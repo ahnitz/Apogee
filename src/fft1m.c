@@ -29,8 +29,14 @@ static double nw(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);retur
 #include "internal.h"
 #include "transpose16.h"
 
+/* N = N1 * N2 with N1 fixed at 1024, so stage 2 is always the validated
+   L1-resident 1024-point kernel and only N2 = N/1024 varies (4 .. 1024,
+   i.e. N = 2^12 .. 2^20). */
+#define PF_N1 1024
 struct P20 {
-  float *inter_re,*inter_im;        /* 4 MiB each */
+  size_t N; int N2; unsigned Nmask16;   /* Nmask16 = N/16 - 1 */
+  float *wM_r,*wM_i;                /* W_N2[j], for the generic element-space FFT */
+  float *inter_re,*inter_im;
   __m512 *bufR,*bufI,*scrR,*scrI;   /* 1024 each = 64 KiB each */
   __m512 *TLr,*TLi;                 /* [1024] lanes l: W_N[l*k2] */
   float *w1024r,*w1024i;            /* inner four-step twiddle */
@@ -41,29 +47,39 @@ struct P20 {
   signed char *res;                 /* int8 residual plane, layout [g][k2][16re|16im] (write-sequential) */
 };
 
-P20* pf20_create(void){
+P20* pf20_create(size_t Nin){
   P20*p=aligned_alloc(64,sizeof(P20)); memset(p,0,sizeof(P20));
-  const double N=1048576.0;
-  p->inter_re=aligned_alloc(2u<<20,4u<<20); p->inter_im=aligned_alloc(2u<<20,4u<<20);
-  madvise(p->inter_re,4u<<20,MADV_HUGEPAGE); madvise(p->inter_im,4u<<20,MADV_HUGEPAGE);
-  p->bufR=aligned_alloc(64,1056*64); p->bufI=aligned_alloc(64,1056*64);
-  p->scrR=aligned_alloc(64,1056*64); p->scrI=aligned_alloc(64,1056*64);
-  p->TLr=aligned_alloc(64,1024*64);  p->TLi=aligned_alloc(64,1024*64);
-  for(int k2=0;k2<1024;k2++){
+  const double N=(double)Nin;
+  int N2=(int)(Nin/PF_N1);
+  p->N=Nin; p->N2=N2; p->Nmask16=(unsigned)(Nin/16-1);
+  size_t inter_bytes=(size_t)Nin*4;
+  p->inter_re=aligned_alloc(2u<<20,inter_bytes); p->inter_im=aligned_alloc(2u<<20,inter_bytes);
+  madvise(p->inter_re,inter_bytes,MADV_HUGEPAGE); madvise(p->inter_im,inter_bytes,MADV_HUGEPAGE);
+  size_t bufslots = (N2==1024) ? 1056 : (size_t)N2;   /* 1024 path uses stride-33 padding */
+  p->bufR=aligned_alloc(64,bufslots*64); p->bufI=aligned_alloc(64,bufslots*64);
+  p->scrR=aligned_alloc(64,bufslots*64); p->scrI=aligned_alloc(64,bufslots*64);
+  p->TLr=aligned_alloc(64,(size_t)N2*64);  p->TLi=aligned_alloc(64,(size_t)N2*64);
+  p->wM_r=aligned_alloc(64,(size_t)N2*4);  p->wM_i=aligned_alloc(64,(size_t)N2*4);
+  for(int j=0;j<N2;j++){ double a=-2.0*M_PI*j/(double)N2; p->wM_r[j]=(float)cos(a); p->wM_i[j]=(float)sin(a); }
+  for(int k2=0;k2<N2;k2++){
     float tr[16],ti[16];
     for(int l=0;l<16;l++){ double a=-2.0*M_PI*(double)l*k2/N; tr[l]=cosf(a); ti[l]=sinf(a); }
     p->TLr[k2]=_mm512_loadu_ps(tr); p->TLi[k2]=_mm512_loadu_ps(ti);
   }
-  p->q=aligned_alloc(2u<<20,(size_t)1024*2048*2); madvise(p->q,(size_t)1024*2048*2,MADV_HUGEPAGE);
-  p->scl=aligned_alloc(64,1024*64*4);
-  p->res=aligned_alloc(2u<<20,(size_t)64*1024*32); madvise(p->res,(size_t)64*1024*32,MADV_HUGEPAGE);
+  { size_t qb=(size_t)N2*2048*2, rb=(size_t)64*N2*32;
+    p->q=aligned_alloc(2u<<20,qb<(2u<<20)?(2u<<20):qb); madvise(p->q,qb,MADV_HUGEPAGE);
+    p->scl=aligned_alloc(64,(size_t)N2*64*4);
+    p->res=aligned_alloc(2u<<20,rb<(2u<<20)?(2u<<20):rb); madvise(p->res,rb,MADV_HUGEPAGE); }
   p->w1024r=aligned_alloc(64,1024*4); p->w1024i=aligned_alloc(64,1024*4);
   for(int j=0;j<1024;j++){ double a=-2.0*M_PI*j/1024.0; p->w1024r[j]=cos(a); p->w1024i[j]=sin(a); }
-  p->w256r=aligned_alloc(64,256*4); p->w256i=aligned_alloc(64,256*4);
-  p->wlor =aligned_alloc(64,256*4); p->wloi =aligned_alloc(64,256*4);
-  for(int j=0;j<256;j++){
-    double a=-2.0*M_PI*(double)(j*256)/65536.0; p->w256r[j]=cos(a); p->w256i[j]=sin(a);
-    double b=-2.0*M_PI*(double)j/65536.0;       p->wlor[j]=cos(b);  p->wloi[j]=sin(b);
+  { size_t nhi=(size_t)(Nin/16)/256; if(nhi<1) nhi=1;
+    double Nq=(double)(Nin/16);
+    p->w256r=aligned_alloc(64,nhi*4+64); p->w256i=aligned_alloc(64,nhi*4+64);
+    p->wlor =aligned_alloc(64,256*4);    p->wloi =aligned_alloc(64,256*4);
+    for(size_t j=0;j<nhi;j++){ double a=-2.0*M_PI*(double)(j*256)/Nq;
+      p->w256r[j]=(float)cos(a); p->w256i[j]=(float)sin(a); }
+    for(int j=0;j<256;j++){ double b=-2.0*M_PI*(double)j/Nq;
+      p->wlor[j]=(float)cos(b); p->wloi[j]=(float)sin(b); }
   }
   for(int c=0;c<2;c++)for(int k2=0;k2<32;k2++){
     float tr[16],ti[16];
@@ -71,6 +87,60 @@ P20* pf20_create(void){
     p->t4r[c][k2]=_mm512_loadu_ps(tr); p->t4i[c][k2]=_mm512_loadu_ps(ti);
   }
   return p;
+}
+
+
+/* Generic element-space Stockham FFT of size M (a power of two, 2..512).
+   Operates on an array of __m512 elements; the 16 SIMD lanes are independent
+   transforms, so every twiddle is a broadcast scalar and no shuffles occur.
+   Result lands in X when the stage count is even, otherwise in Y (returned). */
+#define CMULB(orr,oii,ar,ai,cr,ci) do{                              \
+    __m512 _cr=_mm512_set1_ps(cr), _ci=_mm512_set1_ps(ci);          \
+    (orr)=_mm512_fmsub_ps(ar,_cr,_mm512_mul_ps(ai,_ci));            \
+    (oii)=_mm512_fmadd_ps(ar,_ci,_mm512_mul_ps(ai,_cr)); }while(0)
+
+int elem_fft_generic(int M,__m512*Xr,__m512*Xi,__m512*Yr,__m512*Yi,
+                            const float*wr,const float*wi){
+  const __m512 Z=_mm512_setzero_ps();
+  int n=M,s=1,flip=0;
+  while(n>1){
+    int r=(n%4==0)?4:2, m=n/r;
+    for(int j=0;j<m;j++){
+      for(int q=0;q<s;q++){
+        int i0=q+s*j;
+        if(r==4){
+          int i1=i0+s*m, i2=i1+s*m, i3=i2+s*m;
+          __m512 a0r=Xr[i0],a0i=Xi[i0], a1r=Xr[i1],a1i=Xi[i1];
+          __m512 a2r=Xr[i2],a2i=Xi[i2], a3r=Xr[i3],a3i=Xi[i3];
+          __m512 t0r=_mm512_add_ps(a0r,a2r), t0i=_mm512_add_ps(a0i,a2i);
+          __m512 t1r=_mm512_sub_ps(a0r,a2r), t1i=_mm512_sub_ps(a0i,a2i);
+          __m512 t2r=_mm512_add_ps(a1r,a3r), t2i=_mm512_add_ps(a1i,a3i);
+          __m512 dr =_mm512_sub_ps(a1r,a3r), di =_mm512_sub_ps(a1i,a3i);
+          __m512 t3r=di, t3i=_mm512_sub_ps(Z,dr);            /* -i*(a1-a3) */
+          __m512 o0r=_mm512_add_ps(t0r,t2r), o0i=_mm512_add_ps(t0i,t2i);
+          __m512 o1r=_mm512_add_ps(t1r,t3r), o1i=_mm512_add_ps(t1i,t3i);
+          __m512 o2r=_mm512_sub_ps(t0r,t2r), o2i=_mm512_sub_ps(t0i,t2i);
+          __m512 o3r=_mm512_sub_ps(t1r,t3r), o3i=_mm512_sub_ps(t1i,t3i);
+          int o=q+s*4*j;
+          Yr[o]=o0r; Yi[o]=o0i;                              /* twiddle l=0 is 1 */
+          int b=(j*s)&(M-1), b2=(2*b)&(M-1), b3=(3*b)&(M-1);
+          CMULB(Yr[o+s],  Yi[o+s],  o1r,o1i, wr[b],  wi[b]);
+          CMULB(Yr[o+2*s],Yi[o+2*s],o2r,o2i, wr[b2], wi[b2]);
+          CMULB(Yr[o+3*s],Yi[o+3*s],o3r,o3i, wr[b3], wi[b3]);
+        } else {
+          int i1=i0+s*m;
+          __m512 a0r=Xr[i0],a0i=Xi[i0], a1r=Xr[i1],a1i=Xi[i1];
+          int o=q+s*2*j, b=(j*s)&(M-1);
+          Yr[o]=_mm512_add_ps(a0r,a1r); Yi[o]=_mm512_add_ps(a0i,a1i);
+          __m512 dr=_mm512_sub_ps(a0r,a1r), di=_mm512_sub_ps(a0i,a1i);
+          CMULB(Yr[o+s],Yi[o+s], dr,di, wr[b], wi[b]);
+        }
+      }
+    }
+    { __m512*t; t=Xr;Xr=Yr;Yr=t; t=Xi;Xi=Yi;Yi=t; }
+    flip^=1; n=m; s*=r;
+  }
+  return flip;
 }
 
 /* element-space 1024-pt FFT across the group buffer (lanes independent) */
@@ -88,27 +158,35 @@ static void elem_fft1024(P20*p){
 }
 
 static void stage1(P20*p,const float*in){
+  const int N2=p->N2;
+  const unsigned NM=p->Nmask16;
+  const size_t resstride=(size_t)N2*32;
   const __m512i ev=_mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30);
   const __m512i od=_mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31);
   for(int g=0;g<64;g++){
     const float*src=in+2*(16*g);
-    for(int n2=0;n2<1024;n2++){
-      if(n2+8<1024) _mm_prefetch((const char*)(src+(size_t)(n2+8)*2048),_MM_HINT_T0);
+    for(int n2=0;n2<N2;n2++){
+      if(n2+8<N2) _mm_prefetch((const char*)(src+(size_t)(n2+8)*2048),_MM_HINT_T0);
       __m512 a=_mm512_loadu_ps(src+(size_t)n2*2048), b=_mm512_loadu_ps(src+(size_t)n2*2048+16);
-      int q=(n2&31)+33*(n2>>5);
+      int q=(N2==1024)?((n2&31)+33*(n2>>5)):n2;
       p->bufR[q]=_mm512_permutex2var_ps(a,ev,b);
       p->bufI[q]=_mm512_permutex2var_ps(a,od,b);
     }
-    elem_fft1024(p);
-    for(int k2=0;k2<1024;k2++){
-      int eb=33*(k2&31)+(k2>>5);
-      int m=(g*k2)&65535, m1=m>>8, m0=m&255;
+    __m512 *RR=p->bufR,*RI=p->bufI;
+    if(N2==1024) elem_fft1024(p);
+    else if(N2>1){
+      int f=elem_fft_generic(N2,p->bufR,p->bufI,p->scrR,p->scrI,p->wM_r,p->wM_i);
+      if(f){ RR=p->scrR; RI=p->scrI; }
+    }
+    for(int k2=0;k2<N2;k2++){
+      int eb=(N2==1024)?(33*(k2&31)+(k2>>5)):k2;
+      unsigned m=((unsigned)g*(unsigned)k2)&NM; unsigned m1=m>>8, m0=m&255;
       float sr=p->w256r[m1]*p->wlor[m0]-p->w256i[m1]*p->wloi[m0];
       float si=p->w256r[m1]*p->wloi[m0]+p->w256i[m1]*p->wlor[m0];
       __m512 SR=_mm512_set1_ps(sr),SI=_mm512_set1_ps(si);
       __m512 tr=_mm512_fmsub_ps(SR,p->TLr[k2],_mm512_mul_ps(SI,p->TLi[k2]));
       __m512 ti=_mm512_fmadd_ps(SR,p->TLi[k2],_mm512_mul_ps(SI,p->TLr[k2]));
-      __m512 xr=p->bufR[eb],xi=p->bufI[eb];
+      __m512 xr=RR[eb],xi=RI[eb];
       __m512 vr=_mm512_fmsub_ps(xr,tr,_mm512_mul_ps(xi,ti));
       __m512 vi=_mm512_fmadd_ps(xr,ti,_mm512_mul_ps(xi,tr));
       float mx=_mm512_reduce_max_ps(_mm512_max_ps(_mm512_abs_ps(vr),_mm512_abs_ps(vi)));
@@ -127,7 +205,7 @@ static void stage1(P20*p,const float*in){
       /* low 8 bits -> residual plane, written sequentially in k2 for fixed g */
       __m128i rr8=_mm512_cvtepi32_epi8(_mm512_and_epi32(xr24,_mm512_set1_epi32(255)));
       __m128i ri8=_mm512_cvtepi32_epi8(_mm512_and_epi32(xi24,_mm512_set1_epi32(255)));
-      signed char*rd=p->res+(size_t)g*32768+(size_t)k2*32;
+      signed char*rd=p->res+(size_t)g*resstride+(size_t)k2*32;
       _mm_stream_si128((__m128i*)rd,rr8);
       _mm_stream_si128((__m128i*)(rd+16),ri8);
     }
@@ -138,8 +216,9 @@ static void stage1(P20*p,const float*in){
 /* rebuild one intermediate column at full 24-bit precision */
 static void rebuild24(P20*p,int k2,float*re,float*im){
   const short*src=p->q+(size_t)k2*2048; const float*sp=p->scl+k2*64;
+  const size_t resstride=(size_t)p->N2*32;
   for(int g=0;g<64;g++){
-    const signed char*rd=p->res+(size_t)g*32768+(size_t)k2*32;
+    const signed char*rd=p->res+(size_t)g*resstride+(size_t)k2*32;
     __m512 vs=_mm512_set1_ps(sp[g]);
     __m512i hr=_mm512_slli_epi32(_mm512_cvtepi16_epi32(_mm256_load_si256((const __m256i*)(src+32*g))),8);
     __m512i hi_=_mm512_slli_epi32(_mm512_cvtepi16_epi32(_mm256_load_si256((const __m256i*)(src+32*g+16))),8);
@@ -158,8 +237,18 @@ void pf20_exact(P20*p,const float*in,float*out){
   static float stg_im[16*1024] __attribute__((aligned(64)));
   const __m512i lo=_mm512_setr_epi32(0,16,1,17,2,18,3,19,4,20,5,21,6,22,7,23);
   const __m512i hi=_mm512_setr_epi32(8,24,9,25,10,26,11,27,12,28,13,29,14,30,15,31);
+  const int N2=p->N2;
   stage1(p,in);
-  for(int jb=0;jb<1024;jb+=16){
+  if(N2<16){                       /* too few columns to block the corner turn */
+    for(int k2=0;k2<N2;k2++){
+      rebuild24(p,k2,stg_re,stg_im);
+      pf_fft1024_soa(stg_re,stg_im,p->t4r,p->t4i);
+      for(int k1=0;k1<PF_N1;k1++){ size_t k=(size_t)k1*N2+k2;
+        out[2*k]=stg_re[k1]; out[2*k+1]=stg_im[k1]; }
+    }
+    return;
+  }
+  for(int jb=0;jb<N2;jb+=16){
     for(int l=0;l<16;l++){
       rebuild24(p,jb+l,stg_re+l*1024,stg_im+l*1024);
       pf_fft1024_soa(stg_re+l*1024,stg_im+l*1024,p->t4r,p->t4i);
@@ -170,7 +259,7 @@ void pf20_exact(P20*p,const float*in,float*out){
                              B[l]=_mm512_load_ps(stg_im+l*1024+k1b); }
       t16(A,TA); t16(B,TB);
       for(int r=0;r<16;r++){
-        float*d=out+2*((size_t)(k1b+r)*1024+jb);
+        float*d=out+2*((size_t)(k1b+r)*N2+jb);
         _mm512_stream_ps(d,   _mm512_permutex2var_ps(TA[r],lo,TB[r]));
         _mm512_stream_ps(d+16,_mm512_permutex2var_ps(TA[r],hi,TB[r]));
       }
@@ -185,10 +274,11 @@ void pf20_exact(P20*p,const float*in,float*out){
 int pf20_topk(P20*p,const float*in,int Kreq,int*idx_out,float*re_out,float*im_out){
   int K=Kreq*2+8; if(K>256)K=256;
   PROF_A; stage1(p,in); PROF_B;
+  const int N2=p->N2;
   pf_cand T[256]; int nT=0;
   static float re[1024] __attribute__((aligned(64))), im[1024] __attribute__((aligned(64)));
   float thr=-1.f;
-  for(int k2=0;k2<1024;k2++){
+  for(int k2=0;k2<N2;k2++){
     { const short*src=p->q+(size_t)k2*2048; const float*sp=p->scl+k2*64;
       for(int g=0;g<64;g++){
         __m512 vs=_mm512_set1_ps(sp[g]*256.0f);
@@ -209,7 +299,7 @@ int pf20_topk(P20*p,const float*in,int Kreq,int*idx_out,float*re_out,float*im_ou
         while(msk){
           int l=__builtin_ctz((unsigned)msk); msk&=(__mmask16)(msk-1);
           if(b[l]<=thr) continue;
-          pf_push(T,K,&nT,b[l],(k1+l)*1024+k2,re[k1+l],im[k1+l]);
+          pf_push(T,K,&nT,b[l],(k1+l)*N2+k2,re[k1+l],im[k1+l]);
           if(nT==K){ thr=T[0].mag2; vthr=_mm512_set1_ps(thr); }
         }
       }
@@ -217,13 +307,13 @@ int pf20_topk(P20*p,const float*in,int Kreq,int*idx_out,float*re_out,float*im_ou
   }
   /* refine every candidate to 24-bit precision, then rank */
   for(int a=0;a<nT;a++){
-    int k2=T[a].idx%1024, done=0;
-    for(int b=0;b<a;b++) if(T[b].idx%1024==k2){ done=1; break; }
+    int k2=T[a].idx%N2, done=0;
+    for(int b=0;b<a;b++) if(T[b].idx%N2==k2){ done=1; break; }
     if(done) continue;
     rebuild24(p,k2,re,im);
     pf_fft1024_soa(re,im,p->t4r,p->t4i);
-    for(int b=a;b<nT;b++) if(T[b].idx%1024==k2){
-      int k1=T[b].idx/1024; T[b].re=re[k1]; T[b].im=im[k1];
+    for(int b=a;b<nT;b++) if(T[b].idx%N2==k2){
+      int k1=T[b].idx/N2; T[b].re=re[k1]; T[b].im=im[k1];
       T[b].mag2=re[k1]*re[k1]+im[k1]*im[k1];
     }
   }

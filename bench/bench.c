@@ -55,22 +55,29 @@ static void bench(size_t N,int K,int blocks,int batch){
   }
   qsort(tk,blocks,sizeof(double),cmpd); qsort(tf,blocks,sizeof(double),cmpd);
   qsort(te,blocks,sizeof(double),cmpd); qsort(tt,blocks,sizeof(double),cmpd);
-  double s = N>=65536 ? 1e3 : 1e6; const char *un = N>=65536 ? "ms" : "us";
-  printf("\nN = %zu   (K = %d)\n",N,K);
-  printf("  %-22s %9s %9s\n","","min","median");
-  printf("  %-22s %8.3f%s %8.3f%s\n","MKL DFTI",           tk[0]*s,un,tk[blocks/2]*s,un);
-  printf("  %-22s %8.3f%s %8.3f%s\n","FFTW (PATIENT)",     tf[0]*s,un,tf[blocks/2]*s,un);
-  printf("  %-22s %8.3f%s %8.3f%s   %5.2fx / %5.2fx vs MKL\n","peakfft pf_fft (exact)",
-         te[0]*s,un,te[blocks/2]*s,un, tk[0]/te[0], tk[blocks/2]/te[blocks/2]);
-  printf("  %-22s %8.3f%s %8.3f%s   %5.2fx / %5.2fx vs MKL\n","peakfft pf_topk",
-         tt[0]*s,un,tt[blocks/2]*s,un, tk[0]/tt[0], tk[blocks/2]/tt[blocks/2]);
+  printf("2^%-7d %9.2fus %9.2fus %9.2fus %9.2fus %7.2fx %7.2fx\n",
+         (int)lround(log2((double)N)), tk[0]*1e6, tf[0]*1e6, te[0]*1e6, tt[0]*1e6,
+         tk[0]/te[0], tk[0]/tt[0]);
+  { const char *csv=getenv("PF_CSV");
+    if(csv){ FILE*f=fopen(csv,"a");
+      fprintf(f,"%zu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",N,
+        tk[0],tk[blocks/2],tf[0],tf[blocks/2],te[0],te[blocks/2],tt[0],tt[blocks/2]);
+      fclose(f);} }
   pf_destroy(p); free(in); free(out);
 }
 
 int main(int argc,char**argv){
   int K = argc>1 ? atoi(argv[1]) : 8;
-  printf("peakfft benchmark - single threaded, complex-to-complex, float32\n");
+  const char *csv = getenv("PF_CSV");
+  if(csv){ FILE*f=fopen(csv,"w"); fprintf(f,"N,mkl_min,mkl_med,fftw_min,fftw_med,fft_min,fft_med,topk_min,topk_med\n"); fclose(f); }
+  printf("peakfft benchmark - single threaded, complex-to-complex, float32   (K = %d)\n",K);
+  printf("%-9s %10s %10s %10s %10s %8s %8s\n","N","MKL","FFTW","pf_fft","pf_topk","fft/MKL","topk/MKL");
   bench(1024,K,200,200);
-  bench(1048576,K,30,1);
+  for(int lg=12; lg<=20; lg++){
+    size_t N=(size_t)1<<lg;
+    int batch = N<=(1u<<15) ? 50 : (N<=(1u<<18) ? 5 : 1);
+    int blocks = N<=(1u<<15) ? 60 : (N<=(1u<<18) ? 40 : 25);
+    bench(N,K,blocks,batch);
+  }
   return 0;
 }

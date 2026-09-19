@@ -11,6 +11,7 @@ struct pf_plan {
   float *re, *im;                 /* SoA scratch (N=1024 path) */
   __m512 t4r[2][32], t4i[2][32];  /* 32x32 corner-turn twiddles */
   P20 *p20;
+  PS  *ps;
 };
 
 void pf_push(pf_cand *T,int K,int *n,float m2,int idx,float vr,float vi){
@@ -43,7 +44,10 @@ float pf_prime_threshold(const float *re,const float *im,int n,int K){
   return nextafterf(lm[K-1],-1.f);
 }
 
-int pf_supported(size_t N){ return N==1024u || N==1048576u; }
+int pf_supported(size_t N){
+  if(N==1024u) return 1;
+  return N>=4096u && N<=1048576u && (N&(N-1))==0u;   /* 2^12 .. 2^20 */
+}
 
 pf_plan *pf_create(size_t N){
   if(!pf_supported(N)) return NULL;
@@ -60,8 +64,11 @@ pf_plan *pf_create(size_t N){
   if(N==1024){
     p->re=aligned_alloc(64,1024*sizeof(float));
     p->im=aligned_alloc(64,1024*sizeof(float));
+  } else if(N<=(1u<<16)){
+    p->ps = pfs_create(N);
+    if(!p->ps){ free(p); return NULL; }
   } else {
-    p->p20 = pf20_create();
+    p->p20 = pf20_create(N);
     if(!p->p20){ free(p); return NULL; }
   }
   return p;
@@ -69,7 +76,7 @@ pf_plan *pf_create(size_t N){
 
 void pf_destroy(pf_plan *p){
   if(!p) return;
-  free(p->re); free(p->im); pf20_destroy(p->p20); free(p);
+  free(p->re); free(p->im); pf20_destroy(p->p20); pfs_destroy(p->ps); free(p);
 }
 
 void pf_fft(pf_plan *p,const float *in,float *out){
@@ -77,6 +84,8 @@ void pf_fft(pf_plan *p,const float *in,float *out){
     pf_deint(in,p->re,p->im,1024);
     pf_fft1024_soa(p->re,p->im,p->t4r,p->t4i);
     pf_inter(p->re,p->im,out,1024);
+  } else if(p->ps){
+    pfs_exact(p->ps,in,out);
   } else {
     pf20_exact(p->p20,in,out);
   }
@@ -110,5 +119,6 @@ int pf_topk(pf_plan *p,const float *in,int K,int *idx,float *re,float *im){
     for(int a=0;a<n;a++){ idx[a]=T[a].idx; re[a]=T[a].re; im[a]=T[a].im; }
     return n;
   }
+  if(p->ps) return pfs_topk(p->ps,in,K,idx,re,im);
   return pf20_topk(p->p20,in,K,idx,re,im);
 }

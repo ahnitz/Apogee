@@ -198,6 +198,8 @@ static void test_api(void){
   CHECK(pf_create(999)==NULL, "pf_create must reject unsupported N");
   CHECK(pf_supported(1024) && pf_supported(1048576), "pf_supported wrong");
   CHECK(!pf_supported(2048), "pf_supported(2048) should be false");
+  CHECK(!pf_supported(1u<<21), "pf_supported(2^21) should be false");
+  for(int lg=12;lg<=20;lg++) CHECK(pf_supported((size_t)1<<lg),"pf_supported(2^%d) should be true",lg);
   pf_plan *p=pf_create(1024);
   int idx[4]; float rr[4],ii[4];
   float *in=pf_alloc(1024*8); memset(in,0,1024*8); in[0]=1.f;
@@ -216,8 +218,8 @@ int main(void){
   test_quant24();
   test_heap();
   test_fft1024_exact();
+  for(int lg=12; lg<=20; lg++) test_analytic((size_t)1<<lg);
   test_analytic(1024);
-  test_analytic(1048576);
   test_api();
   return pf_report("test_units");
 }

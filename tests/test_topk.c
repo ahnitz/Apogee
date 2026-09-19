@@ -75,6 +75,7 @@ int main(void){
   for(int mode=0;mode<4;mode++) run(1024,8,40,mode,1e-5);
   run(1024,1,40,0,1e-5);
   run(1024,PF_MAX_K,20,0,1e-5);
+  for(int lg=12; lg<=19; lg++){ size_t N=(size_t)1<<lg; run(N,8,4,0,1e-5); run(N,1,4,1,1e-5); }
   for(int mode=0;mode<4;mode++) run(1048576,8,6,mode,1e-5);
   run(1048576,1,8,0,1e-5);
   run(1048576,PF_MAX_K,4,0,1e-5);

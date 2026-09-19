@@ -59,6 +59,7 @@ int main(void){
   printf("peakfft vs MKL (tolerance 1e-5 relative)\n");
   run(1024,8,50);
   run(1024,1,50);
+  for(int lg=12; lg<=19; lg++){ size_t N=(size_t)1<<lg; run(N,8,6); run(N,1,6); }
   run(1048576,8,10);
   run(1048576,1,10);
   run(1048576,PF_MAX_K,5);

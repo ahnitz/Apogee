@@ -4,7 +4,7 @@ CFLAGS  ?= -O3 -march=native -Wall -Wextra -Wno-unused-parameter
 CPPFLAGS = -Iinclude -Isrc
 LDLIBS   = -lm
 
-SRC  = src/kernel1024.c src/fft1m.c src/plan.c
+SRC  = src/kernel1024.c src/fft1m.c src/fft_small.c src/plan.c
 OBJ  = $(SRC:.c=.o)
 LIB  = libpeakfft.a
 
