@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        if: matrix.cc == 'clang'
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Report runner CPU
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          echo "avx512f:    $(grep -qm1 avx512f    /proc/cpuinfo && echo yes || echo no)"
+          echo "avx512dq:   $(grep -qm1 avx512dq   /proc/cpuinfo && echo yes || echo no)"
+          echo "avx512bw:   $(grep -qm1 avx512bw   /proc/cpuinfo && echo yes || echo no)"
+          echo "avx512vl:   $(grep -qm1 avx512vl   /proc/cpuinfo && echo yes || echo no)"
+
+      # Build with explicit ISA flags rather than -march=native so the result does
+      # not depend on whichever host the runner lands on.
+      - name: Build
+        run: |
+          make clean
+          make all CC=${{ matrix.cc }} \
+            CFLAGS="-O3 -mavx512f -mavx512dq -mavx512bw -mavx512vl -Wall -Wextra -Wno-unused-parameter -Werror"
+
+      - name: Check generated codelets are in sync with gen.py
+        run: |
+          cp src/codelets.h /tmp/codelets.committed.h
+          (cd src && python3 gen.py)
+          diff -u /tmp/codelets.committed.h src/codelets.h \
+            || { echo "::error::src/codelets.h is stale; re-run 'make codelets'"; exit 1; }
+
+      - name: Run tests
+        run: |
+          if grep -qm1 avx512vl /proc/cpuinfo; then
+            ./tests/test_units
+            ./tests/test_topk
+          else
+            echo "::warning::Runner lacks AVX-512; tests built but not executed."
+          fi
+
+  # Guarantees the tests actually execute even when GitHub's runner pool has no
+  # AVX-512 host, by emulating one with Intel SDE.
+  test-under-sde:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          make all CFLAGS="-O3 -mavx512f -mavx512dq -mavx512bw -mavx512vl -Wall -Wextra -Wno-unused-parameter"
+      - name: Fetch Intel SDE
+        run: |
+          set -e
+          url=$(curl -sL https://www.intel.com/content/www/us/en/developer/articles/tool/software-development-emulator.html \
+                | grep -oE 'https://downloadmirror[^"]*sde-external[^"]*-lin\.tar\.xz' | head -1)
+          test -n "$url"
+          curl -sL "$url" -o sde.tar.xz
+          mkdir sde && tar xf sde.tar.xz -C sde --strip-components=1
+      - name: Run tests on an emulated Sapphire Rapids
+        run: |
+          ./sde/sde64 -spr -- ./tests/test_units
+          ./sde/sde64 -spr -- ./tests/test_topk

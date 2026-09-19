@@ -1,0 +1,7 @@
+*.o
+*.a
+tests/test_units
+tests/test_topk
+tests/test_vs_mkl
+bench/bench
+fftw.wisdom
