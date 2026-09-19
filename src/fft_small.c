@@ -73,17 +73,18 @@ void pfs_destroy(PS*p){
   free(p->hr); free(p->hi); free(p->lr); free(p->li); free(p);
 }
 
-static void stageA(PS*p,const float*in){
+static void stageA(PS*p,const float*in,int conj){
   const int N1=p->N1,N2=p->N2;
   const __m512i ev=_mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30);
   const __m512i od=_mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31);
+  const __m512 sg=conj?_mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000)):_mm512_setzero_ps();
   __m512 TR[16],TI[16],OR[16],OI[16];
   for(int g=0;g<N1/16;g++){
     const float*src=in+2*(16*g);
     for(int n2=0;n2<N2;n2++){
       __m512 a=_mm512_loadu_ps(src+(size_t)n2*2*N1), b=_mm512_loadu_ps(src+(size_t)n2*2*N1+16);
       p->bR[n2]=_mm512_permutex2var_ps(a,ev,b);
-      p->bI[n2]=_mm512_permutex2var_ps(a,od,b);
+      p->bI[n2]=_mm512_xor_ps(_mm512_permutex2var_ps(a,od,b),sg);
     }
     __m512 *RR=p->bR,*RI=p->bI;
     if(elem_fft_generic(N2,p->bR,p->bI,p->sR,p->sI,p->w2r,p->w2i)){ RR=p->sR; RI=p->sI; }
@@ -122,24 +123,26 @@ static void stageB(PS*p,int b,__m512**RR,__m512**RI){
   if(elem_fft_generic(N1,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i)){ *RR=p->sR; *RI=p->sI; }
 }
 
-void pfs_exact(PS*p,const float*in,float*out){
+void pfs_exact(PS*p,const float*in,float*out,int conj){
   const int N1=p->N1,N2=p->N2;
   const __m512i lo=_mm512_setr_epi32(0,16,1,17,2,18,3,19,4,20,5,21,6,22,7,23);
   const __m512i hi=_mm512_setr_epi32(8,24,9,25,10,26,11,27,12,28,13,29,14,30,15,31);
-  stageA(p,in);
+  const __m512 sg=conj?_mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000)):_mm512_setzero_ps();
+  stageA(p,in,conj);
   for(int b=0;b<N2/16;b++){
     __m512 *RR,*RI; stageB(p,b,&RR,&RI);
     for(int k1=0;k1<N1;k1++){
       float*d=out+2*((size_t)k1*N2+16*b);
-      _mm512_storeu_ps(d,   _mm512_permutex2var_ps(RR[k1],lo,RI[k1]));
-      _mm512_storeu_ps(d+16,_mm512_permutex2var_ps(RR[k1],hi,RI[k1]));
+      __m512 vi=_mm512_xor_ps(RI[k1],sg);
+      _mm512_storeu_ps(d,   _mm512_permutex2var_ps(RR[k1],lo,vi));
+      _mm512_storeu_ps(d+16,_mm512_permutex2var_ps(RR[k1],hi,vi));
     }
   }
 }
 
-int pfs_topk(PS*p,const float*in,int K,int*idx,float*re,float*im){
+int pfs_topk(PS*p,const float*in,int K,pf_peak*out,int conj){
   const int N1=p->N1,N2=p->N2;
-  stageA(p,in);
+  stageA(p,in,conj);
   pf_cand T[PF_MAX_K]; int n=0; float thr=-1.f;
   __m512 vthr=_mm512_set1_ps(thr);
   float br[16],bi[16],bm[16];
@@ -161,6 +164,7 @@ int pfs_topk(PS*p,const float*in,int K,int*idx,float*re,float*im){
   }
   for(int a=1;a<n;a++){ pf_cand v=T[a]; int c=a-1;
     while(c>=0&&T[c].mag2<v.mag2){T[c+1]=T[c];c--;} T[c+1]=v; }
-  for(int a=0;a<n;a++){ idx[a]=T[a].idx; re[a]=T[a].re; im[a]=T[a].im; }
+  for(int a=0;a<n;a++){ out[a].index=T[a].idx; out[a].re=T[a].re;
+    out[a].im=conj?-T[a].im:T[a].im; out[a].magnitude=sqrtf(T[a].mag2); }
   return n;
 }

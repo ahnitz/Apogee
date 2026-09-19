@@ -122,7 +122,7 @@ static void test_fft1024_exact(void){
   pf_seed(42);
   for(int i=0;i<N;i++){ in[2*i]=(float)pf_gauss(); in[2*i+1]=(float)pf_gauss(); }
   pf_plan *p=pf_create(N); CHECK(p!=NULL,"pf_create(1024) returned NULL");
-  pf_fft(p,in,out);
+  pf_fft(p,in,out,PF_FORWARD);
   pf_ref_dft(in,ref,N);
   double peak=0,worst=0;
   for(int k=0;k<N;k++){ double m=hypot(ref[2*k],ref[2*k+1]); if(m>peak)peak=m; }
@@ -141,7 +141,7 @@ static void test_analytic(size_t N){
   /* unit impulse at n0 -> |X[k]| == 1 for all k */
   int n0 = (int)(N/3);
   memset(in,0,N*8); in[2*n0]=1.f;
-  pf_fft(p,in,out);
+  pf_fft(p,in,out,PF_FORWARD);
   double worst=0;
   for(size_t k=0;k<N;k++){
     double a=-2.0*M_PI*(double)n0*k/N;
@@ -154,7 +154,7 @@ static void test_analytic(size_t N){
   /* pure tone at integer bin f -> all energy in bin f, value N */
   int f = (int)(N/7);
   for(size_t n=0;n<N;n++){ double a=2.0*M_PI*(double)f*n/N; in[2*n]=(float)cos(a); in[2*n+1]=(float)sin(a); }
-  pf_fft(p,in,out);
+  pf_fft(p,in,out,PF_FORWARD);
   double leak=0;
   for(size_t k=0;k<N;k++) if((int)k!=f){ double m=hypot(out[2*k],out[2*k+1]); if(m>leak)leak=m; }
   snprintf(tag,sizeof tag,"N=%zu tone lands in bin %d",N,f);
@@ -162,14 +162,18 @@ static void test_analytic(size_t N){
   CHECK_LE(leak/(double)N, 1e-5, "%s (leakage)", tag);
 
   /* and pf_topk must report exactly that bin */
-  int idx[4]; float rr[4],ii[4];
-  int nk=pf_topk(p,in,1,idx,rr,ii);
-  CHECK(nk==1 && idx[0]==f, "N=%zu pf_topk on a pure tone gave idx=%d, expected %d",N,nk?idx[0]:-1,f);
+  pf_peak pk[4];
+  int nk=pf_topk(p,in,1,pk,PF_FORWARD);
+  CHECK(nk==1 && pk[0].index==f, "N=%zu pf_topk on a pure tone gave idx=%ld, expected %d",
+        N,nk?pk[0].index:-1L,f);
+  CHECK_LE(fabs(pk[0].magnitude-(double)N)/N, 1e-5, "N=%zu peak magnitude field",N);
+  CHECK_LE(fabs(hypot(pk[0].re,pk[0].im)-pk[0].magnitude)/N, 1e-6,
+           "N=%zu magnitude must equal hypot(re,im)",N);
 
   /* Parseval: sum|X|^2 == N * sum|x|^2 */
   pf_seed(N);
   for(size_t n=0;n<N;n++){ in[2*n]=(float)pf_gauss(); in[2*n+1]=(float)pf_gauss(); }
-  pf_fft(p,in,out);
+  pf_fft(p,in,out,PF_FORWARD);
   double e_in=0,e_out=0;
   for(size_t n=0;n<N;n++){ e_in += (double)in[2*n]*in[2*n]+(double)in[2*n+1]*in[2*n+1];
                            e_out+= (double)out[2*n]*out[2*n]+(double)out[2*n+1]*out[2*n+1]; }
@@ -178,11 +182,11 @@ static void test_analytic(size_t N){
 
   /* linearity: F(a+b) == F(a)+F(b) */
   for(size_t n=0;n<N;n++){ in2[2*n]=(float)pf_gauss(); in2[2*n+1]=(float)pf_gauss(); }
-  pf_fft(p,in2,out2);
+  pf_fft(p,in2,out2,PF_FORWARD);
   double scale=0; for(size_t k=0;k<N;k++){ double m=hypot(out[2*k],out[2*k+1]); if(m>scale)scale=m; }
   for(size_t n=0;n<N;n++){ in2[2*n]+=in[2*n]; in2[2*n+1]+=in[2*n+1]; }
   float *sum=pf_alloc(N*8);
-  pf_fft(p,in2,sum);
+  pf_fft(p,in2,sum,PF_FORWARD);
   worst=0;
   for(size_t k=0;k<N;k++){
     double d=hypot(sum[2*k]-(out[2*k]+out2[2*k]), sum[2*k+1]-(out[2*k+1]+out2[2*k+1]));
@@ -194,6 +198,50 @@ static void test_analytic(size_t N){
   pf_destroy(p); free(in); free(out); free(in2); free(out2); free(sum);
 }
 
+/* Backward direction: the round trip must scale by exactly N, a tone must land in
+   the mirrored bin, and pf_topk must agree with pf_fft in that direction too. */
+static void test_backward(size_t N){
+  float *in=pf_alloc(N*8), *fwd=pf_alloc(N*8), *rt=pf_alloc(N*8);
+  pf_plan *p=pf_create(N);
+  char tag[64];
+  pf_seed(N*7+1);
+  for(size_t n=0;n<N;n++){ in[2*n]=(float)pf_gauss(); in[2*n+1]=(float)pf_gauss(); }
+  pf_fft(p,in,fwd,PF_FORWARD);
+  pf_fft(p,fwd,rt,PF_BACKWARD);
+  double scale=0, worst=0;
+  for(size_t n=0;n<N;n++){ double m=hypot(in[2*n],in[2*n+1]); if(m>scale)scale=m; }
+  for(size_t n=0;n<N;n++){
+    double d=hypot(rt[2*n]-(double)N*in[2*n], rt[2*n+1]-(double)N*in[2*n+1]);
+    if(d>worst)worst=d;
+  }
+  snprintf(tag,sizeof tag,"N=%zu backward(forward(x)) == N*x",N);
+  CHECK_LE(worst/((double)N*scale), 1e-5, "%s", tag);
+
+  /* exp(-2*pi*i*f*n/N) has its backward peak at bin f */
+  int f=(int)(N/5);
+  for(size_t n=0;n<N;n++){ double a=-2.0*M_PI*(double)f*n/N;
+    in[2*n]=(float)cos(a); in[2*n+1]=(float)sin(a); }
+  pf_peak pk[2];
+  int nk=pf_topk(p,in,1,pk,PF_BACKWARD);
+  CHECK(nk==1 && pk[0].index==f, "N=%zu backward tone gave idx=%ld, expected %d",
+        N,nk?pk[0].index:-1L,f);
+  CHECK_LE(fabs(pk[0].magnitude-(double)N)/N, 1e-5, "N=%zu backward peak magnitude",N);
+
+  /* pf_topk(BACKWARD) must match a brute-force scan of pf_fft(BACKWARD) */
+  pf_seed(N*13+5);
+  for(size_t n=0;n<N;n++){ in[2*n]=(float)pf_gauss(); in[2*n+1]=(float)pf_gauss(); }
+  pf_fft(p,in,fwd,PF_BACKWARD);
+  int best=0; double bm=-1;
+  for(size_t k=0;k<N;k++){ double m=(double)fwd[2*k]*fwd[2*k]+(double)fwd[2*k+1]*fwd[2*k+1];
+    if(m>bm){bm=m;best=(int)k;} }
+  nk=pf_topk(p,in,1,pk,PF_BACKWARD);
+  CHECK(nk==1 && pk[0].index==best,
+        "N=%zu backward pf_topk idx=%ld but pf_fft peak is %d",N,nk?pk[0].index:-1L,best);
+  CHECK_LE(hypot(pk[0].re-fwd[2*best],pk[0].im-fwd[2*best+1])/sqrt(bm), 1e-5,
+           "N=%zu backward pf_topk value",N);
+  pf_destroy(p); free(in); free(fwd); free(rt);
+}
+
 static void test_api(void){
   CHECK(pf_create(999)==NULL, "pf_create must reject unsupported N");
   CHECK(pf_supported(1024) && pf_supported(1048576), "pf_supported wrong");
@@ -201,9 +249,9 @@ static void test_api(void){
   CHECK(!pf_supported(1u<<21), "pf_supported(2^21) should be false");
   for(int lg=12;lg<=20;lg++) CHECK(pf_supported((size_t)1<<lg),"pf_supported(2^%d) should be true",lg);
   pf_plan *p=pf_create(1024);
-  int idx[4]; float rr[4],ii[4];
+  pf_peak pk[4];
   float *in=pf_alloc(1024*8); memset(in,0,1024*8); in[0]=1.f;
-  CHECK(pf_topk(p,in,0,idx,rr,ii)==0, "pf_topk(K=0) should return 0");
+  CHECK(pf_topk(p,in,0,pk,PF_FORWARD)==0, "pf_topk(K=0) should return 0");
   pf_destroy(p); pf_destroy(NULL); free(in);
 }
 
@@ -220,6 +268,8 @@ int main(void){
   test_fft1024_exact();
   for(int lg=12; lg<=20; lg++) test_analytic((size_t)1<<lg);
   test_analytic(1024);
+  test_backward(1024);
+  for(int lg=12; lg<=20; lg++) test_backward((size_t)1<<lg);
   test_api();
   return pf_report("test_units");
 }

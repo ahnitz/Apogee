@@ -41,17 +41,17 @@ static void bench(size_t N,int K,int blocks,int batch){
   memcpy(fi,in,N*8);
 
   pf_plan *p=pf_create(N);
-  int idx[PF_MAX_K]; float re[PF_MAX_K],im[PF_MAX_K];
+  pf_peak pk[PF_MAX_K];
 
   double *tk=malloc(blocks*sizeof(double)), *tf=malloc(blocks*sizeof(double));
   double *te=malloc(blocks*sizeof(double)), *tt=malloc(blocks*sizeof(double));
   for(int w=0;w<3;w++){ DftiComputeForward(h,in,out); fftwf_execute(fp);
-                        pf_fft(p,in,out); pf_topk(p,in,K,idx,re,im); }
+                        pf_fft(p,in,out,PF_FORWARD); pf_topk(p,in,K,pk,PF_FORWARD); }
   for(int b=0;b<blocks;b++){
     double t0=now(); for(int q=0;q<batch;q++) DftiComputeForward(h,in,out);  tk[b]=(now()-t0)/batch;
     t0=now();        for(int q=0;q<batch;q++) fftwf_execute(fp);             tf[b]=(now()-t0)/batch;
-    t0=now();        for(int q=0;q<batch;q++) pf_fft(p,in,out);              te[b]=(now()-t0)/batch;
-    t0=now();        for(int q=0;q<batch;q++) pf_topk(p,in,K,idx,re,im);     tt[b]=(now()-t0)/batch;
+    t0=now();        for(int q=0;q<batch;q++) pf_fft(p,in,out,PF_FORWARD);              te[b]=(now()-t0)/batch;
+    t0=now();        for(int q=0;q<batch;q++) pf_topk(p,in,K,pk,PF_FORWARD);     tt[b]=(now()-t0)/batch;
   }
   qsort(tk,blocks,sizeof(double),cmpd); qsort(tf,blocks,sizeof(double),cmpd);
   qsort(te,blocks,sizeof(double),cmpd); qsort(tt,blocks,sizeof(double),cmpd);

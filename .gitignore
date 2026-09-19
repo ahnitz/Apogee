@@ -7,3 +7,7 @@ bench/bench
 fftw.wisdom
 bench*.csv
 bench_merged.json
+build/
+*.egg-info/
+*.so
+__pycache__/

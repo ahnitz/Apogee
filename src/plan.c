@@ -79,46 +79,57 @@ void pf_destroy(pf_plan *p){
   free(p->re); free(p->im); pf20_destroy(p->p20); pfs_destroy(p->ps); free(p);
 }
 
-void pf_fft(pf_plan *p,const float *in,float *out){
+void pf_fft(pf_plan *p,const float *in,float *out,int sign){
+  const int conj = (sign==PF_BACKWARD);
   if(p->N==1024){
-    pf_deint(in,p->re,p->im,1024);
+    pf_deint_c(in,p->re,p->im,1024,conj);
     pf_fft1024_soa(p->re,p->im,p->t4r,p->t4i);
-    pf_inter(p->re,p->im,out,1024);
+    pf_inter_c(p->re,p->im,out,1024,conj);
   } else if(p->ps){
-    pfs_exact(p->ps,in,out);
+    pfs_exact(p->ps,in,out,conj);
   } else {
-    pf20_exact(p->p20,in,out);
+    pf20_exact(p->p20,in,out,conj);
   }
 }
 
-int pf_topk(pf_plan *p,const float *in,int K,int *idx,float *re,float *im){
+int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){
+  const int conj = (sign==PF_BACKWARD);
   if(K<1) return 0;
   if(K>PF_MAX_K) K=PF_MAX_K;
   if(p->N==1024){
-    pf_deint(in,p->re,p->im,1024);
-    pf_fft1024_soa(p->re,p->im,p->t4r,p->t4i);   /* exact; no output interleave needed */
-    /* Threshold is primed tight enough that only ~K blocks of 16 ever trigger. */
+    /* |X|^2 and the per-lane maxima come out of the transform's final stage, where
+       the values are already in registers - so the scan needs no pass of its own and
+       starts from a threshold tight enough that it almost never branches. */
+    __m512 vmax;
+    pf_deint_c(in,p->re,p->im,1024,conj);
+    pf_fft1024_soa_mag(p->re,p->im,p->t4r,p->t4i,&vmax);
+    float lm[16]; _mm512_storeu_ps(lm,vmax);
+    int kk = K<16?K:16;
+    for(int a=0;a<kk;a++){ int b=a;
+      for(int c=a+1;c<16;c++) if(lm[c]>lm[b]) b=c;
+      float t=lm[a]; lm[a]=lm[b]; lm[b]=t; }
+    float thr = (K<=16) ? nextafterf(lm[kk-1],-1.f) : -1.f;
     pf_cand T[PF_MAX_K]; int n=0;
-    float thr=pf_prime_threshold(p->re,p->im,1024,K);
     __m512 vthr=_mm512_set1_ps(thr);
     for(int k=0;k<1024;k+=16){
       __m512 r=_mm512_load_ps(p->re+k), i2=_mm512_load_ps(p->im+k);
       __m512 m2=_mm512_fmadd_ps(r,r,_mm512_mul_ps(i2,i2));
       __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ);
       if(msk){
-        float b[16]; _mm512_storeu_ps(b,m2);
+        float bb[16]; _mm512_storeu_ps(bb,m2);
         while(msk){
           int l=__builtin_ctz((unsigned)msk); msk&=(__mmask16)(msk-1);
-          if(b[l]<=thr) continue;
-          pf_push(T,K,&n,b[l],k+l,p->re[k+l],p->im[k+l]);
+          if(bb[l]<=thr) continue;
+          pf_push(T,K,&n,bb[l],k+l,p->re[k+l],p->im[k+l]);
           if(n==K){ thr=T[0].mag2; vthr=_mm512_set1_ps(thr); }
         }
       }
     }
     for(int a=1;a<n;a++){ pf_cand v=T[a]; int b=a-1; while(b>=0&&T[b].mag2<v.mag2){T[b+1]=T[b];b--;} T[b+1]=v; }
-    for(int a=0;a<n;a++){ idx[a]=T[a].idx; re[a]=T[a].re; im[a]=T[a].im; }
+    for(int a=0;a<n;a++){ peaks[a].index=T[a].idx; peaks[a].re=T[a].re;
+      peaks[a].im=conj?-T[a].im:T[a].im; peaks[a].magnitude=sqrtf(T[a].mag2); }
     return n;
   }
-  if(p->ps) return pfs_topk(p->ps,in,K,idx,re,im);
-  return pf20_topk(p->p20,in,K,idx,re,im);
+  if(p->ps) return pfs_topk(p->ps,in,K,peaks,conj);
+  return pf20_topk(p->p20,in,K,peaks,conj);
 }

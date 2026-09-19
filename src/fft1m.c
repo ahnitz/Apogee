@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <math.h>
 #include <immintrin.h>
 #include "codelets.h"
@@ -157,10 +158,11 @@ static void elem_fft1024(P20*p){
   for(int k2p=0;k2p<32;k2p++) fft32_84(bR+33*k2p,bI+33*k2p,sR+33*k2p,sI+33*k2p,1);
 }
 
-static void stage1(P20*p,const float*in){
+static void stage1(P20*p,const float*in,int conj){
   const int N2=p->N2;
   const unsigned NM=p->Nmask16;
   const size_t resstride=(size_t)N2*32;
+  const __m512 sg=conj?_mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000)):_mm512_setzero_ps();
   const __m512i ev=_mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30);
   const __m512i od=_mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31);
   for(int g=0;g<64;g++){
@@ -170,7 +172,7 @@ static void stage1(P20*p,const float*in){
       __m512 a=_mm512_loadu_ps(src+(size_t)n2*2048), b=_mm512_loadu_ps(src+(size_t)n2*2048+16);
       int q=(N2==1024)?((n2&31)+33*(n2>>5)):n2;
       p->bufR[q]=_mm512_permutex2var_ps(a,ev,b);
-      p->bufI[q]=_mm512_permutex2var_ps(a,od,b);
+      p->bufI[q]=_mm512_xor_ps(_mm512_permutex2var_ps(a,od,b),sg);
     }
     __m512 *RR=p->bufR,*RI=p->bufI;
     if(N2==1024) elem_fft1024(p);
@@ -232,19 +234,23 @@ static void rebuild24(P20*p,int k2,float*re,float*im){
 /* Exact full transform.  Stage 2 is run 16 columns at a time so the output,
    which is naturally strided by 1024 complex, can be written back as contiguous
    128-byte runs via a 16x16 register transpose instead of an 8-byte scatter. */
-void pf20_exact(P20*p,const float*in,float*out){
+void pf20_exact(P20*p,const float*in,float*out,int conj){
+  /* Non-temporal stores need a 64-byte-aligned destination; callers (numpy, say)
+     do not always provide one, so fall back to unaligned stores when they don't. */
+  const int nt = (((uintptr_t)out) & 63u) == 0u;
   static float stg_re[16*1024] __attribute__((aligned(64)));
   static float stg_im[16*1024] __attribute__((aligned(64)));
   const __m512i lo=_mm512_setr_epi32(0,16,1,17,2,18,3,19,4,20,5,21,6,22,7,23);
   const __m512i hi=_mm512_setr_epi32(8,24,9,25,10,26,11,27,12,28,13,29,14,30,15,31);
   const int N2=p->N2;
-  stage1(p,in);
+  const __m512 sg=conj?_mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000)):_mm512_setzero_ps();
+  stage1(p,in,conj);
   if(N2<16){                       /* too few columns to block the corner turn */
     for(int k2=0;k2<N2;k2++){
       rebuild24(p,k2,stg_re,stg_im);
       pf_fft1024_soa(stg_re,stg_im,p->t4r,p->t4i);
       for(int k1=0;k1<PF_N1;k1++){ size_t k=(size_t)k1*N2+k2;
-        out[2*k]=stg_re[k1]; out[2*k+1]=stg_im[k1]; }
+        out[2*k]=stg_re[k1]; out[2*k+1]=conj?-stg_im[k1]:stg_im[k1]; }
     }
     return;
   }
@@ -260,8 +266,11 @@ void pf20_exact(P20*p,const float*in,float*out){
       t16(A,TA); t16(B,TB);
       for(int r=0;r<16;r++){
         float*d=out+2*((size_t)(k1b+r)*N2+jb);
-        _mm512_stream_ps(d,   _mm512_permutex2var_ps(TA[r],lo,TB[r]));
-        _mm512_stream_ps(d+16,_mm512_permutex2var_ps(TA[r],hi,TB[r]));
+        __m512 vi=_mm512_xor_ps(TB[r],sg);
+        __m512 o0=_mm512_permutex2var_ps(TA[r],lo,vi);
+        __m512 o1=_mm512_permutex2var_ps(TA[r],hi,vi);
+        if(nt){ _mm512_stream_ps(d,o0); _mm512_stream_ps(d+16,o1); }
+        else  { _mm512_storeu_ps(d,o0); _mm512_storeu_ps(d+16,o1); }
       }
     }
   }
@@ -271,9 +280,9 @@ void pf20_exact(P20*p,const float*in,float*out){
 /* ---- top-K path: no output array is ever written ---- */
 
 
-int pf20_topk(P20*p,const float*in,int Kreq,int*idx_out,float*re_out,float*im_out){
+int pf20_topk(P20*p,const float*in,int Kreq,pf_peak*out,int conj){
   int K=Kreq*2+8; if(K>256)K=256;
-  PROF_A; stage1(p,in); PROF_B;
+  PROF_A; stage1(p,in,conj); PROF_B;
   const int N2=p->N2;
   pf_cand T[256]; int nT=0;
   static float re[1024] __attribute__((aligned(64))), im[1024] __attribute__((aligned(64)));
@@ -319,7 +328,8 @@ int pf20_topk(P20*p,const float*in,int Kreq,int*idx_out,float*re_out,float*im_ou
   }
   for(int a=1;a<nT;a++){ pf_cand v=T[a]; int b=a-1; while(b>=0&&T[b].mag2<v.mag2){T[b+1]=T[b];b--;} T[b+1]=v; }
   int nout = nT<Kreq?nT:Kreq;
-  for(int a=0;a<nout;a++){ idx_out[a]=T[a].idx; re_out[a]=T[a].re; im_out[a]=T[a].im; }
+  for(int a=0;a<nout;a++){ out[a].index=T[a].idx; out[a].re=T[a].re;
+    out[a].im=conj?-T[a].im:T[a].im; out[a].magnitude=sqrtf(T[a].mag2); }
   PROF_C;
   return nout;
 }

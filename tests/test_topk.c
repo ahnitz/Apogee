@@ -40,22 +40,22 @@ static void run(size_t N,int K,int trials,int mode,double tol){
   float *in=pf_alloc(N*8), *out=pf_alloc(N*8);
   rank_t *r=malloc(sizeof(rank_t)*N);
   pf_plan *p=pf_create(N);
-  int idx[PF_MAX_K]; float re[PF_MAX_K], im[PF_MAX_K];
+  pf_peak pk[PF_MAX_K];
   int set_bad=0, order_bad=0; double worst_rel=0;
   for(int t=0;t<trials;t++){
     fill(in,N,mode,0x9E3779B97F4A7C15ULL*(t+1)+mode*7919u+N);
-    pf_fft(p,in,out);
+    pf_fft(p,in,out,PF_FORWARD);
     for(size_t k=0;k<N;k++){ r[k].m=(double)out[2*k]*out[2*k]+(double)out[2*k+1]*out[2*k+1];
                              r[k].i=(int)k; }
     qsort(r,N,sizeof(rank_t),cmp_rank);
-    int n=pf_topk(p,in,K,idx,re,im);
+    int n=pf_topk(p,in,K,pk,PF_FORWARD);
     CHECK(n==K,"pf_topk returned %d, expected %d",n,K);
     double peak=sqrt(r[0].m);
     for(int a=0;a<K;a++){
-      int found=0; for(int b=0;b<K;b++) if(idx[a]==r[b].i) found=1;
+      int found=0; for(int b=0;b<K;b++) if(pk[a].index==r[b].i) found=1;
       if(!found) set_bad++;
-      if(idx[a]!=r[a].i) order_bad++;
-      double d=hypot(re[a]-out[2*idx[a]], im[a]-out[2*idx[a]+1]);
+      if(pk[a].index!=r[a].i) order_bad++;
+      double d=hypot(pk[a].re-out[2*pk[a].index], pk[a].im-out[2*pk[a].index+1]);
       double rel=d/sqrt(r[a].m);
       if(rel>worst_rel) worst_rel=rel;
       (void)peak;
