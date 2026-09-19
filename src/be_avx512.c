@@ -1,18 +1,21 @@
-/* peakfft: plan management and public API. */
+/* peakfft: the specialised AVX-512 back end.
+   N=1024 uses the L1-resident four-step kernel; 2^12..2^16 the balanced split;
+   2^17..2^20 the traffic-minimising path with a 24-bit quantised intermediate. */
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <immintrin.h>
 #include "peakfft.h"
 #include "internal.h"
+#include "backend.h"
 
-struct pf_plan {
+typedef struct {
   size_t N;
   float *re, *im;                 /* SoA scratch (N=1024 path) */
   __m512 t4r[2][32], t4i[2][32];  /* 32x32 corner-turn twiddles */
   P20 *p20;
   PS  *ps;
-};
+} AP;
 
 void pf_push(pf_cand *T,int K,int *n,float m2,int idx,float vr,float vi){
   if(*n<K){ int i=(*n)++; T[i].mag2=m2; T[i].idx=idx; T[i].re=vr; T[i].im=vi;
@@ -44,14 +47,14 @@ float pf_prime_threshold(const float *re,const float *im,int n,int K){
   return nextafterf(lm[K-1],-1.f);
 }
 
-int pf_supported(size_t N){
+static int a512_supported(size_t N){
   if(N==1024u) return 1;
   return N>=4096u && N<=1048576u && (N&(N-1))==0u;   /* 2^12 .. 2^20 */
 }
 
-pf_plan *pf_create(size_t N){
-  if(!pf_supported(N)) return NULL;
-  pf_plan *p = aligned_alloc(64, sizeof(*p));
+static void *a512_create(size_t N){
+  if(!a512_supported(N)) return NULL;
+  AP *p = aligned_alloc(64, sizeof(*p));
   if(!p) return NULL;
   memset(p,0,sizeof(*p));
   p->N=N;
@@ -74,13 +77,13 @@ pf_plan *pf_create(size_t N){
   return p;
 }
 
-void pf_destroy(pf_plan *p){
-  if(!p) return;
+static void a512_destroy(void *vp){
+  AP *p=vp; if(!p) return;
   free(p->re); free(p->im); pf20_destroy(p->p20); pfs_destroy(p->ps); free(p);
 }
 
-void pf_fft(pf_plan *p,const float *in,float *out,int sign){
-  const int conj = (sign==PF_BACKWARD);
+static void a512_fft(void *vp,const float *in,float *out,int conj){
+  AP *p=vp;
   if(p->N==1024){
     pf_deint_c(in,p->re,p->im,1024,conj);
     pf_fft1024_soa(p->re,p->im,p->t4r,p->t4i);
@@ -92,8 +95,8 @@ void pf_fft(pf_plan *p,const float *in,float *out,int sign){
   }
 }
 
-int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){
-  const int conj = (sign==PF_BACKWARD);
+static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj){
+  AP *p=vp;
   if(K<1) return 0;
   if(K>PF_MAX_K) K=PF_MAX_K;
   if(p->N==1024){
@@ -133,3 +136,7 @@ int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){
   if(p->ps) return pfs_topk(p->ps,in,K,peaks,conj);
   return pf20_topk(p->p20,in,K,peaks,conj);
 }
+
+const pf_backend pf_be_avx512 = {
+  "avx512", a512_create, a512_destroy, a512_fft, a512_topk, a512_supported
+};

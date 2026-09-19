@@ -1,144 +1,165 @@
 # peakfft
 
-> **Status: work in progress / experimental.** This is a testbed, not a production
-> library. The API will change, the size coverage is narrow, and it has only ever
-> been run on one machine and one compiler. Treat the numbers below as "measured
-> here, once" rather than as a general claim.
+**Work in progress.** A testbed, not a library you should depend on yet. It has
+run on exactly one machine with one compiler, the API still moves, and the size
+list is short.
 
-A single-threaded AVX-512 complex-to-complex float32 **forward** FFT, specialised for
-finding the **loudest bins** — the largest `|X[k]| = sqrt(re² + im²)`.
+A single-threaded complex float32 FFT, forward and backward, built to answer one
+question fast: *where are the X loudest bins, and what are their values?*
 
-## The aim
+## The goal
 
-Beat Intel MKL on a single core for complex float32 FFTs, given one extra piece of
-information MKL is not allowed to assume: **we only care about the X loudest output
-points**, not the whole spectrum. The motivating case is a matched-filter search, where
-the output is essentially a white-noise time series and the question is only "what is the
-loudest sample, and how loud". The peak is a ~5σ fluctuation among millions of bins — not
-a sparse spectrum.
+Beat MKL on one core, using a piece of information MKL can't assume: we only care
+about the top few output points. The case it's built for is matched filtering,
+where the output is a white-noise time series and you want the loudest sample.
+The peak is a ~5σ fluctuation among a million bins — the spectrum is not sparse,
+so sparse-FFT methods don't apply.
 
-## What it is willing to give up to get there
+## What it gives up to get there
 
-This is the interesting part; each of these is a deliberate trade, not an oversight.
+- **Only the top K bins are right.** `pf_topk` never computes the other N−K to
+  full accuracy and never writes them anywhere.
+- **Accuracy is spent, not maximised.** The budget is 1e-5 relative to MKL. Above
+  2^16 most of the arithmetic runs on a 24-bit block-floating-point intermediate.
+  Worst case measured over 266 checks is 3.6e-7, so there is room left, but the
+  design assumes the budget exists.
+- **c2c float32, single-threaded, powers of two 2^10 and 2^12…2^20.** Nothing else.
+  Multiple cores would not be an algorithmic win, so they're out of scope.
+- **x86 with AVX2 minimum.** No scalar fallback.
+- **Tuned for a busy machine**, where per-core DRAM bandwidth is scarce and the
+  shared L3 is thrashed. On an idle box the tuning choices would land differently.
 
-- **Only the top-K values are correct.** `pf_topk` never produces the other N−K bins at
-  full accuracy, and never even writes them to memory. (`pf_fft` is still available and
-  produces the complete exact transform.)
-- **Accuracy is spent down to a budget, not maximised.** The target is 1e-5 relative
-  versus MKL. Internally the bulk of the large-N arithmetic runs on a 24-bit
-  block-floating-point intermediate rather than fp32. Measured worst case over 305
-  independent checks is 3.6e-7, so there is ~27x of headroom left — but the design
-  *assumes* the budget exists and would not survive a demand for bit-exactness.
-- **Forward, complex-to-complex, float32, single-threaded only.** No inverse, no real
-  transforms, no double, no multi-core. Running over multiple cores is not an algorithmic
-  improvement, so it is deliberately out of scope.
-- **Power-of-two sizes 2^10 and 2^12 … 2^20 only.** Nothing else; `pf_create` returns NULL.
-- **AVX-512 required** (F, DQ, BW, VL). There is no scalar or AVX2 fallback.
-- **Tuned for a *loaded* machine.** The design target is a box where all cores are busy,
-  so per-core DRAM bandwidth is scarce (~2.7 GB/s here) and the shared L3 is thrashed to
-  uselessness. On an idle machine the balance between the tuning choices would differ.
+## Numbers
 
-## Results
-
-Single core, forward c2c float32, on an AMD Ryzen AI MAX+ 395 (Zen 5) under heavy
-concurrent load. Interleaved A/B/C/D timing, batched calls, minimum over 4 runs.
+One core of an AMD Ryzen AI MAX+ 395 (Zen 5), machine under heavy load.
+Interleaved timing, minimum of 3 runs, K=8.
 
 ![benchmark](bench.png)
 
-| N | MKL 2026 | FFTW 3.3.10 PATIENT | `pf_fft` (exact) | `pf_topk` (K=8) |
-|---|---|---|---|---|
-| 2^10 | 0.91 µs | 0.89 µs | **0.47 µs — 1.93x** | 0.63 µs — 1.44x |
-| 2^12 | 4.95 µs | 5.08 µs | 4.10 µs — 1.21x | 4.18 µs — 1.18x |
-| 2^13 | 12.1 µs | 11.9 µs | 8.44 µs — 1.43x | 8.43 µs — 1.43x |
-| 2^14 | 35.5 µs | 37.6 µs | 19.9 µs — 1.78x | **17.8 µs — 1.99x** |
-| 2^15 | 92.1 µs | 104 µs | 57.3 µs — 1.61x | **47.5 µs — 1.94x** |
-| 2^16 | 215 µs | 320 µs | 222 µs — 0.97x | **95.5 µs — 2.25x** |
-| 2^17 | 833 µs | 925 µs | 770 µs — 1.08x | **516 µs — 1.61x** |
-| 2^18 | 4.36 ms | 4.39 ms | 2.13 ms — 2.04x | **1.59 ms — 2.74x** |
-| 2^19 | 6.86 ms | 6.92 ms | 4.69 ms — 1.46x | **3.59 ms — 1.91x** |
-| 2^20 | 15.1 ms | 13.7 ms | 9.60 ms — 1.57x | **7.31 ms — 2.06x** |
+| N | MKL | FFTW | `pf_topk` AVX-512 | vs MKL | `pf_topk` AVX2 |
+|---|---|---|---|---|---|
+| 2^10 | 0.85 µs | 0.86 µs | 0.60 µs | 1.40x | 1.69 µs |
+| 2^12 | 4.61 µs | 4.87 µs | 3.98 µs | 1.16x | 5.92 µs |
+| 2^13 | 12.7 µs | 12.1 µs | 8.49 µs | 1.50x | 12.8 µs |
+| 2^14 | 25.3 µs | 27.6 µs | 16.9 µs | 1.50x | 28.5 µs |
+| 2^15 | 78.5 µs | 68.4 µs | 41.1 µs | 1.91x | 65.2 µs |
+| 2^16 | 210 µs | 295 µs | 90.0 µs | 2.34x | 141 µs |
+| 2^17 | 655 µs | 855 µs | 446 µs | 1.47x | 515 µs |
+| 2^18 | 2.31 ms | 2.20 ms | 0.86 ms | 2.68x | 2.97 ms |
+| 2^19 | 5.67 ms | 5.43 ms | 3.23 ms | 1.76x | 6.35 ms |
+| 2^20 | 12.5 ms | 13.3 ms | 7.16 ms | 1.75x | 14.4 ms |
 
-`pf_topk` beats MKL at every size (1.18x – 2.74x). `pf_fft` is at parity around
-2^16–2^17 and ahead elsewhere.
+The AVX-512 back end beats MKL at every size, 1.16x to 2.68x. The AVX2 back end
+is roughly at parity — ahead between 2^15 and 2^17, behind elsewhere. It is the
+generic implementation (no unrolled codelets, fp32 intermediate), so it gives up
+both of the things that make the AVX-512 path fast. Improving it means generating
+256-bit codelets and porting the quantised intermediate; neither is done.
 
-Accuracy versus MKL across 305 independent checks: **max 3.6e-7 relative**, and the
-reported top-K bin *indices* match MKL exactly in every trial.
+Two caveats. MKL takes its *generic* code path on this AMD part (`MKL_VERBOSE`
+says "Intel(R) Architecture processors"), so some of the margin is dispatch rather
+than algorithm — which is why FFTW is in the table too. And at 2^10–2^13 `pf_fft`
+is actually faster than `pf_topk`: the full output write costs 0.04 µs there, so
+there is nothing for the top-K path to save, while scanning the magnitudes costs
+more than that.
 
-Two caveats on the numbers. MKL takes its generic code path on this AMD part
-(`MKL_VERBOSE` reports "Intel(R) Architecture processors"), so some of the margin is
-dispatch rather than algorithm — which is why FFTW is reported alongside. And at 2^10
-the top-K path is *not* the fast one: the full output write costs only 0.04 µs, so there
-is nothing to save, while scanning 1024 magnitudes costs more than that. Use `pf_fft`
-below ~2^13.
+## Using it
 
-## Usage
+C:
 
 ```c
 #include "peakfft.h"
 pf_plan *p = pf_create(1u << 20);
-pf_fft (p, in, out);                    // exact full transform
-int n = pf_topk(p, in, 8, idx, re, im); // 8 loudest bins, descending
+pf_peak peaks[8];
+int n = pf_topk(p, in, 8, peaks, PF_FORWARD);   /* peaks[i].index / .re / .im / .magnitude */
+pf_fft(p, in, out, PF_BACKWARD);                /* full transform, either direction */
 pf_destroy(p);
 ```
 
+Python:
+
+```python
+import numpy as np, peakfft
+x = (np.random.randn(1<<20) + 1j*np.random.randn(1<<20)).astype(np.complex64)
+peaks = peakfft.topk(x, 8)            # structured array
+peaks["index"], peaks["value"], peaks["magnitude"]
+y = peakfft.fft(x, "backward")        # full transform
+```
+
+Neither direction scales by 1/N, matching FFTW and MKL, so forward then backward
+gives N·x.
+
+## ISA selection
+
+The back end is chosen at load time from CPUID: AVX-512 if the CPU has F/DQ/BW/VL,
+otherwise AVX2. Override it with `PEAKFFT_ISA` to test both on one machine:
+
+```sh
+PEAKFFT_ISA=avx2        ./tests/test_topk    # force the 8-lane back end
+PEAKFFT_ISA=balanced512 ./tests/test_topk    # generic source at 16 lanes
+make test                                    # runs all three
+```
+
+`pf_isa()` reports which one is active. The dispatcher is compiled for the
+baseline ISA and the two back ends for their own, so the library loads on a
+machine without AVX-512.
+
 ## How it works
 
-At large N the transform is entirely DRAM-bandwidth-bound, so the design minimises bytes
-moved rather than flops. A traffic model (`time ≈ bytes ÷ 2.7 GB/s`) predicted every
-measurement to within a few percent and drove each optimisation.
+Above 2^16 the transform is DRAM-bandwidth bound, so the design counts bytes, not
+flops. A traffic model (`time ≈ bytes ÷ 2.7 GB/s`) predicted every measurement
+here to within a few percent and picked every optimisation.
 
-- **Four-step decomposition.** N = 1024×1024 at 2^20 (stage 2 is the L1-resident 1024-point
-  kernel); a balanced N₁×N₂ ≈ √N split for 2^12–2^16, where everything is L2-resident and
-  nothing needs quantising.
-- **Split (SoA) complex layout** — a complex multiply is 4 FMAs with no shuffles.
-- **Generated unrolled Stockham codelets** (`src/gen.py`) — radix-8×4, so a 32-point
-  transform is 2 passes rather than radix-2's 5. Twiddles are compile-time constants and
-  trivial ones (±1, ±i) cost no multiplies. Worth 1.65x on its own at 2^10.
-- **Stages are SIMD-across-16-transforms**, which makes strided column reads 128-byte
-  full-cache-line granules *and* makes the SIMD lane index equal to the intermediate's
-  column index — so no in-register transposes are needed inside a stage.
-- **Padded element stride (33, not 32)** — stride-2048 B access mapped onto ~2 L1 sets and
-  thrashed; padding made that sub-stage **13x** faster.
-- **Non-temporal stores** for the intermediate, avoiding read-for-ownership: **4x** on that
-  write.
-- **Two-level twiddle factorisation** `W_N[n₁·k₂] = W_N[16g·k₂]·W_N[l·k₂]`, keeping tables
-  at 128 KiB instead of 8 MiB.
+Four-step decomposition throughout: 1024×1024 at 2^20 with a 24-bit quantised
+intermediate, a balanced N₁×N₂ ≈ √N split below 2^17 where everything is
+L2-resident and nothing needs quantising. Complex data is kept split (separate
+real/imag registers), so a complex multiply is 4 FMAs with no shuffles. The
+32-point units are generated unrolled Stockham codelets (`src/gen.py`), radix-8×4,
+which is 2 passes instead of radix-2's 5 — worth 1.65x on its own at 2^10.
 
-What the top-K assumption buys, concretely:
+Each stage is SIMD-across-16-transforms, which does two jobs at once: strided
+column reads become full-cache-line granules, and the SIMD lane index *is* the
+intermediate's column index, so no stage needs an in-register transpose.
 
-- **The output is never materialised.** At 2^20 that is 8 MiB not written, worth ~3 ms.
-  Magnitudes are reduced in-register against a running K-th-largest threshold, primed from
-  a cheap per-lane-maximum pass so the scan almost never branches.
-- **The intermediate is stored at reduced precision** (2^17 and above): 24-bit
-  block-floating-point, split across a 16-bit screening plane and an 8-bit residual plane.
-  Screening reads only the 16-bit plane; the residual is touched only for the few columns
-  that actually contain a winner, which are then recomputed at full precision.
+Three things that mattered more than expected: padding the element stride from 32
+to 33, because stride-2048B access mapped onto about two L1 sets and thrashed
+(13x on that sub-stage); non-temporal stores for the intermediate, avoiding
+read-for-ownership (4x on that write); and a two-level twiddle factorisation
+`W_N[n₁k₂] = W_N[16g·k₂]·W_N[l·k₂]`, which keeps the tables at 128 KiB instead of
+8 MiB.
 
-This is deliberately **not** a sparse-FFT method. Sparse/aliasing approaches sample the
-spectrum coarsely and find isolated tones; they cannot locate a ~5σ fluctuation among 2^20
-white-noise bins, which is the target case.
+What top-K buys: the output is never materialised (8 MiB not written at 2^20,
+about 3 ms), and the intermediate can be stored at reduced precision. That
+intermediate is 24-bit block floating point split across a 16-bit screening plane
+and an 8-bit residual; screening reads only the 16-bit plane, and the residual is
+touched only for the few columns that hold a winner, which then get recomputed at
+full precision. The backward transform is `conj(forward(conj(x)))`, and both
+conjugations fold into passes that already exist, so it costs the same as forward.
 
 ## Build
 
 ```sh
-make            # library + tests
-make test       # unit tests + top-K validation
-make test-mkl MKLINC=/path/include MKLLIB=/path/lib   # cross-check against MKL
-make bench    MKLINC=/path/include MKLLIB=/path/lib   # vs MKL and FFTW
+make            # library and tests
+make test       # unit tests and top-K validation on all back ends
+make test-mkl MKLINC=/path/include MKLLIB=/path/lib
+make bench    MKLINC=/path/include MKLLIB=/path/lib
+pip install .   # Python extension
 ```
 
-`make codelets` regenerates `src/codelets.h`. CI builds with explicit AVX-512 flags,
-runs the tests when the runner supports them, and fails if `codelets.h` drifts from
-`gen.py`.
+`make codelets` regenerates `src/codelets.h`. CI builds with explicit ISA flags,
+runs what the runner supports, and fails if `codelets.h` drifts from `gen.py`.
 
 ## Tests
 
-- `tests/test_units.c` — transpose, each codelet vs a direct DFT, codelet stride
-  equivalence, the 24-bit quantiser, the top-K heap, the 1024-point transform against a
-  double-precision O(N²) DFT, and analytic identities at *every* supported size (impulse
-  response, pure tone, Parseval, linearity). Needs no external FFT library.
-- `tests/test_topk.c` — `pf_topk` against a brute-force ranking of `pf_fft`, over white
-  noise, noise+tone, noise+5 tones and a deliberate near-tie, for K = 1, 8, 64.
-- `tests/test_vs_mkl.c` — the independent check. This is the one that bounds the error the
-  reduced-precision intermediate actually introduces; the other two are self-consistent by
-  construction and cannot catch it.
+`tests/test_units.c` covers the transpose, each codelet against a direct DFT,
+codelet stride equivalence, the 24-bit quantiser, the top-K heap, the 1024-point
+transform against a double-precision O(N²) DFT, and analytic identities at every
+size in both directions — impulse response, pure tone, Parseval, linearity, and
+`backward(forward(x)) == N·x`. It needs no external FFT library.
+
+`tests/test_topk.c` checks `pf_topk` against a brute-force ranking of `pf_fft`
+over white noise, noise+tone, noise+5 tones and a deliberate near-tie, for
+K = 1, 8, 64.
+
+`tests/test_vs_mkl.c` is the one that matters for accuracy: the other two are
+self-consistent by construction and cannot see the error the reduced-precision
+intermediate introduces. It compares against MKL in both directions.

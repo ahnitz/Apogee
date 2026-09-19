@@ -39,6 +39,10 @@ pf_plan *pf_create(size_t N);
 void     pf_destroy(pf_plan *p);
 int      pf_supported(size_t N);
 
+/* Name of the back end that will be used: "avx512", "avx2", or "unsupported".
+   Override with the PEAKFFT_ISA environment variable (see README). */
+const char *pf_isa(void);
+
 /* Full transform.  in/out are interleaved complex float, N elements each;
    out must not alias in.  64-byte alignment is best.  sign is PF_FORWARD or
    PF_BACKWARD.  Mainly a reference and test hook - pf_topk is the fast path. */
