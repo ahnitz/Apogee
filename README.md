@@ -19,17 +19,20 @@ under heavy concurrent load — the deployment condition this is tuned for, wher
 bandwidth per core is ~2.7 GB/s and the shared L3 gives no benefit over DRAM.
 Interleaved A/B timing, minimum and median over many batched blocks.
 
-| N | MKL 2026 | FFTW 3.3.10 (PATIENT) | `pf_fft` | `pf_topk` |
+| N | MKL 2026 | FFTW 3.3.10 (PATIENT) | `pf_fft` (exact) | `pf_topk` (K=8) |
 |---|---|---|---|---|
-| 2^10 | 0.88 µs | 0.92 µs | **0.48 µs — 1.8x** | 0.79 µs |
-| 2^20 | 18.3 ms | 19.0 ms | **10.0 ms — 1.8x** | **8.7 ms — 2.1x** |
+| 2^10 | 0.89 µs | 0.92 µs | **0.48 µs — 1.9x** | 0.63 µs — 1.4x |
+| 2^20 | 17.5 ms | 17.2 ms | 9.7 ms — 1.8x | **7.3 ms — 2.3x** |
+
+Medians track the minima: 2.0x at 2^10 and 2.4x at 2^20.
 
 Accuracy versus MKL, over 145 independent checks: **max 3.2e-7 relative**, and the
 reported top-K bin *indices* agree with MKL exactly in every trial.
 
-At 2^10 the top-K path is not worth it — the full output write costs only 0.04 µs, so
-there is nothing to save and any scan costs more. Use `pf_fft` there. At 2^20 the output
-is 8 MiB and not writing it is worth ~3 ms.
+At 2^10 the top-K path is *not* the fast one — the full output write costs only 0.04 µs,
+so there is nothing to save, while scanning 1024 magnitudes costs more than that. Use
+`pf_fft` at 2^10. At 2^20 the output is 8 MiB and not writing it is worth ~3 ms, which is
+where `pf_topk` pulls ahead.
 
 ## How it works
 

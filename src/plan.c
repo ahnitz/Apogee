@@ -26,14 +26,21 @@ void pf_push(pf_cand *T,int K,int *n,float m2,int idx,float vr,float vi){
 }
 
 float pf_prime_threshold(const float *re,const float *im,int n,int K){
+  /* One branch-free pass gives 16 per-lane maxima.  Those are 16 genuine array
+     elements, so their K-th largest never exceeds the K-th largest overall and is a
+     safe scan threshold - and it is far tighter than a blanket -1, which is what
+     makes the following pass almost never branch.  K>16 falls back to no priming. */
   if(K>16) return -1.f;
   __m512 vmax=_mm512_setzero_ps();
   for(int k=0;k<n;k+=16){
     __m512 r=_mm512_load_ps(re+k), i=_mm512_load_ps(im+k);
     vmax=_mm512_max_ps(vmax,_mm512_fmadd_ps(r,r,_mm512_mul_ps(i,i)));
   }
-  float t=_mm512_reduce_min_ps(vmax);
-  return nextafterf(t,-1.f);   /* strictly below, so the bound stays inclusive */
+  float lm[16]; _mm512_storeu_ps(lm,vmax);
+  for(int a=0;a<K;a++){ int b=a;
+    for(int c=a+1;c<16;c++) if(lm[c]>lm[b]) b=c;
+    float t=lm[a]; lm[a]=lm[b]; lm[b]=t; }
+  return nextafterf(lm[K-1],-1.f);
 }
 
 int pf_supported(size_t N){ return N==1024u || N==1048576u; }
@@ -81,25 +88,24 @@ int pf_topk(pf_plan *p,const float *in,int K,int *idx,float *re,float *im){
   if(p->N==1024){
     pf_deint(in,p->re,p->im,1024);
     pf_fft1024_soa(p->re,p->im,p->t4r,p->t4i);   /* exact; no output interleave needed */
-    /* One branch-light pass: keep every bin above a primed threshold via
-       mask-compress, then rank only the survivors (typically ~16 of 1024). */
+    /* Threshold is primed tight enough that only ~K blocks of 16 ever trigger. */
+    pf_cand T[PF_MAX_K]; int n=0;
     float thr=pf_prime_threshold(p->re,p->im,1024,K);
     __m512 vthr=_mm512_set1_ps(thr);
-    static float cm[1024+16]; static int ci[1024+16];
-    int nc=0;
-    __m512i step=_mm512_set1_epi32(16);
-    __m512i vi=_mm512_setr_epi32(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15);
     for(int k=0;k<1024;k+=16){
       __m512 r=_mm512_load_ps(p->re+k), i2=_mm512_load_ps(p->im+k);
       __m512 m2=_mm512_fmadd_ps(r,r,_mm512_mul_ps(i2,i2));
       __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ);
-      _mm512_mask_compressstoreu_ps(cm+nc,msk,m2);
-      _mm512_mask_compressstoreu_epi32(ci+nc,msk,vi);
-      nc+=__builtin_popcount((unsigned)msk);
-      vi=_mm512_add_epi32(vi,step);
+      if(msk){
+        float b[16]; _mm512_storeu_ps(b,m2);
+        while(msk){
+          int l=__builtin_ctz((unsigned)msk); msk&=(__mmask16)(msk-1);
+          if(b[l]<=thr) continue;
+          pf_push(T,K,&n,b[l],k+l,p->re[k+l],p->im[k+l]);
+          if(n==K){ thr=T[0].mag2; vthr=_mm512_set1_ps(thr); }
+        }
+      }
     }
-    pf_cand T[PF_MAX_K]; int n=0;
-    for(int a=0;a<nc;a++){ int k=ci[a]; pf_push(T,K,&n,cm[a],k,p->re[k],p->im[k]); }
     for(int a=1;a<n;a++){ pf_cand v=T[a]; int b=a-1; while(b>=0&&T[b].mag2<v.mag2){T[b+1]=T[b];b--;} T[b+1]=v; }
     for(int a=0;a<n;a++){ idx[a]=T[a].idx; re[a]=T[a].re; im[a]=T[a].im; }
     return n;
