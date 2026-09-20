@@ -20,7 +20,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <sys/mman.h>
 /* PF_ABLATE removes one piece of the pipeline so its cost can be priced.  Results
    are WRONG when it is non-zero; it exists because estimating where the time goes
    has been wrong here more often than it has been right.
@@ -83,7 +82,6 @@ typedef struct {
   float *scl;          /* [n1*(N2/W) + b] dequant scale            */
   float *ire,*iim;     /* fp32 intermediate, used when quantising would not pay */
   int useq;            /* 1 = quantised 24-bit, 0 = plain fp32                  */
-  int nt;              /* 1 = stream the intermediate past the cache            */
   int gblk;            /* stage-A groups loaded per pass over the input          */
   size_t bstride;      /* vf elements between group buffers                      */
   vf *bR,*bI,*sR,*sI;
@@ -108,29 +106,6 @@ int FN(supported)(size_t N){
   return n1>=PF_W && n2>=PF_W;
 }
 
-/* 4 KiB pages make stage A's strided walk pay a TLB miss per row: at 2^20 it
-   touches 1024 pages per column group, which overruns the L1 dTLB many times over.
-   Backing the big buffers with 2 MiB pages turns that into a handful of entries.
-   Falls back silently to ordinary pages if the kernel will not do it. */
-/* A 64-byte header keeps the mapping length with the block so big_free knows
-   whether it came from mmap or malloc; mmap is page-aligned so the header does
-   not disturb the 64-byte alignment the kernels require. */
-static void *big_alloc(size_t bytes){
-  if(bytes < (1u<<19)) return aligned_alloc(64,bytes);
-  size_t sz=(bytes+64+((1u<<21)-1)) & ~(size_t)((1u<<21)-1);
-  void *m=mmap(NULL,sz,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-  if(m==MAP_FAILED) return aligned_alloc(64,bytes);
-  madvise(m,sz,MADV_HUGEPAGE);
-  ((size_t*)m)[0]=0x48554745ul; ((size_t*)m)[1]=sz;
-  return (char*)m+64;
-}
-static void big_free(void *q){
-  if(!q) return;
-  size_t *h=(size_t*)((char*)q-64);
-  if(h[0]==0x48554745ul){ munmap((void*)h,h[1]); return; }
-  free(q);
-}
-
 void *FN(create)(size_t N){
   if(!FN(supported)(N)) return NULL;
   int m=0; while(((size_t)1<<m)<N) m++;
@@ -148,22 +123,13 @@ void *FN(create)(size_t N){
      intermediate stops fitting in cache - below that it is pure added work, and it
      measured ~1.9x slower at 2^12.  L2 here is 1 MiB, so switch at 2^17. */
   p->useq = (N*8 > (1u<<20));
-  /* An ordinary store to a line that is not resident first reads that line from
-     memory (read-for-ownership) only to overwrite it whole - a full extra pass
-     over the intermediate.  Stream past the cache once the intermediate can no
-     longer live there.  Only at 16 lanes: at 8 the screening-plane store is half
-     a cache line and consecutive ones are not adjacent, so write-combining would
-     never fill a line and streaming would cost more than the RFO. */
-  { const char *e=getenv("PEAKFFT_NT");
-    p->nt = 0;   /* measured a wash at 2^18 and 2^20 - see machine-notes */
-    if(e) p->nt = atoi(e) && (PF_W==16); }
   if(p->useq){
-    p->q  =big_alloc(N*2*sizeof(short));
-    p->r8 =big_alloc(N*2);
+    p->q  =aligned_alloc(64,N*2*sizeof(short));
+    p->r8 =aligned_alloc(64,N*2);
     p->scl=aligned_alloc(64,(size_t)n1*(n2/PF_W)*sizeof(float)+64);
   } else {
-    p->ire=big_alloc(N*sizeof(float));
-    p->iim=big_alloc(N*sizeof(float));
+    p->ire=aligned_alloc(64,N*sizeof(float));
+    p->iim=aligned_alloc(64,N*sizeof(float));
   }
   /* Stage A walks the input with stride N1*8 bytes and, one group at a time, uses
      only 2*PF_W floats of each row.  Measured on this machine, touching 128 bytes
@@ -258,7 +224,7 @@ void *FN(create)(size_t N){
 
 void FN(destroy)(void *vp){
   BP *p=vp; if(!p) return;
-  big_free(p->q);big_free(p->r8);free(p->scl);big_free(p->ire);big_free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
+  free(p->q);free(p->r8);free(p->scl);free(p->ire);free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
   free(p->TLr);free(p->TLi);free(p->w1r);free(p->w1i);free(p->w2r);free(p->w2i);
   free(p->hr);free(p->hi);free(p->lr);free(p->li);
   free(p->scg);free(p->twr);free(p->twi);free(p);
@@ -308,21 +274,13 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
        a little larger than a row max, so the quantiser is marginally coarser -
        24 bits leaves plenty of margin for that. */
     if(!p->useq){
-      /* Each store covers exactly one cache line and the line is dead until
-         stage B reads it back, so when the intermediate is too big to stay
-         cached a non-temporal store skips the read-for-ownership - that RFO is
-         a full extra DRAM read of the whole intermediate.  Below that size the
-         line really is wanted in cache, so keep the ordinary store. */
-      if(p->nt){
-        for(int i=0;i<PF_W;i++){
-          size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
-          V_STREAM(p->ire+off,OR[i]); V_STREAM(p->iim+off,OI[i]);
-        }
-      } else {
-        for(int i=0;i<PF_W;i++){
-          size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
-          V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
-        }
+      /* Streaming these past the cache looked right on paper - the line is dead
+         until stage B reads it back, so the read-for-ownership is wasted DRAM
+         traffic.  Measured, it is 1.22x to 1.62x SLOWER (0/32 rounds); stage B
+         wants the line and the store buffer is not the constraint. */
+      for(int i=0;i<PF_W;i++){
+        size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
+        V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
       }
       continue;
     }
@@ -339,18 +297,8 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
       vi xr=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OR[i],vs))));
       vi xi=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OI[i],vs))));
       size_t base=2*((size_t)n1*N2+PF_W*b);
-#if PF_W==16
-      if(p->nt){
-        /* the re and im halves are adjacent, so together they are exactly one
-           line and can go out as a single streaming store */
-        __m256i qr=VI_PACK16(VI_SRAI(xr,8)), qi=VI_PACK16(VI_SRAI(xi,8));
-        VQ_STREAM(p->q+base,_mm512_inserti64x4(_mm512_castsi256_si512(qr),qi,1));
-      } else
-#endif
-      {
-        VI_STORE16(p->q+base,        VI_PACK16(VI_SRAI(xr,8)));
-        VI_STORE16(p->q+base+PF_W,   VI_PACK16(VI_SRAI(xi,8)));
-      }
+      VI_STORE16(p->q+base,      VI_PACK16(VI_SRAI(xr,8)));
+      VI_STORE16(p->q+base+PF_W,   VI_PACK16(VI_SRAI(xi,8)));
       VI_STORE8 (p->r8+base,       VI_PACK8(VI_AND(xr,VI_SET1(255))));
       VI_STORE8 (p->r8+base+PF_W,  VI_PACK8(VI_AND(xi,VI_SET1(255))));
     }
