@@ -20,6 +20,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+/* PF_ABLATE removes one piece of the pipeline so its cost can be priced.  Results
+   are WRONG when it is non-zero; it exists because estimating where the time goes
+   has been wrong here more often than it has been right.
+     1 no corner turn   2 no element transform   3 no four-step twiddle
+     4 contiguous load  5 no padded index remap  6 stage-A body removed
+   What it showed at 2^14: removing any single piece saves nothing, removing all of
+   them saves half.  The loop is throughput-limited with its parts overlapping, so
+   only total work matters - and the element transform is NOT the cost. */
+#ifndef PF_ABLATE
+#define PF_ABLATE 0
+#endif
+/* Prefetching the strided loads was measured at every distance from 4 to 32 and
+   gained nothing: the hardware prefetcher already handles a constant stride. */
+#ifndef PF_PF
+#define PF_PF 0
+#endif
 #include "simd.h"
 #include "peakfft.h"
 #include "backend.h"
@@ -209,7 +225,11 @@ static inline void stageA_body(BP*p,int g,vf*TR,vf*TI,vf*OR,vf*OI){
         TI[t]=V_FMADD(xr,ti,V_MUL(xi,tr));
       }
     }
-    V_TRANSPOSE(TR,OR); V_TRANSPOSE(TI,OI);
+  #if PF_ABLATE==1            /* no corner turn */
+  for(int i=0;i<PF_W;i++){OR[i]=TR[i];OI[i]=TI[i];}
+#else
+  V_TRANSPOSE(TR,OR); V_TRANSPOSE(TI,OI);
+#endif
     /* One block-floating-point scale for the whole W x W tile, not one per row.
        The horizontal reduce and the divide were costing more than either FFT
        stage; sharing them over the tile makes them W times rarer.  A tile max is
@@ -272,32 +292,46 @@ static void stageA(BP*p,const float*in,int conj){
   vf TR[PF_W],TI[PF_W],OR[PF_W],OI[PF_W];
   for(int g=0;g<N1/PF_W;g++){
     const float*src=in+2*(PF_W*g);
-    for(int n2=0;n2<N2;n2++){
-      vf r,i; v_deint(src+(size_t)n2*2*N1,&r,&i);
-      int q=einp(&p->eb,n2);
-      p->bR[q]=r; p->bI[q]=V_XOR(i,sg);
+    { const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
+      for(int e2=0;e2<M2;e2++){
+        const float *sp=src+(size_t)e2*M1*2*N1;
+        vf *dR=p->bR+(size_t)e2*st, *dI=p->bI+(size_t)e2*st;
+        for(int e1=0;e1<M1;e1++){
+          vf r,i; v_deint(sp,&r,&i);
+          dR[e1]=r; dI[e1]=V_XOR(i,sg);
+          sp+=2*N1;
+        }
+      }
     }
+#if PF_ABLATE!=6        /* 6 = stage A does nothing past the load */
     stageA_body(p,g,TR,TI,OR,OI);
+#endif
   }
 }
 
 static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
   const int N1=p->N1,N2=p->N2; PT(_tb0);
   if(!p->useq){
-    for(int n1=0;n1<N1;n1++){
-      size_t off=(size_t)n1*N2+PF_W*b;
-      int q=einp(&p->ea,n1);
-      p->bR[q]=V_LOADU(p->ire+off); p->bI[q]=V_LOADU(p->iim+off);
+    { const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
+      for(int e2=0;e2<M2;e2++){
+        const float *sr=p->ire+(size_t)e2*M1*N2+PF_W*b, *si=p->iim+(size_t)e2*M1*N2+PF_W*b;
+        vf *dR=p->bR+(size_t)e2*st, *dI=p->bI+(size_t)e2*st;
+        for(int e1=0;e1<M1;e1++){
+          dR[e1]=V_LOADU(sr); dI[e1]=V_LOADU(si);
+          sr+=N2; si+=N2;
+        }
+      }
     }
     PACC(pf_pBload,_tb0);
     PT(_tb2); efft(N1,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i); PACC(pf_pBfft,_tb2);
     *RR=p->bR; *RI=p->bI;
     return;
   }
-  for(int n1=0;n1<N1;n1++){
+  { const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, stp=p->ea.st;
+  for(int e2=0;e2<M2;e2++) for(int e1=0;e1<M1;e1++){
+    int n1=e1+M1*e2, q=e1+stp*e2;
     size_t base=2*((size_t)n1*N2+PF_W*b);
     float s=p->scl[(size_t)n1*(N2/PF_W)+b];
-    int q=einp(&p->ea,n1);
     vi hr=VI_UNPACK16(VI_LOAD16(p->q+base));
     vi hi=VI_UNPACK16(VI_LOAD16(p->q+base+PF_W));
     if(exact){
@@ -311,7 +345,7 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
       p->bR[q]=V_MUL(VI_CVTF(hr),vs);
       p->bI[q]=V_MUL(VI_CVTF(hi),vs);
     }
-  }
+  } }
   PACC(pf_pBload,_tb0);
   PT(_tb1); efft(N1,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i); PACC(pf_pBfft,_tb1);
   *RR=p->bR; *RI=p->bI;

@@ -38,14 +38,17 @@ static void bench(size_t N,int K,int blocks,int batch){
   fftwf_import_wisdom_from_filename("amdfftw.wisdom");
   fftwf_complex *ai=fftwf_alloc_complex(N),*ao=fftwf_alloc_complex(N);
   fftwf_plan ap=fftwf_plan_dft_1d((int)N,ai,ao,FFTW_FORWARD,FFTW_PATIENT);
-  fftwf_export_wisdom_to_filename("amdfftw.wisdom");
+  /* Never persist a plan that was chosen under contention: FFTW_PATIENT picks by
+     timing candidates, so planning on a loaded machine stores bad plans that every
+     later run then reuses.  Build wisdom quietly once, then run read-only. */
+  if(!getenv("PF_WISDOM_RO")) fftwf_export_wisdom_to_filename("amdfftw.wisdom");
   memcpy(ai,in,N*8);
 
   if(s_imp) s_imp("sysfftw.wisdom");
   fftwf_complex *si=(fftwf_complex*)s_malloc(sizeof(fftwf_complex)*N);
   fftwf_complex *so=(fftwf_complex*)s_malloc(sizeof(fftwf_complex)*N);
   fftwf_plan sp=s_plan((int)N,si,so,FFTW_FORWARD,FFTW_PATIENT);
-  if(s_exp) s_exp("sysfftw.wisdom");
+  if(s_exp && !getenv("PF_WISDOM_RO")) s_exp("sysfftw.wisdom");
   memcpy(si,in,N*8);
 
   pf_plan *p=pf_create(N); pf_peak pk[PF_MAX_K];
