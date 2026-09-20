@@ -111,7 +111,7 @@ test-mkl: tests/test_vs_mkl
 # ahead of MKL, otherwise MKL's own fftwf_* wrappers win and both FFTW columns
 # silently become MKL again.
 AMDFFTW ?=
-bench/bench4 bench/bench_batch: bench/%: bench/%.c $(LIB)
+bench/bench4 bench/bench_batch bench/bench_mf: bench/%: bench/%.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -Ibench -I$(MKLINC) $< $(LIB) -o $@ \
 	  -Wl,--whole-archive $(AMDFFTW)/lib/libfftw3f.a -Wl,--no-whole-archive \
 	  -L$(MKLLIB) -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -Wl,-rpath,$(MKLLIB) \
