@@ -69,3 +69,14 @@ tests/test_vs_mkl: tests/test_vs_mkl.c $(LIB)
 	  -L$(MKLLIB) -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -Wl,-rpath,$(MKLLIB) $(LDLIBS)
 test-mkl: tests/test_vs_mkl
 	./tests/test_vs_mkl
+
+# Four-way comparison: MKL, stock FFTW (dlopen+DEEPBIND), amd-fftw, peakfft.
+# AMDFFTW must point at an AOCL-FFTW install; its archive is linked whole and
+# ahead of MKL, otherwise MKL's own fftwf_* wrappers win and both FFTW columns
+# silently become MKL again.
+AMDFFTW ?=
+bench/bench4: bench/bench4.c $(LIB)
+	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -Ibench -I$(MKLINC) $< $(LIB) -o $@ \
+	  -Wl,--whole-archive $(AMDFFTW)/lib/libfftw3f.a -Wl,--no-whole-archive \
+	  -L$(MKLLIB) -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -Wl,-rpath,$(MKLLIB) \
+	  -ldl -lm -rdynamic

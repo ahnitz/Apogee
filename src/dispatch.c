@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+#include <math.h>
 #include "peakfft.h"
 #include "backend.h"
 
@@ -55,6 +57,8 @@ pf_plan *pf_create(size_t N){
   p->be=b; p->h=h; p->n=N;
   return p;
 }
+
+const char *pf_plan_backend(const pf_plan *p){ return p?p->be->name:"none"; }
 
 void pf_destroy(pf_plan *p){
   if(!p) return;

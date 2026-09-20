@@ -23,40 +23,23 @@
 #include "simd.h"
 #include "peakfft.h"
 #include "backend.h"
+#ifdef PF_PROF
+#include <time.h>
+double pf_pA=0,pf_pB=0,pf_pAfft=0,pf_pAtw=0,pf_pAq=0,pf_pBload=0,pf_pBfft=0,pf_pBscan=0;
+static inline double pnow(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
+#define PT(x) double x=pnow()
+#define PACC(v,x) v+=pnow()-(x)
+#else
+#define PT(x)
+#define PACC(v,x)
+#endif
 #include "codelets.h"
+#include "elemfft.h"
 
 #define CAT2(a,b) a##b
 #define CAT(a,b) CAT2(a,b)
 #define FN(name) CAT(CAT(pfb,PF_W),_##name)
 
-/* factor M into two codelet-sized halves; M1 == M means "single codelet" */
-static inline void efactor(int M,int *M1,int *M2){
-  switch(M){
-    case 1024: *M1=32; *M2=32; break;
-    case  512: *M1=32; *M2=16; break;
-    case  256: *M1=16; *M2=16; break;
-    case  128: *M1=16; *M2=8;  break;
-    default:   *M1=M;  *M2=1;  break;     /* 8,16,32,64 */
-  }
-}
-#define ESTRIDE(M1) ((M1)+1)
-/* Index maps between natural element order and the padded four-step layout.
-   M1/M2 are powers of two, so these must be shifts and masks - a runtime integer
-   divide here costs more than the transform stage it indexes into. */
-typedef struct { int st, m2mask, m2shift, m1mask, m1shift, single; } emap;
-static inline emap emake(int M1,int M2){
-  emap e; e.single=(M2==1); e.st=ESTRIDE(M1);
-  e.m2mask=M2-1; e.m1mask=M1-1;
-  e.m2shift=0; while((1<<e.m2shift)<M2) e.m2shift++;
-  e.m1shift=0; while((1<<e.m1shift)<M1) e.m1shift++;
-  return e;
-}
-static inline int eidx(const emap *e,int k){        /* slot holding output element k */
-  return e->single ? k : e->st*(k & e->m2mask) + (k >> e->m2shift);
-}
-static inline int einp(const emap *e,int n){        /* slot to place input element n */
-  return e->single ? n : (n & e->m1mask) + e->st*(n >> e->m1shift);
-}
 typedef struct { float mag2; long idx; float re,im; } cand;
 static void push(cand *T,int K,int *n,float m2,long idx,float vr,float vi){
   if(*n<K){ int i=(*n)++; T[i].mag2=m2; T[i].idx=idx; T[i].re=vr; T[i].im=vi;
@@ -73,46 +56,27 @@ static void push(cand *T,int K,int *n,float m2,long idx,float vr,float vi){
 
 typedef struct {
   size_t N; int N1,N2;
-  float *ire,*iim;
+  /* Intermediate as 24-bit block floating point rather than fp32: a 16-bit plane
+     the screening pass reads, plus an 8-bit residual touched only for the columns
+     that actually hold a peak.  Cuts the intermediate round trip from 16 bytes per
+     complex to 10, which is what decides the large sizes once the working set
+     leaves L2.  Layout keeps re and im adjacent so each store is a full line. */
+  short *q;            /* [2*(n1*N2 + W*b) + l] = re, +W = im */
+  signed char *r8;     /* same indexing, low 8 bits                */
+  float *scl;          /* [n1*(N2/W) + b] dequant scale            */
+  float *ire,*iim;     /* fp32 intermediate, used when quantising would not pay */
+  int useq;            /* 1 = quantised 24-bit, 0 = plain fp32                  */
   vf *bR,*bI,*sR,*sI;
   vf *TLr,*TLi;
   float *w1r,*w1i,*w2r,*w2i;
   float *hr,*hi,*lr,*li;
+  float *scg;          /* [g][k2] scalar part of the stage-A twiddle, precomputed */
+  vf *twr,*twi;        /* full twiddle vectors, when they are small enough to hold */
+  int fulltw;
   unsigned nmask;
   int a1,a2,b1,b2;      /* codelet factorisation of N1 and N2 */
   emap ea,eb;           /* index maps for those factorisations */
 } BP;
-
-/* ---- element-space transform of size M, lanes independent ----------------
-   Sizes up to 64 are a single generated codelet.  Larger M is a two-level
-   four-step over codelet-sized factors M = M1*M2, with the element stride padded
-   to M1+1 so the stride-M1 pass does not collapse onto a couple of L1 sets - the
-   same padding that was worth 13x on the specialised path.
-   Output element k then lives at EIDX(), not at k: the four-step leaves it
-   transposed, and undoing that would cost more than indexing around it.        */
-static inline int codelet(int m,vf*ar,vf*ai,vf*br,vf*bi,long S){
-  switch(m){
-    case  8: return fft8_42 (ar,ai,br,bi,S);
-    case 16: return fft16_44(ar,ai,br,bi,S);
-    case 32: return fft32_84(ar,ai,br,bi,S);
-    default: return fft64_88(ar,ai,br,bi,S);
-  }
-}
-static void efft(int M,vf*X,vf*Xi,vf*S,vf*Si,const float*wr,const float*wi){
-  int M1,M2; efactor(M,&M1,&M2);
-  if(M2==1){ codelet(M,X,Xi,S,Si,1); return; }
-  const int st=ESTRIDE(M1);
-  for(int e1=0;e1<M1;e1++) codelet(M2,X+e1,Xi+e1,S+e1,Si+e1,st);
-  for(int k2p=0;k2p<M2;k2p++) for(int e1=0;e1<M1;e1++){
-    int idx=e1+st*k2p, t=(e1*k2p)&(M-1);
-    vf cr=V_SET1(wr[t]),ci=V_SET1(wi[t]);
-    vf xr=X[idx],xi=Xi[idx];
-    X[idx] =V_FMSUB(xr,cr,V_MUL(xi,ci));
-    Xi[idx]=V_FMADD(xr,ci,V_MUL(xi,cr));
-  }
-  for(int k2p=0;k2p<M2;k2p++)
-    codelet(M1,X+st*k2p,Xi+st*k2p,S+st*k2p,Si+st*k2p,1);
-}
 
 int FN(supported)(size_t N){
   /* Kept identical to the AVX-512 back end so the supported set does not depend
@@ -137,7 +101,18 @@ void *FN(create)(size_t N){
   size_t s1=(a2==1)?(size_t)n1:(size_t)ESTRIDE(a1)*a2;
   size_t s2=(b2==1)?(size_t)n2:(size_t)ESTRIDE(b1)*b2;
   size_t me=s1>s2?s1:s2;
-  p->ire=aligned_alloc(64,N*4); p->iim=aligned_alloc(64,N*4);
+  /* Quantising trades arithmetic for bytes moved.  That is only a win once the
+     intermediate stops fitting in cache - below that it is pure added work, and it
+     measured ~1.9x slower at 2^12.  L2 here is 1 MiB, so switch at 2^17. */
+  p->useq = (N*8 > (1u<<20));
+  if(p->useq){
+    p->q  =aligned_alloc(64,N*2*sizeof(short));
+    p->r8 =aligned_alloc(64,N*2);
+    p->scl=aligned_alloc(64,(size_t)n1*(n2/PF_W)*sizeof(float)+64);
+  } else {
+    p->ire=aligned_alloc(64,N*sizeof(float));
+    p->iim=aligned_alloc(64,N*sizeof(float));
+  }
   p->bR=aligned_alloc(64,me*sizeof(vf)); p->bI=aligned_alloc(64,me*sizeof(vf));
   p->sR=aligned_alloc(64,me*sizeof(vf)); p->sI=aligned_alloc(64,me*sizeof(vf));
   p->TLr=aligned_alloc(64,(size_t)n2*sizeof(vf)); p->TLi=aligned_alloc(64,(size_t)n2*sizeof(vf));
@@ -151,6 +126,19 @@ void *FN(create)(size_t N){
   p->w2r=aligned_alloc(64,(size_t)n2*4); p->w2i=aligned_alloc(64,(size_t)n2*4);
   for(int j=0;j<n1;j++){ double a=-2.0*M_PI*j/n1; p->w1r[j]=(float)cos(a); p->w1i[j]=(float)sin(a); }
   for(int j=0;j<n2;j++){ double a=-2.0*M_PI*j/n2; p->w2r[j]=(float)cos(a); p->w2i[j]=(float)sin(a); }
+  /* The stage-A twiddle used to be rebuilt per element from a two-level table:
+     four scalar multiplies and a broadcast, all on the critical path, for ~22% of
+     all instructions at small N.  Precompute instead.  The full vector form is
+     8N bytes, which is worth it while it stays small; above that keep just the
+     scalar part (8N/W bytes) so the large sizes do not pay extra traffic. */
+  { size_t g_n=(size_t)n1/PF_W;
+    p->scg=aligned_alloc(64,g_n*(size_t)n2*2*sizeof(float)+64);
+    p->fulltw = (N<= (1u<<16));
+    if(p->fulltw){
+      p->twr=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
+      p->twi=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
+    }
+  }
   { size_t nhi=(N/PF_W)/256; if(nhi<1) nhi=1; double Nq=(double)(N/PF_W);
     p->hr=aligned_alloc(64,nhi*4+64); p->hi=aligned_alloc(64,nhi*4+64);
     p->lr=aligned_alloc(64,256*4);    p->li=aligned_alloc(64,256*4);
@@ -159,14 +147,30 @@ void *FN(create)(size_t N){
     for(int j=0;j<256;j++){ double b=-2.0*M_PI*(double)j/Nq;
       p->lr[j]=(float)cos(b); p->li[j]=(float)sin(b); }
   }
+  /* fill the precomputed twiddles */
+  { unsigned nmask=(unsigned)(N/PF_W-1);
+    for(int g=0; g<n1/PF_W; g++) for(int k2=0;k2<n2;k2++){
+      unsigned mm=((unsigned)g*(unsigned)k2)&nmask, m1=mm>>8, m0=mm&255;
+      float sr=p->hr[m1]*p->lr[m0]-p->hi[m1]*p->li[m0];
+      float si=p->hr[m1]*p->li[m0]+p->hi[m1]*p->lr[m0];
+      size_t idx=(size_t)g*n2+k2;
+      p->scg[2*idx]=sr; p->scg[2*idx+1]=si;
+      if(p->fulltw){
+        vf SR=V_SET1(sr),SI=V_SET1(si);
+        p->twr[idx]=V_FMSUB(SR,p->TLr[k2],V_MUL(SI,p->TLi[k2]));
+        p->twi[idx]=V_FMADD(SR,p->TLi[k2],V_MUL(SI,p->TLr[k2]));
+      }
+    }
+  }
   return p;
 }
 
 void FN(destroy)(void *vp){
   BP *p=vp; if(!p) return;
-  free(p->ire);free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
+  free(p->q);free(p->r8);free(p->scl);free(p->ire);free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
   free(p->TLr);free(p->TLi);free(p->w1r);free(p->w1i);free(p->w2r);free(p->w2i);
-  free(p->hr);free(p->hi);free(p->lr);free(p->li);free(p);
+  free(p->hr);free(p->hi);free(p->lr);free(p->li);
+  free(p->scg);free(p->twr);free(p->twi);free(p);
 }
 
 static void stageA(BP*p,const float*in,int conj){
@@ -183,36 +187,96 @@ static void stageA(BP*p,const float*in,int conj){
     efft(N2,p->bR,p->bI,p->sR,p->sI,p->w2r,p->w2i);
     vf *RR=p->bR,*RI=p->bI;
     for(int b=0;b<N2/PF_W;b++){
-      for(int t=0;t<PF_W;t++){
-        int k2=PF_W*b+t;
-        unsigned mm=((unsigned)g*(unsigned)k2)&p->nmask, m1=mm>>8, m0=mm&255;
-        float sr=p->hr[m1]*p->lr[m0]-p->hi[m1]*p->li[m0];
-        float si=p->hr[m1]*p->li[m0]+p->hi[m1]*p->lr[m0];
-        vf SR=V_SET1(sr),SI=V_SET1(si);
-        vf tr=V_FMSUB(SR,p->TLr[k2],V_MUL(SI,p->TLi[k2]));
-        vf ti=V_FMADD(SR,p->TLi[k2],V_MUL(SI,p->TLr[k2]));
-        int eb=eidx(&p->eb,k2);
-        vf xr=RR[eb],xi=RI[eb];
-        TR[t]=V_FMSUB(xr,tr,V_MUL(xi,ti));
-        TI[t]=V_FMADD(xr,ti,V_MUL(xi,tr));
+      if(p->fulltw){
+        const vf *twr=p->twr+(size_t)g*N2+PF_W*b, *twi=p->twi+(size_t)g*N2+PF_W*b;
+        for(int t=0;t<PF_W;t++){
+          int eb=eidx(&p->eb,PF_W*b+t);
+          vf xr=RR[eb],xi=RI[eb];
+          TR[t]=V_FMSUB(xr,twr[t],V_MUL(xi,twi[t]));
+          TI[t]=V_FMADD(xr,twi[t],V_MUL(xi,twr[t]));
+        }
+      } else {
+        const float *sc=p->scg+2*((size_t)g*N2+PF_W*b);
+        for(int t=0;t<PF_W;t++){
+          int k2=PF_W*b+t;
+          vf SR=V_SET1(sc[2*t]),SI=V_SET1(sc[2*t+1]);
+          vf tr=V_FMSUB(SR,p->TLr[k2],V_MUL(SI,p->TLi[k2]));
+          vf ti=V_FMADD(SR,p->TLi[k2],V_MUL(SI,p->TLr[k2]));
+          int eb=eidx(&p->eb,k2);
+          vf xr=RR[eb],xi=RI[eb];
+          TR[t]=V_FMSUB(xr,tr,V_MUL(xi,ti));
+          TI[t]=V_FMADD(xr,ti,V_MUL(xi,tr));
+        }
       }
       V_TRANSPOSE(TR,OR); V_TRANSPOSE(TI,OI);
-      for(int i=0;i<PF_W;i++){
-        size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
-        V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
+      /* One block-floating-point scale for the whole W x W tile, not one per row.
+         The horizontal reduce and the divide were costing more than either FFT
+         stage; sharing them over the tile makes them W times rarer.  A tile max is
+         a little larger than a row max, so the quantiser is marginally coarser -
+         24 bits leaves plenty of margin for that. */
+      if(!p->useq){
+        for(int i=0;i<PF_W;i++){
+          size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
+          V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
+        }
+        continue;
       }
+      vf amax=V_MAX(V_ABS(OR[0]),V_ABS(OI[0]));
+      for(int i=1;i<PF_W;i++) amax=V_MAX(amax,V_MAX(V_ABS(OR[i]),V_ABS(OI[i])));
+      float mx=v_reduce_max(amax);
+      float sc = mx>0.f ? 8388607.0f/mx : 1.f;
+      float dq = mx>0.f ? mx*(1.0f/8388607.0f) : 1.f;
+      vf vs=V_SET1(sc);
+      const vi CMAX=VI_SET1(8388607), CMIN=VI_SET1(-8388607);
+      for(int i=0;i<PF_W;i++){
+        int n1=PF_W*g+i;
+        p->scl[(size_t)n1*(N2/PF_W)+b]=dq;
+        vi xr=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OR[i],vs))));
+        vi xi=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OI[i],vs))));
+        size_t base=2*((size_t)n1*N2+PF_W*b);
+        VI_STORE16(p->q+base,        VI_PACK16(VI_SRAI(xr,8)));
+        VI_STORE16(p->q+base+PF_W,   VI_PACK16(VI_SRAI(xi,8)));
+        VI_STORE8 (p->r8+base,       VI_PACK8(VI_AND(xr,VI_SET1(255))));
+        VI_STORE8 (p->r8+base+PF_W,  VI_PACK8(VI_AND(xi,VI_SET1(255))));
+      }
+
     }
   }
 }
 
-static void stageB(BP*p,int b,vf**RR,vf**RI){
-  const int N1=p->N1,N2=p->N2;
-  for(int n1=0;n1<N1;n1++){
-    size_t off=(size_t)n1*N2+PF_W*b;
-    int q=einp(&p->ea,n1);
-    p->bR[q]=V_LOADU(p->ire+off); p->bI[q]=V_LOADU(p->iim+off);
+static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
+  const int N1=p->N1,N2=p->N2; PT(_tb0);
+  if(!p->useq){
+    for(int n1=0;n1<N1;n1++){
+      size_t off=(size_t)n1*N2+PF_W*b;
+      int q=einp(&p->ea,n1);
+      p->bR[q]=V_LOADU(p->ire+off); p->bI[q]=V_LOADU(p->iim+off);
+    }
+    PACC(pf_pBload,_tb0);
+    PT(_tb2); efft(N1,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i); PACC(pf_pBfft,_tb2);
+    *RR=p->bR; *RI=p->bI;
+    return;
   }
-  efft(N1,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+  for(int n1=0;n1<N1;n1++){
+    size_t base=2*((size_t)n1*N2+PF_W*b);
+    float s=p->scl[(size_t)n1*(N2/PF_W)+b];
+    int q=einp(&p->ea,n1);
+    vi hr=VI_UNPACK16(VI_LOAD16(p->q+base));
+    vi hi=VI_UNPACK16(VI_LOAD16(p->q+base+PF_W));
+    if(exact){
+      vi lr=VI_UNPACKU8(VI_LOAD8(p->r8+base));
+      vi li=VI_UNPACKU8(VI_LOAD8(p->r8+base+PF_W));
+      vf vs=V_SET1(s);
+      p->bR[q]=V_MUL(VI_CVTF(VI_OR(VI_SLLI(hr,8),lr)),vs);
+      p->bI[q]=V_MUL(VI_CVTF(VI_OR(VI_SLLI(hi,8),li)),vs);
+    } else {
+      vf vs=V_SET1(s*256.0f);
+      p->bR[q]=V_MUL(VI_CVTF(hr),vs);
+      p->bI[q]=V_MUL(VI_CVTF(hi),vs);
+    }
+  }
+  PACC(pf_pBload,_tb0);
+  PT(_tb1); efft(N1,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i); PACC(pf_pBfft,_tb1);
   *RR=p->bR; *RI=p->bI;
 }
 
@@ -221,7 +285,7 @@ void FN(fft)(void *vp,const float*in,float*out,int conj){
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   stageA(p,in,conj);
   for(int b=0;b<N2/PF_W;b++){
-    vf *RR,*RI; stageB(p,b,&RR,&RI);
+    vf *RR,*RI; stageB(p,b,&RR,&RI,1);
     for(int k1=0;k1<N1;k1++){ int e=eidx(&p->ea,k1);
       v_inter(out+2*((size_t)k1*N2+PF_W*b),RR[e],V_XOR(RI[e],sg)); }
   }
@@ -229,8 +293,12 @@ void FN(fft)(void *vp,const float*in,float*out,int conj){
 
 int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we){
   BP *p=vp; const int N1=p->N1,N2=p->N2;
-  stageA(p,in,conj);
-  cand T[PF_MAX_K]; int n=0; float thr=-1.f;
+  PT(_ta); stageA(p,in,conj); PACC(pf_pA,_ta);
+  /* Screening is only 16-bit accurate, so the K-th and (K+1)-th candidate can be
+     mis-ordered by it.  Keep a wider pool, refine all of it at 24 bits, then rank -
+     otherwise a peak can be cut before it is ever looked at properly. */
+  const int KP = p->useq ? ((K*2+8 > 256) ? 256 : K*2+8) : K;
+  cand T[256]; int n=0; float thr=-1.f;
   vf vthr=V_SET1(thr);
   float br[PF_W],bi[PF_W],bm[PF_W];
   const unsigned allm=(PF_W==16)?0xFFFFu:0xFFu;
@@ -243,7 +311,7 @@ int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t
     if(lo<0) lo=0;
     if(hi>N1-1) hi=N1-1;
     if(lo>hi) continue;
-    vf *RR,*RI; stageB(p,b,&RR,&RI);
+    vf *RR,*RI; stageB(p,b,&RR,&RI,0);
     for(long k1=lo;k1<=hi;k1++){
       int e=eidx(&p->ea,(int)k1);
       long k0=k1*N2+base;                     /* index of lane 0 */
@@ -261,17 +329,33 @@ int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t
         while(msk){
           int l=__builtin_ctz(msk); msk&=msk-1u;
           if(bm[l]<=thr) continue;
-          push(T,K,&n,bm[l],k0+l,br[l],bi[l]);
-          if(n==K){ thr=T[0].mag2; vthr=V_SET1(thr); }
+          push(T,KP,&n,bm[l],k0+l,br[l],bi[l]);
+          if(n==KP){ thr=T[0].mag2; vthr=V_SET1(thr); }
         }
       }
     }
   }
+  /* Screening ran on 16 bits; redo just the column blocks that produced a
+     candidate at the full 24 bits so the reported values are exact. */
+  for(int a=0; p->useq && a<n; a++){
+    int bb=(int)((T[a].idx % N2) / PF_W), done=0;
+    for(int c=0;c<a;c++) if((int)((T[c].idx % N2)/PF_W)==bb){ done=1; break; }
+    if(done) continue;
+    vf *RR,*RI; stageB(p,bb,&RR,&RI,1);
+    for(int c=a;c<n;c++) if((int)((T[c].idx % N2)/PF_W)==bb){
+      long k1=T[c].idx/N2; int l=(int)(T[c].idx%N2)-PF_W*bb;
+      int e=eidx(&p->ea,(int)k1);
+      float rr2[PF_W],ii2[PF_W];
+      V_STOREU(rr2,RR[e]); V_STOREU(ii2,RI[e]);
+      T[c].re=rr2[l]; T[c].im=ii2[l]; T[c].mag2=rr2[l]*rr2[l]+ii2[l]*ii2[l];
+    }
+  }
   for(int a=1;a<n;a++){ cand v=T[a]; int c=a-1;
     while(c>=0&&T[c].mag2<v.mag2){T[c+1]=T[c];c--;} T[c+1]=v; }
-  for(int a=0;a<n;a++){ out[a].index=T[a].idx; out[a].re=T[a].re;
+  int nout = n<K?n:K;
+  for(int a=0;a<nout;a++){ out[a].index=T[a].idx; out[a].re=T[a].re;
     out[a].im=conj?-T[a].im:T[a].im; out[a].magnitude=sqrtf(T[a].mag2); }
-  return n;
+  return nout;
 }
 
 const pf_backend CAT(pf_be_bal,PF_W) = {

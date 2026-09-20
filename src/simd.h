@@ -25,6 +25,7 @@ typedef __m512 vf;
 #define V_MAX(a,b)      _mm512_max_ps(a,b)
 #define V_XOR(a,b)      _mm512_xor_ps(a,b)
 #define V_SIGNMASK()    _mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000))
+#define V_ABS(a)        _mm512_abs_ps(a)
 /* greater-than as a plain bitmask, one bit per lane */
 #define V_GT_MASK(a,b)  ((unsigned)_mm512_cmp_ps_mask(a,b,_CMP_GT_OQ))
 
@@ -44,6 +45,7 @@ typedef __m256 vf;
 #define V_MAX(a,b)      _mm256_max_ps(a,b)
 #define V_XOR(a,b)      _mm256_xor_ps(a,b)
 #define V_SIGNMASK()    _mm256_castsi256_ps(_mm256_set1_epi32((int)0x80000000))
+#define V_ABS(a)        _mm256_andnot_ps(_mm256_castsi256_ps(_mm256_set1_epi32((int)0x80000000)),a)
 #define V_GT_MASK(a,b)  ((unsigned)_mm256_movemask_ps(_mm256_cmp_ps(a,b,_CMP_GT_OQ)))
 #else
 #error "PF_W must be 16 or 8"
@@ -98,6 +100,69 @@ static inline void v_inter(float *p, vf re, vf im){
   _mm256_storeu_ps(p,  _mm256_permute2f128_ps(lo,hi,0x20));
   _mm256_storeu_ps(p+8,_mm256_permute2f128_ps(lo,hi,0x31));
 }
+#endif
+
+/* ---- fixed-point conversion for the quantised intermediate ----
+   The screening pass only needs ~1e-2 relative accuracy, so the intermediate is
+   kept as 24-bit block floating point: a 16-bit plane that screening reads, and an
+   8-bit residual read only for the few columns holding a winner. */
+#if PF_W == 16
+typedef __m512i vi;
+typedef __m256i vi16;   /* W packed int16 */
+typedef __m128i vi8;    /* W packed int8  */
+#define VI_CVT(x)        _mm512_cvtps_epi32(x)
+#define VI_CVTF(x)       _mm512_cvtepi32_ps(x)
+#define VI_MIN(a,b)      _mm512_min_epi32(a,b)
+#define VI_MAX(a,b)      _mm512_max_epi32(a,b)
+#define VI_SET1(x)       _mm512_set1_epi32(x)
+#define VI_SRAI(a,n)     _mm512_srai_epi32(a,n)
+#define VI_SLLI(a,n)     _mm512_slli_epi32(a,n)
+#define VI_AND(a,b)      _mm512_and_epi32(a,b)
+#define VI_OR(a,b)       _mm512_or_epi32(a,b)
+#define VI_PACK16(a)     _mm512_cvtepi32_epi16(a)
+#define VI_PACK8(a)      _mm512_cvtepi32_epi8(a)
+#define VI_LOAD16(p)     _mm256_loadu_si256((const __m256i*)(p))
+#define VI_LOAD8(p)      _mm_loadu_si128((const __m128i*)(p))
+#define VI_STORE16(p,v)  _mm256_storeu_si256((__m256i*)(p),v)
+#define VI_STORE8(p,v)   _mm_storeu_si128((__m128i*)(p),v)
+#define VI_UNPACK16(v)   _mm512_cvtepi16_epi32(v)
+#define VI_UNPACKU8(v)   _mm512_cvtepu8_epi32(v)
+#else
+typedef __m256i vi;
+typedef __m128i vi16;
+typedef __m128i vi8;
+#define VI_CVT(x)        _mm256_cvtps_epi32(x)
+#define VI_CVTF(x)       _mm256_cvtepi32_ps(x)
+#define VI_MIN(a,b)      _mm256_min_epi32(a,b)
+#define VI_MAX(a,b)      _mm256_max_epi32(a,b)
+#define VI_SET1(x)       _mm256_set1_epi32(x)
+#define VI_SRAI(a,n)     _mm256_srai_epi32(a,n)
+#define VI_SLLI(a,n)     _mm256_slli_epi32(a,n)
+#define VI_AND(a,b)      _mm256_and_si256(a,b)
+#define VI_OR(a,b)       _mm256_or_si256(a,b)
+/* 8 x int32 -> 8 x int16 in one 128-bit lane (packs works per 128-bit half,
+   so the halves must be re-joined with a 64-bit permute) */
+static inline __m128i vi_pack16(__m256i a){
+  __m256i p=_mm256_packs_epi32(a,a);
+  return _mm256_castsi256_si128(_mm256_permute4x64_epi64(p,0xD8));
+}
+/* Take the LOW byte of each int32, by truncation.  packs_* would saturate, which
+   silently clamps residual bytes >= 128 to 127 and destroys the low 8 bits. */
+static inline __m128i vi_pack8(__m256i a){
+  const __m256i sh=_mm256_setr_epi8(0,4,8,12,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+                                    0,4,8,12,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1);
+  __m256i t=_mm256_shuffle_epi8(a,sh);
+  __m128i lo=_mm256_castsi256_si128(t), hi=_mm256_extracti128_si256(t,1);
+  return _mm_unpacklo_epi32(lo,hi);
+}
+#define VI_PACK16(a)     vi_pack16(a)
+#define VI_PACK8(a)      vi_pack8(a)
+#define VI_LOAD16(p)     _mm_loadu_si128((const __m128i*)(p))
+#define VI_LOAD8(p)      _mm_loadl_epi64((const __m128i*)(p))
+#define VI_STORE16(p,v)  _mm_storeu_si128((__m128i*)(p),v)
+#define VI_STORE8(p,v)   _mm_storel_epi64((__m128i*)(p),v)
+#define VI_UNPACK16(v)   _mm256_cvtepi16_epi32(v)
+#define VI_UNPACKU8(v)   _mm256_cvtepu8_epi32(v)
 #endif
 
 static inline float v_reduce_max(vf v){

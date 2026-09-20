@@ -29,6 +29,7 @@ static double nw(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);retur
 
 #include "internal.h"
 #include "transpose16.h"
+#include "elemfft.h"
 
 /* N = N1 * N2 with N1 fixed at 1024, so stage 2 is always the validated
    L1-resident 1024-point kernel and only N2 = N/1024 varies (4 .. 1024,
@@ -43,6 +44,7 @@ struct P20 {
   float *w1024r,*w1024i;            /* inner four-step twiddle */
   float *w256r,*w256i,*wlor,*wloi;  /* 2-level table for W_65536[g*k2] */
   __m512 t4r[2][32],t4i[2][32];     /* for fft1024_soa */
+  emap em;            /* index map for the element transform of size N2 */
   short *q;                         /* int16 BFP intermediate: q[k2][g][16 re | 16 im] */
   float *scl;                       /* per-(k2,g) dequant scale */
   signed char *res;                 /* int8 residual plane, layout [g][k2][16re|16im] (write-sequential) */
@@ -56,7 +58,9 @@ P20* pf20_create(size_t Nin){
   size_t inter_bytes=(size_t)Nin*4;
   p->inter_re=aligned_alloc(2u<<20,inter_bytes); p->inter_im=aligned_alloc(2u<<20,inter_bytes);
   madvise(p->inter_re,inter_bytes,MADV_HUGEPAGE); madvise(p->inter_im,inter_bytes,MADV_HUGEPAGE);
-  size_t bufslots = (N2==1024) ? 1056 : (size_t)N2;   /* 1024 path uses stride-33 padding */
+  int m1,m2; efactor(N2,&m1,&m2);
+  p->em=emake(m1,m2);
+  size_t bufslots = (m2==1) ? (size_t)N2 : (size_t)ESTRIDE(m1)*m2;
   p->bufR=aligned_alloc(64,bufslots*64); p->bufI=aligned_alloc(64,bufslots*64);
   p->scrR=aligned_alloc(64,bufslots*64); p->scrI=aligned_alloc(64,bufslots*64);
   p->TLr=aligned_alloc(64,(size_t)N2*64);  p->TLi=aligned_alloc(64,(size_t)N2*64);
@@ -170,18 +174,14 @@ static void stage1(P20*p,const float*in,int conj){
     for(int n2=0;n2<N2;n2++){
       if(n2+8<N2) _mm_prefetch((const char*)(src+(size_t)(n2+8)*2048),_MM_HINT_T0);
       __m512 a=_mm512_loadu_ps(src+(size_t)n2*2048), b=_mm512_loadu_ps(src+(size_t)n2*2048+16);
-      int q=(N2==1024)?((n2&31)+33*(n2>>5)):n2;
+      int q=einp(&p->em,n2);
       p->bufR[q]=_mm512_permutex2var_ps(a,ev,b);
       p->bufI[q]=_mm512_xor_ps(_mm512_permutex2var_ps(a,od,b),sg);
     }
+    if(N2>1) efft(N2,p->bufR,p->bufI,p->scrR,p->scrI,p->wM_r,p->wM_i);
     __m512 *RR=p->bufR,*RI=p->bufI;
-    if(N2==1024) elem_fft1024(p);
-    else if(N2>1){
-      int f=elem_fft_generic(N2,p->bufR,p->bufI,p->scrR,p->scrI,p->wM_r,p->wM_i);
-      if(f){ RR=p->scrR; RI=p->scrI; }
-    }
     for(int k2=0;k2<N2;k2++){
-      int eb=(N2==1024)?(33*(k2&31)+(k2>>5)):k2;
+      int eb=eidx(&p->em,k2);
       unsigned m=((unsigned)g*(unsigned)k2)&NM; unsigned m1=m>>8, m0=m&255;
       float sr=p->w256r[m1]*p->wlor[m0]-p->w256i[m1]*p->wloi[m0];
       float si=p->w256r[m1]*p->wloi[m0]+p->w256i[m1]*p->wlor[m0];

@@ -14,7 +14,7 @@ typedef struct {
   float *re, *im;                 /* SoA scratch (N=1024 path) */
   __m512 t4r[2][32], t4i[2][32];  /* 32x32 corner-turn twiddles */
   P20 *p20;
-  PS  *ps;
+  void *bal;          /* codelet-based balanced split (src/balanced.c) */
 } AP;
 
 void pf_push(pf_cand *T,int K,int *n,float m2,int idx,float vr,float vi){
@@ -87,19 +87,18 @@ static void *a512_create(size_t N){
   if(N==1024){
     p->re=aligned_alloc(64,1024*sizeof(float));
     p->im=aligned_alloc(64,1024*sizeof(float));
-  } else if(N<=(1u<<16)){
-    p->ps = pfs_create(N);
-    if(!p->ps){ free(p); return NULL; }
   } else {
-    p->p20 = pf20_create(N);
-    if(!p->p20){ free(p); return NULL; }
+    p->bal = pf_be_bal16.create(N);
+    if(!p->bal){ free(p); return NULL; }
   }
   return p;
 }
 
 static void a512_destroy(void *vp){
   AP *p=vp; if(!p) return;
-  free(p->re); free(p->im); pf20_destroy(p->p20); pfs_destroy(p->ps); free(p);
+  free(p->re); free(p->im); pf20_destroy(p->p20);
+  if(p->bal) pf_be_bal16.destroy(p->bal);
+  free(p);
 }
 
 static void a512_fft(void *vp,const float *in,float *out,int conj){
@@ -108,10 +107,8 @@ static void a512_fft(void *vp,const float *in,float *out,int conj){
     pf_deint_c(in,p->re,p->im,1024,conj);
     pf_fft1024_soa(p->re,p->im,p->t4r,p->t4i);
     pf_inter_c(p->re,p->im,out,1024,conj);
-  } else if(p->ps){
-    pfs_exact(p->ps,in,out,conj);
   } else {
-    pf20_exact(p->p20,in,out,conj);
+    pf_be_bal16.fft(p->bal,in,out,conj);
   }
 }
 
@@ -163,8 +160,7 @@ static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size
       peaks[a].im=conj?-T[a].im:T[a].im; peaks[a].magnitude=sqrtf(T[a].mag2); }
     return n;
   }
-  if(p->ps) return pfs_topk(p->ps,in,K,peaks,conj,ws,we);
-  return pf20_topk(p->p20,in,K,peaks,conj,ws,we);
+  return pf_be_bal16.topk(p->bal,in,K,peaks,conj,ws,we);
 }
 
 const pf_backend pf_be_avx512 = {

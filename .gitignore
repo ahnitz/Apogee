@@ -11,3 +11,9 @@ build/
 *.egg-info/
 *.so
 __pycache__/
+*.wisdom
+m_*.csv
+four*.csv
+matrix.*
+bench/loadgen
+bench/bench4

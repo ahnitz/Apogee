@@ -43,6 +43,10 @@ int      pf_supported(size_t N);
    Override with the PEAKFFT_ISA environment variable (see README). */
 const char *pf_isa(void);
 
+/* Name of the back end this plan actually selected (autotuning may pick a
+   different one from pf_isa() for large N). */
+const char *pf_plan_backend(const pf_plan *p);
+
 /* Full transform.  in/out are interleaved complex float, N elements each;
    out must not alias in.  64-byte alignment is best.  sign is PF_FORWARD or
    PF_BACKWARD.  Mainly a reference and test hook - pf_topk is the fast path. */
