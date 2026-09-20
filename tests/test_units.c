@@ -246,7 +246,13 @@ static void test_backward(size_t N){
 static void test_api(void){
   CHECK(ap_create(999)==NULL, "ap_create must reject unsupported N");
   CHECK(ap_supported(1024) && ap_supported(1048576), "ap_supported wrong");
-  CHECK(!ap_supported(2048), "ap_supported(2048) should be false");
+  CHECK(!ap_supported(128), "ap_supported(128) should be false (2^7 splits 16x8)");
+  CHECK(!ap_supported(3000), "ap_supported(3000) should be false (not a power of two)");
+  CHECK(ap_supported(2048), "ap_supported(2048) should be true");
+  for(int lg=8;lg<=11;lg++)
+    CHECK(ap_supported((size_t)1<<lg),
+          "ap_supported(2^%d) should be true - the hierarchical filter's coarse "
+          "pass needs the small sizes",lg);
   CHECK(!ap_supported(1u<<21), "ap_supported(2^21) should be false");
   for(int lg=12;lg<=20;lg++) CHECK(ap_supported((size_t)1<<lg),"ap_supported(2^%d) should be true",lg);
   ap_plan *p=ap_create(1024);

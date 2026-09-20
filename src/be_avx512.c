@@ -51,8 +51,9 @@ float ap_prime_threshold(const float *re,const float *im,int n,int K){
 }
 
 static int a512_supported(size_t N){
-  if(N==1024u) return 1;
-  return N>=4096u && N<=1048576u && (N&(N-1))==0u;   /* 2^12 .. 2^20 */
+  /* 1024 has a specialised kernel; everything else delegates to the generic back
+     end, so the supported set is just the generic one. */
+  return ap_be_bal16.supported(N);
 }
 
 static void *a512_create(size_t N){

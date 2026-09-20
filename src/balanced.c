@@ -103,10 +103,15 @@ typedef struct {
 } BP;
 
 int FN(supported)(size_t N){
-  /* Kept identical to the AVX-512 back end so the supported set does not depend
-     on which ISA happens to be selected: 1024, then 2^12..2^20. */
-  if(N==1024u) return 1;
-  if((N&(N-1))||N<4096u||N>(1u<<20)) return 0;
+  /* Powers of two from 256 to 2^20.  The lower bound used to be 4096, which was
+     arbitrary - what actually constrains it is that both halves of the split must
+     be at least one vector wide.  The hierarchical filter needs the small sizes:
+     its coarse pass is an N/R-point transform, and restricting R to keep N/R
+     above 4096 would remove most of the tuning range.
+     256 is the floor because 2^7 splits 16x8, and 8 is below the AVX-512 lane
+     count - the supported set is kept identical across back ends so it does not
+     depend on which one the CPU happens to select. */
+  if((N&(N-1))||N<256u||N>(1u<<20)) return 0;
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
   /* The balanced split is not always best: what matters is which element sizes
