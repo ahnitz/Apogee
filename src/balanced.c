@@ -97,6 +97,8 @@ typedef struct {
   int useq;            /* 1 = quantised 24-bit, 0 = plain fp32                  */
   int gblk;            /* stage-A groups loaded per pass over the input          */
   int bblk;            /* stage-B column blocks loaded per pass over the intermediate */
+  int gmajor;          /* 1 = fused-product inputs are stored group-major     */
+  int ilay;            /* 1 = intermediate as [k2 block][n1][lane]           */
   vf *bmx,*bre,*bim;   /* per-bin running max, and the winner's value            */
   vi *bix;             /* per-bin block index of the current winner              */
   size_t nbcap;
@@ -165,8 +167,11 @@ void *FN(create)(size_t N){
     p->r8 =aligned_alloc(64,(size_t)n1*p->istr*2);
     p->scl=aligned_alloc(64,(size_t)n1*(p->istr/PF_W+1)*sizeof(float)+64);
   } else {
-    p->ire=aligned_alloc(64,(size_t)n1*p->istr*sizeof(float));
-    p->iim=aligned_alloc(64,(size_t)n1*p->istr*sizeof(float));
+    { size_t sz=(size_t)n1*p->istr;
+      size_t alt=(size_t)(n2/PF_W)*n1*PF_W;        /* [k2 block][n1][lane] */
+      if(alt>sz) sz=alt;
+      p->ire=aligned_alloc(64,sz*sizeof(float));
+      p->iim=aligned_alloc(64,sz*sizeof(float)); }
   }
   /* Stage A walks the input with stride N1*8 bytes and, one group at a time, uses
      only 2*PF_W floats of each row.  Measured on this machine, touching 128 bytes
@@ -216,6 +221,7 @@ void *FN(create)(size_t N){
     { const char *e=getenv("PEAKFFT_BBLK"); if(e){ long v=atol(e); if(v>0){ bb=(size_t)v; if(bb>bmaxn)bb=bmaxn; } } }
     p->bblk=(int)bb;
   }
+  { const char *e=getenv("PEAKFFT_GMAJOR"); p->gmajor = e?atoi(e):1; }
   { size_t nbuf = (size_t)p->gblk > (size_t)p->bblk ? (size_t)p->gblk : (size_t)p->bblk;
     p->bR=aligned_alloc(64,me*nbuf*sizeof(vf));
     p->bI=aligned_alloc(64,me*nbuf*sizeof(vf)); }
@@ -297,7 +303,7 @@ void FN(destroy)(void *vp){
 static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
                                vf*restrict OR,vf*restrict OI,
                                vf*restrict bR,vf*restrict bI){
-  const int N2=PN2;
+  const int N2=PN2; const int N1=PN1; (void)N1;
   vf *restrict sR=p->sR, *restrict sI=p->sI;
     efft(N2,bR,bI,sR,sI,p->w2r,p->w2i);
   vf *restrict RR=bR,*restrict RI=bI;
@@ -339,9 +345,17 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
          traffic.  Measured, it is 1.22x to 1.62x SLOWER (0/32 rounds); stage B
          wants the line and the store buffer is not the constraint. */
 #if PF_ABLATE!=7
-      for(int i=0;i<PF_W;i++){
-        size_t off=(size_t)(PF_W*g+i)*p->istr+PF_W*b;
-        V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
+      if(p->ilay){
+        float *er=p->ire+(size_t)b*N1*PF_W+(size_t)PF_W*g*PF_W;
+        float *ei=p->iim+(size_t)b*N1*PF_W+(size_t)PF_W*g*PF_W;
+        for(int i=0;i<PF_W;i++){                    /* one contiguous run */
+          V_STOREU(er+(size_t)i*PF_W,OR[i]); V_STOREU(ei+(size_t)i*PF_W,OI[i]);
+        }
+      } else {
+        for(int i=0;i<PF_W;i++){
+          size_t off=(size_t)(PF_W*g+i)*p->istr+PF_W*b;
+          V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
+        }
       }
 #endif
       continue;
@@ -418,6 +432,74 @@ static void stageA_split(BP*p,const float*inr,const float*ini,int conj){
   }
 }
 
+/* Stage A over spectra stored GROUP-MAJOR, forming the product on the way in.
+ *
+ * Normal stage A reads x[n2*N1 + n1]: PF_W contiguous floats, then a jump of N1.
+ * That is the shape measured at 7.6 GB/s against 43.9 sequential, and the group
+ * blocking only widens the run rather than removing the jump.  When the caller
+ * owns the layout - which the matched filter does, since preprocessing is free -
+ * the spectrum can be stored as [n1 block][n2][lane] instead, and then one
+ * group's entire pass is one sequential run of N2*PF_W floats.
+ *
+ * Layout: spec[g*N2*PF_W + n2*PF_W + l], n1 = g*PF_W + l. */
+static void stageA_prod_gm(BP*p,const float*dr,const float*di,
+                           const float*tr,const float*ti){
+  const int N1=PN1,N2=PN2,NG=N1/PF_W;
+  vf TR[PF_W],TI[PF_W],OR[PF_W],OI[PF_W];
+  const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
+  for(int g=0;g<NG;g++){
+    const size_t gb=(size_t)g*N2*PF_W;
+    for(int e2=0;e2<M2;e2++){
+      const size_t o0=gb+(size_t)e2*M1*PF_W;
+      const float *ar=dr+o0,*ai=di+o0,*br=tr+o0,*bi=ti+o0;
+      vf *dR=p->bR+(size_t)e2*st, *dI=p->bI+(size_t)e2*st;
+      for(int e1=0;e1<M1;e1++){
+        vf x=V_LOADU(ar), y=V_LOADU(ai), u=V_LOADU(br), v=V_LOADU(bi);
+        dR[e1]=V_FMSUB(x,u,V_MUL(y,v));
+        dI[e1]=V_FNMSUB(x,v,V_MUL(y,u));       /* conj(product) */
+        ar+=PF_W; ai+=PF_W; br+=PF_W; bi+=PF_W;
+      }
+    }
+    stageA_body(p,g,TR,TI,OR,OI,p->bR,p->bI);
+  }
+}
+
+/* Stage A that forms the matched-filter product on the way in.
+ *
+ * The product of two spectra is otherwise written to memory and read straight
+ * back by this very loop - 1 MiB of L2 traffic per pair at 2^16.  Computing it
+ * here costs the same four FMAs and touches no intermediate at all.
+ * Output is conj(D*T), which is what the backward transform wants. */
+static void stageA_prod(BP*p,const float*dr,const float*di,
+                        const float*tr,const float*ti){
+  const int N1=PN1,N2=PN2,NG=N1/PF_W,G=p->gblk;
+  vf TR[PF_W],TI[PF_W],OR[PF_W],OI[PF_W];
+  const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
+  for(int g0=0;g0<NG;g0+=G){
+    const int GG = (NG-g0<G)?NG-g0:G;
+    for(int e2=0;e2<M2;e2++){
+      const size_t off0=(size_t)PF_W*g0+(size_t)e2*M1*N1;
+      const float *ar=dr+off0,*ai=di+off0,*br=tr+off0,*bi=ti+off0;
+      for(int e1=0;e1<M1;e1++){
+        for(int gg=0;gg<GG;gg++){
+          const size_t o=(size_t)PF_W*gg;
+          vf x=V_LOADU(ar+o), y=V_LOADU(ai+o);
+          vf u=V_LOADU(br+o), v=V_LOADU(bi+o);
+          vf pr=V_FMSUB(x,u,V_MUL(y,v));
+          vf pi=V_FNMSUB(x,v,V_MUL(y,u));     /* conj(product), free here */
+          vf *dR=p->bR+(size_t)gg*p->bstride+(size_t)e2*st;
+          vf *dI=p->bI+(size_t)gg*p->bstride+(size_t)e2*st;
+          dR[e1]=pr; dI[e1]=pi;
+        }
+        ar+=N1; ai+=N1; br+=N1; bi+=N1;
+      }
+    }
+    for(int gg=0;gg<GG;gg++)
+      stageA_body(p,g0+gg,TR,TI,OR,OI,
+                  p->bR+(size_t)gg*p->bstride,p->bI+(size_t)gg*p->bstride);
+  }
+}
+
 static void stageA(BP*p,const float*in,int conj){
   const int N1=PN1,N2=PN2,NG=N1/PF_W,G=p->gblk;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
@@ -478,12 +560,15 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
   const int N1=PN1; (void)PN2; PT(_tb0);
   if(!p->useq){
     { const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
+      const size_t step = p->ilay ? (size_t)PF_W : p->istr;
+      const size_t base = p->ilay ? (size_t)b*N1*PF_W : (size_t)PF_W*b;
       for(int e2=0;e2<M2;e2++){
-        const float *sr=p->ire+(size_t)e2*M1*p->istr+PF_W*b, *si=p->iim+(size_t)e2*M1*p->istr+PF_W*b;
+        const float *sr=p->ire+base+(size_t)e2*M1*step;
+        const float *si=p->iim+base+(size_t)e2*M1*step;
         vf *dR=p->bR+(size_t)e2*st, *dI=p->bI+(size_t)e2*st;
         for(int e1=0;e1<M1;e1++){
           dR[e1]=V_LOADU(sr); dI[e1]=V_LOADU(si);
-          sr+=p->istr; si+=p->istr;
+          sr+=step; si+=step;
         }
       }
     }
@@ -761,6 +846,18 @@ int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,pf_peak*out,
   return 0;
 }
 
+int FN(binmax_prod)(void *vp,const float*dr,const float*di,
+                    const float*tr,const float*ti,size_t binsize,
+                    float thr,pf_peak*out,int conj,size_t ws,size_t we){
+  BP *p=vp;
+  size_t nb=(we-ws+binsize-1)/binsize;
+  if(FN(bins_reserve)(p,nb)) return -1;
+  if(p->gmajor) stageA_prod_gm(p,dr,di,tr,ti);
+  else          stageA_prod(p,dr,di,tr,ti);
+  FN(binmax_core)(p,binsize,thr,out,conj,ws,we);
+  return 0;
+}
+
 int FN(binmax_split)(void *vp,const float*inr,const float*ini,size_t binsize,
                      float thr,pf_peak*out,int conj,size_t ws,size_t we){
   BP *p=vp;
@@ -813,5 +910,5 @@ const pf_backend CAT(pf_be_bal,PF_W) = {
   "avx2",
 #endif
   FN(create), FN(destroy), FN(fft), FN(topk), FN(supported),
-  FN(topk_q), FN(quantize_in), FN(binmax), FN(binmax_split)
+  FN(topk_q), FN(quantize_in), FN(binmax), FN(binmax_split), FN(binmax_prod)
 };

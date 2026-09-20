@@ -211,7 +211,18 @@ static int a512_binmax_split(void *vp,const float *re,const float *im,size_t bin
   return pf_be_bal16.binmax_split(p->bal,re,im,binsize,thr,out,conj,ws,we);
 }
 
+static int a512_binmax_prod(void *vp,const float *dr,const float *di,
+                            const float *tr,const float *ti,size_t binsize,
+                            float thr,pf_peak *out,int conj,size_t ws,size_t we){
+  AP *p=vp;
+  /* N=1024 has no fused variant of its specialised kernel; the product there is
+     8 KiB in L1 and not worth a second kernel.  Everything else goes to the
+     generic fused path. */
+  if(p->N==1024) return -1;
+  return pf_be_bal16.binmax_prod(p->bal,dr,di,tr,ti,binsize,thr,out,conj,ws,we);
+}
+
 const pf_backend pf_be_avx512 = {
   "avx512", a512_create, a512_destroy, a512_fft, a512_topk, a512_supported,
-  a512_topk_q, a512_quantize, a512_binmax, a512_binmax_split
+  a512_topk_q, a512_quantize, a512_binmax, a512_binmax_split, a512_binmax_prod
 };

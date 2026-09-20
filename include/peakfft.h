@@ -152,6 +152,18 @@ int pf_binmax_split(pf_plan *p, const float *re, const float *im,
                     size_t binsize, float threshold, pf_peak *peaks, int *count,
                     int sign, size_t start, size_t end);
 
+/* Binned maximum of the matched-filter product, with the product formed inside
+   the transform's load so it never reaches memory.  Returns -1 if the selected
+   back end has no fused path for this length, in which case form the product and
+   call pf_binmax_split. */
+/* SIMD lane width of the active back end (8 or 16), or 0 if unsupported. */
+int pf_lane_width(void);
+
+int pf_binmax_prod(pf_plan *p, const float *dr, const float *di,
+                   const float *tr, const float *ti,
+                   size_t binsize, float threshold, pf_peak *peaks, int *count,
+                   int sign, size_t start, size_t end);
+
 int pf_binmax(pf_plan *p, const float *in, size_t dist, int B,
               size_t binsize, float threshold, pf_peak *peaks, int *counts,
               int sign, size_t start, size_t end);

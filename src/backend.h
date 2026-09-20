@@ -29,6 +29,11 @@ typedef struct {
          conj here only sets the sign of the reported imaginary parts. */
   int   (*binmax_split)(void *, const float *re, const float *im, size_t binsize,
                         float thr, pf_peak *out, int conj, size_t start, size_t end);
+  /* matched filter: form conj(D*T) inside stage A's load, so the product never
+     reaches memory.  Inputs are read-only here, unlike binmax_split. */
+  int   (*binmax_prod)(void *, const float *dr, const float *di,
+                       const float *tr, const float *ti, size_t binsize,
+                       float thr, pf_peak *out, int conj, size_t start, size_t end);
 } pf_backend;
 extern const pf_backend pf_be_avx512;   /* specialised: 1024 kernel + tuned 2^17..2^20 */
 extern const pf_backend pf_be_bal8;    /* width-generic balanced split, 8 lanes (AVX2)  */

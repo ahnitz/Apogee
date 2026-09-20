@@ -131,6 +131,23 @@ int pf_binmax_split(pf_plan *p,const float *re,const float *im,
   return c;
 }
 
+/* matched-filter product fused into the transform's load; -1 if unavailable */
+int pf_binmax_prod(pf_plan *p,const float *dr,const float *di,
+                   const float *tr,const float *ti,
+                   size_t binsize,float threshold,pf_peak *peaks,int *count,
+                   int sign,size_t start,size_t end){
+  if(!p||!binsize) return -1;
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  if(!p->be->binmax_prod) return -1;
+  const size_t nb=(end-start+binsize-1)/binsize;
+  if(p->be->binmax_prod(p->h,dr,di,tr,ti,binsize,threshold,peaks,
+                        sign==PF_BACKWARD,start,end)<0) return -1;
+  int c=0; for(size_t j=0;j<nb;j++) if(peaks[j].index>=0) c++;
+  if(count) *count=c;
+  return c;
+}
+
 int pf_binmax(pf_plan *p,const float *in,size_t dist,int B,
               size_t binsize,float threshold,pf_peak *peaks,int *counts,
               int sign,size_t start,size_t end){
@@ -177,4 +194,12 @@ int pf_topk_many(pf_plan *p,const float *in,size_t dist,int B,
 
 int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){
   return pf_topk_window(p,in,K,peaks,sign,0,p->n);
+}
+
+/* SIMD lane width of the active back end, so callers that want to store data in
+   the layout stage A walks can compute it.  0 if unsupported. */
+int pf_lane_width(void){
+  const pf_backend *b=pick();
+  if(!b) return 0;
+  return (b==&pf_be_bal8) ? 8 : 16;
 }
