@@ -65,7 +65,10 @@ P20* pf20_create(size_t Nin){
   p->scrR=aligned_alloc(64,bufslots*64); p->scrI=aligned_alloc(64,bufslots*64);
   p->TLr=aligned_alloc(64,(size_t)N2*64);  p->TLi=aligned_alloc(64,(size_t)N2*64);
   p->wM_r=aligned_alloc(64,(size_t)N2*4);  p->wM_i=aligned_alloc(64,(size_t)N2*4);
-  for(int j=0;j<N2;j++){ double a=-2.0*M_PI*j/(double)N2; p->wM_r[j]=(float)cos(a); p->wM_i[j]=(float)sin(a); }
+  { int b1,b2; efactor(N2,&b1,&b2);
+    for(int k=0;k<(b2==1?1:b2);k++) for(int e=0;e<b1;e++){
+      double a=-2.0*M_PI*(double)e*k/(double)N2;
+      p->wM_r[(size_t)k*b1+e]=(float)cos(a); p->wM_i[(size_t)k*b1+e]=(float)sin(a); } }
   for(int k2=0;k2<N2;k2++){
     float tr[16],ti[16];
     for(int l=0;l<16;l++){ double a=-2.0*M_PI*(double)l*k2/N; tr[l]=cosf(a); ti[l]=sinf(a); }

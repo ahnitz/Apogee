@@ -49,20 +49,28 @@ static inline int codelet(int m,vf*ar,vf*ai,vf*br,vf*bi,long S){
     default: return fft64_88(ar,ai,br,bi,S);
   }
 }
-static void efft(int M,vf*X,vf*Xi,vf*S,vf*Si,const float*wr,const float*wi){
+/* Same, but the four-step twiddle is applied to the inputs as they are read.
+   The alternative is a standalone pass that re-reads and re-writes the whole
+   block purely to multiply it - this removes that pass entirely. */
+static inline int codelet_tw(int m,vf*ar,vf*ai,vf*br,vf*bi,long S,
+                             const float*twr,const float*twi){
+  switch(m){
+    case  8: return fft8_tw (ar,ai,br,bi,S,twr,twi);
+    case 16: return fft16_tw(ar,ai,br,bi,S,twr,twi);
+    case 32: return fft32_tw(ar,ai,br,bi,S,twr,twi);
+    default: return fft64_tw(ar,ai,br,bi,S,twr,twi);
+  }
+}
+/* itwr/itwi hold W_M[e1*k2p] laid out [k2p][e1], so the second half can consume
+   them directly. */
+static void efft(int M,vf*X,vf*Xi,vf*S,vf*Si,const float*itwr,const float*itwi){
   int M1,M2; efactor(M,&M1,&M2);
   if(M2==1){ codelet(M,X,Xi,S,Si,1); return; }
   const int st=ESTRIDE(M1);
   for(int e1=0;e1<M1;e1++) codelet(M2,X+e1,Xi+e1,S+e1,Si+e1,st);
-  for(int k2p=0;k2p<M2;k2p++) for(int e1=0;e1<M1;e1++){
-    int idx=e1+st*k2p, t=(e1*k2p)&(M-1);
-    vf cr=V_SET1(wr[t]),ci=V_SET1(wi[t]);
-    vf xr=X[idx],xi=Xi[idx];
-    X[idx] =V_FMSUB(xr,cr,V_MUL(xi,ci));
-    Xi[idx]=V_FMADD(xr,ci,V_MUL(xi,cr));
-  }
   for(int k2p=0;k2p<M2;k2p++)
-    codelet(M1,X+st*k2p,Xi+st*k2p,S+st*k2p,Si+st*k2p,1);
+    codelet_tw(M1,X+st*k2p,Xi+st*k2p,S+st*k2p,Si+st*k2p,1,
+               itwr+(size_t)k2p*M1, itwi+(size_t)k2p*M1);
 }
 
 #endif

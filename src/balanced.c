@@ -124,8 +124,14 @@ void *FN(create)(size_t N){
   }
   p->w1r=aligned_alloc(64,(size_t)n1*4); p->w1i=aligned_alloc(64,(size_t)n1*4);
   p->w2r=aligned_alloc(64,(size_t)n2*4); p->w2i=aligned_alloc(64,(size_t)n2*4);
-  for(int j=0;j<n1;j++){ double a=-2.0*M_PI*j/n1; p->w1r[j]=(float)cos(a); p->w1i[j]=(float)sin(a); }
-  for(int j=0;j<n2;j++){ double a=-2.0*M_PI*j/n2; p->w2r[j]=(float)cos(a); p->w2i[j]=(float)sin(a); }
+  { int a1,a2; efactor(n1,&a1,&a2);
+    for(int k=0;k<(a2==1?1:a2);k++) for(int e=0;e<a1;e++){
+      double a=-2.0*M_PI*(double)e*k/n1;
+      p->w1r[(size_t)k*a1+e]=(float)cos(a); p->w1i[(size_t)k*a1+e]=(float)sin(a); } }
+  { int b1,b2; efactor(n2,&b1,&b2);
+    for(int k=0;k<(b2==1?1:b2);k++) for(int e=0;e<b1;e++){
+      double a=-2.0*M_PI*(double)e*k/n2;
+      p->w2r[(size_t)k*b1+e]=(float)cos(a); p->w2i[(size_t)k*b1+e]=(float)sin(a); } }
   /* The stage-A twiddle used to be rebuilt per element from a two-level table:
      four scalar multiplies and a broadcast, all on the critical path, for ~22% of
      all instructions at small N.  Precompute instead.  The full vector form is
