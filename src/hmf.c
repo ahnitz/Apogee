@@ -61,6 +61,8 @@ struct ap_hmf_plan {
      the early-out fires, so keeping the evens contiguous walks 16 KiB of
      templates instead of striding through 32 KiB. */
   ap_mf_plan *coarse;
+  ap_plan   *full_fft;        /* n-point plan for the forward transform of a block */
+  float     *fwd,*spec;       /* [2n] block staging and its spectrum            */
   ap_plan   *cf;              /* explicit m-point plan, for the rare interpolation
                                  path that needs the series materialised        */
   float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
@@ -166,7 +168,10 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->graw1=hmf_recovery(n,band,oversample,taps,2);
   p->full  =ap_mf_create(n,ndata,ntmpl);
   p->coarse=ap_mf_create(band,ndata,2*ntmpl);
-  p->cf    =ap_create(band);
+  p->cf      =ap_create(band);
+  p->full_fft=ap_create(n);
+  p->fwd =aligned_alloc(64,2*n*sizeof(float));
+  p->spec=aligned_alloc(64,2*n*sizeof(float));
   p->cd  =aligned_alloc(64,(size_t)ndata*2*band*sizeof(float));
   p->dspec=calloc((size_t)ndata,sizeof(*p->dspec));
   p->dready=calloc((size_t)ndata,1);
@@ -186,7 +191,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
   p->cebuf=calloc((size_t)ntmpl,sizeof(ap_peak));
-  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
+  if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->cd||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   p->even_margin=0.999f;
@@ -206,6 +211,8 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->full) ap_mf_destroy(p->full);
   if(p->coarse) ap_mf_destroy(p->coarse);
   if(p->cf)   ap_destroy(p->cf);
+  if(p->full_fft) ap_destroy(p->full_fft);
+  free(p->fwd);free(p->spec);
   free(p->dspec);free(p->dready);free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
   free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);free(p->shift2);
   free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);
@@ -483,6 +490,40 @@ static float interp_abs(const float *ev,const float *od,size_t m,int U,
     si += wr*zi + wi*zr;
   }
   return sqrtf(sr*sr+si*si);
+}
+
+int ap_hmf_run_series(ap_hmf_plan *p,
+                      const float *series,size_t nseries,
+                      const size_t *start,const size_t *win_start,
+                      const size_t *win_end,int nblocks,
+                      int t0,int nt,size_t binsize,float threshold,
+                      ap_peak *peaks,int *counts){
+  if(!p||nblocks<1||nt<1||!binsize) return 0;
+  if(t0<0||t0+nt>p->nt) return -1;
+  const size_t n=p->n;
+  int total=0;
+  for(int b=0;b<nblocks;b++){
+    /* Forward transform this block.  Short tails are zero-padded, which is what
+       the caller's layout already assumes for the final block of a segment. */
+    const size_t s0=start[b];
+    size_t have = s0<nseries ? nseries-s0 : 0;
+    if(have>n) have=n;
+    if(have) memcpy(p->fwd,series+2*s0,2*have*sizeof(float));
+    if(have<n) memset(p->fwd+2*have,0,2*(n-have)*sizeof(float));
+    ap_fft(p->full_fft,p->fwd,p->spec,AP_FORWARD);
+    /* pycbc's inverse is unnormalised and so is apogee's, so the caller's
+       convention of pre-dividing the block spectrum by n is preserved here. */
+    { const float inv=1.0f/(float)n;
+      for(size_t k=0;k<2*n;k++) p->spec[k]*=inv; }
+    if(ap_hmf_set_data(p,0,p->spec)) return -1;
+    size_t nb=ap_mf_nbins(p->full,binsize,win_start[b],win_end[b]);
+    int r=ap_hmf_run(p,0,1,t0,nt,binsize,threshold,
+                     peaks+(size_t)b*nt*nb,counts?counts+(size_t)b*nt:NULL,
+                     win_start[b],win_end[b]);
+    if(r<0) return -1;
+    total+=r;
+  }
+  return total;
 }
 
 int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,

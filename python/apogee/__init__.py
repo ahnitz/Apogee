@@ -213,6 +213,7 @@ class HierarchicalFilter(MatchedFilter):
         self.snr = float(snr)
         self.fd = float(fd)
         self._buf = None
+        self._sbuf = None
         if band is None:
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd)
         else:
@@ -242,6 +243,57 @@ class HierarchicalFilter(MatchedFilter):
         if p.size != self.n:
             raise ValueError(f"reference must have {self.n} values, got {p.size}")
         self._mf.set_reference(p)
+
+    def run_series(self, series, starts, win_start, win_end,
+                   binsize=None, threshold=0.0, templates=None, raw=False):
+        """Filter a time series over a caller-supplied block layout.
+
+        The caller keeps the overlap-save arithmetic -- where each block starts
+        and which span of its output is valid.  apogee only executes that plan,
+        which removes the per-block round trip: no separately-planned forward
+        FFT, no spectrum passed back and forth, and one call per segment rather
+        than one per block.
+
+        Windows are per block, so the ragged ones at a segment's edges need no
+        grouping.  Returns a structured array of shape
+        ``(nblocks, ntemplates, nbins)``, or with ``raw=True`` the three plain
+        arrays ``(index, value, magnitude)`` of that shape -- which skips
+        assembling the structured array, a real cost here because a whole
+        segment's blocks come back at once.
+        """
+        ser = np.ascontiguousarray(series, dtype=np.complex64)
+        st = np.ascontiguousarray(starts, dtype=np.uintp)
+        ws = np.ascontiguousarray(win_start, dtype=np.uintp)
+        we = np.ascontiguousarray(win_end, dtype=np.uintp)
+        if not (st.size == ws.size == we.size):
+            raise ValueError("starts, win_start and win_end must be the same length")
+        nblk = st.size
+        t0, nt = (0, self.ntemplates) if templates is None else (
+            int(templates[0]), int(templates[1]))
+        binsize = self.n if binsize is None else int(binsize)
+        nb = self._mf.nbins(binsize, int(ws[0]), int(we[0]))
+        need = nblk * nt * nb
+        # Reuse the buffers, as run() does.  Re-allocated per call they are a
+        # small cost here -- one call per segment rather than per block -- but
+        # the shape is stable across segments, so there is no reason to pay it.
+        sb = self._sbuf
+        if sb is None or sb[0] != (nblk, nt, nb):
+            sb = self._sbuf = ((nblk, nt, nb),
+                               np.empty(need, dtype=np.int64),
+                               np.empty(need, dtype=np.complex64),
+                               np.empty(need, dtype=np.float32),
+                               np.empty(nblk * nt, dtype=np.int32))
+        _, idx, val, mag, cnt = sb
+        self._mf.run_series(ser, st, ws, we, t0, nt, binsize, float(threshold),
+                            idx, val, mag, cnt)
+        if raw:
+            return (idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb),
+                    mag.reshape(nblk, nt, nb))
+        peaks = np.empty((nblk, nt, nb), dtype=PEAK_DTYPE)
+        peaks["index"] = idx.reshape(nblk, nt, nb)
+        peaks["value"] = val.reshape(nblk, nt, nb)
+        peaks["magnitude"] = mag.reshape(nblk, nt, nb)
+        return peaks
 
     @property
     def config(self):

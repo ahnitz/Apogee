@@ -123,6 +123,30 @@ int ap_hmf_run(ap_hmf_plan *p, int d0, int nd, int t0, int nt,
                size_t binsize, float threshold,
                ap_peak *peaks, int *counts, size_t start, size_t end);
 
+/* Filter a time series directly, over a caller-supplied block layout.
+ *
+ * The caller still owns the overlap-save arithmetic: it decides where each
+ * block starts and which span of each block's output is valid.  apogee only
+ * executes that plan -- forward transform per block, gate, refine where needed
+ * -- which removes the per-block round trip through the caller entirely: no
+ * separately-planned forward FFT, no spectrum handed back and forth, and one
+ * call per segment instead of one per block.
+ *
+ * series holds `nseries` complex samples, interleaved.  For block b, the
+ * transform covers series[start[b] .. start[b]+n), and the peak search covers
+ * lags [win_start[b], win_end[b]) within that block.  Windows are per block, so
+ * the ragged ones at a segment's edges need no special handling.
+ *
+ * peaks is [block][template][bin] with bins as ap_hmf_run.  A block whose
+ * transform would run past nseries is zero-padded.
+ */
+int ap_hmf_run_series(ap_hmf_plan *p,
+                      const float *series, size_t nseries,
+                      const size_t *start, const size_t *win_start,
+                      const size_t *win_end, int nblocks,
+                      int t0, int nt, size_t binsize, float threshold,
+                      ap_peak *peaks, int *counts);
+
 /* Diagnostics: pairs examined and pairs that went to the full correlation.
    The ratio is the measured trigger rate, which is what the speedup rides on. */
 void ap_hmf_stats(const ap_hmf_plan *p, long *pairs, long *triggers);
