@@ -127,3 +127,31 @@ Extracted from `libfftw3f.a` and counted:
   already the better one and avoids their permute traffic.
 - `vaddps` and `vsubps` at 5601 each vs `vmulps` 3043 — **adds are ~55% of their
   arithmetic**, which is exactly where int16's 3x add advantage applies.
+
+## Phase 1a: batch-interleaved layout — rejected on measurement
+
+Tried `x[n*B + b]` so SIMD lanes are the batch index. This removes the four-step corner
+turn entirely (no `V_TRANSPOSE` anywhere) and makes the outer twiddle a scalar broadcast
+instead of a per-lane vector table. Both are real structural savings. It still loses badly:
+
+| N | B | batched us/xform | single-at-a-time | ratio |
+|---|---|---|---|---|
+| 2^12 | 16 | 6.38 | 2.21 | 0.35x |
+| 2^12 | 64 | 7.01 | 2.39 | 0.34x |
+| 2^16 | 32 | 269.97 | 65.21 | 0.24x |
+| 2^18 | 64 | 1336.59 | 390.79 | 0.29x |
+
+Correct throughout (rel err 1.4e-07 .. 2.3e-07 vs the single-transform path), so this is
+purely a memory-system result. Two causes:
+
+1. **Working set multiplies by W.** The inter-stage buffer goes from N complex to N*W
+   complex: 32 KiB -> 512 KiB at 2^12. The single-transform intermediate is L1-resident;
+   the batched one is not. Every byte that was L1 traffic becomes L3 traffic.
+2. **Stride becomes pathological.** Stage A walks n2 with stride `N1*B*8` bytes — 64 KiB
+   at 2^18, so N2=512 reads span 32 MiB with a TLB miss each. The single-transform path
+   tiles this into W x W blocks; with lanes already spent on the batch there is no tile
+   left to hide the stride in.
+
+Lesson: the corner turn was never the bottleneck, so paying cache residency to delete it
+is a bad trade. Batching has to preserve per-transform L1 residency, which means the batch
+must be an array of separate contiguous transforms (stride 2N), not an interleave.
