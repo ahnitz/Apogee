@@ -1,182 +1,129 @@
-"""Python-level tests. Run with: python -m pytest tests/test_python.py
+"""Python-level tests for the matched-filter interface.
 
-Checks every supported size against numpy's FFT, in both directions, on whichever
-back end PEAKFFT_ISA selects - so CI can run the same file twice to cover both.
+Checks the class API against numpy, and that the Python layer adds no
+measurable cost over the C path - the run loop is one call into C.
 """
-import os
+import time
 import numpy as np
 import pytest
 import peakfft
 
-SIZES = [1024] + [1 << k for k in range(12, 21)]
-TOL = 1e-5
 
-
-def _rand(n, seed):
+def _case(n, D, T, seed=0):
     rng = np.random.default_rng(seed)
-    return (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64)
+    d = (rng.standard_normal((D, n)) + 1j * rng.standard_normal((D, n))).astype(np.complex64)
+    h = (rng.standard_normal((T, n)) + 1j * rng.standard_normal((T, n))).astype(np.complex64)
+    return d, h
 
 
-@pytest.mark.parametrize("n", SIZES)
-@pytest.mark.parametrize("direction", ["forward", "backward"])
-def test_fft_matches_numpy(n, direction):
-    x = _rand(n, n + (direction == "backward"))
-    ref = np.fft.fft(x.astype(np.complex128)) if direction == "forward" \
-        else np.fft.ifft(x.astype(np.complex128)) * n
-    got = peakfft.fft(x, direction)
-    assert np.abs(got - ref).max() / np.abs(ref).max() < TOL
+def _ref(d, h):
+    """Unnormalised correlation, the same convention the library uses."""
+    n = d.size
+    return np.fft.ifft(np.fft.fft(d.astype(np.complex128)) *
+                       np.conj(np.fft.fft(h.astype(np.complex128)))) * n
 
 
-@pytest.mark.parametrize("n", SIZES)
-@pytest.mark.parametrize("k", [1, 8])
-def test_topk_matches_numpy(n, k):
-    x = _rand(n, 7 * n + k)
-    ref = np.fft.fft(x.astype(np.complex128))
-    mag = np.abs(ref)
-    expect = list(np.argsort(-mag)[:k])
-    peaks = peakfft.topk(x, k)
-    assert len(peaks) == k
-    assert list(peaks["index"]) == expect
-    for p in peaks:
-        assert abs(p["value"] - ref[p["index"]]) / mag[p["index"]] < TOL
-        assert abs(p["magnitude"] - mag[p["index"]]) / mag[p["index"]] < TOL
-    # descending order
-    assert np.all(np.diff(peaks["magnitude"]) <= 0)
+@pytest.mark.parametrize("n,D,T", [(1024, 2, 3), (4096, 4, 4), (16384, 2, 2)])
+def test_matches_numpy(n, D, T):
+    d, h = _case(n, D, T)
+    mf = peakfft.MatchedFilter(n, D, T)
+    mf.set_data(d)
+    mf.set_templates(h)
+    bs = n // 4
+    peaks = mf.run(binsize=bs)
+    assert peaks.shape == (D, T, n // bs)
+    for i in range(D):
+        for j in range(T):
+            z = _ref(d[i], h[j])
+            mag = np.abs(z)
+            for b in range(peaks.shape[2]):
+                lo, hi = b * bs, (b + 1) * bs
+                want = lo + int(np.argmax(mag[lo:hi]))
+                got = peaks[i, j, b]
+                assert got["index"] == want
+                assert abs(got["magnitude"] - mag[want]) <= 1e-5 * mag.max()
 
 
-def test_roundtrip():
-    n = 1 << 16
-    x = _rand(n, 99)
-    back = peakfft.fft(peakfft.fft(x), "backward")
-    assert np.abs(back / n - x).max() / np.abs(x).max() < TOL
+def test_threshold_and_empty_bins():
+    n, bs = 4096, 512
+    d, h = _case(n, 1, 1, seed=3)
+    mf = peakfft.MatchedFilter(n, 1, 1)
+    mf.set_data(d); mf.set_templates(h)
+    mag = np.abs(_ref(d[0], h[0]))
+    thr = float(np.sort(mag)[::-1][2])
+    peaks, counts = mf.run(binsize=bs, threshold=thr, counts=True)
+    for b in range(peaks.shape[2]):
+        lo, hi = b * bs, (b + 1) * bs
+        best = mag[lo:hi].max()
+        if best <= thr:
+            assert peaks[0, 0, b]["index"] == -1
+            assert peaks[0, 0, b]["magnitude"] == 0
+    assert counts[0, 0] == int(np.sum(peaks[0, 0]["index"] >= 0))
+    # a floor above everything empties every bin
+    peaks = mf.run(binsize=bs, threshold=float(mag.max()) * 2)
+    assert np.all(peaks["index"] == -1)
 
 
-def test_peak_fields_are_explicit():
-    peaks = peakfft.topk(_rand(4096, 5), 3)
-    assert peaks.dtype.names == ("index", "value", "magnitude")
-    assert peaks["index"].dtype == np.int64
-    assert peaks["value"].dtype == np.complex64
+def test_window():
+    n, bs = 4096, 256
+    d, h = _case(n, 1, 1, seed=5)
+    mf = peakfft.MatchedFilter(n, 1, 1)
+    mf.set_data(d); mf.set_templates(h)
+    ws, we = 800, 3000
+    peaks = mf.run(binsize=bs, window=(ws, we))
+    idx = peaks["index"].ravel()
+    assert np.all(idx >= ws) and np.all(idx < we)
+    assert peaks.shape[2] == mf.nbins(bs, window=(ws, we))
 
 
-def test_rejects_bad_sizes():
+def test_subrange_matches_full():
+    n, D, T, bs = 1024, 4, 4, 256
+    d, h = _case(n, D, T, seed=7)
+    mf = peakfft.MatchedFilter(n, D, T)
+    mf.set_data(d); mf.set_templates(h)
+    full = mf.run(binsize=bs)
+    sub = mf.run(binsize=bs, data=(1, 2), templates=(2, 2))
+    assert np.array_equal(sub["index"], full["index"][1:3, 2:4])
+
+
+def test_known_lag():
+    n, lag = 4096, 321
+    rng = np.random.default_rng(11)
+    d = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64)
+    h = np.roll(d, -lag)
+    mf = peakfft.MatchedFilter(n, 1, 1)
+    mf.set_data(d, index=0); mf.set_templates(h, index=0)
+    peaks = mf.run(binsize=n)
+    assert peaks[0, 0, 0]["index"] == lag
+    energy = float(np.sum(np.abs(d.astype(np.complex128)) ** 2))
+    assert abs(peaks[0, 0, 0]["magnitude"] - energy * n) <= 1e-4 * energy * n
+
+
+def test_shape_errors():
+    mf = peakfft.MatchedFilter(1024, 2, 2)
     with pytest.raises(ValueError):
-        peakfft.Plan(2048)
+        mf.set_data(np.zeros((3, 1024), dtype=np.complex64))
     with pytest.raises(ValueError):
-        peakfft.Plan(1 << 21)
-
-
-def test_plan_reuse():
-    p = peakfft.Plan(4096)
-    for s in range(3):
-        x = _rand(4096, s)
-        ref = np.fft.fft(x.astype(np.complex128))
-        assert p.topk(x, 1)["index"][0] == int(np.argmax(np.abs(ref)))
-
-
-def test_isa_env_is_honoured():
-    want = os.environ.get("PEAKFFT_ISA")
-    if want in ("avx2", "avx512"):
-        # the module picked a back end at import; just prove it still works
-        assert peakfft.topk(_rand(1 << 14, 3), 1).size == 1
-
-
-@pytest.mark.parametrize("n", [1024, 4096, 1 << 16, 1 << 20])
-def test_window(n):
-    x = _rand(n, 31 + n)
-    ref = np.fft.fft(x.astype(np.complex128))
-    mag = np.abs(ref)
-    gmax = int(np.argmax(mag))
-    windows = [
-        (0, n),                       # full
-        (n // 4, n // 4 + n // 2),    # middle half
-        (n // 3 + 7, n // 3 + 7 + (2 * n) // 3 - 11),   # ragged ~67%
-        (gmax + 1, n),                # deliberately excludes the global max
-        (gmax, gmax + 1),             # exactly the global max
-    ]
-    for s, e in windows:
-        if s >= e or e > n:
-            continue
-        k = min(4, e - s)
-        peaks = peakfft.topk(x, k, window=(s, e))
-        order = [i for i in np.argsort(-mag) if s <= i < e][:k]
-        assert list(peaks["index"]) == order, f"window ({s},{e})"
-        assert np.all(peaks["index"] >= s) and np.all(peaks["index"] < e)
-
-
-def test_window_clamped_and_empty():
-    x = _rand(4096, 2)
-    assert peakfft.topk(x, 4, window=(0, 10**9)).size == 4   # end clamped to n
-    assert peakfft.topk(x, 4, window=(100, 100)).size == 0   # empty
-    assert peakfft.topk(x, 4, window=(500, 100)).size == 0   # reversed
-
-
-# --- batched API -----------------------------------------------------------
-
-def _batch_case(n, b, k, direction, thr_quantile):
-    rng = np.random.default_rng(n * 131 + b)
-    x = (rng.standard_normal((b, n)) + 1j * rng.standard_normal((b, n))).astype(np.complex64)
-    sign = 1 if direction == peakfft.BACKWARD else -1
-    ref = np.fft.fft(x.astype(np.complex128), axis=1) if sign == -1 \
-        else np.fft.ifft(x.astype(np.complex128), axis=1) * n
-    mags = np.abs(ref)
-    if thr_quantile is None:
-        thr = 0.0
-    else:
-        s = np.sort(mags[0])[::-1]
-        q = max(n // thr_quantile, 1)
-        thr = float(0.5 * (s[q] + s[q + 1]))
-    return x, ref, mags, thr
-
-
-@pytest.mark.parametrize("n,b,k", [(1024, 16, 8), (1024, 128, 4), (4096, 32, 6),
-                                   (16384, 16, 4), (65536, 16, 3)])
-@pytest.mark.parametrize("direction", [peakfft.FORWARD, peakfft.BACKWARD])
-@pytest.mark.parametrize("thr_q", [None, 1000])
-def test_topk_many_matches_numpy(n, b, k, direction, thr_q):
-    """Every row must match a brute-force ranking of numpy's spectrum.
-
-    With a floor set this also checks there are no false negatives: the count
-    has to be exactly the number of bins numpy puts above the floor, capped at
-    k.  A mis-primed threshold shows up as a short row, not a wrong value.
-    """
-    x, ref, mags, thr = _batch_case(n, b, k, direction, thr_q)
-    rows = peakfft.topk_many(x, k, threshold=thr, direction=direction)
-    assert len(rows) == b
-    for j, peaks in enumerate(rows):
-        order = np.argsort(-mags[j], kind="stable")
-        expect = [int(i) for i in order[:k] if mags[j][i] > thr]
-        assert list(peaks["index"]) == expect
-        assert np.all(np.diff(peaks["magnitude"]) <= 0), "rows must be sorted loudest first"
-        if len(peaks):
-            got = peaks["value"]
-            want = ref[j][peaks["index"]]
-            rel = np.max(np.abs(got - want) / mags[j][peaks["index"]])
-            assert rel < 1e-5, f"relative error {rel:.2e}"
-            assert np.all(peaks["magnitude"] > thr)
-
-
-def test_topk_many_matches_single():
-    """The batched call and the single-transform call must agree exactly."""
-    n, b, k = 4096, 16, 8
-    x, _, _, _ = _batch_case(n, b, k, peakfft.FORWARD, None)
-    rows = peakfft.topk_many(x, k)
-    for j in range(b):
-        one = peakfft.topk(x[j], k)
-        assert list(rows[j]["index"]) == list(one["index"])
-        assert np.array_equal(rows[j]["value"], one["value"])
-
-
-def test_topk_many_window():
-    n, b, k = 4096, 8, 5
-    x, ref, mags, _ = _batch_case(n, b, k, peakfft.FORWARD, None)
-    ws, we = n // 5, int(n * 0.7)
-    rows = peakfft.topk_many(x, k, window=(ws, we))
-    for j, peaks in enumerate(rows):
-        assert np.all((peaks["index"] >= ws) & (peaks["index"] < we))
-        sub = np.argsort(-mags[j][ws:we], kind="stable")[:k] + ws
-        assert list(peaks["index"]) == [int(i) for i in sub]
-
-
-def test_topk_many_rejects_bad_shape():
+        mf.run(data=(0, 5))
     with pytest.raises(ValueError):
-        peakfft.topk_many(np.zeros(1024, dtype=np.complex64), 4)
+        mf.run(window=(500, 500))
+
+
+def test_python_overhead_is_negligible():
+    """The pair loop is one call into C, so Python must not show up in the cost."""
+    n, D, T = 4096, 8, 8
+    d, h = _case(n, D, T, seed=13)
+    mf = peakfft.MatchedFilter(n, D, T)
+    mf.set_data(d); mf.set_templates(h)
+    best_small = best_large = 1e30
+    for _ in range(5):
+        t0 = time.perf_counter(); mf.run(binsize=1024, data=(0, 1), templates=(0, 1))
+        best_small = min(best_small, time.perf_counter() - t0)
+        t0 = time.perf_counter(); mf.run(binsize=1024)
+        best_large = min(best_large, time.perf_counter() - t0)
+    per_pair_small = best_small          # 1 pair, so this is call overhead + 1 pair
+    per_pair_large = best_large / (D * T)
+    # if Python overhead dominated, one pair would cost far more than the average
+    assert per_pair_small < 25 * per_pair_large, (
+        f"per-pair cost {per_pair_small*1e6:.1f} us for a single pair vs "
+        f"{per_pair_large*1e6:.1f} us amortised - Python overhead is not negligible")

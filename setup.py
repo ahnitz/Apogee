@@ -19,6 +19,7 @@ GROUPS = [
     ("src/be_avx512.c",  AVX512, []),
     ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
     ("src/balanced.c",   AVX2,   [("PF_W", "8")]),      # generic source, 8 lanes
+    ("src/matchfilt.c",  BASE,   []),
     ("src/dispatch.c",   [],     []),                 # baseline only
     ("python/peakfft/_core.c", [], []),
 ]

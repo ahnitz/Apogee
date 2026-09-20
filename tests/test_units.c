@@ -161,10 +161,10 @@ static void test_analytic(size_t N){
   CHECK_LE(fabs(hypot(out[2*f],out[2*f+1])-(double)N)/N, 1e-5, "%s (magnitude)", tag);
   CHECK_LE(leak/(double)N, 1e-5, "%s (leakage)", tag);
 
-  /* and pf_topk must report exactly that bin */
+  /* and the binned maximum over the whole spectrum must report exactly that bin */
   pf_peak pk[4];
-  int nk=pf_topk(p,in,1,pk,PF_FORWARD);
-  CHECK(nk==1 && pk[0].index==f, "N=%zu pf_topk on a pure tone gave idx=%ld, expected %d",
+  int nk; { int c; nk=pf_binmax(p,in,N,1,N,0.f,pk,&c,PF_FORWARD,0,N); nk=c; }
+  CHECK(nk==1 && pk[0].index==f, "N=%zu binmax on a pure tone gave idx=%ld, expected %d",
         N,nk?pk[0].index:-1L,f);
   CHECK_LE(fabs(pk[0].magnitude-(double)N)/N, 1e-5, "N=%zu peak magnitude field",N);
   CHECK_LE(fabs(hypot(pk[0].re,pk[0].im)-pk[0].magnitude)/N, 1e-6,
@@ -199,7 +199,7 @@ static void test_analytic(size_t N){
 }
 
 /* Backward direction: the round trip must scale by exactly N, a tone must land in
-   the mirrored bin, and pf_topk must agree with pf_fft in that direction too. */
+   the mirrored bin, and binmax must agree with pf_fft in that direction too. */
 static void test_backward(size_t N){
   float *in=pf_alloc(N*8), *fwd=pf_alloc(N*8), *rt=pf_alloc(N*8);
   pf_plan *p=pf_create(N);
@@ -222,23 +222,23 @@ static void test_backward(size_t N){
   for(size_t n=0;n<N;n++){ double a=-2.0*M_PI*(double)f*n/N;
     in[2*n]=(float)cos(a); in[2*n+1]=(float)sin(a); }
   pf_peak pk[2];
-  int nk=pf_topk(p,in,1,pk,PF_BACKWARD);
+  int nk; { int c; pf_binmax(p,in,N,1,N,0.f,pk,&c,PF_BACKWARD,0,N); nk=c; }
   CHECK(nk==1 && pk[0].index==f, "N=%zu backward tone gave idx=%ld, expected %d",
         N,nk?pk[0].index:-1L,f);
   CHECK_LE(fabs(pk[0].magnitude-(double)N)/N, 1e-5, "N=%zu backward peak magnitude",N);
 
-  /* pf_topk(BACKWARD) must match a brute-force scan of pf_fft(BACKWARD) */
+  /* the backward binned maximum must match a brute-force scan of pf_fft(BACKWARD) */
   pf_seed(N*13+5);
   for(size_t n=0;n<N;n++){ in[2*n]=(float)pf_gauss(); in[2*n+1]=(float)pf_gauss(); }
   pf_fft(p,in,fwd,PF_BACKWARD);
   int best=0; double bm=-1;
   for(size_t k=0;k<N;k++){ double m=(double)fwd[2*k]*fwd[2*k]+(double)fwd[2*k+1]*fwd[2*k+1];
     if(m>bm){bm=m;best=(int)k;} }
-  nk=pf_topk(p,in,1,pk,PF_BACKWARD);
+  { int c; pf_binmax(p,in,N,1,N,0.f,pk,&c,PF_BACKWARD,0,N); nk=c; }
   CHECK(nk==1 && pk[0].index==best,
-        "N=%zu backward pf_topk idx=%ld but pf_fft peak is %d",N,nk?pk[0].index:-1L,best);
+        "N=%zu backward binmax idx=%ld but pf_fft peak is %d",N,nk?pk[0].index:-1L,best);
   CHECK_LE(hypot(pk[0].re-fwd[2*best],pk[0].im-fwd[2*best+1])/sqrt(bm), 1e-5,
-           "N=%zu backward pf_topk value",N);
+           "N=%zu backward binmax value",N);
   pf_destroy(p); free(in); free(fwd); free(rt);
 }
 
@@ -249,9 +249,8 @@ static void test_api(void){
   CHECK(!pf_supported(1u<<21), "pf_supported(2^21) should be false");
   for(int lg=12;lg<=20;lg++) CHECK(pf_supported((size_t)1<<lg),"pf_supported(2^%d) should be true",lg);
   pf_plan *p=pf_create(1024);
-  pf_peak pk[4];
   float *in=pf_alloc(1024*8); memset(in,0,1024*8); in[0]=1.f;
-  CHECK(pf_topk(p,in,0,pk,PF_FORWARD)==0, "pf_topk(K=0) should return 0");
+
   pf_destroy(p); pf_destroy(NULL); free(in);
 }
 

@@ -1,9 +1,17 @@
-"""peakfft - single-threaded AVX-512 FFT specialised for finding the loudest bins.
+"""peakfft - single-threaded batched matched filter with peak-only output.
+
+Correlate D data segments against T templates and report, for each pair, the
+loudest sample in each bin of a search window:
 
     >>> import numpy as np, peakfft
-    >>> x = (np.random.randn(1 << 20) + 1j*np.random.randn(1 << 20)).astype(np.complex64)
-    >>> peaks = peakfft.topk(x, 3)
+    >>> mf = peakfft.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
+    >>> mf.set_data(data)            # (16, 16384) complex64
+    >>> mf.set_templates(templates)  # (16, 16384) complex64
+    >>> peaks = mf.run(binsize=1024, threshold=t, window=(a, b))
     >>> peaks["index"], peaks["value"], peaks["magnitude"]
+
+Segments are transformed once when set and reused across every pair, so ingest
+cost is amortised over the D*T correlations.
 
 Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 """
@@ -12,158 +20,143 @@ from . import _core
 
 FORWARD = _core.FORWARD
 BACKWARD = _core.BACKWARD
-MAX_K = _core.MAX_K
 
-#: dtype of the array returned by :func:`topk` - index, complex value, magnitude.
+#: dtype of the arrays returned by :meth:`MatchedFilter.run`.
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
 
-__all__ = ["Plan", "fft", "topk", "topk_many", "FORWARD", "BACKWARD", "MAX_K", "PEAK_DTYPE"]
+__all__ = ["MatchedFilter", "Plan", "fft", "PEAK_DTYPE", "FORWARD", "BACKWARD"]
 
 
-def _sign(direction):
-    if isinstance(direction, str):
-        d = direction.lower()
-        if d in ("forward", "fwd", "f", "-1"):
-            return FORWARD
-        if d in ("backward", "bwd", "b", "inverse", "inv", "+1", "1"):
-            return BACKWARD
-        raise ValueError(f"unknown direction {direction!r}")
-    if direction not in (FORWARD, BACKWARD):
-        raise ValueError("direction must be FORWARD (-1) or BACKWARD (+1)")
-    return int(direction)
+def _as_c64(a, n, what):
+    a = np.ascontiguousarray(a, dtype=np.complex64)
+    if a.ndim != 1 or a.size != n:
+        raise ValueError(f"{what} must be a 1-D complex array of {n} samples, got shape {a.shape}")
+    return a
+
+
+class MatchedFilter:
+    """Correlate a set of data segments against a set of templates.
+
+    Every pair (d, t) gives ``IFFT(FFT(data_d) * conj(FFT(template_t)))``, of
+    which only the loudest sample per bin is computed to full accuracy and
+    reported.  The transform is unnormalised, matching FFTW and MKL, so a perfect
+    match returns ``n * energy``.
+
+    ``ndata`` and ``ntemplates`` are arbitrary; they need not match or be powers
+    of two.  Setting a segment transforms it once and stores it in the layout the
+    correlation loop wants, so that cost is paid once rather than per pair.
+    """
+
+    def __init__(self, n, ndata=1, ntemplates=1):
+        self.n = int(n)
+        self.ndata = int(ndata)
+        self.ntemplates = int(ntemplates)
+        self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
+
+    # ---- ingest -------------------------------------------------------------
+    def set_data(self, segments, index=None):
+        """Set one segment (with ``index``) or all of them from a (ndata, n) array."""
+        if index is not None:
+            self._mf.set_data(int(index), _as_c64(segments, self.n, "segment"))
+            return
+        a = np.ascontiguousarray(segments, dtype=np.complex64)
+        if a.ndim != 2 or a.shape != (self.ndata, self.n):
+            raise ValueError(f"expected shape ({self.ndata}, {self.n}), got {a.shape}")
+        for i in range(self.ndata):
+            self._mf.set_data(i, a[i])
+
+    def set_templates(self, templates, index=None):
+        """Set one template (with ``index``) or all of them from a (ntemplates, n) array."""
+        if index is not None:
+            self._mf.set_template(int(index), _as_c64(templates, self.n, "template"))
+            return
+        a = np.ascontiguousarray(templates, dtype=np.complex64)
+        if a.ndim != 2 or a.shape != (self.ntemplates, self.n):
+            raise ValueError(f"expected shape ({self.ntemplates}, {self.n}), got {a.shape}")
+        for i in range(self.ntemplates):
+            self._mf.set_template(i, a[i])
+
+    # ---- run ----------------------------------------------------------------
+    def nbins(self, binsize, window=None):
+        start, end = self._window(window)
+        return self._mf.nbins(int(binsize), start, end)
+
+    def _window(self, window):
+        if window is None:
+            return 0, self.n
+        start, end = int(window[0]), int(window[1])
+        start = max(0, min(start, self.n))
+        end = max(0, min(end, self.n))
+        if start >= end:
+            raise ValueError(f"empty window ({start}, {end})")
+        return start, end
+
+    def run(self, binsize=None, threshold=0.0, window=None,
+            data=None, templates=None, counts=False):
+        """Correlate and report the loudest sample per bin.
+
+        Returns a structured array of shape ``(ndata, ntemplates, nbins)`` with
+        fields ``index`` (lag, int64), ``value`` (complex64) and ``magnitude``
+        (float32).  A bin whose maximum does not exceed ``threshold`` comes back
+        with ``index == -1`` and ``magnitude == 0``, so bin j always sits at
+        slot j and the result can be indexed by frequency without searching.
+
+        ``data`` and ``templates`` restrict the run to a sub-range, given as
+        ``(start, count)``; the answer is identical to the matching slice of a
+        full run.  ``window=(start, end)`` restricts the lags searched.
+
+        With ``counts=True`` returns ``(peaks, counts)``, where counts has shape
+        ``(ndata, ntemplates)`` and holds how many bins crossed the threshold.
+        """
+        n = self.n
+        binsize = n if binsize is None else int(binsize)
+        start, end = self._window(window)
+        d0, nd = (0, self.ndata) if data is None else (int(data[0]), int(data[1]))
+        t0, nt = (0, self.ntemplates) if templates is None else (int(templates[0]), int(templates[1]))
+        if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
+           or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
+            raise ValueError("data/templates sub-range out of bounds")
+        nb = self._mf.nbins(binsize, start, end)
+        rows = nd * nt
+        idx = np.empty(rows * nb, dtype=np.int64)
+        val = np.empty(rows * nb, dtype=np.complex64)
+        mag = np.empty(rows * nb, dtype=np.float32)
+        cnt = np.empty(rows, dtype=np.int32)
+        self._mf.run(d0, nd, t0, nt, binsize, float(threshold), start, end,
+                     idx, val, mag, cnt)
+        peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
+        peaks["index"] = idx.reshape(nd, nt, nb)
+        peaks["value"] = val.reshape(nd, nt, nb)
+        peaks["magnitude"] = mag.reshape(nd, nt, nb)
+        return (peaks, cnt.reshape(nd, nt)) if counts else peaks
 
 
 class Plan:
-    """Reusable plan for one transform length.  Serves both directions.
+    """Reusable plan for a plain complex transform of one length.
 
-    Creating a plan builds the twiddle tables and scratch buffers, so reuse it
-    across calls; that is where the setup cost belongs.
+    Present mainly so callers can produce reference spectra; the matched filter
+    is the interface this library is for.  Neither direction scales by 1/n.
     """
 
     def __init__(self, n):
-        self._p = _core.Plan(int(n))
         self.n = int(n)
-
-    def _check(self, x):
-        x = np.ascontiguousarray(x, dtype=np.complex64)
-        if x.ndim != 1 or x.size != self.n:
-            raise ValueError(f"expected a 1-D array of {self.n} samples, got shape {x.shape}")
-        return x
+        self._p = _core.Plan(self.n)
 
     def fft(self, x, direction=FORWARD, out=None):
-        """Full transform.  Returns a complex64 array of length n.
-
-        No 1/n scaling is applied in either direction, matching FFTW and MKL, so
-        ``plan.fft(plan.fft(x), BACKWARD)`` returns ``n * x``.
-        """
-        x = self._check(x)
+        x = _as_c64(x, self.n, "input")
         if out is None:
             out = np.empty(self.n, dtype=np.complex64)
-        elif out.dtype != np.complex64 or out.size != self.n or not out.flags.c_contiguous:
-            raise ValueError("out must be a contiguous complex64 array of length n")
-        _core.fft(self._p, x, out, _sign(direction))
-        return out
-
-    def topk(self, x, k=1, direction=FORWARD, window=None):
-        """The ``k`` loudest bins, ordered loudest first.
-
-        Returns a structured array with fields ``index`` (int64), ``value``
-        (complex64) and ``magnitude`` (float32), so both the location and the
-        value of each peak are explicit.  The full spectrum is never formed.
-
-        ``window=(start, end)`` restricts the search to ``start <= k < end``.
-        Reported indices stay absolute.  Bins outside the window are never
-        tested, so a narrower window is slightly cheaper; the transform itself
-        costs the same either way.
-        """
-        x = self._check(x)
-        k = int(k)
-        if window is None:
-            ws, we = 0, self.n
-        else:
-            ws, we = int(window[0]), int(window[1])
-            ws = max(0, min(ws, self.n))
-            we = max(0, min(we, self.n))
-        idx = np.empty(max(k, 1), dtype=np.int64)
-        val = np.empty(max(k, 1), dtype=np.complex64)
-        mag = np.empty(max(k, 1), dtype=np.float32)
-        n = _core.topk(self._p, x, k, idx, val, mag, _sign(direction), ws, we)
-        peaks = np.empty(n, dtype=PEAK_DTYPE)
-        peaks["index"] = idx[:n]
-        peaks["value"] = val[:n]
-        peaks["magnitude"] = mag[:n]
-        return peaks
-
-
-    def topk_many(self, x, k=1, threshold=0.0, direction=FORWARD, window=None):
-        """Batched :meth:`topk`.
-
-        ``x`` is a 2-D array of shape ``(b, n)`` - one transform per row.  Each
-        transform keeps its own cache-resident working set, so this is a batch of
-        separate transforms rather than an interleave.
-
-        ``threshold`` is a magnitude floor, combined with ``k``: the result is the
-        ``k`` loudest bins that are also above the floor.  A non-zero floor is
-        also faster, because it primes the candidate test rather than filtering
-        after the fact - at ``k=64`` that is worth about 10x at n=1024.
-
-        Returns a list of ``b`` structured arrays, one per row, each ordered
-        loudest first.  A row may be shorter than ``k`` when the floor cuts it.
-        """
-        x = np.ascontiguousarray(x, dtype=np.complex64)
-        if x.ndim != 2 or x.shape[1] != self.n:
-            raise ValueError(f"expected a 2-D array of shape (b, {self.n}), got {x.shape}")
-        b = x.shape[0]
-        k = int(k)
-        if window is None:
-            ws, we = 0, self.n
-        else:
-            ws, we = int(window[0]), int(window[1])
-            ws = max(0, min(ws, self.n))
-            we = max(0, min(we, self.n))
-        idx = np.empty(b * max(k, 1), dtype=np.int64)
-        val = np.empty(b * max(k, 1), dtype=np.complex64)
-        mag = np.empty(b * max(k, 1), dtype=np.float32)
-        cnt = np.empty(b, dtype=np.int32)
-        _core.topk_many(self._p, x, self.n, b, k, float(threshold),
-                        idx, val, mag, cnt, _sign(direction), ws, we)
-        out = []
-        for j in range(b):
-            m = int(cnt[j])
-            peaks = np.empty(m, dtype=PEAK_DTYPE)
-            sl = slice(j * k, j * k + m)
-            peaks["index"] = idx[sl]
-            peaks["value"] = val[sl]
-            peaks["magnitude"] = mag[sl]
-            out.append(peaks)
+        _core.fft(self._p, x, out, int(direction))
         return out
 
 
 _cache = {}
 
 
-def _plan(n):
-    p = _cache.get(n)
-    if p is None:
-        p = _cache[n] = Plan(n)
-    return p
-
-
 def fft(x, direction=FORWARD, out=None):
-    """One-shot :meth:`Plan.fft`, caching the plan by length."""
+    """One-shot transform, caching the plan by length."""
     x = np.ascontiguousarray(x, dtype=np.complex64)
-    return _plan(x.size).fft(x, direction, out)
-
-
-def topk(x, k=1, direction=FORWARD, window=None):
-    """One-shot :meth:`Plan.topk`, caching the plan by length."""
-    x = np.ascontiguousarray(x, dtype=np.complex64)
-    return _plan(x.size).topk(x, k, direction, window)
-
-
-def topk_many(x, k=1, threshold=0.0, direction=FORWARD, window=None):
-    """One-shot :meth:`Plan.topk_many`, caching the plan by row length."""
-    x = np.ascontiguousarray(x, dtype=np.complex64)
-    if x.ndim != 2:
-        raise ValueError(f"expected a 2-D array of shape (b, n), got {x.shape}")
-    return _plan(x.shape[1]).topk_many(x, k, threshold, direction, window)
+    p = _cache.get(x.size)
+    if p is None:
+        p = _cache[x.size] = Plan(x.size)
+    return p.fft(x, direction, out)

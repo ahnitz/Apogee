@@ -22,7 +22,7 @@ MKLLIB ?=
 FFTWLIB ?= -l:libfftw3f.so.3
 
 .PHONY: all test quick bench clean codelets ab
-all: $(LIB) tests/test_units tests/test_topk tests/test_batch tests/test_binmax tests/test_mf
+all: $(LIB) tests/test_units tests/test_binmax tests/test_mf
 
 $(LIB): $(OBJ)
 	ar rcs $@ $^
@@ -64,9 +64,9 @@ codelets: src/codelets.h
 
 tests/test_units: tests/test_units.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
-tests/test_topk: tests/test_topk.c $(LIB)
+tests/test_topk:.c $(LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
-tests/test_batch: tests/test_batch.c $(LIB)
+tests/test_batch:.c $(LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
 tests/test_binmax: tests/test_binmax.c $(LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
@@ -75,30 +75,20 @@ tests/test_mf: tests/test_mf.c $(LIB)
 
 # Correctness gate small enough to run between edits.  Not a substitute for
 # 'make test' - it is what you run 20 times an hour, not once.
-quick: tests/test_units tests/test_batch tests/test_binmax tests/test_mf
+quick: tests/test_units tests/test_binmax tests/test_mf
 	./tests/test_units
-	PF_QUICK=1 ./tests/test_batch
 	PF_QUICK=1 ./tests/test_binmax
 	PF_QUICK=1 ./tests/test_mf
 
-test: tests/test_units tests/test_topk tests/test_batch tests/test_binmax tests/test_mf
-	./tests/test_units && ./tests/test_topk && ./tests/test_batch && ./tests/test_binmax && ./tests/test_mf
+test: tests/test_units tests/test_binmax tests/test_mf
+	./tests/test_units && ./tests/test_binmax && ./tests/test_mf
 	@echo "--- forcing the AVX2 back end ---"
-	PEAKFFT_ISA=avx2 ./tests/test_topk && PEAKFFT_ISA=avx2 ./tests/test_batch && PEAKFFT_ISA=avx2 ./tests/test_binmax
+	PEAKFFT_ISA=avx2 ./tests/test_binmax && PEAKFFT_ISA=avx2 ./tests/test_mf
 	@echo "--- forcing the generic back end at 16 lanes ---"
-	PEAKFFT_ISA=balanced512 ./tests/test_topk && PEAKFFT_ISA=balanced512 ./tests/test_batch && PEAKFFT_ISA=balanced512 ./tests/test_binmax
-
-# Benchmark against MKL and FFTW.  Requires MKLINC/MKLLIB to be set:
-#   make bench MKLINC=/path/to/include MKLLIB=/path/to/lib
-bench/bench: bench/bench.c $(LIB)
-	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -I$(MKLINC) $< $(LIB) -o $@ \
-	  -L$(MKLLIB) -lmkl_intel_lp64 -lmkl_sequential -lmkl_core $(FFTWLIB) \
-	  -Wl,-rpath,$(MKLLIB) $(LDLIBS)
-bench: bench/bench
-	./bench/bench
+	PEAKFFT_ISA=balanced512 ./tests/test_binmax && PEAKFFT_ISA=balanced512 ./tests/test_mf
 
 clean:
-	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_topk tests/test_batch tests/test_binmax tests/test_mf bench/bench
+	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_binmax tests/test_mf bench/bench
 
 tests/test_vs_mkl: tests/test_vs_mkl.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -I$(MKLINC) $< $(LIB) -o $@ \
@@ -111,7 +101,7 @@ test-mkl: tests/test_vs_mkl
 # ahead of MKL, otherwise MKL's own fftwf_* wrappers win and both FFTW columns
 # silently become MKL again.
 AMDFFTW ?=
-bench/bench4 bench/bench_batch bench/bench_mf: bench/%: bench/%.c $(LIB)
+bench/bench_mf: bench/%: bench/%.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -Ibench -I$(MKLINC) $< $(LIB) -o $@ \
 	  -Wl,--whole-archive $(AMDFFTW)/lib/libfftw3f.a -Wl,--no-whole-archive \
 	  -L$(MKLLIB) -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -Wl,-rpath,$(MKLLIB) \

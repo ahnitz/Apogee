@@ -21,8 +21,6 @@ extern "C" {
 #define PF_FORWARD  (-1)
 #define PF_BACKWARD (+1)
 
-/* Largest K that pf_topk will return. */
-#define PF_MAX_K 64
 
 /* One peak: where it is, and what the transform's value there is. */
 typedef struct {
@@ -55,39 +53,7 @@ void pf_fft(pf_plan *p, const float *in, float *out, int sign);
 /* Transform returning only the K loudest bins, in descending |X| order.
    peaks must have room for K entries; K is clamped to PF_MAX_K.
    Returns the number written.  The output array is never materialised. */
-int pf_topk(pf_plan *p, const float *in, int K, pf_peak *peaks, int sign);
 
-/* ---- pre-quantised input ------------------------------------------------
-   The input read is the one cost the top-K structure could never remove: it is
-   8 MiB of fp32 at N=2^20 and must all be touched.  If the producer can store
-   the data in reduced form instead, that read shrinks.
-
-   pf_qinput holds the input as 24-bit block floating point (blocks of 16 complex):
-   6 bytes per complex instead of 8, so the read drops by a quarter.  Accuracy is
-   ~2e-8 relative, i.e. essentially free - unlike a 16-bit form, which would cost
-   ~5e-6 and is irreversible, since no refinement can recover detail the input
-   never carried.
-
-   pf_qinput_fill() is a convenience for benchmarking and testing; in real use the
-   producer would write this format directly and the fp32 array would never exist. */
-typedef struct {
-  short       *hi;    /* high 16 bits, [block][16 re | 16 im] */
-  signed char *lo;    /* low 8 bits, same layout              */
-  float       *scale; /* one per block of 16 complex          */
-  size_t       n;
-} pf_qinput;
-
-int  pf_qinput_alloc(pf_plan *p, pf_qinput *q);
-void pf_qinput_free(pf_qinput *q);
-void pf_qinput_fill(pf_plan *p, pf_qinput *q, const float *in);
-int  pf_topk_q(pf_plan *p, const pf_qinput *q, int K, pf_peak *peaks, int sign,
-               size_t start, size_t end);
-
-/* As pf_topk, but only bins with start <= k < end are considered.  Indices in
-   the result are still absolute (relative to the whole transform), not relative
-   to the window.  start/end are clamped to [0, N]; start >= end returns 0.
-   Outputs outside the window are never even tested, so a narrower window is
-   slightly cheaper - the transform itself still costs the same. */
 /* ---- batched matched filter -----------------------------------------------
    D data segments against T template segments, all length n.  For every pair,
 
@@ -96,10 +62,9 @@ int  pf_topk_q(pf_plan *p, const pf_qinput *q, int K, pf_peak *peaks, int sign,
    and the same peak report as pf_binmax: the loudest sample per bin of the
    search window, with a detection floor.
 
-   The point of the separate plan is reuse.  Each segment is transformed once at
-   ingest and stored in the layout the pair loop wants, so the D*T pair loop never
-   repeats work that depends on only one side.  Forward transforms are D+T; pair
-   work is D*T.
+   Reuse is the point.  Each segment is transformed once at ingest and stored in
+   the layout the pair loop wants, so the D*T pair loop never repeats work that
+   depends on only one side.  Forward transforms are D+T; pair work is D*T.
 
    Peaks for pair (d,t) land at peaks[((d-d0)*nt + (t-t0)) * nbins], dense and
    indexed by bin exactly as pf_binmax.  counts, if given, holds one crossing
@@ -167,25 +132,6 @@ int pf_binmax_prod(pf_plan *p, const float *dr, const float *di,
 int pf_binmax(pf_plan *p, const float *in, size_t dist, int B,
               size_t binsize, float threshold, pf_peak *peaks, int *counts,
               int sign, size_t start, size_t end);
-
-/* Batched top-K.  in holds B transforms; transform b starts at in + 2*b*dist,
-   so dist is a complex-element stride (dist == N for a packed batch).  Each
-   transform keeps its own L1-resident working set - the batch is an array of
-   separate transforms, not an interleave.
-
-   peaks needs room for B*K entries; transform b's results land at peaks + b*K,
-   already sorted loudest first.  counts[b] receives how many that transform
-   produced (may be < K in threshold mode); counts may be NULL.
-
-   threshold is a magnitude floor: bins with |X[k]| <= threshold are never
-   reported.  Pass 0 to disable.  It is combined with K, so the result is the
-   K loudest bins that are also above the floor.  A non-zero floor is also
-   faster, because it primes the candidate test instead of only filtering after.
-
-   Returns the total number of peaks across the batch, or -1 on error. */
-int pf_topk_many(pf_plan *p, const float *in, size_t dist, int B,
-                 int K, float threshold, pf_peak *peaks, int *counts, int sign,
-                 size_t start, size_t end);
 
 int pf_topk_window(pf_plan *p, const float *in, int K, pf_peak *peaks, int sign,
                    size_t start, size_t end);

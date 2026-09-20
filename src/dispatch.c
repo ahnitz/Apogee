@@ -70,44 +70,6 @@ void pf_fft(pf_plan *p,const float *in,float *out,int sign){
   p->be->fft(p->h,in,out,sign==PF_BACKWARD);
 }
 
-/* One scale per block of 16 complex; the 24-bit value is split hi16 / lo8. */
-#define PF_QBLK 16
-int pf_qinput_alloc(pf_plan *p,pf_qinput *q){
-  size_t n=p->n;
-  q->n=n;
-  q->hi   = aligned_alloc(64, n*2*sizeof(short));
-  q->lo   = aligned_alloc(64, n*2);
-  q->scale= aligned_alloc(64, (n/PF_QBLK)*sizeof(float)+64);
-  if(!q->hi||!q->lo||!q->scale){ pf_qinput_free(q); return -1; }
-  return 0;
-}
-void pf_qinput_free(pf_qinput *q){
-  if(!q) return;
-  free(q->hi); free(q->lo); free(q->scale);
-  q->hi=NULL; q->lo=NULL; q->scale=NULL;
-}
-void pf_qinput_fill(pf_plan *p,pf_qinput *q,const float *in){
-  if(p->be->quantize) p->be->quantize(p->h,in,q->hi,q->lo,q->scale);
-}
-int pf_topk_q(pf_plan *p,const pf_qinput *q,int K,pf_peak *peaks,int sign,
-              size_t start,size_t end){
-  if(K<1) return 0;
-  if(K>PF_MAX_K) K=PF_MAX_K;
-  if(end>p->n) end=p->n;
-  if(start>=end) return 0;
-  if(!p->be->topk_q) return -1;
-  return p->be->topk_q(p->h,q->hi,q->lo,q->scale,K,peaks,sign==PF_BACKWARD,start,end,0.f);
-}
-
-int pf_topk_window(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign,
-                   size_t start,size_t end){
-  if(K<1) return 0;
-  if(K>PF_MAX_K) K=PF_MAX_K;
-  if(end>p->n) end=p->n;
-  if(start>=end) return 0;
-  return p->be->topk(p->h,in,K,peaks,sign==PF_BACKWARD,start,end,0.f);
-}
-
 size_t pf_nbins(const pf_plan *p,size_t binsize,size_t start,size_t end){
   if(!p||!binsize) return 0;
   if(end>p->n) end=p->n;
@@ -170,31 +132,6 @@ int pf_binmax(pf_plan *p,const float *in,size_t dist,int B,
   return total;
 }
 
-int pf_topk_many(pf_plan *p,const float *in,size_t dist,int B,
-                 int K,float threshold,pf_peak *peaks,int *counts,int sign,
-                 size_t start,size_t end){
-  if(B<1||K<1) return 0;
-  if(K>PF_MAX_K) K=PF_MAX_K;
-  if(end>p->n) end=p->n;
-  if(start>=end) return 0;
-  const int conj = sign==PF_BACKWARD;
-  int total=0;
-  for(int b=0;b<B;b++){
-    int n=p->be->topk(p->h,in+2*(size_t)b*dist,K,peaks+(size_t)b*K,conj,
-                      start,end,threshold);
-    if(n<0) return -1;
-    /* thr0 primes the search but a partly-filled heap can still hold
-       sub-threshold entries, so trim.  Results are sorted, so one scan. */
-    if(threshold>0.f){ int m=0; while(m<n && peaks[(size_t)b*K+m].magnitude>threshold) m++; n=m; }
-    if(counts) counts[b]=n;
-    total+=n;
-  }
-  return total;
-}
-
-int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){
-  return pf_topk_window(p,in,K,peaks,sign,0,p->n);
-}
 
 /* SIMD lane width of the active back end, so callers that want to store data in
    the layout stage A walks can compute it.  0 if unsupported. */
