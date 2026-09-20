@@ -19,3 +19,8 @@ bench/loadgen
 bench/bench4
 tests/test_hmf
 bench/bench_hmf
+
+# Build artifacts. Wheels are produced by CI, never committed.
+dist/
+*.whl
+*.egg-info/

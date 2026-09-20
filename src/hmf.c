@@ -75,7 +75,7 @@ struct ap_hmf_plan {
   long pairs, trig;
   /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
-  unsigned long long c_even,c_odd,c_ref,c_fill,c_tot; int prof;
+  unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
   long npre, ninterp, nskip;   /* diagnostics: pre-gate passes, interpolations run */
   float lastgate;
 };
@@ -205,13 +205,15 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
   if(pairs) *pairs=p->pairs;
   if(triggers) *triggers=p->trig;
   if(p->prof && p->pairs){
-    double acc=(double)(p->c_even+p->c_odd+p->c_ref+p->c_fill);
-    double tot=(double)p->c_tot;
-    fprintf(stderr,"    [prof] per pair: total=%.0f | even=%.0f odd=%.0f refine=%.0f "
-            "fill=%.0f | UNACCOUNTED=%.0f (%.0f%%)\n",
-            tot/p->pairs,(double)p->c_even/p->pairs,(double)p->c_odd/p->pairs,
-            (double)p->c_ref/p->pairs,(double)p->c_fill/p->pairs,
-            (tot-acc)/p->pairs,100.0*(tot-acc)/tot);
+    /* Cycles per pair.  The even pass is batched per data segment, so its
+       counter is the segment cost divided across that segment's pairs. */
+    double tot=(double)(p->c_even+p->c_odd+p->c_ref+p->c_fill);
+    fprintf(stderr,"    [prof] cycles/pair: even=%.0f (%.0f%%) odd=%.0f (%.0f%%) "
+            "refine=%.0f (%.0f%%) fill=%.0f (%.0f%%)\n",
+            (double)p->c_even/p->pairs,100*p->c_even/tot,
+            (double)p->c_odd /p->pairs,100*p->c_odd /tot,
+            (double)p->c_ref /p->pairs,100*p->c_ref /tot,
+            (double)p->c_fill/p->pairs,100*p->c_fill/tot);
   }
   if(getenv("APOGEE_HMF_DIAG"))
     fprintf(stderr,"    [diag] pairs=%ld pre-gate passes=%ld (%.1f/pair) "
@@ -417,7 +419,6 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
-      unsigned long long _tt = p->prof ? __rdtsc() : 0;
       const float gate = tcs[t]; p->lastgate=gate;
       const float raw_gate  = rawg[t];
       int fire=0;
@@ -499,7 +500,6 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
         if(counts) counts[row]=0;
         if(p->prof) p->c_fill += __rdtsc()-f0;
       }
-      if(p->prof) p->c_tot += __rdtsc()-_tt;
     }
   }
   return total;

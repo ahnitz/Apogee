@@ -57,11 +57,11 @@ do not apply — a coarse fold cannot find that peak.
 One core of an AMD Ryzen AI MAX+ 395 (Zen 5), idle. D=T=16 (256 pairs), 60%
 window, bin 1024, detection floor on.
 
-The baselines are charged for their **inverse transforms only** — no product, no
+The baselines are charged for their **inverse transforms only** - no product, no
 peak scan, no forward transforms. apogee is charged for everything it does. That
 is deliberately generous to them: it removes any argument about how well the
-surrounding code was written, and sets the bar where it belongs, at "can a
-peak-only matched filter beat a bare FFT?"
+surrounding code was written, and sets the bar at "can a peak-only matched filter
+beat a bare FFT?"
 
 µs per pair, versus amd-fftw's bare inverse transform:
 
@@ -73,15 +73,25 @@ peak-only matched filter beat a bare FFT?"
 | 2^16 | **1.14x** | 0.83x |
 | 2^18 | 0.99x | 0.75x |
 
-So on AVX-512 the whole matched filter beats a bare inverse FFT at 2^14 and 2^16
-and is close elsewhere. On AVX2 it is not there yet — that path costs 1.3–2.2x
-its AVX-512 equivalent, while amd-fftw barely gains from AVX-512 at all (2^14:
-14.1 µs AVX2 against 13.8 AVX-512). Closing AVX2 is the current work.
-
-Against the *full* baseline route — product, inverse and scan, all vectorised —
-apogee is 1.26–1.72x on AVX-512 and 0.85–1.26x on AVX2. Caveat: MKL takes its
+Against the *full* baseline route - product, inverse and scan, all vectorised -
+apogee is 1.26-1.72x on AVX-512 and 0.85-1.26x on AVX2. Caveat: MKL takes its
 generic path on this AMD part (`MKL_VERBOSE` says "Intel(R) Architecture
 processors"), which is why amd-fftw is the number to watch.
+
+### How close to the hardware
+
+The transform is at **52% of the achievable ceiling** at 2^12 and 43% at 256,
+where the ceiling is `fft16_44` measured register-resident with no loads or
+stores (162.3 GF/s on AVX2 - which beats a pure FMA chain at 142.9, because on
+Zen 5 FP add and FP mul issue on disjoint pipes and an FFT is add-heavy).
+
+That gap is not recoverable by restructuring. `stageA_tail` already fuses the
+stage twiddle, the corner turn and the store into one pass; deleting those pieces
+outright - an upper bound on any fusion - saves 3.4% and 0.6%. A real four-step
+moves each element through memory four times, so it is co-limited by data
+movement and cannot reach a ceiling measured without any. Remaining gains have to
+come from doing *fewer* transforms, not faster ones. `docs/machine-notes.md` has
+the full ablation.
 
 ## The hierarchical filter
 
@@ -113,9 +123,34 @@ Band, oversampling and tap count come from a compiled-in measured table
 not a zero-padded transform, and why the interpolation kernel has to be the
 Dirichlet one rather than a plain sinc.
 
-`trigger_rate` is the number to watch: the whole speedup rides on it, and it
-depends on the data rather than only on the design.  On data noisier than the
-design assumed, the gate opens more often and the coarse pass becomes overhead.
+### Measured, AVX2, pure noise
+
+D=T=16, per pair, against the ordinary filter on the same inputs. Templates
+carry ~0.85 of their power below n/8 (= 256 Hz at a 2048 Hz sample rate, at
+every size). Cells are speedup, with the fraction of pairs that needed the full
+correlation in brackets - that trigger rate is what the speedup rides on.
+
+n = 2^11, full filter 1.77 µs/pair:
+
+| fd | snr 5.0 | 5.5 | 6.0 | 6.5 |
+|---|---|---|---|---|
+| 1e-2 | 2.32x (18%) | 5.06x (3%) | 6.99x (0%) | **7.80x** (0%) |
+| 1e-3 | 1.72x (15%) | 3.17x (10%) | 5.12x (3%) | 7.27x (0%) |
+| 1e-4 | 2.02x (0%) | 2.43x (6%) | 3.75x (6%) | 5.84x (1%) |
+
+n = 2^12, full filter 3.43 µs/pair:
+
+| fd | snr 5.0 | 5.5 | 6.0 | 6.5 |
+|---|---|---|---|---|
+| 1e-2 | 1.74x (31%) | 3.16x (18%) | 6.84x (5%) | **11.48x** (1%) |
+| 1e-3 | 1.91x (1%) | 2.27x (21%) | 4.42x (4%) | 6.85x (5%) |
+| 1e-4 | 1.92x (1%) | 1.85x (10%) | 2.90x (12%) | — |
+
+AVX-512 is faster in absolute terms (2^12 full filter 2.15 µs against 3.43) and
+so shows lower ratios - 8.72x at its best cell rather than 11.48x. The gate saves
+less when the baseline is already fast.
+
+`python -m apogee.benchmark` and `bench/bench_hmf` reproduce these.
 
 ## Using it
 

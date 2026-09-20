@@ -45,11 +45,15 @@ jobs:
           cc -I"$(python -c 'import apogee; print(apogee.include_dir())')" \
              -fsyntax-only /tmp/hdr.c
 
+      # The wheel is a CI artifact, not a repo file.  One was committed once;
+      # building it here is what makes that unnecessary, and is the step a
+      # future PyPI upload would hang off.
       - uses: actions/upload-artifact@v4
         if: matrix.python == '3.11'
         with:
-          name: wheel
+          name: apogee-wheel-py${{ matrix.python }}
           path: dist/*.whl
+          if-no-files-found: error
 
   c-tests:
     runs-on: ubuntu-latest
