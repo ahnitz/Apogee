@@ -109,6 +109,15 @@ int FN(supported)(size_t N){
   if((N&(N-1))||N<4096u||N>(1u<<20)) return 0;
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
+  /* The balanced split is not always best: what matters is which element sizes
+     the two stages land on, because the codelets differ by up to 27% per point
+     per level (see codelet() in elemfft.h).  Measured winners, median of 3, on
+     both widths - everything not listed measured within noise of balanced:
+       2^12  128x32   AVX2 7.1% faster, AVX-512 10.3%
+       2^18  1024x256 AVX2 9.1% faster, AVX-512  4.8%
+     Compiled in rather than searched: the same two win on both ISAs. */
+  if(m==12){ n1=128;  n2=32;  }
+  if(m==18){ n1=1024; n2=256; }
   return n1>=AP_W && n2>=AP_W;
 }
 
@@ -116,6 +125,15 @@ void *FN(create)(size_t N){
   if(!FN(supported)(N)) return NULL;
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
+  /* The balanced split is not always best: what matters is which element sizes
+     the two stages land on, because the codelets differ by up to 27% per point
+     per level (see codelet() in elemfft.h).  Measured winners, median of 3, on
+     both widths - everything not listed measured within noise of balanced:
+       2^12  128x32   AVX2 7.1% faster, AVX-512 10.3%
+       2^18  1024x256 AVX2 9.1% faster, AVX-512  4.8%
+     Compiled in rather than searched: the same two win on both ISAs. */
+  if(m==12){ n1=128;  n2=32;  }
+  if(m==18){ n1=1024; n2=256; }
   { const char *e=getenv("APOGEE_N1");
     if(e){ int v=atoi(e);
       if(v>=AP_W && v<=(int)(N/AP_W) && !(v&(v-1)) && esupported(v) && esupported((int)(N/v))){

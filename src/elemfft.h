@@ -50,12 +50,31 @@ static inline int einp(const emap *e,int n){        /* slot to place input eleme
    same padding that was worth 13x on the specialised path.
    Output element k then lives at EIDX(), not at k: the four-step leaves it
    transposed, and undoing that would cost more than indexing around it.        */
+/* Codelet choice, measured per point per butterfly level so the sizes compare
+ * fairly (ns/point/level; lower is better):
+ *
+ *            AVX2 (8 lanes)        AVX-512 (16 lanes)
+ *   fft16_44   0.0342                0.0201
+ *   fftsr16    0.0300  <- 14%        0.0147  <- 27%
+ *   fft32_84   0.0326                0.0170
+ *   fftsr32    0.0304  <-  7%        0.0155  <-  9%
+ *   fft64_88   0.0357                0.0196
+ *   fftsr64    0.154   <- 4.9x WORSE 0.0161  <- 18% better
+ *
+ * Split-radix wins at 16 and 32 at both widths.  At 64 it depends on the
+ * register file: AVX-512 has 32 zmm and the whole DAG stays live, AVX2 has 16
+ * ymm and it spills catastrophically.  So 64 is split-radix only at 16 lanes.
+ */
 static inline int codelet(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,long S){
   switch(m){
     case  8: return fft8_42 (ar,ai,br,bi,S);
-    case 16: return fftsr16 (ar,ai,br,bi,S);   /* split-radix: 1.4-1.5x the Stockham form here */
-    case 32: return fft32_84(ar,ai,br,bi,S);
+    case 16: return fftsr16 (ar,ai,br,bi,S);
+    case 32: return fftsr32 (ar,ai,br,bi,S);
+#if AP_W >= 16
+    default: return fftsr64 (ar,ai,br,bi,S);
+#else
     default: return fft64_88(ar,ai,br,bi,S);
+#endif
   }
 }
 /* Same, but the four-step twiddle is applied to the inputs as they are read.
@@ -66,8 +85,12 @@ static inline int codelet_tw(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,
   switch(m){
     case  8: return fft8_tw (ar,ai,br,bi,S,twr,twi);
     case 16: return fftsr16_tw(ar,ai,br,bi,S,twr,twi);
-    case 32: return fft32_tw(ar,ai,br,bi,S,twr,twi);
+    case 32: return fftsr32_tw(ar,ai,br,bi,S,twr,twi);
+#if AP_W >= 16
+    default: return fftsr64_tw(ar,ai,br,bi,S,twr,twi);
+#else
     default: return fft64_tw(ar,ai,br,bi,S,twr,twi);
+#endif
   }
 }
 /* itwr/itwi hold W_M[e1*k2p] laid out [k2p][e1], so the second half can consume
