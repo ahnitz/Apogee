@@ -82,6 +82,8 @@ dispatch rather than algorithm. That is why amd-fftw is the number to watch.
 C:
 
 ```c
+#include "apogee.h"
+
 ap_mf_plan *mf = ap_mf_create(1u<<14, 16, 16);
 for (int d = 0; d < 16; d++) ap_mf_set_data(mf, d, data_spectrum[d]);
 for (int t = 0; t < 16; t++) ap_mf_set_template(mf, t, tmpl_spectrum[t]);
@@ -108,6 +110,10 @@ peaks["index"], peaks["value"], peaks["magnitude"]   # (16, 16, nbins)
 The whole D×T loop is one call into C — measured at 1.4% over the C path, so the
 class costs nothing. `run(data=(d0,nd), templates=(t0,nt))` runs a sub-block and
 gives exactly the matching slice of a full run.
+
+There is no plan object to manage. The filter is the plan: build it once with
+`(n, ndata, ntemplates)` and reuse it. Produce the spectra with whatever you
+already use — apogee has no reason to own that step.
 
 ## How it works
 

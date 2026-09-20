@@ -1,50 +1,13 @@
-/* apogee Python extension: the matched filter, plus the plain transform.
+/* apogee Python extension: the matched filter.
  *
  * The whole D x T pair loop happens in one call into C, so no per-pair Python
- * overhead reaches the measurement.  Ingest takes a buffer per segment, which is
- * amortised over the pair loop anyway. */
+ * overhead reaches the measurement.  Only the matched filter is exposed: there is
+ * no transform plan to hand out, because callers bring their own spectra. */
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <stdlib.h>
 #include "apogee.h"
-
-/* ---------------- plain transform plan ---------------- */
-typedef struct { PyObject_HEAD ap_plan *p; Py_ssize_t n; } PlanObject;
-
-static int Plan_init(PlanObject *self,PyObject *args,PyObject *kw){
-  Py_ssize_t n; (void)kw;
-  if(!PyArg_ParseTuple(args,"n",&n)) return -1;
-  self->p=ap_create((size_t)n);
-  if(!self->p){ PyErr_Format(PyExc_ValueError,"unsupported transform length %zd",n); return -1; }
-  self->n=n; return 0;
-}
-static void Plan_dealloc(PlanObject *self){
-  if(self->p) ap_destroy(self->p);
-  Py_TYPE(self)->tp_free((PyObject*)self);
-}
-static PyObject *Plan_getn(PlanObject *self,void *c){(void)c;return PyLong_FromSsize_t(self->n);}
-static PyGetSetDef Plan_getset[]={{"n",(getter)Plan_getn,NULL,"transform length",NULL},{NULL}};
-static PyTypeObject PlanType={
-  PyVarObject_HEAD_INIT(NULL,0)
-  .tp_name="apogee._core.Plan", .tp_basicsize=sizeof(PlanObject),
-  .tp_flags=Py_TPFLAGS_DEFAULT, .tp_new=PyType_GenericNew,
-  .tp_init=(initproc)Plan_init, .tp_dealloc=(destructor)Plan_dealloc,
-  .tp_getset=Plan_getset, .tp_doc="apogee transform plan (opaque)",
-};
-
-static PyObject *m_fft(PyObject *m,PyObject *args){
-  PlanObject *pl; Py_buffer bi,bo; int sign; (void)m;
-  if(!PyArg_ParseTuple(args,"Oy*w*i",(PyObject**)&pl,&bi,&bo,&sign)) return NULL;
-  if(bi.len<pl->n*2*(Py_ssize_t)sizeof(float)||bo.len<pl->n*2*(Py_ssize_t)sizeof(float)){
-    PyBuffer_Release(&bi);PyBuffer_Release(&bo);
-    return PyErr_Format(PyExc_ValueError,"buffers must hold %zd complex64 samples",pl->n);
-  }
-  Py_BEGIN_ALLOW_THREADS
-  ap_fft(pl->p,(const float*)bi.buf,(float*)bo.buf,sign);
-  Py_END_ALLOW_THREADS
-  PyBuffer_Release(&bi);PyBuffer_Release(&bo);
-  Py_RETURN_NONE;
-}
+#include "transform.h"
 
 /* ---------------- matched filter ---------------- */
 typedef struct { PyObject_HEAD ap_mf_plan *p; Py_ssize_t n; int nd,nt; } MFObject;
@@ -132,19 +95,12 @@ static PyTypeObject MFType={
   .tp_methods=MF_methods, .tp_doc="apogee matched filter (opaque)",
 };
 
-static PyMethodDef methods[]={
-  {"fft",m_fft,METH_VARARGS,"fft(plan, in, out, sign)"},
-  {NULL,NULL,0,NULL}
-};
+static PyMethodDef methods[]={{NULL,NULL,0,NULL}};
 static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"apogee._core",NULL,-1,methods};
 PyMODINIT_FUNC PyInit__core(void){
-  if(PyType_Ready(&PlanType)<0) return NULL;
   if(PyType_Ready(&MFType)<0) return NULL;
   PyObject *m=PyModule_Create(&mod);
   if(!m) return NULL;
-  Py_INCREF(&PlanType); PyModule_AddObject(m,"Plan",(PyObject*)&PlanType);
   Py_INCREF(&MFType);   PyModule_AddObject(m,"MF",(PyObject*)&MFType);
-  PyModule_AddIntConstant(m,"FORWARD",AP_FORWARD);
-  PyModule_AddIntConstant(m,"BACKWARD",AP_BACKWARD);
   return m;
 }

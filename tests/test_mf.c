@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include "apogee.h"
+#include "transform.h"
 
 static int checks=0, fails=0;
 #define CK(c,...) do{ checks++; if(!(c)){ fails++; if(fails<25){printf("  FAIL ");printf(__VA_ARGS__);printf("\n");} } }while(0)

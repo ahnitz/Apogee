@@ -19,6 +19,7 @@
 #include "mkl_dfti.h"
 #include "fftw_min.h"
 #include "apogee.h"
+#include "transform.h"
 
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 static unsigned long long rs=88172645463325252ULL;

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <immintrin.h>
 #include "apogee.h"
+#include "transform.h"
 #include "internal.h"
 #include "transpose16.h"
 #include "codelets.h"

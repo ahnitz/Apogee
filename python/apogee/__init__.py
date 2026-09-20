@@ -10,6 +10,10 @@ loudest sample in each bin of a search window:
     >>> peaks = mf.run(binsize=1024, threshold=t, window=(a, b))
     >>> peaks["index"], peaks["value"], peaks["magnitude"]
 
+Produce the spectra with whatever you already use - numpy, MKL, FFTW.  apogee
+does not need to own that step, and there is no plan object to manage: the
+MatchedFilter is built once and reused for every pair.
+
 Inputs are FREQUENCY-DOMAIN: the unnormalised forward transform of each segment,
 in natural order.  Ingest only rearranges - templates are conjugated and both
 sides are stored in the layout the correlation loop walks - which measures at
@@ -20,13 +24,10 @@ Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 import numpy as np
 from . import _core
 
-FORWARD = _core.FORWARD
-BACKWARD = _core.BACKWARD
-
 #: dtype of the arrays returned by :meth:`MatchedFilter.run`.
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
 
-__all__ = ["MatchedFilter", "Plan", "fft", "PEAK_DTYPE", "FORWARD", "BACKWARD"]
+__all__ = ["MatchedFilter", "PEAK_DTYPE"]
 
 
 def _as_c64(a, n, what):
@@ -140,32 +141,3 @@ class MatchedFilter:
         return (peaks, cnt.reshape(nd, nt)) if counts else peaks
 
 
-class Plan:
-    """Reusable plan for a plain complex transform of one length.
-
-    Present mainly so callers can produce reference spectra; the matched filter
-    is the interface this library is for.  Neither direction scales by 1/n.
-    """
-
-    def __init__(self, n):
-        self.n = int(n)
-        self._p = _core.Plan(self.n)
-
-    def fft(self, x, direction=FORWARD, out=None):
-        x = _as_c64(x, self.n, "input")
-        if out is None:
-            out = np.empty(self.n, dtype=np.complex64)
-        _core.fft(self._p, x, out, int(direction))
-        return out
-
-
-_cache = {}
-
-
-def fft(x, direction=FORWARD, out=None):
-    """One-shot transform, caching the plan by length."""
-    x = np.ascontiguousarray(x, dtype=np.complex64)
-    p = _cache.get(x.size)
-    if p is None:
-        p = _cache[x.size] = Plan(x.size)
-    return p.fft(x, direction, out)

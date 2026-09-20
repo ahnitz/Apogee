@@ -14,6 +14,7 @@
 #include <time.h>
 #include <math.h>
 #include "apogee.h"
+#include "transform.h"
 #include "backend.h"
 
 struct ap_plan { const ap_backend *be; void *h; size_t n; };

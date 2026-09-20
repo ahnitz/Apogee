@@ -13,6 +13,7 @@
 #include <math.h>
 #include <immintrin.h>
 #include "apogee.h"
+#include "transform.h"
 
 /* Split-layout spectrum product.  Templates are stored already conjugated, so
  * this is a plain complex multiply, conjugated on output because the backward
