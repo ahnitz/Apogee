@@ -24,6 +24,11 @@ FFTWLIB ?= -l:libfftw3f.so.3
 .PHONY: all test quick bench clean codelets ab
 all: $(LIB) tests/test_units tests/test_binmax tests/test_mf tests/test_hmf
 
+# hmf.c includes the generated design table, and nothing told make that.
+# Regenerating the table left a stale hmf.o linked into every binary, which
+# measured as a 100% trigger rate and looked like an algorithmic regression.
+src/hmf.o: src/hmf.c src/hmf_table.h python/apogee/apogee.h src/transform.h
+
 $(LIB): $(OBJ)
 	ar rcs $@ $^
 

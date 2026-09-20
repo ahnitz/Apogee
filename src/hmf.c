@@ -110,12 +110,26 @@ static void build_taps(float *w, int K, int U){
 }
 
 /* conj(D * conj(H)) from interleaved inputs, matching matchfilt.c's convention:
-   the transform is fed conj(product) and run backward. */
+   the transform is fed conj(product) and run backward.  H is expected ALREADY
+   CONJUGATED, as ap_mf_set_template stores it. */
 static void prod_inter(const float *d,const float *h,float *o,size_t m){
   for(size_t k=0;k<m;k++){
     float x=d[2*k],y=d[2*k+1],u=h[2*k],v=h[2*k+1];
     o[2*k]  = x*u - y*v;
     o[2*k+1]= -(x*v + y*u);
+  }
+}
+
+/* Same product, but taking H unconjugated.  measure_recovery holds the coarse
+   templates in the form ap_mf_set_template was handed, i.e. before that call
+   conjugated them, so it must do the conjugation itself.  Passing them to
+   prod_inter instead silently measures conj(D*H) -- the wrong series, giving
+   wrong recovery factors and a gate far below where it belongs. */
+static void prod_inter_nc(const float *d,const float *h,float *o,size_t m){
+  for(size_t k=0;k<m;k++){
+    float x=d[2*k],y=d[2*k+1],u=h[2*k],v=h[2*k+1];
+    o[2*k]  = x*u + y*v;
+    o[2*k+1]= x*v - y*u;
   }
 }
 
@@ -236,8 +250,8 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
       Ds[2*k]  =(float)(a0[2*k]*c-a0[2*k+1]*sn);
       Ds[2*k+1]=(float)(a0[2*k]*sn+a0[2*k+1]*c);
     }
-    prod_inter(Ds,a0,p->prod,m); ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
-    if(U>1){ prod_inter(Ds,a1,p->prod,m); ap_fft(p->cf,p->prod,p->cod,AP_BACKWARD); }
+    prod_inter_nc(Ds,a0,p->prod,m); ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
+    if(U>1){ prod_inter_nc(Ds,a1,p->prod,m); ap_fft(p->cf,p->prod,p->cod,AP_BACKWARD); }
     const size_t G=m*(size_t)U;
     float be=0.f,ball=0.f; long bj=0;
     for(size_t j=0;j<G;j++){
