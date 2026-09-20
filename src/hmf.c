@@ -50,7 +50,15 @@ struct ap_hmf_plan {
                                  pre-scan would discard exactly the samples
                                  interpolation exists to rescue.               */
   ap_mf_plan *full;           /* refinement is the ordinary filter, unchanged   */
-  ap_plan   *cf;              /* m-point plan for the coarse pass               */
+  /* The coarse pass IS a matched filter on an m-point plan.  Using ap_mf_plan
+     rather than a hand-rolled product + transform + scan buys the fused product
+     loader (the product never reaches memory), group-major spectrum storage and
+     the floor-primed binned max -- all of which already exist and are tuned.
+     Templates are stored in pairs: 2t is the even output half, 2t+1 the
+     half-sample-shifted odd half. */
+  ap_mf_plan *coarse;
+  ap_plan   *cf;              /* explicit m-point plan, for the rare interpolation
+                                 path that needs the series materialised        */
   float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
   float *ct0, *ct1;           /* [nt][2m]   coarse templates: even, half-shifted*/
   float *fpow;                /* [nt]       band power fraction per template    */
@@ -121,8 +129,9 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->nd=ndata; p->nt=ntmpl; p->snr=snr; p->fd=fd;
   p->g   =hmf_recovery(n,band,oversample,taps,0);
   p->graw=hmf_recovery(n,band,oversample,taps,1);
-  p->full=ap_mf_create(n,ndata,ntmpl);
-  p->cf  =ap_create(band);
+  p->full  =ap_mf_create(n,ndata,ntmpl);
+  p->coarse=ap_mf_create(band,ndata,2*ntmpl);
+  p->cf    =ap_create(band);
   p->cd  =aligned_alloc(64,(size_t)ndata*2*band*sizeof(float));
   p->ct0 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
   p->ct1 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
@@ -132,7 +141,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->cod =aligned_alloc(64,2*band*sizeof(float));
   p->taps=aligned_alloc(64,(size_t)2*HMF_NSUB*taps*sizeof(float));
   p->tcbuf=calloc((size_t)ntmpl,sizeof(float));
-  if(!p->full||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||
+  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   return p;
@@ -147,6 +156,7 @@ ap_hmf_plan *ap_hmf_create(size_t n,int ndata,int ntmpl,float snr,float fd){
 void ap_hmf_destroy(ap_hmf_plan *p){
   if(!p) return;
   if(p->full) ap_mf_destroy(p->full);
+  if(p->coarse) ap_mf_destroy(p->coarse);
   if(p->cf)   ap_destroy(p->cf);
   free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
   free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);
@@ -177,6 +187,7 @@ int ap_hmf_set_data(ap_hmf_plan *p,int d,const float *spec){
   if(!p||d<0||d>=p->nd) return -1;
   if(ap_mf_set_data(p->full,d,spec)) return -1;
   memcpy(p->cd+(size_t)d*2*p->m,spec,2*p->m*sizeof(float));
+  if(ap_mf_set_data(p->coarse,d,spec)) return -1;   /* only the kept band */
   return 0;
 }
 
@@ -207,6 +218,8 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
     a1[2*k]  =(float)(re*c-im*sn);
     a1[2*k+1]=(float)(re*sn+im*c);
   }
+  if(ap_mf_set_template(p->coarse,2*t,  a0)) return -1;
+  if(ap_mf_set_template(p->coarse,2*t+1,a1)) return -1;
   return 0;
 }
 
@@ -237,10 +250,9 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   if(end>p->n) end=p->n;
   if(start>=end) return 0;
   const size_t n=p->n,m=p->m; const int U=p->U,K=p->K;
-  const size_t G=m*(size_t)U, nb=ap_mf_nbins(p->full,binsize,start,end);
+  const size_t nb=ap_mf_nbins(p->full,binsize,start,end);
+  (void)U;
   /* coarse index range covering the window; the grid step is n/G lags */
-  long jlo=(long)((start*G)/n), jhi=(long)((end*G+n-1)/n);
-  if(jhi>(long)G) jhi=(long)G;
   /* Recalibrate the gate for the weakest signal that can actually be REPORTED,
      which is max(snr, threshold).  Two wrong ways to do this:
        - gate at max(tc, threshold): raises the gate above what snr calibrated,
@@ -256,6 +268,15 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     for(int t=0;t<nt;t++)
       tcs[t]=hmf_threshold(p->fpow[t0+t]*p->g*p->g,T,p->fd);
   }
+  /* Coarse lag window.  Even sample j maps to full lag j*R, odd to j*R + R/2,
+     so one range covers both to within half a coarse step; widening by one step
+     keeps it conservative.  A single bin spanning the range makes the reported
+     peak the maximum. */
+  const size_t R=n/m;
+  size_t cstart = start/R;
+  size_t cend   = (end+R-1)/R; if(cend>m) cend=m;
+  if(cstart>0) cstart--;
+  const size_t cspan = cend>cstart ? cend-cstart : 1;
   int total=0;
   for(int d=0;d<nd;d++){
     const float *Dc=p->cd+(size_t)(d0+d)*2*m;
@@ -263,48 +284,40 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
       const float gate = tcs[t]; p->lastgate=gate;
-      prod_inter(Dc,p->ct0+(size_t)(t0+t)*2*m,p->prod,m);
-      ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
-      if(U>1){
-        prod_inter(Dc,p->ct1+(size_t)(t0+t)*2*m,p->prod,m);
-        ap_fft(p->cf,p->prod,p->cod,AP_BACKWARD);
-      }
-      /* Two passes, and the split matters for both speed and correctness.
-       *
-       * First a running maximum over the raw samples: no sqrt, no branches
-       * taken, vectorisable.  If that already clears the gate, fire - no
-       * interpolation at all, which is the common case for a real signal.
-       *
-       * Only if the raw maximum lands in [graw*gate, gate) can interpolation
-       * change the answer, and then only around the ARGMAX.  That is exactly
-       * what the table's recovery factor was measured on, so the run-time
-       * behaviour and the calibration agree by construction.
-       *
-       * The earlier version interpolated around every sample above the
-       * pre-gate.  That is conservative, so it never lost a detection - but on
-       * a template whose power is concentrated (f ~ 0.99) the correlation peak
-       * is broad, its shoulder crosses the pre-gate for ~100 consecutive
-       * samples, and the filter spent 25 us per pair doing 1360 interpolations
-       * where 14 suffice.  It measured 0.08x against the plain filter.
-       */
-      const float g2=gate*gate;
-      float bestv=-1.f; long bestj=jlo;
-      for(long j=jlo;j<jhi;j++){
-        const float *z = (U==1) ? p->cev+2*j
-                                : ((j&1) ? p->cod+((j>>1)*2) : p->cev+((j>>1)*2));
-        float v=z[0]*z[0]+z[1]*z[1];
-        if(v>bestv){ bestv=v; bestj=j; }
-      }
-      int fire = bestv>=g2;
-      if(!fire){
-        const float raw_gate=gate*p->graw*0.999f;
-        if(bestv >= raw_gate*raw_gate){
-          p->npre++;
-          for(int i=0;i<HMF_NSUB && !fire;i++){
-            p->ninterp+=2;
-            if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj-1) >= gate) fire=1;
-            else if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj) >= gate) fire=1;
-          }
+      const float raw_gate = gate*p->graw*0.999f;
+      /* Fused coarse pass: product, transform and maximum in one kernel, with
+       * the product never reaching memory.  One bin spanning the whole coarse
+       * window means the reported peak IS the maximum, so the separate scan
+       * that used to walk the materialised series disappears entirely.
+       * Threshold at raw_gate: below it, interpolation cannot reach the gate,
+       * so ap_mf_run returns index<0 and there is nothing more to do. */
+      ap_peak ce,co; int cc=0;
+      ce.index=co.index=-1; ce.magnitude=co.magnitude=0.f;
+      if(ap_mf_run(p->coarse,d0+d,1,2*(t0+t),1,cspan,raw_gate,&ce,&cc,cstart,cend)<0)
+        return -1;
+      if(U>1 && ap_mf_run(p->coarse,d0+d,1,2*(t0+t)+1,1,cspan,raw_gate,&co,&cc,
+                          cstart,cend)<0) return -1;
+      float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
+      int fire = bestmag>=gate;
+      if(!fire && bestmag>=raw_gate){
+        /* Rare: the raw maximum sits in [graw*gate, gate), the only window where
+           interpolation can change the answer.  Only here is the series worth
+           materialising, and only around the argmax -- which is exactly what the
+           table's recovery factor was measured on. */
+        p->npre++;
+        long bestj = (ce.magnitude>=co.magnitude) ? 2*(long)ce.index
+                                                  : 2*(long)co.index+1;
+        if(U==1) bestj=(long)ce.index;
+        prod_inter(Dc,p->ct0+(size_t)(t0+t)*2*m,p->prod,m);
+        ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
+        if(U>1){
+          prod_inter(Dc,p->ct1+(size_t)(t0+t)*2*m,p->prod,m);
+          ap_fft(p->cf,p->prod,p->cod,AP_BACKWARD);
+        }
+        for(int i=0;i<HMF_NSUB && !fire;i++){
+          p->ninterp+=2;
+          if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj-1) >= gate) fire=1;
+          else if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj) >= gate) fire=1;
         }
       }
       if(fire){
