@@ -519,3 +519,44 @@ path, which is close to the 2x the halved vector width implies, while amd-fftw
 barely gains from AVX-512 at all (2^14: 14.1 us AVX2 against 13.8 AVX-512).  So
 the AVX-512 lead was substantially "we use the wider vectors better than they
 do", and that advantage is simply absent at 8 lanes.
+
+## Fusing the product into the codelet: neutral, and why
+
+Added a product-loading codelet family (`fft{8,16,32,64}_prod` from gen.py): the
+first radix pass reads two spectra straight from memory and forms conj(d*t) as it
+loads, so the matched filter's staging buffer disappears entirely.  Driver is
+`efft_prod`.
+
+Paired A/B in one binary, median of 3:
+
+| | 2^12 | 2^14 | 2^16 | 2^18 |
+|---|---|---|---|---|
+| AVX-512 | 1.03x | 1.00x | 1.01x | 1.01x |
+| AVX2 | 0.98x | 1.00x | 1.00x | 1.00x |
+
+Neutral.  The staging buffer is at most N2*AP_W complex - 8 KiB - so the round
+trip it removes was L1 traffic, which was never the constraint.
+
+It also has to be gated: with a two-level element transform the fused loader
+walks the source with stride M1*AP_W (2 KiB at 2^18) where the unfused path reads
+sequentially into a buffer.  Ungated it measured 14% worse at 2^16 and 18% at
+2^18 on AVX2.  `eprod_ok()` restricts it to single-level sizes.
+
+**Why fusing cannot help, and what AVX2 would actually need.**  Codelet-only cost
+against amd-fftw's complete inverse transform, at 2^12:
+
+| | codelets alone | full matched filter | amd-fftw total |
+|---|---|---|---|
+| AVX-512 | 0.705 us | 2.366 | 1.61 |
+| AVX2 | **1.458 us** | 3.497 | 1.61 |
+
+`fft64_88` costs 88 ns/call at 16 lanes and 91 ns at 8 - nearly the same per
+call, so twice the cost per point, which is what half the vector width means.  On
+AVX2 that puts our *arithmetic alone* at 1.458 us against their entire transform
+at 1.61.  There is no room left for the product, the corner turn, the twiddle and
+the scan, however cheaply they are arranged.
+
+So the AVX2 gap is not pass count or fusion.  It is operation count: FFTW's
+codelets do measurably less arithmetic than a generated radix-8 Stockham chain.
+Closing it needs a lower-flop algorithm - split-radix, or larger radices that cut
+twiddle multiplies - not a better arrangement of the current one.

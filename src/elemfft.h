@@ -72,6 +72,53 @@ static inline int codelet_tw(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,
 }
 /* itwr/itwi hold W_M[e1*k2p] laid out [k2p][e1], so the second half can consume
    them directly. */
+/* Dispatch for the product-loading codelets. */
+static inline int codelet_prod(int m,const float*restrict dr,const float*restrict di,
+                               const float*restrict tr,const float*restrict ti,
+                               vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,
+                               long S,long DS){
+  switch(m){
+    case  8: return fft8_prod (dr,di,tr,ti,ar,ai,br,bi,S,DS);
+    case 16: return fft16_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+    case 32: return fft32_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+    default: return fft64_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+  }
+}
+
+/* Can the product be fused into this element size's first pass?
+ *
+ * Only when the transform is single-level.  Two-level means the first codelet
+ * walks its input with stride M1*AP_W - 2 KiB at 2^18 - where the unfused path
+ * reads the source sequentially into a buffer and then reads the buffer.  Trading
+ * a sequential read plus a round trip for a strided read loses badly: measured
+ * 14% worse at 2^16 and 18% at 2^18 on AVX2.  Below that the source read stays
+ * sequential and fusing wins. */
+static inline int eprod_ok(int M){
+  int M1,M2; efactor(M,&M1,&M2); (void)M1;
+  return M2==1;
+}
+
+/* Element transform whose first pass forms conj(d*t) as it loads, so the matched
+   filter's product never reaches memory and the staging buffer disappears.
+   dr/di/tr/ti are group-major: element e of this group sits at e*AP_W floats. */
+static void efft_prod(int M,const float*restrict dr,const float*restrict di,
+                      const float*restrict tr,const float*restrict ti,
+                      vf*restrict X,vf*restrict Xi,vf*restrict S,vf*restrict Si,
+                      const float*restrict itwr,const float*restrict itwi){
+  int M1,M2; efactor(M,&M1,&M2);
+  if(M2==1){ codelet_prod(M,dr,di,tr,ti,X,Xi,S,Si,1,AP_W); return; }
+  const int st=ESTRIDE(M1);
+  /* element (e2,e1) of the group is at (e2*M1 + e1)*AP_W, so at fixed e1 the
+     inner codelet walks e2 with stride M1*AP_W */
+  for(int e1=0;e1<M1;e1++)
+    codelet_prod(M2,dr+(size_t)e1*AP_W,di+(size_t)e1*AP_W,
+                 tr+(size_t)e1*AP_W,ti+(size_t)e1*AP_W,
+                 X+e1,Xi+e1,S+e1,Si+e1,st,(long)M1*AP_W);
+  for(int k2p=0;k2p<M2;k2p++)
+    codelet_tw(M1,X+st*k2p,Xi+st*k2p,S+st*k2p,Si+st*k2p,1,
+               itwr+(size_t)k2p*M1, itwi+(size_t)k2p*M1);
+}
+
 static void efft(int M,vf*restrict X,vf*restrict Xi,vf*restrict S,vf*restrict Si,
                  const float*restrict itwr,const float*restrict itwi){
   int M1,M2; efactor(M,&M1,&M2);

@@ -14,8 +14,14 @@ def trivial(c,s,tol=1e-12):
     return None
 
 class Gen:
-    def __init__(s,n,name,tw=False,preload=False):
+    def __init__(s,n,name,tw=False,preload=False,prod=False):
         s.n=n; s.name=name; s.L=[]; s.consts={}; s.nc=0; s.tw=tw; s.preload=preload
+        # prod: the first radix pass reads two spectra straight from memory and
+        # forms conj(d*t) as it loads.  The matched filter otherwise writes that
+        # product into a staging buffer that this codelet immediately reads back
+        # - a whole round trip through L1 per pass, for arithmetic that is four
+        # FMAs and can just as well happen here.
+        s.prod=prod
     def emit(s,l): s.L.append("  "+l)
     def const(s,c,v):
         key=("%.17g"%v)
@@ -81,6 +87,19 @@ class Gen:
                         idx=q+sstride*(j+m*k)
                         if s.pre and X is A:
                             ins.append(s.pre[idx])
+                        elif s.prod and X is A:
+                            # each element is read exactly once in the first pass
+                            pr,pi="g%d_r"%s.nc,"g%d_i"%s.nc; s.nc+=1
+                            s.emit("vf dR%d=V_LOADU(dr+DS*%d), dI%d=V_LOADU(di+DS*%d);"
+                                   %(idx,idx,idx,idx))
+                            s.emit("vf tR%d=V_LOADU(tr+DS*%d), tI%d=V_LOADU(ti+DS*%d);"
+                                   %(idx,idx,idx,idx))
+                            s.emit("vf %s=V_FMSUB(dR%d,tR%d,V_MUL(dI%d,tI%d));"
+                                   %(pr,idx,idx,idx,idx))
+                            # conj(d*t): the backward transform wants it, free here
+                            s.emit("vf %s=V_FNMSUB(dR%d,tI%d,V_MUL(dI%d,tR%d));"
+                                   %(pi,idx,idx,idx,idx))
+                            ins.append((pr,pi))
                         else:
                             ins.append(("%s[S*%d]"%(X[0],idx),"%s[S*%d]"%(X[1],idx)))
                     outs=s.dft(r,ins)
@@ -121,13 +140,22 @@ class Gen:
             return res
         raise Exception("radix %d"%r)
 
-def build(n,radices,name,tw=False,preload=False):
-    g=Gen(n,name,tw,preload); flip=g.run(radices)
+def build(n,radices,name,tw=False,preload=False,prod=False):
+    g=Gen(n,name,tw,preload,prod); flip=g.run(radices)
     if (preload or tw) and len(radices)==1: flip=0
     body="\n".join(g.L)
     cdefs="\n".join("  const vf %s=V_SET1(%sf);"%(v,k) for k,v in g.consts.items())
-    args=("vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi"
-          if tw else "vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S")
+    if prod:
+        # ar/ai are never read - the first pass comes from the spectra - but the
+        # ping-pong still needs somewhere to land on an even number of stages.
+        args=("const float*restrict dr,const float*restrict di,"
+              "const float*restrict tr,const float*restrict ti,"
+              "vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,"
+              "const long S,const long DS")
+    elif tw:
+        args="vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi"
+    else:
+        args="vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S"
     sig=("static inline int %s(%s){\n"
          "  const vf Z=V_ZERO();\n%s\n%s\n  return %d;\n}\n")%(name,args,cdefs,body,flip)
     return sig
@@ -298,6 +326,11 @@ if __name__=="__main__":
     out.append(build(32,[4,4,2],"fft32_442"))
     out.append(build(16,[8,2],"fft16_44"))
     out.append(build(64,[8,8],"fft64_88"))
+    # product-loading variants: the matched filter's first stage reads two
+    # spectra and forms conj(d*t) inside the codelet, so the product never
+    # reaches memory.  One per element size the four-step can ask for.
+    for nn,rr in ((8,[8]),(16,[8,2]),(32,[8,4]),(64,[8,8])):
+        out.append(build(nn,rr,"fft%d_prod"%nn,prod=True))
     for nn,rr in ((8,[8]),(16,[8,2]),(32,[8,4]),(64,[8,8])):
         out.append(build_i16(nn,rr,"ffti16_%d"%nn))
         # Same codelet with the per-stage shifts removed.  Those shifts are 320 of

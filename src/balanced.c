@@ -287,12 +287,14 @@ void FN(destroy)(void *vp){
 
 /* Per-group work shared by the fp32 and pre-quantised load paths: element
    transform, four-step twiddle, corner turn, and the intermediate store. */
-static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
+/* Everything after the element transform: four-step twiddle, corner turn and
+   the intermediate store.  Split out so the fused-product path can run its own
+   transform - which loads the product instead of reading a staging buffer - and
+   then share this tail. */
+static inline void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict TI,
                                vf*restrict OR,vf*restrict OI,
                                vf*restrict bR,vf*restrict bI){
   const int N2=PN2; const int N1=PN1; (void)N1;
-  vf *restrict sR=p->sR, *restrict sI=p->sI;
-    efft(N2,bR,bI,sR,sI,p->w2r,p->w2i);
   vf *restrict RR=bR,*restrict RI=bI;
   for(int b=0;b<N2/AP_W;b++){
     if(p->fulltw){
@@ -343,6 +345,14 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
   }
 }
 
+static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
+                               vf*restrict OR,vf*restrict OI,
+                               vf*restrict bR,vf*restrict bI){
+  efft(PN2,bR,bI,p->sR,p->sI,p->w2r,p->w2i);
+  stageA_tail(p,g,TR,TI,OR,OI,bR,bI);
+}
+
+
 /* Stage A from split input.  Identical structure to stageA; only the load
    differs - no v_deint, because the caller already has re and im apart. */
 static void stageA_split(BP*p,const float*inr,const float*ini,int conj){
@@ -384,22 +394,33 @@ static void stageA_split(BP*p,const float*inr,const float*ini,int conj){
 static void stageA_prod_gm(BP*p,const float*dr,const float*di,
                            const float*tr,const float*ti){
   const int N1=PN1,N2=PN2,NG=N1/AP_W;
+  int fuse=eprod_ok(N2);
+  { const char *e=getenv("APOGEE_FUSE"); if(e) fuse = atoi(e) ? eprod_ok(N2) : 0; }
   vf TR[AP_W],TI[AP_W],OR[AP_W],OI[AP_W];
-  const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
   for(int g=0;g<NG;g++){
     const size_t gb=(size_t)g*N2*AP_W;
-    for(int e2=0;e2<M2;e2++){
-      const size_t o0=gb+(size_t)e2*M1*AP_W;
-      const float *ar=dr+o0,*ai=di+o0,*br=tr+o0,*bi=ti+o0;
-      vf *dR=p->bR+(size_t)e2*st, *dI=p->bI+(size_t)e2*st;
-      for(int e1=0;e1<M1;e1++){
-        vf x=V_LOADU(ar), y=V_LOADU(ai), u=V_LOADU(br), v=V_LOADU(bi);
-        dR[e1]=V_FMSUB(x,u,V_MUL(y,v));
-        dI[e1]=V_FNMSUB(x,v,V_MUL(y,u));       /* conj(product) */
-        ar+=AP_W; ai+=AP_W; br+=AP_W; bi+=AP_W;
+    /* The product is formed inside the first butterfly rather than written to a
+       staging buffer this loop would immediately read back - one round trip
+       through L1 per group, removed. */
+    if(fuse){
+      efft_prod(N2,dr+gb,di+gb,tr+gb,ti+gb,p->bR,p->bI,p->sR,p->sI,p->w2r,p->w2i);
+    } else {
+      /* form the product into the staging buffer, then transform it */
+      const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
+      for(int e2=0;e2<M2;e2++){
+        const size_t o0=gb+(size_t)e2*M1*AP_W;
+        const float *ar=dr+o0,*ai=di+o0,*br=tr+o0,*bi=ti+o0;
+        vf *dR=p->bR+(size_t)e2*st, *dI=p->bI+(size_t)e2*st;
+        for(int e1=0;e1<M1;e1++){
+          vf x=V_LOADU(ar), y=V_LOADU(ai), u=V_LOADU(br), v=V_LOADU(bi);
+          dR[e1]=V_FMSUB(x,u,V_MUL(y,v));
+          dI[e1]=V_FNMSUB(x,v,V_MUL(y,u));
+          ar+=AP_W; ai+=AP_W; br+=AP_W; bi+=AP_W;
+        }
       }
+      efft(N2,p->bR,p->bI,p->sR,p->sI,p->w2r,p->w2i);
     }
-    stageA_body(p,g,TR,TI,OR,OI,p->bR,p->bI);
+    stageA_tail(p,g,TR,TI,OR,OI,p->bR,p->bI);
   }
 }
 
