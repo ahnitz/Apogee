@@ -189,3 +189,39 @@ and reported ~400 us at 2^20. Batched over 16 distinct inputs (128 MiB, nothing
 cached) the same work costs ~2200 us. The batched figure is the honest one for the
 intended use. All four libraries get distinct data in bench_batch, so the comparison
 is unaffected - but do not compare a batched number against an old unbatched one.
+
+## Phase 1c: where 2^20 actually goes, and three things that did not help
+
+Ablation at 2^20 (B=16, floor on, us/transform):
+
+| variant | us | reading |
+|---|---|---|
+| 0 full | 1931 | |
+| 6 stage-A load only | **1022** | the load is 53% of everything |
+| 2 no element transform | 1982 | element FFT is free, it overlaps |
+| 3 no four-step twiddle | 1916 | twiddle is free too |
+
+Same conclusion as at 2^14: the transform arithmetic is not the cost. The load is.
+
+Measured access-shape penalty on this core: sequential read 43.9 GB/s, the same
+volume at stage A's 8 KiB stride touching 128 B per row **7.6 GB/s**. Widening the
+touched run recovers it - 512 B gives 19.1, 1 KiB 24.7, 2 KiB 30.7.
+
+Three attempts on that, all measured, none kept:
+
+1. **Non-temporal intermediate stores.** Full-line stores whose line is dead until
+   stage B reads it back should skip the read-for-ownership. Wash: 2^18 405 vs 407,
+   2^20 2200 vs 2184. Code kept behind `PEAKFFT_NT`, default off.
+2. **Huge pages for the big buffers** (`MADV_HUGEPAGE`). No change. The strided walk
+   is over the *caller's* input buffer, which we do not allocate. Kept anyway - it
+   costs nothing and the TLB argument still holds for the intermediate.
+3. **Blocking stage A over G groups per input pass** (`PEAKFFT_GBLK`). Widens the
+   touched run to G*128 B at no extra total bytes. Gains nothing: G group buffers
+   need G*N2*PF_W*16 bytes, so G=4 at 2^20 is 1 MiB and evicts L2 exactly as fast as
+   the wider stream helps. G=1 405/2120, G=2 408/2118, G=4 406/2162 against 405-455
+   of run-to-run noise. Kept at a conservative G because it is never worse and helps
+   the mid sizes slightly.
+
+So A=6's 1022 us is 8 MiB of strided DRAM read *plus* 8 MiB of L2 buffer write, and
+the two are balanced - which is why trading one for the other does nothing. Getting
+past this needs the input read itself to become sequential, not merely wider.
