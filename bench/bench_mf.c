@@ -3,7 +3,7 @@
  * Baseline: forward-transform every segment once, then per pair form the product
  * and inverse-transform it, then scan for the peak.  That is the same algorithm
  * with the same reuse - the only difference is the library underneath - so this
- * isolates what peakfft's peak-only path is worth on this workload.
+ * isolates what apogee's peak-only path is worth on this workload.
  *
  * Both FFTW variants get batched plans; MKL gets a descriptor.  The scan for the
  * baselines is a plain max over the window, which is the cheapest thing that
@@ -18,7 +18,7 @@
 #include <dlfcn.h>
 #include "mkl_dfti.h"
 #include "fftw_min.h"
-#include "peakfft.h"
+#include "apogee.h"
 
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 static unsigned long long rs=88172645463325252ULL;
@@ -60,22 +60,22 @@ int main(int argc,char**argv){
   for(size_t i=0;i<(size_t)D*2*n;i++) data[i]=(float)gauss();
   for(size_t i=0;i<(size_t)T*2*n;i++) tmpl[i]=(float)gauss();
 
-  /* ---- peakfft ---- */
+  /* ---- apogee ---- */
   /* Everything downstream takes spectra: the caller's pipeline has them in the
      frequency domain, so the D+T forward transforms are outside the comparison
-     for peakfft and the baselines alike. */
-  pf_plan *fp=pf_create(n);
+     for apogee and the baselines alike. */
+  ap_plan *fp=ap_create(n);
   float *dspec0=aligned_alloc(64,(size_t)D*2*n*4), *tspec0=aligned_alloc(64,(size_t)T*2*n*4);
-  for(int i=0;i<D;i++) pf_fft(fp,data+(size_t)i*2*n,dspec0+(size_t)i*2*n,PF_FORWARD);
-  for(int i=0;i<T;i++) pf_fft(fp,tmpl+(size_t)i*2*n,tspec0+(size_t)i*2*n,PF_FORWARD);
+  for(int i=0;i<D;i++) ap_fft(fp,data+(size_t)i*2*n,dspec0+(size_t)i*2*n,AP_FORWARD);
+  for(int i=0;i<T;i++) ap_fft(fp,tmpl+(size_t)i*2*n,tspec0+(size_t)i*2*n,AP_FORWARD);
 
-  pf_mf_plan *mp=pf_mf_create(n,D,T);
-  for(int i=0;i<D;i++) pf_mf_set_data(mp,i,dspec0+(size_t)i*2*n);
-  for(int i=0;i<T;i++) pf_mf_set_template(mp,i,tspec0+(size_t)i*2*n);
-  size_t nb=pf_mf_nbins(mp,bs,ws,we);
-  pf_peak *pk=malloc((size_t)D*T*nb*sizeof(pf_peak));
+  ap_mf_plan *mp=ap_mf_create(n,D,T);
+  for(int i=0;i<D;i++) ap_mf_set_data(mp,i,dspec0+(size_t)i*2*n);
+  for(int i=0;i<T;i++) ap_mf_set_template(mp,i,tspec0+(size_t)i*2*n);
+  size_t nb=ap_mf_nbins(mp,bs,ws,we);
+  ap_peak *pk=malloc((size_t)D*T*nb*sizeof(ap_peak));
   int *cnt=malloc((size_t)D*T*sizeof(int));
-  pf_mf_run(mp,0,D,0,T,bs,0.f,pk,cnt,ws,we);
+  ap_mf_run(mp,0,D,0,T,bs,0.f,pk,cnt,ws,we);
   float mx=0; for(size_t i=0;i<(size_t)D*T*nb;i++) if(pk[i].magnitude>mx) mx=pk[i].magnitude;
   float THR=mx*0.8f;
 
@@ -119,9 +119,9 @@ int main(int argc,char**argv){
   for(int r=0;r<reps;r++){ t0=now(); PAIRLOOP(MKLB); double t=now()-t0; if(t<bm)bm=t; }
   for(int r=0;r<reps;r++){ t0=now(); PAIRLOOP(AMDB); double t=now()-t0; if(t<ba)ba=t; }
   for(int r=0;r<reps+2;r++){ t0=now();
-    for(int i=0;i<D;i++) pf_mf_set_data(mp,i,dspec0+(size_t)i*2*n);
-    for(int i=0;i<T;i++) pf_mf_set_template(mp,i,tspec0+(size_t)i*2*n);
-    pf_mf_run(mp,0,D,0,T,bs,THR,pk,cnt,ws,we);
+    for(int i=0;i<D;i++) ap_mf_set_data(mp,i,dspec0+(size_t)i*2*n);
+    for(int i=0;i<T;i++) ap_mf_set_template(mp,i,tspec0+(size_t)i*2*n);
+    ap_mf_run(mp,0,D,0,T,bs,THR,pk,cnt,ws,we);
     double t=now()-t0; if(t<bp)bp=t; }
 
   double np=(double)D*T;
@@ -130,7 +130,7 @@ int main(int argc,char**argv){
   printf("  %-24s %10.1f us total  %9.3f us/pair\n","MKL",bm*1e6,bm*1e6/np);
   printf("  %-24s %10.1f us total  %9.3f us/pair\n","amd-fftw",ba*1e6,ba*1e6/np);
   printf("  %-24s %10.1f us total  %9.3f us/pair   vs MKL %.2fx  vs amd %.2fx\n",
-         "peakfft (incl. ingest)",bp*1e6,bp*1e6/np,bm/bp,ba/bp);
+         "apogee (incl. ingest)",bp*1e6,bp*1e6/np,bm/bp,ba/bp);
   printf("  (sink %zu)\n",(size_t)sink);
   return 0;
 }

@@ -1,7 +1,7 @@
 """Merge the benchmark matrix into a table and a plot.
 
 Reads m_{avx512,avx2}_{quiet,load}.csv written by bench4, whose columns are
-N,mkl,sysfftw,amdfftw,peakfft (seconds, minimum over blocks).
+N,mkl,sysfftw,amdfftw,apogee (seconds, minimum over blocks).
 """
 import csv, json, os, sys
 import numpy as np
@@ -29,9 +29,9 @@ for regime in ("quiet", "load"):
           f"| {'vs MKL':>7} {'vs FFTW':>8} {'vs AMD':>7}")
     for n in sorted(a):
         r = a[n]
-        p2 = b[n]["peakfft"] * 1e6 if b and n in b else float("nan")
+        p2 = b[n]["apogee"] * 1e6 if b and n in b else float("nan")
         u = 1e6
         print(f"2^{n.bit_length()-1:<5d} {r['mkl']*u:8.2f} {r['sysfftw']*u:8.2f} "
-              f"{r['amdfftw']*u:8.2f} {r['peakfft']*u:8.2f} {p2:8.2f} "
-              f"| {r['mkl']/r['peakfft']:6.2f}x {r['sysfftw']/r['peakfft']:7.2f}x "
-              f"{r['amdfftw']/r['peakfft']:6.2f}x")
+              f"{r['amdfftw']*u:8.2f} {r['apogee']*u:8.2f} {p2:8.2f} "
+              f"| {r['mkl']/r['apogee']:6.2f}x {r['sysfftw']/r['apogee']:7.2f}x "
+              f"{r['amdfftw']/r['apogee']:6.2f}x")

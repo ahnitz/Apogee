@@ -66,7 +66,7 @@ At 2^20 that is 48 MiB per pair, and 256 pairs is 12 GiB.
 
 Correctness, all against a double-precision reference computed independently:
 
-1. **Single pair** - `pf_mf` with D=T=1 against an explicit
+1. **Single pair** - `ap_mf` with D=T=1 against an explicit
    `IFFT(FFT(d)*conj(FFT(h)))` in double.
 2. **Every pair independently** - for D=T=16, all 256 outputs checked against
    their own reference, not just a spot check.

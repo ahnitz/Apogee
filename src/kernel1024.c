@@ -1,4 +1,4 @@
-/* peakfft: L1-resident 1024-point AVX-512 kernel.
+/* apogee: L1-resident 1024-point AVX-512 kernel.
  *
  * Four-step 32x32 on split (SoA) complex data.  Both 32-point stages are
  * generated radix-8 x radix-4 Stockham codelets (2 passes, not radix-2's 5),
@@ -14,7 +14,7 @@
 #include "codelets.h"
 
 /* AoS complex -> SoA, vectorised */
-void pf_deint_c(const float*in,float*re,float*im,size_t N,int conj){
+void ap_deint_c(const float*in,float*re,float*im,size_t N,int conj){
   const __m512i ev=_mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30);
   const __m512i od=_mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31);
   const __m512 sg=conj?_mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000)):_mm512_setzero_ps();
@@ -24,7 +24,7 @@ void pf_deint_c(const float*in,float*re,float*im,size_t N,int conj){
     _mm512_store_ps(im+i,_mm512_xor_ps(_mm512_permutex2var_ps(a,od,b),sg));
   }
 }
-void pf_inter_c(const float*re,const float*im,float*out,size_t N,int conj){
+void ap_inter_c(const float*re,const float*im,float*out,size_t N,int conj){
   const __m512i lo=_mm512_setr_epi32(0,16,1,17,2,18,3,19,4,20,5,21,6,22,7,23);
   const __m512i hi=_mm512_setr_epi32(8,24,9,25,10,26,11,27,12,28,13,29,14,30,15,31);
   const __m512 sg=conj?_mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000)):_mm512_setzero_ps();
@@ -34,7 +34,7 @@ void pf_inter_c(const float*re,const float*im,float*out,size_t N,int conj){
     _mm512_storeu_ps(out+2*i+16,_mm512_permutex2var_ps(r,hi,m));
   }
 }
-void pf_deint(const float*in,float*re,float*im,size_t N){
+void ap_deint(const float*in,float*re,float*im,size_t N){
   const __m512i ev=_mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30);
   const __m512i od=_mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31);
   for(size_t i=0;i<N;i+=16){
@@ -43,7 +43,7 @@ void pf_deint(const float*in,float*re,float*im,size_t N){
     _mm512_store_ps(im+i,_mm512_permutex2var_ps(a,od,b));
   }
 }
-void pf_inter(const float*re,const float*im,float*out,size_t N){
+void ap_inter(const float*re,const float*im,float*out,size_t N){
   const __m512i lo=_mm512_setr_epi32(0,16,1,17,2,18,3,19,4,20,5,21,6,22,7,23);
   const __m512i hi=_mm512_setr_epi32(8,24,9,25,10,26,11,27,12,28,13,29,14,30,15,31);
   for(size_t i=0;i<N;i+=16){
@@ -91,7 +91,7 @@ static inline void fft1024_core(float *re,float *im,
       _mm512_storeu_ps(im+k1*32+16*d,i);
       if(want_mag){
         /* The running per-lane maximum of |X|^2 is nearly free here - the values are
-           already in registers.  It gives pf_topk a tight scan threshold without a
+           already in registers.  It gives ap_topk a tight scan threshold without a
            pass of its own.  |X|^2 itself is deliberately NOT stored: the final stage
            is store-port bound, and writing it back costs more than it saves. */
         vmax=_mm512_max_ps(vmax,_mm512_fmadd_ps(r,r,_mm512_mul_ps(i,i)));
@@ -101,10 +101,10 @@ static inline void fft1024_core(float *re,float *im,
   if(want_mag) *vmaxout=vmax;
 }
 
-void pf_fft1024_soa(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32]){
+void ap_fft1024_soa(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32]){
   fft1024_core(re,im,t4r,t4i,NULL,0);
 }
-void pf_fft1024_soa_mag(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32],
+void ap_fft1024_soa_mag(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32],
                         __m512 *vmax){
   fft1024_core(re,im,t4r,t4i,vmax,1);
 }
@@ -123,13 +123,13 @@ void pf_fft1024_soa_mag(float *re,float *im,const __m512 (*t4r)[32],const __m512
  * tighter as the scan proceeds.  re/im are still updated for candidate blocks
  * because the caller refines and reports exact values from them.
  */
-int pf_fft1024_topk(const float *re,const float *im,
+int ap_fft1024_topk(const float *re,const float *im,
                     const __m512 (*t4r)[32],const __m512 (*t4i)[32],
-                    float thr2,long ws,long we,int K,pf_cand *T){
+                    float thr2,long ws,long we,int K,ap_cand *T){
   __m512 A[32],B[32],C[32],D[32];
   __m512 Vr[2][32],Vi[2][32];
   /* Folding the AoS->SoA split into this loop was tried and is slightly slower:
-     it turns pf_deint_c's streaming pass into strided 128-of-256-byte reads and
+     it turns ap_deint_c's streaming pass into strided 128-of-256-byte reads and
      puts two more permutes on the shuffle port the butterflies are already using.
      0.391 us against 0.381.  Keep the split as its own pass. */
   for(int c=0;c<2;c++){
@@ -172,7 +172,7 @@ int pf_fft1024_topk(const float *re,const float *im,
         while(msk){
           int l=__builtin_ctz((unsigned)msk); msk&=(__mmask16)(msk-1);
           if(bm[l]<=thr) continue;
-          pf_push(T,K,&n,bm[l],(int)(k0+l),br[l],bi[l]);
+          ap_push(T,K,&n,bm[l],(int)(k0+l),br[l],bi[l]);
           if(n==K){ thr=T[0].mag2; vthr=_mm512_set1_ps(thr); }
         }
       }
@@ -186,7 +186,7 @@ int pf_fft1024_topk(const float *re,const float *im,
 
 /* Binned maximum fused into the transform's final stage.
  *
- * Same idea as pf_fft1024_topk - the outputs are compared while still in
+ * Same idea as ap_fft1024_topk - the outputs are compared while still in
  * registers and never stored - but the survivor test is a per-bin running max
  * instead of a heap.  That makes it branchless: no candidate pool, no pushes,
  * no final sort, and a cost that does not depend on the data.
@@ -197,12 +197,12 @@ int pf_fft1024_topk(const float *re,const float *im,
  */
 static int fft1024_binmax_many(__m512 Vr[2][32],__m512 Vi[2][32],
                                __m512 *A,__m512 *B,__m512 *Tr,__m512 *Ti,
-                               long nb,size_t binsize,float thr,pf_peak *out,
+                               long nb,size_t binsize,float thr,ap_peak *out,
                                int conj,long ws,long we,int full,__m512 NEG);
 
-int pf_fft1024_binmax(float *re,float *im,
+int ap_fft1024_binmax(float *re,float *im,
                       const __m512 (*t4r)[32],const __m512 (*t4i)[32],
-                      size_t binsize,float thr,pf_peak *out,int conj,
+                      size_t binsize,float thr,ap_peak *out,int conj,
                       long ws,long we){
   __m512 A[32],B[32],C[32],D[32];
   __m512 Vr[2][32],Vi[2][32];
@@ -293,7 +293,7 @@ int pf_fft1024_binmax(float *re,float *im,
 __attribute__((noinline))
 static int fft1024_binmax_many(__m512 Vr[2][32],__m512 Vi[2][32],
                                __m512 *A,__m512 *B,__m512 *Tr,__m512 *Ti,
-                               long nb,size_t binsize,float thr,pf_peak *out,
+                               long nb,size_t binsize,float thr,ap_peak *out,
                                int conj,long ws,long we,int full,__m512 NEG){
   enum { MAXB = 64 };
   __m512 bm[MAXB],br[MAXB],bi[MAXB]; __m512i bx[MAXB];

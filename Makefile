@@ -1,4 +1,4 @@
-# peakfft - single-threaded AVX-512 FFT specialised for loudest-bin search.
+# apogee - single-threaded AVX-512 FFT specialised for loudest-bin search.
 CC      ?= gcc
 CFLAGS  ?= -O3 -Wall -Wextra -Wno-unused-parameter
 CPPFLAGS = -Iinclude -Isrc
@@ -6,7 +6,7 @@ LDLIBS   = -lm
 
 # AVX-512 sources, AVX2 sources and the ISA-neutral dispatcher are compiled with
 # different -m flags, so the library is safe to load on a machine without AVX-512.
-AVX512FLAGS = -DPF_W=16 -mavx512f -mavx512dq -mavx512bw -mavx512vl
+AVX512FLAGS = -DAP_W=16 -mavx512f -mavx512dq -mavx512bw -mavx512vl
 AVX2FLAGS   = -mavx2 -mfma
 BASEFLAGS   =
 
@@ -14,7 +14,7 @@ OBJ512 = src/kernel1024.o src/be_avx512.o
 OBJGEN = src/balanced16.o src/balanced8.o
 OBJB   = src/dispatch.o src/matchfilt.o
 OBJ    = $(OBJ512) $(OBJGEN) $(OBJB)
-LIB    = libpeakfft.a
+LIB    = libapogee.a
 
 # Optional references for the benchmark / cross-check.  Point these at your install.
 MKLINC ?=
@@ -29,7 +29,7 @@ $(LIB): $(OBJ)
 
 # Shared build, so bench/ab can hold two versions of the library at once.
 # -fPIC is applied to a separate object set to keep the static build unchanged.
-SO = libpeakfft.so
+SO = libapogee.so
 $(SO): $(OBJ:.o=.pico)
 	$(CC) -shared -o $@ $^
 %.pico: %.c
@@ -37,7 +37,7 @@ $(SO): $(OBJ:.o=.pico)
 src/balanced16.pico: src/balanced.c
 	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -fPIC -c $< -o $@
 src/balanced8.pico: src/balanced.c
-	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -fPIC -DPF_W=8 -c $< -o $@
+	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -fPIC -DAP_W=8 -c $< -o $@
 src/dispatch.pico: src/dispatch.c
 	$(CC) $(CFLAGS) $(BASEFLAGS) $(CPPFLAGS) -fPIC -c $< -o $@
 
@@ -54,7 +54,7 @@ $(OBJ512): %.o: %.c
 src/balanced16.o: src/balanced.c
 	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -c $< -o $@
 src/balanced8.o: src/balanced.c
-	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -DPF_W=8 -c $< -o $@
+	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -DAP_W=8 -c $< -o $@
 $(OBJB): %.o: %.c
 	$(CC) $(CFLAGS) $(BASEFLAGS) $(CPPFLAGS) -c $< -o $@
 
@@ -77,15 +77,15 @@ tests/test_mf: tests/test_mf.c $(LIB)
 # 'make test' - it is what you run 20 times an hour, not once.
 quick: tests/test_units tests/test_binmax tests/test_mf
 	./tests/test_units
-	PF_QUICK=1 ./tests/test_binmax
-	PF_QUICK=1 ./tests/test_mf
+	AP_QUICK=1 ./tests/test_binmax
+	AP_QUICK=1 ./tests/test_mf
 
 test: tests/test_units tests/test_binmax tests/test_mf
 	./tests/test_units && ./tests/test_binmax && ./tests/test_mf
 	@echo "--- forcing the AVX2 back end ---"
-	PEAKFFT_ISA=avx2 ./tests/test_binmax && PEAKFFT_ISA=avx2 ./tests/test_mf
+	APOGEE_ISA=avx2 ./tests/test_binmax && APOGEE_ISA=avx2 ./tests/test_mf
 	@echo "--- forcing the generic back end at 16 lanes ---"
-	PEAKFFT_ISA=balanced512 ./tests/test_binmax && PEAKFFT_ISA=balanced512 ./tests/test_mf
+	APOGEE_ISA=balanced512 ./tests/test_binmax && APOGEE_ISA=balanced512 ./tests/test_mf
 
 clean:
 	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_binmax tests/test_mf bench/bench
@@ -96,7 +96,7 @@ tests/test_vs_mkl: tests/test_vs_mkl.c $(LIB)
 test-mkl: tests/test_vs_mkl
 	./tests/test_vs_mkl
 
-# Four-way comparison: MKL, stock FFTW (dlopen+DEEPBIND), amd-fftw, peakfft.
+# Four-way comparison: MKL, stock FFTW (dlopen+DEEPBIND), amd-fftw, apogee.
 # AMDFFTW must point at an AOCL-FFTW install; its archive is linked whole and
 # ahead of MKL, otherwise MKL's own fftwf_* wrappers win and both FFTW columns
 # silently become MKL again.

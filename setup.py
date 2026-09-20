@@ -1,4 +1,4 @@
-"""Builds the peakfft extension with per-source ISA flags.
+"""Builds the apogee extension with per-source ISA flags.
 
 The AVX-512 sources, the AVX2 sources and the dispatcher must be compiled with
 different -m flags so the resulting module can be *loaded* on a machine without
@@ -10,7 +10,7 @@ from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
 BASE = ["-O3", "-fno-math-errno", "-std=gnu11"]
-AVX512 = ["-DPF_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
+AVX512 = ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 AVX2 = ["-mavx2", "-mfma"]
 
 # (source, extra flags, extra defines)
@@ -18,10 +18,10 @@ GROUPS = [
     ("src/kernel1024.c", AVX512, []),
     ("src/be_avx512.c",  AVX512, []),
     ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
-    ("src/balanced.c",   AVX2,   [("PF_W", "8")]),      # generic source, 8 lanes
+    ("src/balanced.c",   AVX2,   [("AP_W", "8")]),      # generic source, 8 lanes
     ("src/matchfilt.c",  BASE,   []),
     ("src/dispatch.c",   [],     []),                 # baseline only
-    ("python/peakfft/_core.c", [], []),
+    ("python/apogee/_core.c", [], []),
 ]
 
 
@@ -50,6 +50,6 @@ class BuildExt(build_ext):
 
 
 setup(
-    ext_modules=[Extension("peakfft._core", sources=[], include_dirs=["include", "src"])],
+    ext_modules=[Extension("apogee._core", sources=[], include_dirs=["include", "src"])],
     cmdclass={"build_ext": BuildExt},
 )

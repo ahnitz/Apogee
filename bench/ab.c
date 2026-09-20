@@ -6,10 +6,10 @@
  * sweep, so drift hits both equally, and the statistic reported is the
  * distribution of per-round ratios plus a sign test - not a difference of minima.
  *
- *   make libpeakfft.so                       # build the current tree
- *   cp libpeakfft.so /tmp/base.so            # keep it as the baseline
+ *   make libapogee.so                       # build the current tree
+ *   cp libapogee.so /tmp/base.so            # keep it as the baseline
  *   ...edit, rebuild...
- *   ./bench/ab /tmp/base.so libpeakfft.so
+ *   ./bench/ab /tmp/base.so libapogee.so
  *
  * It also checks the two builds agree on every peak before timing anything, so a
  * change that is fast because it is wrong gets caught here rather than later.
@@ -21,7 +21,7 @@
 #include <math.h>
 #include <time.h>
 #include <dlfcn.h>
-#include "peakfft.h"
+#include "apogee.h"
 
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 static unsigned long long rs=88172645463325252ULL;
@@ -63,10 +63,10 @@ static double sign_p(int wins,int R){
 
 typedef struct {
   void *h; const char *path;
-  pf_plan *(*create)(size_t);
-  void (*destroy)(pf_plan*);
-  void (*fft)(pf_plan*,const float*,float*,int);
-  int (*many)(pf_plan*,const float*,size_t,int,int,float,pf_peak*,int*,int,size_t,size_t);
+  ap_plan *(*create)(size_t);
+  void (*destroy)(ap_plan*);
+  void (*fft)(ap_plan*,const float*,float*,int);
+  int (*many)(ap_plan*,const float*,size_t,int,int,float,ap_peak*,int*,int,size_t,size_t);
   const char *(*isa)(void);
 } lib;
 
@@ -74,9 +74,9 @@ static int open_lib(lib *L,const char *path){
   L->h=dlopen(path,RTLD_NOW|RTLD_LOCAL|RTLD_DEEPBIND);
   if(!L->h){ fprintf(stderr,"dlopen %s: %s\n",path,dlerror()); return -1; }
   L->path=path;
-  L->create=dlsym(L->h,"pf_create"); L->destroy=dlsym(L->h,"pf_destroy");
-  L->fft=dlsym(L->h,"pf_fft"); L->many=dlsym(L->h,"pf_topk_many");
-  L->isa=dlsym(L->h,"pf_isa");
+  L->create=dlsym(L->h,"ap_create"); L->destroy=dlsym(L->h,"ap_destroy");
+  L->fft=dlsym(L->h,"ap_fft"); L->many=dlsym(L->h,"ap_topk_many");
+  L->isa=dlsym(L->h,"ap_isa");
   if(!L->create||!L->many){ fprintf(stderr,"%s: missing symbols\n",path); return -1; }
   return 0;
 }
@@ -135,7 +135,7 @@ int main(int argc,char**argv){
     float thr=0.f;
 
     for(int tr=0;tr<TRIALS;tr++){
-      pf_plan *pa,*pb;
+      ap_plan *pa,*pb;
       if(tr&1){   /* swap which library allocates first */
         if(envar) setenv(envar,evb,1);
         pb=B.create(N);
@@ -151,7 +151,7 @@ int main(int argc,char**argv){
       if(!pa||!pb){ printf("2^%-4d  (unsupported)\n",lgs[i]); goto next_size; }
 
       if(tr==0 && useThr){
-        A.fft(pa,in,ref,PF_FORWARD);
+        A.fft(pa,in,ref,AP_FORWARD);
         double *m=malloc(N*sizeof(double));
         for(size_t k=0;k<N;k++) m[k]=hypot(ref[2*k],ref[2*k+1]);
         qsort(m,N,sizeof(double),cmpdd);
@@ -159,31 +159,31 @@ int main(int argc,char**argv){
         thr=(float)(0.5*(m[q]+m[q+1])); free(m);
       }
 
-      pf_peak *ka=malloc((size_t)Bsz*K*sizeof(pf_peak)),*kb=malloc((size_t)Bsz*K*sizeof(pf_peak));
+      ap_peak *ka=malloc((size_t)Bsz*K*sizeof(ap_peak)),*kb=malloc((size_t)Bsz*K*sizeof(ap_peak));
       int *ca=malloc(Bsz*4),*cb=malloc(Bsz*4);
-      A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
-      B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N);
+      A.many(pa,in,N,Bsz,K,thr,ka,ca,AP_FORWARD,0,N);
+      B.many(pb,in,N,Bsz,K,thr,kb,cb,AP_FORWARD,0,N);
       for(int b=0;b<Bsz && !bad;b++){
         if(ca[b]!=cb[b]){ bad=1; break; }
         for(int a=0;a<ca[b];a++){
-          pf_peak *x=&ka[b*K+a],*y=&kb[b*K+a];
+          ap_peak *x=&ka[b*K+a],*y=&kb[b*K+a];
           if(x->index!=y->index || hypot(x->re-y->re,x->im-y->im) > 1e-4*x->magnitude){ bad=1; break; }
         }
       }
       /* A fresh plan's buffers are newly mapped, so the first passes take page
          faults - at 2^12 that showed up as a single round 47x the median and a
          spread of several thousand percent.  Warm until the pages are resident. */
-      for(int w=0;w<6;w++){ A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
-                            B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N); }
+      for(int w=0;w<6;w++){ A.many(pa,in,N,Bsz,K,thr,ka,ca,AP_FORWARD,0,N);
+                            B.many(pb,in,N,Bsz,K,thr,kb,cb,AP_FORWARD,0,N); }
       for(int r=0;r<R;r++){
         double t0,t1,t2,ta,tb;
         if(r&1){
-          t0=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
-          t1=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N); t2=now();
+          t0=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,AP_FORWARD,0,N);
+          t1=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,AP_FORWARD,0,N); t2=now();
           ta=(t1-t0)/Bsz; tb=(t2-t1)/Bsz;
         } else {
-          t0=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N);
-          t1=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N); t2=now();
+          t0=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,AP_FORWARD,0,N);
+          t1=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,AP_FORWARD,0,N); t2=now();
           tb=(t1-t0)/Bsz; ta=(t2-t1)/Bsz;
         }
         ra[n]=ta; rb[n]=tb; rt[n]=tb/ta; if(tb<ta) bwin++; n++;

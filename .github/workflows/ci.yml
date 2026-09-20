@@ -46,8 +46,8 @@ jobs:
       - name: Run tests (AVX2 back end always; AVX-512 when the runner has it)
         run: |
           if grep -qm1 avx2 /proc/cpuinfo; then
-            PEAKFFT_ISA=avx2 ./tests/test_topk
-            PEAKFFT_ISA=avx2 ./tests/test_batch
+            APOGEE_ISA=avx2 ./tests/test_topk
+            APOGEE_ISA=avx2 ./tests/test_batch
           else
             echo "::warning::Runner lacks AVX2; nothing can run natively."
           fi
@@ -55,8 +55,8 @@ jobs:
             ./tests/test_units
             ./tests/test_topk
             ./tests/test_batch
-            PEAKFFT_ISA=balanced512 ./tests/test_topk
-            PEAKFFT_ISA=balanced512 ./tests/test_batch
+            APOGEE_ISA=balanced512 ./tests/test_topk
+            APOGEE_ISA=balanced512 ./tests/test_batch
           else
             echo "::notice::Runner lacks AVX-512; the AVX-512 back end is built but not run here."
           fi
@@ -73,7 +73,7 @@ jobs:
           python -m build --wheel
           python -m pip install dist/*.whl
           if grep -qm1 avx2 /proc/cpuinfo; then
-            PEAKFFT_ISA=avx2 python -m pytest -q tests/test_python.py
+            APOGEE_ISA=avx2 python -m pytest -q tests/test_python.py
             if grep -qm1 avx512vl /proc/cpuinfo; then
               python -m pytest -q tests/test_python.py
             fi

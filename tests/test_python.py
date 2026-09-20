@@ -6,7 +6,7 @@ measurable cost over the C path - the run loop is one call into C.
 import time
 import numpy as np
 import pytest
-import peakfft
+import apogee
 
 
 def _case(n, D, T, seed=0):
@@ -31,7 +31,7 @@ def _ref(d, h):
 @pytest.mark.parametrize("n,D,T", [(1024, 2, 3), (4096, 4, 4), (16384, 2, 2)])
 def test_matches_numpy(n, D, T):
     d, h = _case(n, D, T)
-    mf = peakfft.MatchedFilter(n, D, T)
+    mf = apogee.MatchedFilter(n, D, T)
     mf.set_data(_spec(d))
     mf.set_templates(_spec(h))
     bs = n // 4
@@ -52,7 +52,7 @@ def test_matches_numpy(n, D, T):
 def test_threshold_and_empty_bins():
     n, bs = 4096, 512
     d, h = _case(n, 1, 1, seed=3)
-    mf = peakfft.MatchedFilter(n, 1, 1)
+    mf = apogee.MatchedFilter(n, 1, 1)
     mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     mag = np.abs(_ref(d[0], h[0]))
     thr = float(np.sort(mag)[::-1][2])
@@ -72,7 +72,7 @@ def test_threshold_and_empty_bins():
 def test_window():
     n, bs = 4096, 256
     d, h = _case(n, 1, 1, seed=5)
-    mf = peakfft.MatchedFilter(n, 1, 1)
+    mf = apogee.MatchedFilter(n, 1, 1)
     mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     ws, we = 800, 3000
     peaks = mf.run(binsize=bs, window=(ws, we))
@@ -84,7 +84,7 @@ def test_window():
 def test_subrange_matches_full():
     n, D, T, bs = 1024, 4, 4, 256
     d, h = _case(n, D, T, seed=7)
-    mf = peakfft.MatchedFilter(n, D, T)
+    mf = apogee.MatchedFilter(n, D, T)
     mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     full = mf.run(binsize=bs)
     sub = mf.run(binsize=bs, data=(1, 2), templates=(2, 2))
@@ -96,7 +96,7 @@ def test_known_lag():
     rng = np.random.default_rng(11)
     d = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64)
     h = np.roll(d, -lag)
-    mf = peakfft.MatchedFilter(n, 1, 1)
+    mf = apogee.MatchedFilter(n, 1, 1)
     mf.set_data(_spec(d), index=0); mf.set_templates(_spec(h), index=0)
     peaks = mf.run(binsize=n)
     assert peaks[0, 0, 0]["index"] == lag
@@ -105,7 +105,7 @@ def test_known_lag():
 
 
 def test_shape_errors():
-    mf = peakfft.MatchedFilter(1024, 2, 2)
+    mf = apogee.MatchedFilter(1024, 2, 2)
     with pytest.raises(ValueError):
         mf.set_data(np.zeros((3, 1024), dtype=np.complex64))
     with pytest.raises(ValueError):
@@ -118,7 +118,7 @@ def test_python_overhead_is_negligible():
     """The pair loop is one call into C, so Python must not show up in the cost."""
     n, D, T = 4096, 8, 8
     d, h = _case(n, D, T, seed=13)
-    mf = peakfft.MatchedFilter(n, D, T)
+    mf = apogee.MatchedFilter(n, D, T)
     mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     best_small = best_large = 1e30
     for _ in range(5):

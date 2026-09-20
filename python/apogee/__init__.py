@@ -1,10 +1,10 @@
-"""peakfft - single-threaded batched matched filter with peak-only output.
+"""apogee - single-threaded batched matched filter with peak-only output.
 
 Correlate D data segments against T templates and report, for each pair, the
 loudest sample in each bin of a search window:
 
-    >>> import numpy as np, peakfft
-    >>> mf = peakfft.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
+    >>> import numpy as np, apogee
+    >>> mf = apogee.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
     >>> mf.set_data(data_spectra)         # (16, 16384) complex64, ALREADY FFT'd
     >>> mf.set_templates(template_spectra)
     >>> peaks = mf.run(binsize=1024, threshold=t, window=(a, b))

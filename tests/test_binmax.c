@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "peakfft.h"
+#include "apogee.h"
 
 static int checks=0, fails=0;
 #define CK(c,...) do{ checks++; if(!(c)){ fails++; printf("  FAIL "); printf(__VA_ARGS__); printf("\n"); } }while(0)
@@ -20,7 +20,7 @@ static double gs(void){ return sqrt(-2.0*log(u()+1e-300))*cos(2*M_PI*u()); }
 static int cmpdd(const void*a,const void*b){double x=*(const double*)a,y=*(const double*)b;return x<y?1:(x>y?-1:0);}
 
 static void run(size_t N,int B,size_t binsize,int sign,size_t ws,size_t we,int usethr){
-  pf_plan *p=pf_create(N); if(!p) return;
+  ap_plan *p=ap_create(N); if(!p) return;
   size_t dist=N;
   float *in=aligned_alloc(64,2*dist*(size_t)B*sizeof(float));
   float *ot=aligned_alloc(64,2*N*sizeof(float));
@@ -28,33 +28,33 @@ static void run(size_t N,int B,size_t binsize,int sign,size_t ws,size_t we,int u
   for(int b=0;b<B;b++) for(size_t n=0;n<N;n++){
     in[2*(b*dist+n)]=(float)gs(); in[2*(b*dist+n)+1]=(float)gs(); }
 
-  size_t nb=pf_nbins(p,binsize,ws,we);
-  CK(nb==(we-ws+binsize-1)/binsize,"N=%zu: pf_nbins %zu",N,nb);
-  pf_peak *pk=malloc((size_t)B*nb*sizeof(pf_peak));
+  size_t nb=ap_nbins(p,binsize,ws,we);
+  CK(nb==(we-ws+binsize-1)/binsize,"N=%zu: ap_nbins %zu",N,nb);
+  ap_peak *pk=malloc((size_t)B*nb*sizeof(ap_peak));
   int *cnt=malloc((size_t)B*sizeof(int));
 
   float T=0.f;
   if(usethr){
-    pf_fft(p,in,ot,sign);
+    ap_fft(p,in,ot,sign);
     for(size_t k=0;k<N;k++) mg[k]=hypot(ot[2*k],ot[2*k+1]);
     memcpy(srt,mg+ws,(we-ws)*sizeof(double));
     qsort(srt,we-ws,sizeof(double),cmpdd);
     size_t q=(we-ws)/1000; if(q<1) q=1;
     T=(float)(0.5*(srt[q]+srt[q+1]));
   }
-  int tot=pf_binmax(p,in,dist,B,binsize,T,pk,cnt,sign,ws,we);
-  CK(tot>=0,"N=%zu binsize=%zu: pf_binmax returned %d",N,binsize,tot);
+  int tot=ap_binmax(p,in,dist,B,binsize,T,pk,cnt,sign,ws,we);
+  CK(tot>=0,"N=%zu binsize=%zu: ap_binmax returned %d",N,binsize,tot);
 
   int sum=0;
   for(int b=0;b<B;b++){
-    pf_fft(p,in+2*b*dist,ot,sign);
+    ap_fft(p,in+2*b*dist,ot,sign);
     for(size_t k=0;k<N;k++) mg[k]=hypot(ot[2*k],ot[2*k+1]);
     int c=0;
     for(size_t j=0;j<nb;j++){
       size_t lo=ws+j*binsize, hi=lo+binsize; if(hi>we) hi=we;
       /* brute force: the loudest bin member, and whether it clears the floor */
       size_t best=lo; for(size_t k=lo;k<hi;k++) if(mg[k]>mg[best]) best=k;
-      pf_peak *q=&pk[(size_t)b*nb+j];
+      ap_peak *q=&pk[(size_t)b*nb+j];
       if(mg[best]<=(double)T){
         CK(q->index==-1,"N=%zu b=%d bin %zu: expected empty, got index %ld (mag %g, floor %g)",
            N,b,j,q->index,(double)q->magnitude,(double)T);
@@ -76,26 +76,26 @@ static void run(size_t N,int B,size_t binsize,int sign,size_t ws,size_t we,int u
     sum+=c;
   }
   CK(tot==sum,"N=%zu: total %d != sum %d",N,tot,sum);
-  free(in);free(ot);free(mg);free(srt);free(pk);free(cnt); pf_destroy(p);
+  free(in);free(ot);free(mg);free(srt);free(pk);free(cnt); ap_destroy(p);
 }
 
 int main(void){
-  if(!pf_supported(1024)){ printf("test_binmax: unsupported CPU, skipped\n"); return 0; }
-  const int quick = getenv("PF_QUICK") != NULL;
+  if(!ap_supported(1024)){ printf("test_binmax: unsupported CPU, skipped\n"); return 0; }
+  const int quick = getenv("AP_QUICK") != NULL;
   size_t Ns[]={1024,4096,16384,65536};
   int nN = quick?2:4;
   for(int i=0;i<nN;i++){
     size_t N=Ns[i]; int B=quick?4:8;
     for(size_t bs=16; bs<=N; bs*=4){
-      run(N,B,bs,PF_FORWARD,0,N,0);
-      run(N,B,bs,PF_FORWARD,0,N,1);
-      run(N,B,bs,PF_BACKWARD,0,N,1);
+      run(N,B,bs,AP_FORWARD,0,N,0);
+      run(N,B,bs,AP_FORWARD,0,N,1);
+      run(N,B,bs,AP_BACKWARD,0,N,1);
     }
     /* windowed, and deliberately not a multiple of the bin size */
-    run(N,B,N/8,PF_FORWARD,N/5,(size_t)(N*0.7),1);
-    run(N,B,N/8+3,PF_FORWARD,N/5+1,(size_t)(N*0.7),1);
-    run(N,B,97,PF_FORWARD,N/4,N/2,1);          /* ragged bins, straddles blocks */
-    run(N,B,N,PF_FORWARD,0,N,1);               /* one bin: global max */
+    run(N,B,N/8,AP_FORWARD,N/5,(size_t)(N*0.7),1);
+    run(N,B,N/8+3,AP_FORWARD,N/5+1,(size_t)(N*0.7),1);
+    run(N,B,97,AP_FORWARD,N/4,N/2,1);          /* ragged bins, straddles blocks */
+    run(N,B,N,AP_FORWARD,0,N,1);               /* one bin: global max */
   }
   printf("test_binmax %29s %d checks, %d failures  [%s]\n","",checks,fails,fails?"FAIL":"ok");
   return fails?1:0;

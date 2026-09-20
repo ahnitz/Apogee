@@ -1,11 +1,11 @@
-/* peakfft: the specialised AVX-512 back end.
+/* apogee: the specialised AVX-512 back end.
    N=1024 uses the L1-resident four-step kernel; 2^12..2^16 the balanced split;
    2^17..2^20 the traffic-minimising path with a 24-bit quantised intermediate. */
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <immintrin.h>
-#include "peakfft.h"
+#include "apogee.h"
 #include "internal.h"
 #include "backend.h"
 
@@ -16,23 +16,23 @@ typedef struct {
   void *bal;          /* codelet-based balanced split (src/balanced.c) */
 } AP;
 
-void pf_push(pf_cand *T,int K,int *n,float m2,int idx,float vr,float vi){
+void ap_push(ap_cand *T,int K,int *n,float m2,int idx,float vr,float vi){
   if(*n<K){ int i=(*n)++; T[i].mag2=m2; T[i].idx=idx; T[i].re=vr; T[i].im=vi;
-    while(i>0&&T[i].mag2<T[(i-1)/2].mag2){ pf_cand t=T[i];T[i]=T[(i-1)/2];T[(i-1)/2]=t; i=(i-1)/2; } return; }
+    while(i>0&&T[i].mag2<T[(i-1)/2].mag2){ ap_cand t=T[i];T[i]=T[(i-1)/2];T[(i-1)/2]=t; i=(i-1)/2; } return; }
   if(m2<=T[0].mag2) return;
   T[0].mag2=m2; T[0].idx=idx; T[0].re=vr; T[0].im=vi; int i=0;
   for(;;){ int l=2*i+1,r=l+1,s=i;
     if(l<K&&T[l].mag2<T[s].mag2) s=l;
     if(r<K&&T[r].mag2<T[s].mag2) s=r;
     if(s==i) break;
-    { pf_cand t=T[i];T[i]=T[s];T[s]=t; } i=s; }
+    { ap_cand t=T[i];T[i]=T[s];T[s]=t; } i=s; }
 }
 
 /* Same idea as the full-range prime, but restricted to whole 16-lane blocks that
    lie strictly inside [lo,hi).  Every candidate is then a real in-window element,
    so the K-th largest of the per-lane maxima is still a safe lower bound - and the
    windowed scan keeps the tight threshold instead of falling back to a push storm. */
-float pf_prime_threshold(const float *re,const float *im,int n,int K){
+float ap_prime_threshold(const float *re,const float *im,int n,int K){
   /* One branch-free pass gives 16 per-lane maxima.  Those are 16 genuine array
      elements, so their K-th largest never exceeds the K-th largest overall and is a
      safe scan threshold - and it is far tighter than a blanket -1, which is what
@@ -71,7 +71,7 @@ static void *a512_create(size_t N){
     p->re=aligned_alloc(64,1024*sizeof(float));
     p->im=aligned_alloc(64,1024*sizeof(float));
   } else {
-    p->bal = pf_be_bal16.create(N);
+    p->bal = ap_be_bal16.create(N);
     if(!p->bal){ free(p); return NULL; }
   }
   return p;
@@ -80,58 +80,58 @@ static void *a512_create(size_t N){
 static void a512_destroy(void *vp){
   AP *p=vp; if(!p) return;
   free(p->re); free(p->im);
-  if(p->bal) pf_be_bal16.destroy(p->bal);
+  if(p->bal) ap_be_bal16.destroy(p->bal);
   free(p);
 }
 
 static void a512_fft(void *vp,const float *in,float *out,int conj){
   AP *p=vp;
   if(p->N==1024){
-    pf_deint_c(in,p->re,p->im,1024,conj);
-    pf_fft1024_soa(p->re,p->im,p->t4r,p->t4i);
-    pf_inter_c(p->re,p->im,out,1024,conj);
+    ap_deint_c(in,p->re,p->im,1024,conj);
+    ap_fft1024_soa(p->re,p->im,p->t4r,p->t4i);
+    ap_inter_c(p->re,p->im,out,1024,conj);
   } else {
-    pf_be_bal16.fft(p->bal,in,out,conj);
+    ap_be_bal16.fft(p->bal,in,out,conj);
   }
 }
 
 static int a512_binmax(void *vp,const float *in,size_t binsize,float thr,
-                       pf_peak *out,int conj,size_t ws,size_t we){
+                       ap_peak *out,int conj,size_t ws,size_t we){
   AP *p=vp;
   if(p->N==1024){
-    pf_deint_c(in,p->re,p->im,1024,conj);
-    int r=pf_fft1024_binmax(p->re,p->im,p->t4r,p->t4i,binsize,thr,out,conj,
+    ap_deint_c(in,p->re,p->im,1024,conj);
+    int r=ap_fft1024_binmax(p->re,p->im,p->t4r,p->t4i,binsize,thr,out,conj,
                             (long)ws,(long)we);
     if(r==0) return 0;            /* -1 only means too many bins for the fused path */
   }
-  return pf_be_bal16.binmax(p->bal,in,binsize,thr,out,conj,ws,we);
+  return ap_be_bal16.binmax(p->bal,in,binsize,thr,out,conj,ws,we);
 }
 
 static int a512_binmax_split(void *vp,const float *re,const float *im,size_t binsize,
-                             float thr,pf_peak *out,int conj,size_t ws,size_t we){
+                             float thr,ap_peak *out,int conj,size_t ws,size_t we){
   AP *p=vp;
   if(p->N==1024){
     /* consumed in place, and already conjugated by the caller if needed - so no
        copy and no conjugate pass, which is the whole point of this entry point */
-    int r=pf_fft1024_binmax((float*)re,(float*)im,p->t4r,p->t4i,binsize,thr,out,conj,
+    int r=ap_fft1024_binmax((float*)re,(float*)im,p->t4r,p->t4i,binsize,thr,out,conj,
                             (long)ws,(long)we);
     if(r==0) return 0;
   }
-  return pf_be_bal16.binmax_split(p->bal,re,im,binsize,thr,out,conj,ws,we);
+  return ap_be_bal16.binmax_split(p->bal,re,im,binsize,thr,out,conj,ws,we);
 }
 
 static int a512_binmax_prod(void *vp,const float *dr,const float *di,
                             const float *tr,const float *ti,size_t binsize,
-                            float thr,pf_peak *out,int conj,size_t ws,size_t we){
+                            float thr,ap_peak *out,int conj,size_t ws,size_t we){
   AP *p=vp;
   /* N=1024 has no fused variant of its specialised kernel; the product there is
      8 KiB in L1 and not worth a second kernel.  Everything else goes to the
      generic fused path. */
   if(p->N==1024) return -1;
-  return pf_be_bal16.binmax_prod(p->bal,dr,di,tr,ti,binsize,thr,out,conj,ws,we);
+  return ap_be_bal16.binmax_prod(p->bal,dr,di,tr,ti,binsize,thr,out,conj,ws,we);
 }
 
-const pf_backend pf_be_avx512 = {
+const ap_backend ap_be_avx512 = {
   "avx512", a512_create, a512_destroy, a512_fft, a512_supported,
   a512_binmax, a512_binmax_split, a512_binmax_prod
 };

@@ -1,15 +1,15 @@
 /* Width abstraction so one source compiles to both AVX-512 (W=16) and AVX2 (W=8).
-   Only the operations peakfft's width-generic back end actually needs. */
-#ifndef PF_SIMD_H
-#define PF_SIMD_H
+   Only the operations apogee's width-generic back end actually needs. */
+#ifndef AP_SIMD_H
+#define AP_SIMD_H
 #include <immintrin.h>
 #include <stdint.h>
 
-#ifndef PF_W
-#error "define PF_W to 16 (AVX-512) or 8 (AVX2)"
+#ifndef AP_W
+#error "define AP_W to 16 (AVX-512) or 8 (AVX2)"
 #endif
 
-#if PF_W == 16
+#if AP_W == 16
 typedef __m512 vf;
 #define V_ZERO()        _mm512_setzero_ps()
 /* select by mask: lane set -> take b, clear -> keep a */
@@ -35,7 +35,7 @@ typedef __m512 vf;
 /* greater-than as a plain bitmask, one bit per lane */
 #define V_GT_MASK(a,b)  ((unsigned)_mm512_cmp_ps_mask(a,b,_CMP_GT_OQ))
 
-#elif PF_W == 8
+#elif AP_W == 8
 typedef __m256 vf;
 #define V_ZERO()        _mm256_setzero_ps()
 /* AVX2 has no mask registers; V_GT_MASK hands back a movemask bitfield, so turn
@@ -68,11 +68,11 @@ static inline __m256 v_maskof(unsigned m){
 #define V_ABS(a)        _mm256_andnot_ps(_mm256_castsi256_ps(_mm256_set1_epi32((int)0x80000000)),a)
 #define V_GT_MASK(a,b)  ((unsigned)_mm256_movemask_ps(_mm256_cmp_ps(a,b,_CMP_GT_OQ)))
 #else
-#error "PF_W must be 16 or 8"
+#error "AP_W must be 16 or 8"
 #endif
 
 /* ---- W x W register transpose ---- */
-#if PF_W == 16
+#if AP_W == 16
 #include "transpose16.h"
 #define V_TRANSPOSE(in,out) t16((in),(out))
 #else
@@ -95,7 +95,7 @@ static inline void t8(const __m256 *i, __m256 *o){
 #endif
 
 /* ---- interleaved complex <-> split, one vector's worth ---- */
-#if PF_W == 16
+#if AP_W == 16
 static inline void v_deint(const float *p, vf *re, vf *im){
   const __m512i ev=_mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30);
   const __m512i od=_mm512_setr_epi32(1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31);
@@ -125,7 +125,7 @@ static inline void v_inter(float *p, vf re, vf im){
 /* ---- int16 Q15 arithmetic (AVX-512 only for now) ----
    32 lanes per register.  VQ15_MUL is vpmulhrsw: (a*b + 0x4000) >> 15, i.e. a Q15
    multiply whose built-in >>15 means twiddles never grow the data. */
-#if PF_W == 16
+#if AP_W == 16
 typedef __m512i vq15;
 #define VQ15_SET1(x)   _mm512_set1_epi16(x)
 #define VQ15_ADD(a,b)  _mm512_add_epi16(a,b)
@@ -147,7 +147,7 @@ typedef __m256i vq15;
    The screening pass only needs ~1e-2 relative accuracy, so the intermediate is
    kept as 24-bit block floating point: a 16-bit plane that screening reads, and an
    8-bit residual read only for the few columns holding a winner. */
-#if PF_W == 16
+#if AP_W == 16
 typedef __m512i vi;
 typedef __m256i vi16;   /* W packed int16 */
 typedef __m128i vi8;    /* W packed int8  */
@@ -207,9 +207,9 @@ static inline __m128i vi_pack8(__m256i a){
 #endif
 
 static inline float v_reduce_max(vf v){
-  float t[PF_W]; V_STOREU(t,v);
+  float t[AP_W]; V_STOREU(t,v);
   float m=t[0];
-  for(int i=1;i<PF_W;i++) if(t[i]>m) m=t[i];
+  for(int i=1;i<AP_W;i++) if(t[i]>m) m=t[i];
   return m;
 }
 #endif

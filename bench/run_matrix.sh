@@ -8,10 +8,10 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_DYNAMIC=FA
 set -e
 for isa in avx512 avx2; do
   echo "################ $isa / quiet"
-  PF_CSV=m_${isa}_quiet.csv PEAKFFT_ISA=$isa taskset -c 4 ./bench/bench4 8
+  AP_CSV=m_${isa}_quiet.csv APOGEE_ISA=$isa taskset -c 4 ./bench/bench4 8
 done
 for isa in avx512 avx2; do
   echo "################ $isa / loaded (28 memory hogs)"
-  PF_CSV=m_${isa}_load.csv ./bench/with_load.sh 28 \
-     env PEAKFFT_ISA=$isa taskset -c 4 ./bench/bench4 8
+  AP_CSV=m_${isa}_load.csv ./bench/with_load.sh 28 \
+     env APOGEE_ISA=$isa taskset -c 4 ./bench/bench4 8
 done

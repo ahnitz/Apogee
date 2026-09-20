@@ -1,4 +1,4 @@
-/* peakfft - single-precision complex FFT specialised for finding the loudest bins.
+/* apogee - single-precision complex FFT specialised for finding the loudest bins.
  *
  * Single-threaded, x86-64 AVX-512.  Complex-to-complex, float32, forward and
  * backward.  Sizes 1024 and 4096 .. 1048576 (2^10, 2^12 .. 2^20).
@@ -6,20 +6,20 @@
  * "Loudest" means largest complex modulus |X[k]| = sqrt(re^2 + im^2).
  *
  * Sign convention matches FFTW and MKL:
- *   PF_FORWARD   X[k] = sum_n x[n] exp(-2*pi*i*n*k/N)
- *   PF_BACKWARD  X[k] = sum_n x[n] exp(+2*pi*i*n*k/N)
+ *   AP_FORWARD   X[k] = sum_n x[n] exp(-2*pi*i*n*k/N)
+ *   AP_BACKWARD  X[k] = sum_n x[n] exp(+2*pi*i*n*k/N)
  * Neither direction applies a 1/N scale, so a forward followed by a backward
  * transform multiplies the input by N.
  */
-#ifndef PEAKFFT_H
-#define PEAKFFT_H
+#ifndef APOGEE_H
+#define APOGEE_H
 #include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define PF_FORWARD  (-1)
-#define PF_BACKWARD (+1)
+#define AP_FORWARD  (-1)
+#define AP_BACKWARD (+1)
 
 
 /* One peak: where it is, and what the transform's value there is. */
@@ -27,31 +27,31 @@ typedef struct {
     long  index;      /* bin index k, in [0, N)                      */
     float re, im;     /* X[k]                                        */
     float magnitude;  /* |X[k]| = sqrt(re*re + im*im)                */
-} pf_peak;
+} ap_peak;
 
-typedef struct pf_plan pf_plan;
+typedef struct ap_plan ap_plan;
 
 /* Create a plan for transform length N.  Returns NULL if N is unsupported.
    One plan serves both directions. */
-pf_plan *pf_create(size_t N);
-void     pf_destroy(pf_plan *p);
-int      pf_supported(size_t N);
+ap_plan *ap_create(size_t N);
+void     ap_destroy(ap_plan *p);
+int      ap_supported(size_t N);
 
 /* Name of the back end that will be used: "avx512", "avx2", or "unsupported".
-   Override with the PEAKFFT_ISA environment variable (see README). */
-const char *pf_isa(void);
+   Override with the APOGEE_ISA environment variable (see README). */
+const char *ap_isa(void);
 
 /* Name of the back end this plan actually selected (autotuning may pick a
-   different one from pf_isa() for large N). */
-const char *pf_plan_backend(const pf_plan *p);
+   different one from ap_isa() for large N). */
+const char *ap_plan_backend(const ap_plan *p);
 
 /* Full transform.  in/out are interleaved complex float, N elements each;
-   out must not alias in.  64-byte alignment is best.  sign is PF_FORWARD or
-   PF_BACKWARD.  Mainly a reference and test hook - pf_topk is the fast path. */
-void pf_fft(pf_plan *p, const float *in, float *out, int sign);
+   out must not alias in.  64-byte alignment is best.  sign is AP_FORWARD or
+   AP_BACKWARD.  Mainly a reference and test hook - ap_topk is the fast path. */
+void ap_fft(ap_plan *p, const float *in, float *out, int sign);
 
 /* Transform returning only the K loudest bins, in descending |X| order.
-   peaks must have room for K entries; K is clamped to PF_MAX_K.
+   peaks must have room for K entries; K is clamped to AP_MAX_K.
    Returns the number written.  The output array is never materialised. */
 
 /* ---- batched matched filter -----------------------------------------------
@@ -59,7 +59,7 @@ void pf_fft(pf_plan *p, const float *in, float *out, int sign);
 
        z[k] = IFFT( FFT(data_d)[f] * conj(FFT(tmpl_t)[f]) )[k]
 
-   and the same peak report as pf_binmax: the loudest sample per bin of the
+   and the same peak report as ap_binmax: the loudest sample per bin of the
    search window, with a detection floor.
 
    Segments are supplied ALREADY TRANSFORMED - the caller's pipeline has them in
@@ -70,26 +70,26 @@ void pf_fft(pf_plan *p, const float *in, float *out, int sign);
    once per segment, so it stays amortised however many pairs run.
 
    Peaks for pair (d,t) land at peaks[((d-d0)*nt + (t-t0)) * nbins], dense and
-   indexed by bin exactly as pf_binmax.  counts, if given, holds one crossing
+   indexed by bin exactly as ap_binmax.  counts, if given, holds one crossing
    count per pair in the same order. */
-typedef struct pf_mf_plan pf_mf_plan;
+typedef struct ap_mf_plan ap_mf_plan;
 
-pf_mf_plan *pf_mf_create(size_t n, int ndata, int ntmpl);
-void        pf_mf_destroy(pf_mf_plan *p);
-size_t      pf_mf_nbins(const pf_mf_plan *p, size_t binsize, size_t start, size_t end);
+ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl);
+void        ap_mf_destroy(ap_mf_plan *p);
+size_t      ap_mf_nbins(const ap_mf_plan *p, size_t binsize, size_t start, size_t end);
 
 /* Ingest.  spec is the segment's SPECTRUM: n interleaved complex float32, the
    unnormalised forward transform of the segment, in natural frequency order.
    Returns 0, or -1 on error. */
-int pf_mf_set_data    (pf_mf_plan *p, int d, const float *spec);
-int pf_mf_set_template(pf_mf_plan *p, int t, const float *spec);
+int ap_mf_set_data    (ap_mf_plan *p, int d, const float *spec);
+int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec);
 
 /* Run the pairs [d0,d0+nd) x [t0,t0+nt).  Any sub-block must give the same
    answer as the corresponding slice of the whole, which is what makes tiling
    safe to tune.  Returns total crossings, or -1. */
-int pf_mf_run(pf_mf_plan *p, int d0, int nd, int t0, int nt,
+int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
               size_t binsize, float threshold,
-              pf_peak *peaks, int *counts, size_t start, size_t end);
+              ap_peak *peaks, int *counts, size_t start, size_t end);
 
 /* ---- binned maximum -------------------------------------------------------
    The search window [start,end) is cut into bins of `binsize` output samples and
@@ -101,7 +101,7 @@ int pf_mf_run(pf_mf_plan *p, int d0, int nd, int t0, int nt,
    an index blend with no branches, no heap and no final sort - where the top-K
    path has an unpredictable branch per block and a heap push per candidate.
 
-   nbins = ceil((end-start)/binsize); pf_nbins() computes it.  peaks must hold
+   nbins = ceil((end-start)/binsize); ap_nbins() computes it.  peaks must hold
    B*nbins entries: bin j of transform b lands at peaks[b*nbins + j], in
    increasing frequency, so the output is dense and indexable without a search.
 
@@ -112,33 +112,33 @@ int pf_mf_run(pf_mf_plan *p, int d0, int nd, int t0, int nt,
    Pass threshold 0 to report every bin's maximum.
 
    Returns the total number of crossings across the batch, or -1 on error. */
-size_t pf_nbins(const pf_plan *p, size_t binsize, size_t start, size_t end);
+size_t ap_nbins(const ap_plan *p, size_t binsize, size_t start, size_t end);
 
-/* As pf_binmax for a single transform, but the input is already split into
+/* As ap_binmax for a single transform, but the input is already split into
    separate real and imaginary arrays.  Saves the deinterleave for callers that
    naturally hold data that way - the matched filter forms its products directly
    into split arrays. */
-int pf_binmax_split(pf_plan *p, const float *re, const float *im,
-                    size_t binsize, float threshold, pf_peak *peaks, int *count,
+int ap_binmax_split(ap_plan *p, const float *re, const float *im,
+                    size_t binsize, float threshold, ap_peak *peaks, int *count,
                     int sign, size_t start, size_t end);
 
 /* Binned maximum of the matched-filter product, with the product formed inside
    the transform's load so it never reaches memory.  Returns -1 if the selected
    back end has no fused path for this length, in which case form the product and
-   call pf_binmax_split. */
+   call ap_binmax_split. */
 /* SIMD lane width of the active back end (8 or 16), or 0 if unsupported. */
-int pf_lane_width(void);
+int ap_lane_width(void);
 
-int pf_binmax_prod(pf_plan *p, const float *dr, const float *di,
+int ap_binmax_prod(ap_plan *p, const float *dr, const float *di,
                    const float *tr, const float *ti,
-                   size_t binsize, float threshold, pf_peak *peaks, int *count,
+                   size_t binsize, float threshold, ap_peak *peaks, int *count,
                    int sign, size_t start, size_t end);
 
-int pf_binmax(pf_plan *p, const float *in, size_t dist, int B,
-              size_t binsize, float threshold, pf_peak *peaks, int *counts,
+int ap_binmax(ap_plan *p, const float *in, size_t dist, int B,
+              size_t binsize, float threshold, ap_peak *peaks, int *counts,
               int sign, size_t start, size_t end);
 
-int pf_topk_window(pf_plan *p, const float *in, int K, pf_peak *peaks, int sign,
+int ap_topk_window(ap_plan *p, const float *in, int K, ap_peak *peaks, int sign,
                    size_t start, size_t end);
 
 #ifdef __cplusplus

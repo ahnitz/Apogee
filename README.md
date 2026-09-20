@@ -1,4 +1,4 @@
-# peakfft
+# apogee
 
 **Work in progress.** A testbed, not something to depend on yet. It has run on
 one machine with one compiler, the API still moves, and the size list is short.
@@ -60,7 +60,7 @@ run the same algorithm with the same reuse — forward transforms are outside th
 timing on every side, amd-fftw uses `fftwf_execute_dft` so it is not charged for
 copies, and the baselines get the same vectorised complex product.
 
-| N | MKL | amd-fftw | peakfft | vs MKL | vs amd-fftw |
+| N | MKL | amd-fftw | apogee | vs MKL | vs amd-fftw |
 |---|---|---|---|---|---|
 | 2^10 | 1.3 | 0.7 | **0.5** | 2.82x | 1.62x |
 | 2^12 | 6.2 | 3.9 | **2.5** | 2.52x | 1.56x |
@@ -68,7 +68,7 @@ copies, and the baselines get the same vectorised complex product.
 | 2^16 | 140.7 | 113.3 | **62.4** | 2.25x | 1.82x |
 | 2^18 | 1206.8 | 616.6 | **384.6** | 3.14x | 1.60x |
 
-µs per pair, peakfft's including its ingest. Faster than both at every size.
+µs per pair, apogee's including its ingest. Faster than both at every size.
 
 Per-pair cost improves as the work grows, which is what reuse should do: at 2^14,
 D=1/T=16 gives 25.6 µs/pair and D=32/T=32 gives 11.7.
@@ -82,23 +82,23 @@ dispatch rather than algorithm. That is why amd-fftw is the number to watch.
 C:
 
 ```c
-pf_mf_plan *mf = pf_mf_create(1u<<14, 16, 16);
-for (int d = 0; d < 16; d++) pf_mf_set_data(mf, d, data_spectrum[d]);
-for (int t = 0; t < 16; t++) pf_mf_set_template(mf, t, tmpl_spectrum[t]);
+ap_mf_plan *mf = ap_mf_create(1u<<14, 16, 16);
+for (int d = 0; d < 16; d++) ap_mf_set_data(mf, d, data_spectrum[d]);
+for (int t = 0; t < 16; t++) ap_mf_set_template(mf, t, tmpl_spectrum[t]);
 
-size_t nb = pf_mf_nbins(mf, 1024, start, end);
-pf_peak *peaks = malloc(16*16*nb*sizeof *peaks);
+size_t nb = ap_mf_nbins(mf, 1024, start, end);
+ap_peak *peaks = malloc(16*16*nb*sizeof *peaks);
 int counts[16*16];
-pf_mf_run(mf, 0,16, 0,16, 1024, threshold, peaks, counts, start, end);
+ap_mf_run(mf, 0,16, 0,16, 1024, threshold, peaks, counts, start, end);
 /* pair (d,t) bin j -> peaks[(d*16 + t)*nb + j]; index -1 means no crossing */
-pf_mf_destroy(mf);
+ap_mf_destroy(mf);
 ```
 
 Python:
 
 ```python
-import numpy as np, peakfft
-mf = peakfft.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
+import numpy as np, apogee
+mf = apogee.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
 mf.set_data(data_spectra)           # (16, 16384) complex64, already transformed
 mf.set_templates(template_spectra)
 peaks = mf.run(binsize=1024, threshold=t, window=(a, b))

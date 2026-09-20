@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "peakfft.h"
+#include "apogee.h"
 
 static int checks=0, fails=0;
 #define CK(c,...) do{ checks++; if(!(c)){ fails++; if(fails<25){printf("  FAIL ");printf(__VA_ARGS__);printf("\n");} } }while(0)
@@ -49,21 +49,21 @@ static void refpair(const float *d,const float *h,size_t n,double *mag,double *z
 }
 
 static void run(size_t n,int D,int T,size_t binsize,size_t ws,size_t we,int usethr){
-  pf_mf_plan *p=pf_mf_create(n,D,T); if(!p) return;
+  ap_mf_plan *p=ap_mf_create(n,D,T); if(!p) return;
   float *data=malloc((size_t)D*2*n*4), *tmpl=malloc((size_t)T*2*n*4);
   for(int d=0;d<D;d++) for(size_t k=0;k<n;k++){
     data[(size_t)d*2*n+2*k]=(float)gs(); data[(size_t)d*2*n+2*k+1]=(float)gs(); }
   for(int t=0;t<T;t++) for(size_t k=0;k<n;k++){
     tmpl[(size_t)t*2*n+2*k]=(float)gs(); tmpl[(size_t)t*2*n+2*k+1]=(float)gs(); }
   /* segments are supplied already transformed */
-  pf_plan *fp=pf_create(n); float *sp=malloc(2*n*4);
-  for(int d=0;d<D;d++){ pf_fft(fp,data+(size_t)d*2*n,sp,PF_FORWARD);
-    CK(pf_mf_set_data(p,d,sp)==0,"set_data %d",d); }
-  for(int t=0;t<T;t++){ pf_fft(fp,tmpl+(size_t)t*2*n,sp,PF_FORWARD);
-    CK(pf_mf_set_template(p,t,sp)==0,"set_template %d",t); }
+  ap_plan *fp=ap_create(n); float *sp=malloc(2*n*4);
+  for(int d=0;d<D;d++){ ap_fft(fp,data+(size_t)d*2*n,sp,AP_FORWARD);
+    CK(ap_mf_set_data(p,d,sp)==0,"set_data %d",d); }
+  for(int t=0;t<T;t++){ ap_fft(fp,tmpl+(size_t)t*2*n,sp,AP_FORWARD);
+    CK(ap_mf_set_template(p,t,sp)==0,"set_template %d",t); }
 
-  size_t nb=pf_mf_nbins(p,binsize,ws,we);
-  pf_peak *pk=malloc((size_t)D*T*nb*sizeof(pf_peak));
+  size_t nb=ap_mf_nbins(p,binsize,ws,we);
+  ap_peak *pk=malloc((size_t)D*T*nb*sizeof(ap_peak));
   int *cnt=malloc((size_t)D*T*sizeof(int));
   double *mag=malloc(n*8),*zr=malloc(n*8),*zi=malloc(n*8);
 
@@ -73,8 +73,8 @@ static void run(size_t n,int D,int T,size_t binsize,size_t ws,size_t we,int uset
     double mx=0; for(size_t k=ws;k<we;k++) if(mag[k]>mx) mx=mag[k];
     T0=(float)(mx*0.5);                       /* roughly half the pair's peak */
   }
-  int tot=pf_mf_run(p,0,D,0,T,binsize,T0,pk,cnt,ws,we);
-  CK(tot>=0,"pf_mf_run n=%zu D=%d T=%d",n,D,T);
+  int tot=ap_mf_run(p,0,D,0,T,binsize,T0,pk,cnt,ws,we);
+  CK(tot>=0,"ap_mf_run n=%zu D=%d T=%d",n,D,T);
 
   double worst=0;
   for(int d=0;d<D;d++) for(int t=0;t<T;t++){
@@ -85,7 +85,7 @@ static void run(size_t n,int D,int T,size_t binsize,size_t ws,size_t we,int uset
     for(size_t j=0;j<nb;j++){
       size_t lo=ws+j*binsize, hi=lo+binsize; if(hi>we) hi=we;
       size_t best=lo; for(size_t k=lo;k<hi;k++) if(mag[k]>mag[best]) best=k;
-      pf_peak *q=&pk[row*nb+j];
+      ap_peak *q=&pk[row*nb+j];
       if(mag[best] <= (double)T0){
         CK(q->index==-1,"n=%zu d=%d t=%d bin %zu: expected empty, got %ld",n,d,t,j,q->index);
         continue;
@@ -102,9 +102,9 @@ static void run(size_t n,int D,int T,size_t binsize,size_t ws,size_t we,int uset
   /* blocking invariance: any sub-block equals the matching slice of the whole */
   if(D>1 && T>1){
     int nd=D/2, nt=T/2, d0=D-nd, t0=T-nt;
-    pf_peak *sub=malloc((size_t)nd*nt*nb*sizeof(pf_peak));
+    ap_peak *sub=malloc((size_t)nd*nt*nb*sizeof(ap_peak));
     int *sc=malloc((size_t)nd*nt*sizeof(int));
-    CK(pf_mf_run(p,d0,nd,t0,nt,binsize,T0,sub,sc,ws,we)>=0,"sub-block run");
+    CK(ap_mf_run(p,d0,nd,t0,nt,binsize,T0,sub,sc,ws,we)>=0,"sub-block run");
     for(int d=0;d<nd;d++) for(int t=0;t<nt;t++){
       size_t rf=(size_t)(d0+d)*T+(t0+t), rs2=(size_t)d*nt+t;
       CK(sc[rs2]==cnt[rf],"sub-block count differs at d=%d t=%d",d0+d,t0+t);
@@ -115,59 +115,59 @@ static void run(size_t n,int D,int T,size_t binsize,size_t ws,size_t we,int uset
     free(sub);free(sc);
   }
   free(data);free(tmpl);free(pk);free(cnt);free(mag);free(zr);free(zi);free(sp);
-  pf_destroy(fp); pf_mf_destroy(p);
+  ap_destroy(fp); ap_mf_destroy(p);
 }
 
 /* template is a circular shift of the data: the peak must be exactly at that lag */
 static void run_known(size_t n,int lag){
-  pf_mf_plan *p=pf_mf_create(n,1,1); if(!p) return;
+  ap_mf_plan *p=ap_mf_create(n,1,1); if(!p) return;
   float *d=malloc(2*n*4),*h=malloc(2*n*4);
   double energy=0;
   for(size_t k=0;k<n;k++){ d[2*k]=(float)gs(); d[2*k+1]=(float)gs();
     energy += (double)d[2*k]*d[2*k] + (double)d[2*k+1]*d[2*k+1]; }
   for(size_t k=0;k<n;k++){ size_t src=(k+(size_t)lag)%n;
     h[2*k]=d[2*src]; h[2*k+1]=d[2*src+1]; }
-  { pf_plan *fp=pf_create(n); float *sp=malloc(2*n*4);
-    pf_fft(fp,d,sp,PF_FORWARD); pf_mf_set_data(p,0,sp);
-    pf_fft(fp,h,sp,PF_FORWARD); pf_mf_set_template(p,0,sp);
-    free(sp); pf_destroy(fp); }
+  { ap_plan *fp=ap_create(n); float *sp=malloc(2*n*4);
+    ap_fft(fp,d,sp,AP_FORWARD); ap_mf_set_data(p,0,sp);
+    ap_fft(fp,h,sp,AP_FORWARD); ap_mf_set_template(p,0,sp);
+    free(sp); ap_destroy(fp); }
 
-  pf_peak pk[1]; int c[1];
-  pf_mf_run(p,0,1,0,1,n,0.f,pk,c,0,n);
+  ap_peak pk[1]; int c[1];
+  ap_mf_run(p,0,1,0,1,n,0.f,pk,c,0,n);
   CK(pk[0].index==lag,"known-answer n=%zu: peak at %ld, expected lag %d",n,pk[0].index,lag);
   /* the backward transform is unnormalised, matching FFTW and MKL, so a perfect
      match returns n * energy rather than energy */
   double want = energy*(double)n;
   CK(fabs(pk[0].magnitude-want) <= 1e-4*want,
      "known-answer n=%zu: magnitude %g, expected n*energy %g",n,(double)pk[0].magnitude,want);
-  free(d);free(h); pf_mf_destroy(p);
+  free(d);free(h); ap_mf_destroy(p);
 }
 
 /* duplicating a template must give identical rows - catches state leaking */
 static void run_reuse(size_t n){
-  pf_mf_plan *p=pf_mf_create(n,2,3); if(!p) return;
+  ap_mf_plan *p=ap_mf_create(n,2,3); if(!p) return;
   float *d=malloc(2*2*n*4),*h=malloc(3*2*n*4);
   for(size_t i=0;i<2*2*n;i++) d[i]=(float)gs();
   for(size_t i=0;i<3*2*n;i++) h[i]=(float)gs();
   memcpy(h+2*2*n, h, 2*n*sizeof(float));      /* template 2 == template 0 */
-  { pf_plan *fp=pf_create(n); float *sp=malloc(2*n*4);
-    for(int i=0;i<2;i++){ pf_fft(fp,d+(size_t)i*2*n,sp,PF_FORWARD); pf_mf_set_data(p,i,sp); }
-    for(int i=0;i<3;i++){ pf_fft(fp,h+(size_t)i*2*n,sp,PF_FORWARD); pf_mf_set_template(p,i,sp); }
-    free(sp); pf_destroy(fp); }
-  size_t bs=n/4, nb=pf_mf_nbins(p,bs,0,n);
-  pf_peak *pk=malloc(2*3*nb*sizeof(pf_peak)); int cnt[6];
-  pf_mf_run(p,0,2,0,3,bs,0.f,pk,cnt,0,n);
+  { ap_plan *fp=ap_create(n); float *sp=malloc(2*n*4);
+    for(int i=0;i<2;i++){ ap_fft(fp,d+(size_t)i*2*n,sp,AP_FORWARD); ap_mf_set_data(p,i,sp); }
+    for(int i=0;i<3;i++){ ap_fft(fp,h+(size_t)i*2*n,sp,AP_FORWARD); ap_mf_set_template(p,i,sp); }
+    free(sp); ap_destroy(fp); }
+  size_t bs=n/4, nb=ap_mf_nbins(p,bs,0,n);
+  ap_peak *pk=malloc(2*3*nb*sizeof(ap_peak)); int cnt[6];
+  ap_mf_run(p,0,2,0,3,bs,0.f,pk,cnt,0,n);
   for(int dd=0;dd<2;dd++) for(size_t j=0;j<nb;j++){
-    pf_peak *a=&pk[((size_t)dd*3+0)*nb+j], *b=&pk[((size_t)dd*3+2)*nb+j];
+    ap_peak *a=&pk[((size_t)dd*3+0)*nb+j], *b=&pk[((size_t)dd*3+2)*nb+j];
     CK(a->index==b->index && a->magnitude==b->magnitude,
        "reuse n=%zu d=%d bin %zu: duplicate template gave different results",n,dd,j);
   }
-  free(d);free(h);free(pk); pf_mf_destroy(p);
+  free(d);free(h);free(pk); ap_mf_destroy(p);
 }
 
 int main(void){
-  if(!pf_supported(1024)){ printf("test_mf: unsupported CPU, skipped\n"); return 0; }
-  const int quick = getenv("PF_QUICK")!=NULL;
+  if(!ap_supported(1024)){ printf("test_mf: unsupported CPU, skipped\n"); return 0; }
+  const int quick = getenv("AP_QUICK")!=NULL;
   run(1024,2,2,1024,0,1024,0);
   run(1024,2,2,256,0,1024,1);
   run_known(1024,137); run_known(4096,1000);

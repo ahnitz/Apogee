@@ -211,11 +211,11 @@ Three attempts on that, all measured, none kept:
 
 1. **Non-temporal intermediate stores.** Full-line stores whose line is dead until
    stage B reads it back should skip the read-for-ownership. Wash: 2^18 405 vs 407,
-   2^20 2200 vs 2184. Code kept behind `PEAKFFT_NT`, default off.
+   2^20 2200 vs 2184. Code kept behind `APOGEE_NT`, default off.
 2. **Huge pages for the big buffers** (`MADV_HUGEPAGE`). No change. The strided walk
    is over the *caller's* input buffer, which we do not allocate. Kept anyway - it
    costs nothing and the TLB argument still holds for the intermediate.
-3. **Blocking stage A over G groups per input pass** (`PEAKFFT_GBLK`). Recorded here
+3. **Blocking stage A over G groups per input pass** (`APOGEE_GBLK`). Recorded here
    originally as "gains nothing". **That was wrong** - see the correction below. The
    sequential runs it was judged on had 405-455 us of spread at 2^18, larger than the
    effect, so no conclusion was available either way.
@@ -251,7 +251,7 @@ an identical pair of libraries and demanding it say "noise":
 
 Usage:
 
-    make libpeakfft.so && cp libpeakfft.so /tmp/base.so
+    make libapogee.so && cp libapogee.so /tmp/base.so
     ...edit...
     make ab BASE=/tmp/base.so ABFLAGS="-t 10 12 14 16"
 
@@ -292,7 +292,7 @@ To tune one parameter, hold the build fixed and vary it with `-e`.
 
 ## Binned maximum
 
-`pf_binmax` reports the loudest sample in each bin of the search window, dense and
+`ap_binmax` reports the loudest sample in each bin of the search window, dense and
 indexed by bin, with the floor suppressing bins that never cross. Semantically it
 is what a matched-filter search wants; the interesting part is what it took to
 make it as fast as the top-K path rather than slower.
@@ -357,7 +357,7 @@ So the intermediate store is 13% at 2^12 and 20% at 2^14. Two hypotheses, both w
    sizes and spends 47% outside its codelets; the generic path spends 67% at the
    same codelet cost. Compiling balanced.c with N1/N2 as literals: 3-5%. Not it.
 2. **L1 set aliasing on the intermediate row stride.** N2 is a power of two, so a
-   tile column's PF_W stores land on sets a power of two apart - exactly what made
+   tile column's AP_W stores land on sets a power of two apart - exactly what made
    the element stride 33 instead of 32. Padding the row by one vector, isolated on
    a single build with `-e`: noise at every size.
 
@@ -456,7 +456,7 @@ against amd-fftw's 0.26. **A tie, not the 1.25x projected earlier** - because th
 integrated transform is 0.152, not the 0.094 the isolated codelets suggested.
 
 The one way it becomes a clear win is if the caller supplies input already
-quantised (the pf_qinput API exists for exactly this): 0.152 + 0.03 + 0.02 = 0.20
+quantised (the ap_qinput API exists for exactly this): 0.152 + 0.03 + 0.02 = 0.20
 against 0.26, about 1.3x. That is a real option for a pipeline whose data is
 already fixed point, but it is not a like-for-like comparison with a library that
 must take fp32.
@@ -465,14 +465,14 @@ must take fp32.
 
 Stage A's input walk touches 128 bytes per 8 KiB row, and widening it with group
 blocking was worth 1.05-1.21x. Stage B reads the intermediate with the same shape
-- PF_W floats out of every `istr` row, 64 bytes per 4 KiB at 2^20 - so the same
+- AP_W floats out of every `istr` row, 64 bytes per 4 KiB at 2^20 - so the same
 treatment looked obviously right.
 
 It is not: blocking 4, 8 or 16 column blocks per pass measures 1.02-1.05x *worse*
 at 2^18 and 2^20, and neutral at 2^16 (paired A/B, same build, only the knob
 varying). The difference from stage A is that stage B's stride is constant and
 short enough for the hardware prefetcher, and the wider buffers cost L2 for
-nothing. Default 1; mechanism kept behind `PEAKFFT_BBLK`.
+nothing. Default 1; mechanism kept behind `APOGEE_BBLK`.
 
 Ablation of the large sizes with the current build, windowed binmax, B=16:
 

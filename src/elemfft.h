@@ -1,7 +1,7 @@
 /* Element-space transform shared by both back ends.
-   Width-generic (PF_W), so it serves the AVX-512 and AVX2 paths from one source. */
-#ifndef PF_ELEMFFT_H
-#define PF_ELEMFFT_H
+   Width-generic (AP_W), so it serves the AVX-512 and AVX2 paths from one source. */
+#ifndef AP_ELEMFFT_H
+#define AP_ELEMFFT_H
 #include "simd.h"
 #include "codelets.h"
 

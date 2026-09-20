@@ -1,5 +1,5 @@
-#ifndef PF_T16_H
-#define PF_T16_H
+#ifndef AP_T16_H
+#define AP_T16_H
 #include <immintrin.h>
 #define CPD(x) _mm512_castps_pd(x)
 #define CPS(x) _mm512_castpd_ps(x)

@@ -1,4 +1,4 @@
-/* peakfft Python extension: the matched filter, plus the plain transform.
+/* apogee Python extension: the matched filter, plus the plain transform.
  *
  * The whole D x T pair loop happens in one call into C, so no per-pair Python
  * overhead reaches the measurement.  Ingest takes a buffer per segment, which is
@@ -6,30 +6,30 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <stdlib.h>
-#include "peakfft.h"
+#include "apogee.h"
 
 /* ---------------- plain transform plan ---------------- */
-typedef struct { PyObject_HEAD pf_plan *p; Py_ssize_t n; } PlanObject;
+typedef struct { PyObject_HEAD ap_plan *p; Py_ssize_t n; } PlanObject;
 
 static int Plan_init(PlanObject *self,PyObject *args,PyObject *kw){
   Py_ssize_t n; (void)kw;
   if(!PyArg_ParseTuple(args,"n",&n)) return -1;
-  self->p=pf_create((size_t)n);
+  self->p=ap_create((size_t)n);
   if(!self->p){ PyErr_Format(PyExc_ValueError,"unsupported transform length %zd",n); return -1; }
   self->n=n; return 0;
 }
 static void Plan_dealloc(PlanObject *self){
-  if(self->p) pf_destroy(self->p);
+  if(self->p) ap_destroy(self->p);
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 static PyObject *Plan_getn(PlanObject *self,void *c){(void)c;return PyLong_FromSsize_t(self->n);}
 static PyGetSetDef Plan_getset[]={{"n",(getter)Plan_getn,NULL,"transform length",NULL},{NULL}};
 static PyTypeObject PlanType={
   PyVarObject_HEAD_INIT(NULL,0)
-  .tp_name="peakfft._core.Plan", .tp_basicsize=sizeof(PlanObject),
+  .tp_name="apogee._core.Plan", .tp_basicsize=sizeof(PlanObject),
   .tp_flags=Py_TPFLAGS_DEFAULT, .tp_new=PyType_GenericNew,
   .tp_init=(initproc)Plan_init, .tp_dealloc=(destructor)Plan_dealloc,
-  .tp_getset=Plan_getset, .tp_doc="peakfft transform plan (opaque)",
+  .tp_getset=Plan_getset, .tp_doc="apogee transform plan (opaque)",
 };
 
 static PyObject *m_fft(PyObject *m,PyObject *args){
@@ -40,25 +40,25 @@ static PyObject *m_fft(PyObject *m,PyObject *args){
     return PyErr_Format(PyExc_ValueError,"buffers must hold %zd complex64 samples",pl->n);
   }
   Py_BEGIN_ALLOW_THREADS
-  pf_fft(pl->p,(const float*)bi.buf,(float*)bo.buf,sign);
+  ap_fft(pl->p,(const float*)bi.buf,(float*)bo.buf,sign);
   Py_END_ALLOW_THREADS
   PyBuffer_Release(&bi);PyBuffer_Release(&bo);
   Py_RETURN_NONE;
 }
 
 /* ---------------- matched filter ---------------- */
-typedef struct { PyObject_HEAD pf_mf_plan *p; Py_ssize_t n; int nd,nt; } MFObject;
+typedef struct { PyObject_HEAD ap_mf_plan *p; Py_ssize_t n; int nd,nt; } MFObject;
 
 static int MF_init(MFObject *self,PyObject *args,PyObject *kw){
   Py_ssize_t n; int nd,nt; (void)kw;
   if(!PyArg_ParseTuple(args,"nii",&n,&nd,&nt)) return -1;
-  self->p=pf_mf_create((size_t)n,nd,nt);
+  self->p=ap_mf_create((size_t)n,nd,nt);
   if(!self->p){ PyErr_Format(PyExc_ValueError,
       "unsupported matched-filter shape n=%zd ndata=%d ntemplates=%d",n,nd,nt); return -1; }
   self->n=n; self->nd=nd; self->nt=nt; return 0;
 }
 static void MF_dealloc(MFObject *self){
-  if(self->p) pf_mf_destroy(self->p);
+  if(self->p) ap_mf_destroy(self->p);
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 static PyObject *MF_set(MFObject *self,PyObject *args,int is_data){
@@ -70,8 +70,8 @@ static PyObject *MF_set(MFObject *self,PyObject *args,int is_data){
   }
   int r;
   Py_BEGIN_ALLOW_THREADS
-  r = is_data ? pf_mf_set_data(self->p,i,(const float*)b.buf)
-              : pf_mf_set_template(self->p,i,(const float*)b.buf);
+  r = is_data ? ap_mf_set_data(self->p,i,(const float*)b.buf)
+              : ap_mf_set_template(self->p,i,(const float*)b.buf);
   Py_END_ALLOW_THREADS
   PyBuffer_Release(&b);
   if(r<0) return PyErr_Format(PyExc_IndexError,"index %d out of range",i);
@@ -86,19 +86,19 @@ static PyObject *MF_run(MFObject *self,PyObject *args){
   Py_buffer bidx,bval,bmag,bcnt;
   if(!PyArg_ParseTuple(args,"iiiindnnw*w*w*w*",&d0,&nd,&t0,&nt,&binsize,&thr,
                        &start,&end,&bidx,&bval,&bmag,&bcnt)) return NULL;
-  size_t nb=pf_mf_nbins(self->p,(size_t)binsize,(size_t)start,(size_t)end);
+  size_t nb=ap_mf_nbins(self->p,(size_t)binsize,(size_t)start,(size_t)end);
   Py_ssize_t rows=(Py_ssize_t)nd*nt, need=(Py_ssize_t)(rows*(Py_ssize_t)nb);
   PyObject *err=NULL;
   if(bidx.len<need*8 || bval.len<need*8 || bmag.len<need*4 || bcnt.len<rows*4)
     err=PyErr_Format(PyExc_ValueError,"output arrays too small for %zd pairs x %zu bins",rows,nb);
   if(err){ PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
            PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt); return NULL; }
-  pf_peak *pk=(pf_peak*)PyMem_Malloc((size_t)need*sizeof(pf_peak));
+  ap_peak *pk=(ap_peak*)PyMem_Malloc((size_t)need*sizeof(ap_peak));
   if(!pk){ PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
            PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt); return PyErr_NoMemory(); }
   int tot;
   Py_BEGIN_ALLOW_THREADS
-  tot=pf_mf_run(self->p,d0,nd,t0,nt,(size_t)binsize,(float)thr,pk,(int*)bcnt.buf,
+  tot=ap_mf_run(self->p,d0,nd,t0,nt,(size_t)binsize,(float)thr,pk,(int*)bcnt.buf,
                 (size_t)start,(size_t)end);
   Py_END_ALLOW_THREADS
   if(tot>=0){
@@ -109,13 +109,13 @@ static PyObject *MF_run(MFObject *self,PyObject *args){
   }
   PyMem_Free(pk);
   PyBuffer_Release(&bidx);PyBuffer_Release(&bval);PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt);
-  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"peakfft: matched filter failed"); return NULL; }
+  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"apogee: matched filter failed"); return NULL; }
   return PyLong_FromLong(tot);
 }
 static PyObject *MF_nbins(MFObject *self,PyObject *args){
   Py_ssize_t bs,st,en;
   if(!PyArg_ParseTuple(args,"nnn",&bs,&st,&en)) return NULL;
-  return PyLong_FromSize_t(pf_mf_nbins(self->p,(size_t)bs,(size_t)st,(size_t)en));
+  return PyLong_FromSize_t(ap_mf_nbins(self->p,(size_t)bs,(size_t)st,(size_t)en));
 }
 static PyMethodDef MF_methods[]={
   {"set_data",(PyCFunction)MF_set_data,METH_VARARGS,"set_data(i, buffer)"},
@@ -126,17 +126,17 @@ static PyMethodDef MF_methods[]={
 };
 static PyTypeObject MFType={
   PyVarObject_HEAD_INIT(NULL,0)
-  .tp_name="peakfft._core.MF", .tp_basicsize=sizeof(MFObject),
+  .tp_name="apogee._core.MF", .tp_basicsize=sizeof(MFObject),
   .tp_flags=Py_TPFLAGS_DEFAULT, .tp_new=PyType_GenericNew,
   .tp_init=(initproc)MF_init, .tp_dealloc=(destructor)MF_dealloc,
-  .tp_methods=MF_methods, .tp_doc="peakfft matched filter (opaque)",
+  .tp_methods=MF_methods, .tp_doc="apogee matched filter (opaque)",
 };
 
 static PyMethodDef methods[]={
   {"fft",m_fft,METH_VARARGS,"fft(plan, in, out, sign)"},
   {NULL,NULL,0,NULL}
 };
-static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"peakfft._core",NULL,-1,methods};
+static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"apogee._core",NULL,-1,methods};
 PyMODINIT_FUNC PyInit__core(void){
   if(PyType_Ready(&PlanType)<0) return NULL;
   if(PyType_Ready(&MFType)<0) return NULL;
@@ -144,7 +144,7 @@ PyMODINIT_FUNC PyInit__core(void){
   if(!m) return NULL;
   Py_INCREF(&PlanType); PyModule_AddObject(m,"Plan",(PyObject*)&PlanType);
   Py_INCREF(&MFType);   PyModule_AddObject(m,"MF",(PyObject*)&MFType);
-  PyModule_AddIntConstant(m,"FORWARD",PF_FORWARD);
-  PyModule_AddIntConstant(m,"BACKWARD",PF_BACKWARD);
+  PyModule_AddIntConstant(m,"FORWARD",AP_FORWARD);
+  PyModule_AddIntConstant(m,"BACKWARD",AP_BACKWARD);
   return m;
 }

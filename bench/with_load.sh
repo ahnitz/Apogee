@@ -6,7 +6,7 @@
 #
 # 1. The hogs are pinned OFF the measurement core.  Unpinned, the scheduler puts
 #    some of them on it and the "loaded" numbers are CPU theft rather than memory
-#    contention.  PF_LOAD_CPUS is the set they may use; it must exclude whatever
+#    contention.  AP_LOAD_CPUS is the set they may use; it must exclude whatever
 #    core the benchmark itself is pinned to.
 # 2. It refuses to start on top of a previous run's hogs.  Two cohorts stacked
 #    once and a regime silently ran at 62 workers instead of 28, putting 2^20 at
@@ -15,7 +15,7 @@
 #    matches the command line of whatever shell is doing the killing, so the
 #    script kills itself and the run dies half-finished.
 W=${1:-32}; shift
-CPUS=${PF_LOAD_CPUS:-0-3,5-31}
+CPUS=${AP_LOAD_CPUS:-0-3,5-31}
 
 if pgrep -x loadgen >/dev/null 2>&1; then
   echo "with_load.sh: $(pgrep -xc loadgen) loadgen processes already running; refusing" >&2

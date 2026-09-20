@@ -1,6 +1,6 @@
 /* Minimal FFTW declarations so the benchmark builds without fftw3-devel headers. */
-#ifndef PF_FFTW_MIN_H
-#define PF_FFTW_MIN_H
+#ifndef AP_FFTW_MIN_H
+#define AP_FFTW_MIN_H
 #include <stddef.h>
 typedef float fftwf_complex[2];
 typedef void *fftwf_plan;
