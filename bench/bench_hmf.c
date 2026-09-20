@@ -69,25 +69,35 @@ static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const 
   long p1,g1; ap_hmf_stats(hf,&p1,&g1);
 
   size_t band; int u,k; ap_hmf_config(hf,&band,&u,&k);
-  printf("  %-22s band=%-6zu U=%d K=%-2d  mf=%7.2f us  hmf=%7.2f us  %5.2fx  trig=%5.1f%%\n",
-         lab,band,u,k,tmf*1e6,thf*1e6,tmf/thf,100.0*(g1-g0)/(double)(p1-p0));
+  /* Normalise by n*log2(n): the full inverse's own work.  ps/(n log n) makes
+     sizes comparable and shows whether a route is hitting its flop bound or
+     paying overhead. */
+  double nl = (double)n * log2((double)n);
+  printf("  %-20s %7zu %6zu | %8.2f %8.2f | %7.1f %7.1f | %6.2fx %6.1f%%\n",
+         lab,n,band,tmf*1e6,thf*1e6,tmf*1e12/nl,thf*1e12/nl,
+         tmf/thf,100.0*(g1-g0)/(double)(p1-p0));
   free(pk);free(H);free(D); ap_mf_destroy(mf); ap_hmf_destroy(hf);
 }
 
 int main(int argc,char **argv){
   (void)argc;(void)argv;
-  printf("hierarchical vs full matched filter (backend %s), per pair\n\n",ap_isa());
+  printf("hierarchical vs full matched filter, backend %s\n",ap_isa());
+  printf("D=T=16 (16x16=256 pairs), bin n/4, whole record searched.\n");
+  printf("us/pair is wall time per (data,template) pair; ps/nlogn normalises by\n");
+  printf("the full inverse's own work so sizes are comparable.\n\n");
+  printf("  %-20s %7s %6s | %8s %8s | %7s %7s | %6s %7s\n",
+         "case","n","band","mf us","hmf us","mf ps","hmf ps","speedup","trig");
   printf(" pure noise - the gate should almost never open\n");
-  run_case(2048,16,16,5.5f,1e-2f,0.0,"2^11 snr5.5 fd1e-2");
-  run_case(4096,16,16,5.5f,1e-2f,0.0,"2^12 snr5.5 fd1e-2");
-  run_case(4096,16,16,5.0f,1e-4f,0.0,"2^12 snr5.0 fd1e-4");
-  run_case(8192,16,16,6.0f,1e-2f,0.0,"2^13 snr6.0 fd1e-2");
-  run_case(16384,8,8, 5.5f,1e-2f,0.0,"2^14 snr5.5 fd1e-2");
+  run_case(2048,16,16,5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
+  run_case(4096,16,16,5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
+  run_case(4096,16,16,5.0f,1e-4f,0.0,"snr5.0 fd1e-4");
+  run_case(8192,16,16,6.0f,1e-2f,0.0,"snr6.0 fd1e-2");
+  run_case(16384,16,16,5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
   printf("\n every data segment carries a signal - the worst case for the gate\n");
-  run_case(2048,16,16,5.5f,1e-2f,7.0,"2^11 snr5.5 fd1e-2");
-  run_case(4096,16,16,5.5f,1e-2f,7.0,"2^12 snr5.5 fd1e-2");
-  run_case(4096,16,16,5.0f,1e-4f,7.0,"2^12 snr5.0 fd1e-4");
-  run_case(8192,16,16,6.0f,1e-2f,7.0,"2^13 snr6.0 fd1e-2");
-  run_case(16384,8,8, 5.5f,1e-2f,7.0,"2^14 snr5.5 fd1e-2");
+  run_case(2048,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");
+  run_case(4096,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");
+  run_case(4096,16,16,5.0f,1e-4f,7.0,"snr5.0 fd1e-4");
+  run_case(8192,16,16,6.0f,1e-2f,7.0,"snr6.0 fd1e-2");
+  run_case(16384,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");
   return 0;
 }

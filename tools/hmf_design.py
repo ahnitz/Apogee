@@ -192,7 +192,14 @@ def design(n, want_f=0.85, taps=(4, 8, 12), Rs=(2, 4, 8, 16, 32, 64),
             if G > n: continue
             for K in taps:
                 graw, g = recovery(H, n, m, U, K)
-                cand.append(dict(R=R, U=U, K=K, m=m, G=G, f=f, g=g, graw=graw))
+                # Raw recovery of the EVEN half alone, i.e. the U=1 series at the
+                # same band.  At run time the even transform is done first; if
+                # its maximum is below graw1*gate the true peak cannot reach the
+                # gate, so the odd transform can be skipped entirely.  In noise
+                # that is almost always, which halves the coarse cost.
+                graw1, _ = recovery(H, n, m, 1, K)
+                cand.append(dict(R=R, U=U, K=K, m=m, G=G, f=f,
+                                 g=g, graw=graw, graw1=graw1))
     out = {}
     for T in Ts:
         for a in FDs:
@@ -277,17 +284,23 @@ static int hmf_choose(size_t n, float snr, float fd, size_t *band, int *u, int *
 /* raw=0 gives the interpolated recovery (calibrates the gate); raw=1 gives the
    raw-sample recovery (bounds the cheap pre-scan).  They differ by ~6% at U=2
    and ~18% at U=1, and confusing them costs detections. */
+/* raw=0: interpolated recovery, which calibrates the gate.
+   raw=1: raw-sample recovery of the full coarse grid, which bounds the pre-scan.
+   raw=2: raw recovery of the EVEN half alone, which bounds the early-out that
+          skips the odd transform.  All three differ, and swapping any pair of
+          them costs detections rather than time. */
 static float hmf_recovery(size_t n, size_t band, int u, int k, int raw)
 {
   for (int i = 0; i < HMF_NPICK; i++)
     if (hmf_picks[i].n == (unsigned)n && hmf_picks[i].band == (unsigned)band
         && hmf_picks[i].u == u && hmf_picks[i].k == k)
-      return raw ? hmf_picks[i].graw : hmf_picks[i].g;
+      return raw == 2 ? hmf_picks[i].graw1
+           : raw == 1 ? hmf_picks[i].graw : hmf_picks[i].g;
   /* Unknown combination (a pinned band, say).  For the interpolated figure
      assume no loss; for the raw figure assume the worst plausible loss.  Both
      choices err toward triggering more often, which costs time but cannot cost
      a detection. */
-  return raw ? 0.70f : 1.0f;
+  return raw ? 0.70f : 1.0f;   /* conservative: widens the gates, never narrows */
 }
 
 static float hmf_threshold(float f_eff, float snr, float fd)
@@ -372,7 +385,7 @@ def emit_table(path):
     w("};")
     w("")
     w("/* Per size and design point: band, oversampling, taps, recovery factor. */")
-    w("typedef struct { unsigned n; float snr, fd; unsigned band; int u, k;\n                 float g, graw; } hmf_pick;")
+    w("typedef struct { unsigned n; float snr, fd; unsigned band; int u, k;\n                 float g, graw, graw1; } hmf_pick;")
     w("static const hmf_pick hmf_picks[] = {")
     for n in TABLE_N:
         for T in TABLE_SNR:
@@ -380,7 +393,7 @@ def emit_table(path):
                 b = chosen.get((n, T, a))
                 if b is None: continue
                 w(f"  {{ {n}u, {T:.2f}f, {a:.1e}f, {b['m']}u, {b['U']}, {b['K']}, "
-                  f"{b['g']:.5f}f, {b['graw']:.5f}f }},")
+                  f"{b['g']:.5f}f, {b['graw']:.5f}f, {b['graw1']:.5f}f }},")
     w("};")
     w("#define HMF_NPICK ((int)(sizeof hmf_picks / sizeof hmf_picks[0]))")
     w(CHOOSE_C)

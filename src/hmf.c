@@ -44,7 +44,8 @@ struct ap_hmf_plan {
   int U, K;                   /* coarse oversampling; interpolator taps         */
   int nd, nt;
   float snr, fd;              /* design point                                   */
-  float g, graw;              /* recovery: interpolated, and raw-sample.  The
+  float g, graw, graw1;       /* recovery: interpolated, raw-sample, and raw for
+                                 the EVEN half alone.  The
                                  gate is calibrated against g; the cheap
                                  pre-scan is bounded by graw.  Using g for the
                                  pre-scan would discard exactly the samples
@@ -62,11 +63,13 @@ struct ap_hmf_plan {
   float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
   float *ct0, *ct1;           /* [nt][2m]   coarse templates: even, half-shifted*/
   float *fpow;                /* [nt]       band power fraction per template    */
+  float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
+  float *shift;               /* [2m]       scratch for the measurement         */
   float *prod, *cev, *cod;    /* scratch: product and the two coarse halves     */
   float *taps;                /* [HMF_NSUB][K] complex interpolation bank       */
   float *tcbuf;               /* [nt] gate per template for the current run     */
   long pairs, trig;
-  long npre, ninterp;   /* diagnostics: pre-gate passes, interpolations run */
+  long npre, ninterp, nskip;   /* diagnostics: pre-gate passes, interpolations run */
   float lastgate;
 };
 
@@ -128,7 +131,8 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->n=n; p->m=band; p->U=oversample; p->K=taps;
   p->nd=ndata; p->nt=ntmpl; p->snr=snr; p->fd=fd;
   p->g   =hmf_recovery(n,band,oversample,taps,0);
-  p->graw=hmf_recovery(n,band,oversample,taps,1);
+  p->graw =hmf_recovery(n,band,oversample,taps,1);
+  p->graw1=hmf_recovery(n,band,oversample,taps,2);
   p->full  =ap_mf_create(n,ndata,ntmpl);
   p->coarse=ap_mf_create(band,ndata,2*ntmpl);
   p->cf    =ap_create(band);
@@ -136,12 +140,16 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->ct0 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
   p->ct1 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
   p->fpow=calloc((size_t)ntmpl,sizeof(float));
+  p->tg=calloc((size_t)ntmpl,sizeof(float));
+  p->tgraw=calloc((size_t)ntmpl,sizeof(float));
+  p->tgraw1=calloc((size_t)ntmpl,sizeof(float));
+  p->shift=aligned_alloc(64,2*band*sizeof(float));
   p->prod=aligned_alloc(64,2*band*sizeof(float));
   p->cev =aligned_alloc(64,2*band*sizeof(float));
   p->cod =aligned_alloc(64,2*band*sizeof(float));
   p->taps=aligned_alloc(64,(size_t)2*HMF_NSUB*taps*sizeof(float));
   p->tcbuf=calloc((size_t)ntmpl,sizeof(float));
-  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||
+  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   return p;
@@ -159,6 +167,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->coarse) ap_mf_destroy(p->coarse);
   if(p->cf)   ap_destroy(p->cf);
   free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
+  free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);
   free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);
   free(p);
 }
@@ -172,9 +181,10 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
   if(triggers) *triggers=p->trig;
   if(getenv("APOGEE_HMF_DIAG"))
     fprintf(stderr,"    [diag] pairs=%ld pre-gate passes=%ld (%.1f/pair) "
-            "interpolations=%ld (%.1f/pair) gate=%.3f\n",
+            "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% gate=%.3f\n",
             p->pairs,p->npre,(double)p->npre/(p->pairs?p->pairs:1),
-            p->ninterp,(double)p->ninterp/(p->pairs?p->pairs:1),p->lastgate);
+            p->ninterp,(double)p->ninterp/(p->pairs?p->pairs:1),
+            100.0*p->nskip/(p->pairs?p->pairs:1),p->lastgate);
 }
 void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *oversample,int *taps){
   if(!p) return;
@@ -189,6 +199,69 @@ int ap_hmf_set_data(ap_hmf_plan *p,int d,const float *spec){
   memcpy(p->cd+(size_t)d*2*p->m,spec,2*p->m*sizeof(float));
   if(ap_mf_set_data(p->coarse,d,spec)) return -1;   /* only the kept band */
   return 0;
+}
+
+static float interp_abs(const float *ev,const float *od,size_t m,int U,
+                        const float *w,int K,int i,long j);
+
+/* Measure this template's own recovery factors instead of inheriting the
+ * table's.
+ *
+ * The table's figures were measured on the design template (85% of its power in
+ * the lowest n/8 bins).  Recovery depends on the spectral shape *inside* the
+ * kept band -- a flatter template has a sharper correlation peak and recovers
+ * less -- so a caller whose templates differ would have gates calibrated for a
+ * peak shape they do not have, and would lose detections with nothing to show
+ * for it.  Preprocessing is free here (T >> D), so measure it exactly.
+ *
+ * The continuous peak needs no fine transform: for a template matched against
+ * itself it is exactly sum |Hn[f]|^2 over the kept band.  So the whole
+ * measurement is nsub sub-offsets x two m-point transforms, per template.
+ */
+static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a1,
+                             float *gout,float *grawout,float *graw1out){
+  const size_t m=p->m,n=p->n; const int U=p->U,K=p->K;
+  const size_t R=n/m;
+  size_t nsub=(R/(size_t)U); if(!nsub) nsub=1; if(nsub>16) nsub=16;
+  double peak=0;
+  for(size_t k=0;k<m;k++) peak+=(double)a0[2*k]*a0[2*k]+(double)a0[2*k+1]*a0[2*k+1];
+  if(peak<=0){ *gout=1.f; *grawout=0.7f; *graw1out=0.7f; return; }
+  const float pk=(float)peak;
+  float gr=9.f,g1=9.f,gi=9.f;
+  float *Ds=p->shift;
+  for(size_t s=0;s<nsub;s++){
+    const double off=-2.0*M_PI*(double)(s*R/(size_t)U)/(double)n;
+    for(size_t k=0;k<m;k++){
+      double c=cos(off*(double)k), sn=sin(off*(double)k);
+      Ds[2*k]  =(float)(a0[2*k]*c-a0[2*k+1]*sn);
+      Ds[2*k+1]=(float)(a0[2*k]*sn+a0[2*k+1]*c);
+    }
+    prod_inter(Ds,a0,p->prod,m); ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
+    if(U>1){ prod_inter(Ds,a1,p->prod,m); ap_fft(p->cf,p->prod,p->cod,AP_BACKWARD); }
+    const size_t G=m*(size_t)U;
+    float be=0.f,ball=0.f; long bj=0;
+    for(size_t j=0;j<G;j++){
+      const float *z=(U==1)?p->cev+2*j:((j&1)?p->cod+((j>>1)*2):p->cev+((j>>1)*2));
+      float v=sqrtf(z[0]*z[0]+z[1]*z[1]);
+      if(v>ball){ ball=v; bj=(long)j; }
+      if(U==1||!(j&1)){ if(v>be) be=v; }
+    }
+    float bi=ball;
+    for(int i=0;i<HMF_NSUB;i++){
+      float u1=interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bj-1);
+      float u2=interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bj);
+      if(u1>bi) bi=u1;
+      if(u2>bi) bi=u2;
+    }
+    if(ball/pk<gr) gr=ball/pk;
+    if(be  /pk<g1) g1=be/pk;
+    if(bi  /pk<gi) gi=bi/pk;
+  }
+  /* Clamp to <=1: the interpolator can overshoot slightly, and a recovery above
+     1 would raise the gate above what the statistics justify. */
+  *gout     = gi>1.f?1.f:gi;
+  *grawout  = gr>1.f?1.f:gr;
+  *graw1out = g1>1.f?1.f:g1;
 }
 
 int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
@@ -220,6 +293,7 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
   }
   if(ap_mf_set_template(p->coarse,2*t,  a0)) return -1;
   if(ap_mf_set_template(p->coarse,2*t+1,a1)) return -1;
+  measure_recovery(p,t,a0,a1,&p->tg[t],&p->tgraw[t],&p->tgraw1[t]);
   return 0;
 }
 
@@ -266,7 +340,8 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   {
     float T = threshold>p->snr ? threshold : p->snr;
     for(int t=0;t<nt;t++)
-      tcs[t]=hmf_threshold(p->fpow[t0+t]*p->g*p->g,T,p->fd);
+      { float gt=p->tg[t0+t];
+        tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd); }
   }
   /* Coarse lag window.  Even sample j maps to full lag j*R, odd to j*R + R/2,
      so one range covers both to within half a coarse step; widening by one step
@@ -284,7 +359,8 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
       const float gate = tcs[t]; p->lastgate=gate;
-      const float raw_gate = gate*p->graw*0.999f;
+      const float raw_gate  = gate*p->tgraw[t0+t]*0.999f;
+      int fire=0;
       /* Fused coarse pass: product, transform and maximum in one kernel, with
        * the product never reaching memory.  One bin spanning the whole coarse
        * window means the reported peak IS the maximum, so the separate scan
@@ -293,12 +369,25 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * so ap_mf_run returns index<0 and there is nothing more to do. */
       ap_peak ce,co; int cc=0;
       ce.index=co.index=-1; ce.magnitude=co.magnitude=0.f;
-      if(ap_mf_run(p->coarse,d0+d,1,2*(t0+t),1,cspan,raw_gate,&ce,&cc,cstart,cend)<0)
-        return -1;
+      /* Even half first, thresholded at graw1*gate rather than graw*gate.  The
+       * even samples alone are the U=1 series, so if their maximum falls below
+       * graw1*gate the true continuous peak cannot reach the gate no matter
+       * what the odd samples hold - and the odd transform, half the coarse
+       * cost, is skipped outright.  On noise that is the overwhelming majority
+       * of pairs.  It must be graw1 and not graw: graw describes the combined
+       * U=2 grid, which recovers more, so using it here would cut off peaks the
+       * odd half would have found. */
+      const float even_gate = gate*p->tgraw1[t0+t]*0.999f;
+      if(ap_mf_run(p->coarse,d0+d,1,2*(t0+t),1,cspan,even_gate,&ce,&cc,
+                   cstart,cend)<0) return -1;
+      if(ce.index<0){                       /* cannot reach the gate: done */
+        p->nskip++;
+        goto verdict;
+      }
       if(U>1 && ap_mf_run(p->coarse,d0+d,1,2*(t0+t)+1,1,cspan,raw_gate,&co,&cc,
                           cstart,cend)<0) return -1;
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
-      int fire = bestmag>=gate;
+      fire = bestmag>=gate;
       if(!fire && bestmag>=raw_gate){
         /* Rare: the raw maximum sits in [graw*gate, gate), the only window where
            interpolation can change the answer.  Only here is the series worth
@@ -320,6 +409,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
           else if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj) >= gate) fire=1;
         }
       }
+      verdict:
       if(fire){
         p->trig++;
         int c=0;
