@@ -10,7 +10,7 @@ AVX512FLAGS = -DPF_W=16 -mavx512f -mavx512dq -mavx512bw -mavx512vl
 AVX2FLAGS   = -mavx2 -mfma
 BASEFLAGS   =
 
-OBJ512 = src/kernel1024.o src/fft1m.o src/fft_small.o src/be_avx512.o
+OBJ512 = src/kernel1024.o src/be_avx512.o
 OBJGEN = src/balanced16.o src/balanced8.o
 OBJB   = src/dispatch.o
 OBJ    = $(OBJ512) $(OBJGEN) $(OBJB)

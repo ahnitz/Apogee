@@ -13,7 +13,6 @@ typedef struct {
   size_t N;
   float *re, *im;                 /* SoA scratch (N=1024 path) */
   __m512 t4r[2][32], t4i[2][32];  /* 32x32 corner-turn twiddles */
-  P20 *p20;
   void *bal;          /* codelet-based balanced split (src/balanced.c) */
 } AP;
 
@@ -96,7 +95,7 @@ static void *a512_create(size_t N){
 
 static void a512_destroy(void *vp){
   AP *p=vp; if(!p) return;
-  free(p->re); free(p->im); pf20_destroy(p->p20);
+  free(p->re); free(p->im);
   if(p->bal) pf_be_bal16.destroy(p->bal);
   free(p);
 }

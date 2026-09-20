@@ -174,7 +174,8 @@ void *FN(create)(size_t N){
   { size_t per=(size_t)n2*PF_W*8*2;            /* bR and bI, per group */
     size_t g_max=(size_t)n1/PF_W;
     size_t g=per? (size_t)(262144/per) : g_max;   /* keep the live set well inside L2 */
-    if(g<1) g=1; if(g>g_max) g=g_max;
+    if(g<1) g=1;
+    if(g>g_max) g=g_max;
     { const char *e=getenv("PEAKFFT_GBLK"); if(e){ long v=atol(e); if(v>0){ g=(size_t)v; if(g>g_max)g=g_max; } } }
     p->gblk=(int)g; p->bstride=me;
   }

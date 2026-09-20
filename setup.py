@@ -16,8 +16,6 @@ AVX2 = ["-mavx2", "-mfma"]
 # (source, extra flags, extra defines)
 GROUPS = [
     ("src/kernel1024.c", AVX512, []),
-    ("src/fft_small.c",  AVX512, []),
-    ("src/fft1m.c",      AVX512, []),
     ("src/be_avx512.c",  AVX512, []),
     ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
     ("src/balanced.c",   AVX2,   [("PF_W", "8")]),      # generic source, 8 lanes
