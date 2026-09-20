@@ -64,6 +64,8 @@ struct ap_hmf_plan {
   ap_plan   *cf;              /* explicit m-point plan, for the rare interpolation
                                  path that needs the series materialised        */
   float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
+  const float **dspec;        /* [nd]       caller's full spectra, ingested lazily */
+  char *dready;               /* [nd]       1 once ingested into the full plan  */
   float *ct0, *ct1;           /* [nt][2m]   coarse templates: even, half-shifted*/
   float *fpow;                /* [nt]       band power fraction per template    */
   /* Reference SNR distribution, or ref_on=0 to measure per template.  The
@@ -166,6 +168,8 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->coarse=ap_mf_create(band,ndata,2*ntmpl);
   p->cf    =ap_create(band);
   p->cd  =aligned_alloc(64,(size_t)ndata*2*band*sizeof(float));
+  p->dspec=calloc((size_t)ndata,sizeof(*p->dspec));
+  p->dready=calloc((size_t)ndata,1);
   p->ct0 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
   p->ct1 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
   p->fpow=calloc((size_t)ntmpl,sizeof(float));
@@ -182,7 +186,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
   p->cebuf=calloc((size_t)ntmpl,sizeof(ap_peak));
-  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
+  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   p->even_margin=0.999f;
@@ -202,7 +206,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->full) ap_mf_destroy(p->full);
   if(p->coarse) ap_mf_destroy(p->coarse);
   if(p->cf)   ap_destroy(p->cf);
-  free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
+  free(p->dspec);free(p->dready);free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
   free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);free(p->shift2);
   free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);
   free(p);
@@ -331,7 +335,14 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
 
 int ap_hmf_set_data(ap_hmf_plan *p,int d,const float *spec){
   if(!p||d<0||d>=p->nd) return -1;
-  if(ap_mf_set_data(p->full,d,spec)) return -1;
+  /* The FULL plan's ingest is a group-major transpose of n complex, and the
+     gate discards it on the overwhelming majority of pairs -- 99.9% at a 0.1%
+     trigger rate.  Keep the caller's pointer instead and ingest lazily, the
+     first time a pair on this data segment actually reaches refinement.  The
+     spectrum must stay valid until run() returns, which is already the
+     contract: set_data then run. */
+  p->dspec[d]=spec;
+  p->dready[d]=0;
   memcpy(p->cd+(size_t)d*2*p->m,spec,2*p->m*sizeof(float));
   if(ap_mf_set_data(p->coarse,d,spec)) return -1;   /* only the kept band */
   return 0;
@@ -599,6 +610,10 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       verdict:
       if(fire){
         p->trig++;
+        if(!p->dready[d0+d]){          /* first refinement on this segment */
+          if(ap_mf_set_data(p->full,d0+d,p->dspec[d0+d])) return -1;
+          p->dready[d0+d]=1;
+        }
         int c=0;
         unsigned long long r0 = p->prof ? __rdtsc() : 0;
         int r=ap_mf_run(p->full,d0+d,1,t0+t,1,binsize,threshold,

@@ -173,6 +173,27 @@ def test_hierarchical_matches_full_filter():
     assert 0.0 <= hf.trigger_rate <= 1.0
 
 
+def test_raw_output_matches_structured():
+    """raw=True must return exactly what the structured array holds.
+
+    It exists to skip the structured-array assembly for callers driving small
+    batches in a tight loop, so it has to be the same numbers -- not merely
+    close -- or it becomes a second code path that can silently drift.
+    """
+    n, nd, nt = 1 << 12, 2, 3
+    rng = np.random.default_rng(7)
+    D = (rng.standard_normal((nd, n)) + 1j * rng.standard_normal((nd, n))).astype(np.complex64)
+    H = (rng.standard_normal((nt, n)) + 1j * rng.standard_normal((nt, n))).astype(np.complex64)
+    mf = apogee.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    mf.set_data(D)
+    mf.set_templates(H)
+    peaks = mf.run(binsize=1024, threshold=0.0).copy()
+    idx, val, mag = mf.run(binsize=1024, threshold=0.0, raw=True)
+    np.testing.assert_array_equal(peaks["index"], idx)
+    np.testing.assert_array_equal(peaks["value"], val)
+    np.testing.assert_array_equal(peaks["magnitude"], mag)
+
+
 def test_hierarchical_gate_stays_shut_on_noise():
     """On pure noise nothing should reach the full filter."""
     n = 1 << 12

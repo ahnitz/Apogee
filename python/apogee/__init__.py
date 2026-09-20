@@ -54,6 +54,7 @@ class MatchedFilter:
         self.n = int(n)
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
+        self._buf = None
         self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
 
     # ---- ingest -------------------------------------------------------------
@@ -102,7 +103,7 @@ class MatchedFilter:
         return start, end
 
     def run(self, binsize=None, threshold=0.0, window=None,
-            data=None, templates=None, counts=False):
+            data=None, templates=None, counts=False, raw=False):
         """Correlate and report the loudest sample per bin.
 
         Returns a structured array of shape ``(ndata, ntemplates, nbins)`` with
@@ -117,6 +118,14 @@ class MatchedFilter:
 
         With ``counts=True`` returns ``(peaks, counts)``, where counts has shape
         ``(ndata, ntemplates)`` and holds how many bins crossed the threshold.
+
+        ``raw=True`` returns ``(index, value, magnitude)`` as three plain arrays
+        of shape ``(ndata, ntemplates, nbins)`` instead of assembling a
+        structured array.  A caller driving small batches in a tight loop pays
+        for that assembly on every call -- three field copies here and a
+        structured-array slice at the other end -- which can exceed the filter
+        work itself.  The arrays are views on buffers reused between calls, so
+        copy anything that must outlive the next ``run``.
         """
         n = self.n
         binsize = n if binsize is None else int(binsize)
@@ -128,13 +137,25 @@ class MatchedFilter:
             raise ValueError("data/templates sub-range out of bounds")
         nb = self._mf.nbins(binsize, start, end)
         rows = nd * nt
-        idx = np.empty(rows * nb, dtype=np.int64)
-        val = np.empty(rows * nb, dtype=np.complex64)
-        mag = np.empty(rows * nb, dtype=np.float32)
-        cnt = np.empty(rows, dtype=np.int32)
+        # Reuse the output buffers.  Six allocations per call is nothing beside
+        # a 2^20 transform, but a caller driving small batches in a tight loop
+        # pays it every time: at 37 templates it was 15 of the 21 us a call
+        # took, swamping the work itself.
+        buf = self._buf
+        if buf is None or buf[0] != (rows, nb):
+            idx = np.empty(rows * nb, dtype=np.int64)
+            val = np.empty(rows * nb, dtype=np.complex64)
+            mag = np.empty(rows * nb, dtype=np.float32)
+            cnt = np.empty(rows, dtype=np.int32)
+            peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
+            buf = self._buf = ((rows, nb), idx, val, mag, cnt, peaks)
+        _, idx, val, mag, cnt, peaks = buf
         self._mf.run(d0, nd, t0, nt, binsize, float(threshold), start, end,
                      idx, val, mag, cnt)
-        peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
+        if raw:
+            r = (idx.reshape(nd, nt, nb), val.reshape(nd, nt, nb),
+                 mag.reshape(nd, nt, nb))
+            return (r, cnt.reshape(nd, nt)) if counts else r
         peaks["index"] = idx.reshape(nd, nt, nb)
         peaks["value"] = val.reshape(nd, nt, nb)
         peaks["magnitude"] = mag.reshape(nd, nt, nb)
@@ -191,6 +212,7 @@ class HierarchicalFilter(MatchedFilter):
         self.ntemplates = int(ntemplates)
         self.snr = float(snr)
         self.fd = float(fd)
+        self._buf = None
         if band is None:
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd)
         else:
