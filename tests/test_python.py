@@ -108,3 +108,75 @@ def test_window_clamped_and_empty():
     assert peakfft.topk(x, 4, window=(0, 10**9)).size == 4   # end clamped to n
     assert peakfft.topk(x, 4, window=(100, 100)).size == 0   # empty
     assert peakfft.topk(x, 4, window=(500, 100)).size == 0   # reversed
+
+
+# --- batched API -----------------------------------------------------------
+
+def _batch_case(n, b, k, direction, thr_quantile):
+    rng = np.random.default_rng(n * 131 + b)
+    x = (rng.standard_normal((b, n)) + 1j * rng.standard_normal((b, n))).astype(np.complex64)
+    sign = 1 if direction == peakfft.BACKWARD else -1
+    ref = np.fft.fft(x.astype(np.complex128), axis=1) if sign == -1 \
+        else np.fft.ifft(x.astype(np.complex128), axis=1) * n
+    mags = np.abs(ref)
+    if thr_quantile is None:
+        thr = 0.0
+    else:
+        s = np.sort(mags[0])[::-1]
+        q = max(n // thr_quantile, 1)
+        thr = float(0.5 * (s[q] + s[q + 1]))
+    return x, ref, mags, thr
+
+
+@pytest.mark.parametrize("n,b,k", [(1024, 16, 8), (1024, 128, 4), (4096, 32, 6),
+                                   (16384, 16, 4), (65536, 16, 3)])
+@pytest.mark.parametrize("direction", [peakfft.FORWARD, peakfft.BACKWARD])
+@pytest.mark.parametrize("thr_q", [None, 1000])
+def test_topk_many_matches_numpy(n, b, k, direction, thr_q):
+    """Every row must match a brute-force ranking of numpy's spectrum.
+
+    With a floor set this also checks there are no false negatives: the count
+    has to be exactly the number of bins numpy puts above the floor, capped at
+    k.  A mis-primed threshold shows up as a short row, not a wrong value.
+    """
+    x, ref, mags, thr = _batch_case(n, b, k, direction, thr_q)
+    rows = peakfft.topk_many(x, k, threshold=thr, direction=direction)
+    assert len(rows) == b
+    for j, peaks in enumerate(rows):
+        order = np.argsort(-mags[j], kind="stable")
+        expect = [int(i) for i in order[:k] if mags[j][i] > thr]
+        assert list(peaks["index"]) == expect
+        assert np.all(np.diff(peaks["magnitude"]) <= 0), "rows must be sorted loudest first"
+        if len(peaks):
+            got = peaks["value"]
+            want = ref[j][peaks["index"]]
+            rel = np.max(np.abs(got - want) / mags[j][peaks["index"]])
+            assert rel < 1e-5, f"relative error {rel:.2e}"
+            assert np.all(peaks["magnitude"] > thr)
+
+
+def test_topk_many_matches_single():
+    """The batched call and the single-transform call must agree exactly."""
+    n, b, k = 4096, 16, 8
+    x, _, _, _ = _batch_case(n, b, k, peakfft.FORWARD, None)
+    rows = peakfft.topk_many(x, k)
+    for j in range(b):
+        one = peakfft.topk(x[j], k)
+        assert list(rows[j]["index"]) == list(one["index"])
+        assert np.array_equal(rows[j]["value"], one["value"])
+
+
+def test_topk_many_window():
+    n, b, k = 4096, 8, 5
+    x, ref, mags, _ = _batch_case(n, b, k, peakfft.FORWARD, None)
+    ws, we = n // 5, int(n * 0.7)
+    rows = peakfft.topk_many(x, k, window=(ws, we))
+    for j, peaks in enumerate(rows):
+        assert np.all((peaks["index"] >= ws) & (peaks["index"] < we))
+        sub = np.argsort(-mags[j][ws:we], kind="stable")[:k] + ws
+        assert list(peaks["index"]) == [int(i) for i in sub]
+
+
+def test_topk_many_rejects_bad_shape():
+    with pytest.raises(ValueError):
+        peakfft.topk_many(np.zeros(1024, dtype=np.complex64), 4)
