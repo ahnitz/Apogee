@@ -22,14 +22,35 @@ static double nrand(void){
 
 static int fails=0, checks=0;
 
-/* Analytic template, power concentrated low, unit norm. */
-static void make_template(float *H,size_t n,double s){
+
+/* Build a template with a stated fraction of its SNR below n/8.
+ *
+ * The band edge is fixed in Hz, not in bins: at a 2048 Hz sample rate, 256 Hz
+ * lands at bin 256*n/2048 = n/8 for any n.  So the reference band is n/8 at
+ * every size, and growing n analyses more time rather than more bandwidth.
+ *
+ * `want` is a POWER fraction (0.85 power is 0.92 SNR -- the two are easy to
+ * conflate and differ substantially).  Using
+ * a fixed power-law exponent instead makes the template far more concentrated
+ * as n grows -- f^-0.9 puts 99% of its power below n/8 at 2^20 -- which flatters
+ * every hierarchical measurement into meaninglessness.
+ */
+static void make_template_pow(float *H,size_t n,double want){
+  const size_t mref=n/8;
+  double lo=-8.0,hi=4.0;
+  for(int it=0;it<200;it++){
+    double s=0.5*(lo+hi), tot=0, low=0;
+    for(size_t f=1;f<n/2;f++){ double p=pow((double)f,2*s); tot+=p; if(f<mref) low+=p; }
+    if(low/tot<want) hi=s; else lo=s;
+  }
+  const double s=0.5*(lo+hi);
   double e=0;
   for(size_t k=0;k<2*n;k++) H[k]=0.f;
   for(size_t f=1;f<n/2;f++){ double a=pow((double)f,s); H[2*f]=(float)a; e+=a*a; }
   e=sqrt(e);
   for(size_t f=1;f<n/2;f++) H[2*f]/=(float)e;
 }
+
 
 /* data = noise + amp * template shifted to `lag` */
 static void make_data(float *D,const float *H,size_t n,double amp,size_t lag){
@@ -49,7 +70,7 @@ static void compare(const char *what,size_t n,int ND,int NT,
   ap_mf_plan  *mf =ap_mf_create(n,ND,NT);
   ap_hmf_plan *hmf=ap_hmf_create(n,ND,NT,snr,fd);
   if(!mf||!hmf){ printf("  %-28s SKIP (no plan)\n",what); free(H);free(D); return; }
-  for(int t=0;t<NT;t++) make_template(H+(size_t)t*2*n,n,-0.9-0.1*t);
+  for(int t=0;t<NT;t++) make_template_pow(H+(size_t)t*2*n,n,0.85-0.03*t);
   for(int d=0;d<ND;d++) make_data(D+(size_t)d*2*n,H,n,amp,(size_t)(start+ (end-start)/3 + 7*d));
   for(int d=0;d<ND;d++){ ap_mf_set_data(mf,d,D+(size_t)d*2*n); ap_hmf_set_data(hmf,d,D+(size_t)d*2*n); }
   for(int t=0;t<NT;t++){ ap_mf_set_template(mf,t,H+(size_t)t*2*n); ap_hmf_set_template(hmf,t,H+(size_t)t*2*n); }
@@ -99,6 +120,14 @@ int main(void){
   compare("2^12 1x1",             4096, 1, 1,4096, 4.f,   0,4096,5.0f,1e-2f,12.0,&miss,&tot);
   compare("2^12 3x5",             4096, 3, 5, 256, 4.f,   0,4096,5.5f,1e-4f,12.0,&miss,&tot);
   compare("2^12 pure noise",      4096, 8, 8,1024,20.f,   0,4096,5.5f,1e-2f, 0.0,&miss,&tot);
+  /* The design table covers 2^10..2^20.  Large N picks a very small band
+     relative to n, which is where a mis-scaled gate would show up as either a
+     flood of triggers or silent omissions -- so cover both ends. */
+  compare("2^10 small",           1024, 4, 4, 256, 4.f,   0,1024,5.5f,1e-2f,12.0,&miss,&tot);
+  compare("2^16 8x8",            65536, 4, 4,4096, 4.f,   0,65536,5.5f,1e-2f,12.0,&miss,&tot);
+  compare("2^18 2x2",           262144, 2, 2,8192, 4.f,   0,262144,5.5f,1e-2f,12.0,&miss,&tot);
+  compare("2^20 1x1",          1048576, 1, 1,8192, 4.f,   0,1048576,5.5f,1e-2f,12.0,&miss,&tot);
+  compare("2^20 noise",        1048576, 2, 2,8192,20.f,   0,1048576,5.5f,1e-2f, 0.0,&miss,&tot);
 
   /* blocking invariance: a sub-block must equal the matching slice, including
      which pairs were gated away */
@@ -106,7 +135,7 @@ int main(void){
   {
     const size_t n=4096; const int ND=8,NT=8;
     float *H=malloc(2*n*sizeof(float)*NT), *D=malloc(2*n*sizeof(float)*ND);
-    for(int t=0;t<NT;t++) make_template(H+(size_t)t*2*n,n,-0.9);
+    for(int t=0;t<NT;t++) make_template_pow(H+(size_t)t*2*n,n,0.85);
     for(int d=0;d<ND;d++) make_data(D+(size_t)d*2*n,H,n,12.0,600+13*d);
     ap_hmf_plan *h=ap_hmf_create(n,ND,NT,5.5f,1e-2f);
     for(int d=0;d<ND;d++) ap_hmf_set_data(h,d,D+(size_t)d*2*n);

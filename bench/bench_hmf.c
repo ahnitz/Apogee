@@ -23,13 +23,35 @@ static double nrand(void){ double u=urand(),v=urand(); if(u<1e-300)u=1e-300;
 static double now(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
                          return t.tv_sec+1e-9*t.tv_nsec; }
 
-static void make_template(float *H,size_t n,double s){
+
+/* Build a template with a stated fraction of its SNR below n/8.
+ *
+ * The band edge is fixed in Hz, not in bins: at a 2048 Hz sample rate, 256 Hz
+ * lands at bin 256*n/2048 = n/8 for any n.  So the reference band is n/8 at
+ * every size, and growing n analyses more time rather than more bandwidth.
+ *
+ * `want` is a POWER fraction (0.85 power is 0.92 SNR -- the two are easy to
+ * conflate and differ substantially).  Using
+ * a fixed power-law exponent instead makes the template far more concentrated
+ * as n grows -- f^-0.9 puts 99% of its power below n/8 at 2^20 -- which flatters
+ * every hierarchical measurement into meaninglessness.
+ */
+static void make_template_pow(float *H,size_t n,double want){
+  const size_t mref=n/8;
+  double lo=-8.0,hi=4.0;
+  for(int it=0;it<200;it++){
+    double s=0.5*(lo+hi), tot=0, low=0;
+    for(size_t f=1;f<n/2;f++){ double p=pow((double)f,2*s); tot+=p; if(f<mref) low+=p; }
+    if(low/tot<want) hi=s; else lo=s;
+  }
+  const double s=0.5*(lo+hi);
   double e=0;
-  memset(H,0,2*n*sizeof(float));
+  for(size_t k=0;k<2*n;k++) H[k]=0.f;
   for(size_t f=1;f<n/2;f++){ double a=pow((double)f,s); H[2*f]=(float)a; e+=a*a; }
   e=sqrt(e);
   for(size_t f=1;f<n/2;f++) H[2*f]/=(float)e;
 }
+
 static void make_data(float *D,const float *H,size_t n,double amp,size_t lag){
   for(size_t f=0;f<n;f++){
     double re=nrand(), im=nrand();
@@ -41,7 +63,7 @@ static void make_data(float *D,const float *H,size_t n,double amp,size_t lag){
 
 static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const char *lab){
   float *H=malloc(2*n*sizeof(float)*NT), *D=malloc(2*n*sizeof(float)*ND);
-  for(int t=0;t<NT;t++) make_template(H+(size_t)t*2*n,n,-0.9-0.05*t);
+  for(int t=0;t<NT;t++) make_template_pow(H+(size_t)t*2*n,n,0.85-0.02*t);
   for(int d=0;d<ND;d++) make_data(D+(size_t)d*2*n,H,n,amp,(size_t)(400+31*d));
 
   ap_mf_plan  *mf =ap_mf_create(n,ND,NT);
@@ -93,6 +115,9 @@ int main(int argc,char **argv){
   run_case(4096,16,16,5.0f,1e-4f,0.0,"snr5.0 fd1e-4");
   run_case(8192,16,16,6.0f,1e-2f,0.0,"snr6.0 fd1e-2");
   run_case(16384,16,16,5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
+  run_case(65536, 8, 8, 5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
+  run_case(262144,4, 4, 5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
+  run_case(1048576,2,2, 5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
   printf("\n every data segment carries a signal - the worst case for the gate\n");
   run_case(2048,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");
   run_case(4096,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");

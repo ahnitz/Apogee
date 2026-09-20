@@ -105,6 +105,26 @@ def solve_tc(alpha, f, g, T, tdet=None):
     _TC_CACHE[key] = out
     return out
 
+#: POWER fraction of the design template below the reference band edge.
+#:
+#: Two things are easy to conflate here.  This is power, not SNR: 0.85 of the
+#: power is sqrt(0.85) = 0.92 of the SNR, so quoting "85%" of one when the other
+#: is meant changes the template's concentration substantially.
+#:
+#: The band edge is fixed in Hz, not in bins.  At a 2048 Hz sample rate, 256 Hz
+#: lands at bin 256*n/2048 = n/8 for any n, so the fractional band n/8 is the
+#: right reference and stays right as n grows -- more samples means more time
+#: analysed, not more bandwidth.  A fixed power-law exponent would NOT be
+#: scale-invariant: f^-0.9 puts 99% of its power below n/8 by 2^20.
+#:
+#: This only selects the BAND.  Each template's own f and recovery factors are
+#: measured at ingest, so a template that does not match this assumption gets a
+#: correct gate regardless -- the cost of a mismatch is efficiency, not
+#: detections.
+POWER_FRAC = 0.85
+SNR_FRAC = POWER_FRAC ** 0.5
+
+
 def make_template(n, m_ref, want_f):
     """Analytic template with power fraction want_f in bins [0, m_ref)."""
     fr = np.arange(1, n // 2).astype(float)
@@ -151,7 +171,12 @@ def recovery(H, n, m, U, K, nsub=8):
     bank = [kernel(K, d, U) for d in offs]
     worst = 9.0; worst_raw = 9.0
     R = n // m
-    for s in range(max(1, R // U)):          # sub-grid offsets within one step
+    # Sample the sub-grid offsets evenly rather than exhaustively.  At large N
+    # with a small band there can be hundreds of them, and the worst case is the
+    # half-step, which even sampling always brackets.
+    nstep = max(1, R // U)
+    stride = max(1, nstep // 16)
+    for s in range(0, nstep, stride):        # sub-grid offsets within one step
         lag = s
         D = H * np.exp(-2j * np.pi * np.arange(n) * lag / n)
         P = (D * np.conj(Hn))[:m]
@@ -171,7 +196,8 @@ def recovery(H, n, m, U, K, nsub=8):
         worst = min(worst, best / truth)
     return worst_raw, worst
 
-def design(n, want_f=0.85, taps=(4, 8, 12), Rs=(2, 4, 8, 16, 32, 64),
+def design(n, want_f=POWER_FRAC, taps=(4, 8, 12),
+           Rs=(2, 4, 8, 16, 32, 64, 128, 256, 512, 1024),
            Ts=(5.0, 5.5, 6.0), FDs=(1e-2, 1e-3, 1e-4), window=1.0):
     """Best (R,U,K) per (T,FD), with the cost model in units of the full inverse."""
     H = make_template(n, n // 8, want_f)
@@ -219,7 +245,7 @@ def design(n, want_f=0.85, taps=(4, 8, 12), Rs=(2, 4, 8, 16, 32, 64),
 def validate(n, R, U, K, T, ntrial=40000, seed=5):
     """Check the Rice model against Monte Carlo at one operating point."""
     rng = np.random.default_rng(seed)
-    H = make_template(n, n // 8, 0.85)
+    H = make_template(n, n // 8, POWER_FRAC)
     m = n // R; G = m * U
     Hl = H.copy(); Hl[m:] = 0
     f = float((np.abs(Hl) ** 2).sum()); Hn = Hl / np.sqrt(f)
@@ -331,7 +357,8 @@ static float hmf_threshold(float f_eff, float snr, float fd)
 TABLE_F   = np.round(np.arange(0.30, 1.0001, 0.025), 4)
 TABLE_SNR = (4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 8.0)
 TABLE_FD  = (1e-2, 1e-3, 1e-4)
-TABLE_N   = (2048, 4096, 8192, 16384)
+TABLE_N   = (1024, 2048, 4096, 8192, 16384, 32768, 65536,
+             131072, 262144, 524288, 1048576)
 
 
 def emit_table(path):
