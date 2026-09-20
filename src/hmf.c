@@ -32,6 +32,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <x86intrin.h>
 #include "apogee.h"
 #include "transform.h"
 #include "hmf_table.h"
@@ -69,6 +70,9 @@ struct ap_hmf_plan {
   float *taps;                /* [HMF_NSUB][K] complex interpolation bank       */
   float *tcbuf;               /* [nt] gate per template for the current run     */
   long pairs, trig;
+  /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
+     ~25 ns and these phases are ~200 ns, so it would measure itself. */
+  unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
   long npre, ninterp, nskip;   /* diagnostics: pre-gate passes, interpolations run */
   float lastgate;
 };
@@ -166,6 +170,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
+  p->prof = getenv("APOGEE_HMF_PROF") ? 1 : 0;
   return p;
 }
 
@@ -193,6 +198,14 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
   if(!p) return;
   if(pairs) *pairs=p->pairs;
   if(triggers) *triggers=p->trig;
+  if(p->prof && p->pairs){
+    double tot=(double)(p->c_even+p->c_odd+p->c_ref+p->c_fill);
+    fprintf(stderr,"    [prof] per pair: even=%.0f odd=%.0f refine=%.0f fill=%.0f cycles"
+            "  (even %.0f%%, odd %.0f%%, refine %.0f%%, fill %.0f%%)\n",
+            (double)p->c_even/p->pairs,(double)p->c_odd/p->pairs,
+            (double)p->c_ref/p->pairs,(double)p->c_fill/p->pairs,
+            100*p->c_even/tot,100*p->c_odd/tot,100*p->c_ref/tot,100*p->c_fill/tot);
+  }
   if(getenv("APOGEE_HMF_DIAG"))
     fprintf(stderr,"    [diag] pairs=%ld pre-gate passes=%ld (%.1f/pair) "
             "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% gate=%.3f\n",
@@ -398,8 +411,10 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * U=2 grid, which recovers more, so using it here would cut off peaks the
        * odd half would have found. */
       const float even_gate = gate*p->tgraw1[t0+t]*0.999f;
+      unsigned long long _t0 = p->prof ? __rdtsc() : 0;
       if(ap_mf_run(p->coarse,d0+d,1,2*(t0+t),1,cspan,even_gate,&ce,&cc,
                    cstart,cend)<0) return -1;
+      if(p->prof){ unsigned long long t1=__rdtsc(); p->c_even+=t1-_t0; _t0=t1; }
       if(ce.index<0){
         if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
           fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
@@ -410,6 +425,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       }
       if(U>1 && ap_mf_run(p->coarse,d0+d,1,2*(t0+t)+1,1,cspan,raw_gate,&co,&cc,
                           cstart,cend)<0) return -1;
+      if(p->prof){ unsigned long long t1=__rdtsc(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
       if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
@@ -441,17 +457,21 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       if(fire){
         p->trig++;
         int c=0;
+        unsigned long long r0 = p->prof ? __rdtsc() : 0;
         int r=ap_mf_run(p->full,d0+d,1,t0+t,1,binsize,threshold,
                         peaks+row*nb,&c,start,end);
+        if(p->prof) p->c_ref += __rdtsc()-r0;
         if(r<0) return -1;
         if(counts) counts[row]=c;
         total+=c;
       }else{
+        unsigned long long f0 = p->prof ? __rdtsc() : 0;
         for(size_t b=0;b<nb;b++){
           peaks[row*nb+b].index=-1;
           peaks[row*nb+b].re=peaks[row*nb+b].im=peaks[row*nb+b].magnitude=0.f;
         }
         if(counts) counts[row]=0;
+        if(p->prof) p->c_fill += __rdtsc()-f0;
       }
     }
   }

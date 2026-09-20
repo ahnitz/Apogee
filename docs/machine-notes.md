@@ -738,3 +738,36 @@ The odd twiddle is a half-sample shift, so it folds into the stored conjugated
 template at preprocessing and costs nothing at run time -- no new transform size,
 no padding, just the existing fused-product transform run twice against two
 template copies.  Charging it as one 2m-point FFT overcharges by 11% at m=512.
+
+## Hierarchical coarse stage: where the cycles actually go
+
+Per pair, AVX2, measured with rdtsc (clock_gettime costs ~25 ns and these
+phases are ~200 ns, so it would measure itself):
+
+    low-trigger cell (2^11, snr 6.0, fd 1e-2, 0.3% trigger)
+      even coarse transform  600 cycles   71%
+      odd coarse transform   132 cycles   16%
+      refinement              88 cycles   10%
+      peak fill               22 cycles    3%
+
+    high-trigger cell (2^12, snr 5.5, fd 1e-3, 20.6% trigger)
+      even 639 (33%)  odd 360 (19%)  refine 894 (47%)  fill 22 (1%)
+
+So there are two regimes and they want different work.  Below ~5% trigger the
+EVEN COARSE TRANSFORM is the whole cost and nothing else matters; above ~20% the
+refinement dominates and the only lever is the trigger rate.  The odd transform
+costs 132/600 = 22% of an even one on average, which is the early-out working as
+intended.
+
+Measured negatives from this round:
+
+- **Forcing the generic back end at m=1024 on AVX-512 is worse**, 0.69 -> 0.77 us,
+  even though the specialised 1024 kernel has no fused product
+  (`ap_has_fused_prod` is false, `split=0x0`) and therefore pays a separate
+  product pass.  The specialised kernel still wins.  Do not "fix" this by
+  routing the coarse plan around it.
+- **Hoisting getenv out of stageA_prod_gm and ap_mf_run is within noise.**  Both
+  were per-transform and per-call respectively, which looked like an obvious
+  win.  It is not one; keep the hoist for cleanliness, not for speed.
+- **Batching the coarse call across pairs gains nothing** (1.01-1.03x at every
+  size from 256 to 16384).  Per-pair ap_mf_run is already as cheap as batched.
