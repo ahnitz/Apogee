@@ -108,3 +108,68 @@ void pf_fft1024_soa_mag(float *re,float *im,const __m512 (*t4r)[32],const __m512
   fft1024_core(re,im,t4r,t4i,vmax,1);
 }
 
+/* Transform with the peak search fused into its final stage.
+ *
+ * The scan normally costs a second pass: store 8 KiB of re/im, reload it, square,
+ * compare.  Given a detection floor up front we can do the compare while the
+ * outputs are still in registers, which removes the pass and most of the stores -
+ * only blocks that produce a candidate are written back at all.
+ *
+ * This is the one place the relaxed spec buys something a general FFT cannot have:
+ * a full FFT must materialise every output, and we do not.
+ *
+ * thr2 is the squared floor.  The heap raises it as it fills, so the compare gets
+ * tighter as the scan proceeds.  re/im are still updated for candidate blocks
+ * because the caller refines and reports exact values from them.
+ */
+int pf_fft1024_topk(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32],
+                    float thr2,long ws,long we,int K,pf_cand *T){
+  __m512 A[32],B[32],C[32],D[32];
+  __m512 Vr[2][32],Vi[2][32];
+  for(int c=0;c<2;c++){
+    for(int n2=0;n2<32;n2++){ A[n2]=_mm512_loadu_ps(re+n2*32+16*c); B[n2]=_mm512_loadu_ps(im+n2*32+16*c); }
+    int f=fft32_84(A,B,C,D,1);
+    __m512*Rr = f?C:A, *Ri = f?D:B;
+    for(int k2=0;k2<32;k2++){
+      __m512 xr=Rr[k2],xi=Ri[k2], tr=t4r[c][k2], ti=t4i[c][k2];
+      Vr[c][k2]=_mm512_fmsub_ps(xr,tr,_mm512_mul_ps(xi,ti));
+      Vi[c][k2]=_mm512_fmadd_ps(xr,ti,_mm512_mul_ps(xi,tr));
+    }
+  }
+  __m512 Tr[32],Ti[32];
+  int n=0;
+  float thr=thr2;
+  __m512 vthr=_mm512_set1_ps(thr);
+  const int full = (ws<=0 && we>=1024);
+  for(int d=0;d<2;d++){
+    for(int c=0;c<2;c++){ t16(&Vr[c][16*d],&Tr[16*c]); t16(&Vi[c][16*d],&Ti[16*c]); }
+    int f=fft32_84(Tr,Ti,A,B,1);
+    __m512*Rr=f?A:Tr, *Ri=f?B:Ti;
+    for(int k1=0;k1<32;k1++){
+      __m512 r=Rr[k1], i=Ri[k1];
+      long k0=k1*32+16*d;
+      __mmask16 inw=0xFFFF;
+      if(!full){
+        if(k0+16<=ws || k0>=we) continue;
+        if(k0<ws || k0+16>we){ inw=0;
+          for(int l=0;l<16;l++){ long k=k0+l; if(k>=ws&&k<we) inw|=(__mmask16)(1u<<l); } }
+      }
+      __m512 m2=_mm512_fmadd_ps(r,r,_mm512_mul_ps(i,i));
+      __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ)&inw;
+      if(__builtin_expect(msk!=0,0)){
+        /* only now is it worth paying for the stores */
+        _mm512_storeu_ps(re+k0,r); _mm512_storeu_ps(im+k0,i);
+        float bm[16],br[16],bi[16];
+        _mm512_storeu_ps(bm,m2); _mm512_storeu_ps(br,r); _mm512_storeu_ps(bi,i);
+        while(msk){
+          int l=__builtin_ctz((unsigned)msk); msk&=(__mmask16)(msk-1);
+          if(bm[l]<=thr) continue;
+          pf_push(T,K,&n,bm[l],(int)(k0+l),br[l],bi[l]);
+          if(n==K){ thr=T[0].mag2; vthr=_mm512_set1_ps(thr); }
+        }
+      }
+    }
+  }
+  return n;
+}
+

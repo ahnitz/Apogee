@@ -23,15 +23,24 @@ void pf_deint_c(const float *in, float *re, float *im, size_t n, int conj);
 void pf_inter(const float *re, const float *im, float *out, size_t n);
 void pf_inter_c(const float *re, const float *im, float *out, size_t n, int conj);
 
+/* Running top-K by magnitude-squared (min-heap of size K). */
+typedef struct pf_cand_s { float mag2; int idx; float re, im; } pf_cand;
+void pf_push(pf_cand *T, int K, int *n, float m2, int idx, float vr, float vi);
+
+/* Transform with the peak search fused into its final stage: outputs are compared
+   against the detection floor while still in registers, so no scan pass and no
+   full output store ever happen.  Needs a floor to be useful - with thr2 = 0 every
+   block is a candidate and it degenerates to the unfused cost.  Returns the number
+   of candidates in T (an unsorted min-heap of at most K). */
+int pf_fft1024_topk(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32],
+                    float thr2,long ws,long we,int K,pf_cand *T);
+
 /* Cheap lower bound on the K-th largest |X|^2 over an SoA block, used to prime the
    scan threshold.  Returns the minimum of the 16 per-lane maxima, which is the
    smallest of 16 actual array elements and therefore never exceeds the 16th largest
    value - so it is a safe threshold for any K <= 16.  Returns -1 for K > 16. */
 float pf_prime_threshold(const float *re,const float *im,int n,int K);
 
-/* Running top-K by magnitude-squared (min-heap of size K). */
-typedef struct { float mag2; int idx; float re, im; } pf_cand;
-void pf_push(pf_cand *T, int K, int *n, float m2, int idx, float vr, float vi);
 
 /* Generic element-space Stockham FFT: the 16 SIMD lanes are independent
    transforms, so every twiddle is a broadcast and no shuffles occur.

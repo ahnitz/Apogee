@@ -116,6 +116,18 @@ static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size
   AP *p=vp;
   if(K<1) return 0;
   if(K>PF_MAX_K) K=PF_MAX_K;
+  if(p->N==1024 && thr0>0.f){
+    /* With a floor supplied up front the search fuses into the transform: no scan
+       pass, and only blocks that produce a candidate are ever stored. */
+    pf_cand T[PF_MAX_K];
+    pf_deint_c(in,p->re,p->im,1024,conj);
+    int n=pf_fft1024_topk(p->re,p->im,p->t4r,p->t4i,thr0*thr0,(long)ws,(long)we,K,T);
+    for(int a=1;a<n;a++){ pf_cand v=T[a]; int b=a-1;
+      while(b>=0&&T[b].mag2<v.mag2){T[b+1]=T[b];b--;} T[b+1]=v; }
+    for(int a=0;a<n;a++){ peaks[a].index=T[a].idx; peaks[a].re=T[a].re;
+      peaks[a].im=conj?-T[a].im:T[a].im; peaks[a].magnitude=sqrtf(T[a].mag2); }
+    return n;
+  }
   if(p->N==1024){
     /* |X|^2 and the per-lane maxima come out of the transform's final stage, where
        the values are already in registers - so the scan needs no pass of its own and
