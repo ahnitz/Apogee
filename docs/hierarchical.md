@@ -251,3 +251,31 @@ This is a substantial change, not a microoptimisation: a new transform path plus
 a re-calibration.  It should not be attempted in a context too small to finish
 and re-validate it, because a half-finished gate that is slightly wrong looks
 *faster*, and the correctness suite cannot see it.
+
+## Recovery factors from a mean spectrum are not a bound at coarse grids
+
+graw1 is measured over noise realisations at a low quantile, because the
+reference's autocorrelation is a MEAN shape and an individual peak can be
+sharper.  g and graw are still measured deterministically from that mean shape,
+and the same argument applies to them -- it just does not bite until the grid is
+coarse.
+
+Seen in a real search at snr 5.0, forcing bands the design table does not pick:
+
+    band   kernel   trigger   triggers recovered
+    2048   0.200 s     0.8%   893/893   <- what the table picks
+    1024   0.144 s     1.5%   859/893   34 lost
+     512   0.135 s     8.7%   885/893    8 lost
+
+Losing more at 1024 than at 256 is not how a merely-strict gate behaves: at
+R=4 the deterministic g and graw run optimistic, so the gate sits too high.
+Nothing is broken today, because the table never selects those bands -- but a
+smaller band at low SNR needs this fixed first.
+
+An attempt at fixing it was wrong in two ways worth recording.  It set
+g = min(g, raw_combined_recovery), which is meaningless since the interpolated
+recovery is by definition at least the raw one.  And it measured the quantile
+against a synthetic realisation with an arbitrary noise level, so the number it
+produced was not a bound at all.  Together they took the trigger rate from 0.8%
+to 25% and the kernel 2.4x slower at the band actually in use.  A real fix has
+to model the realisation spread from the data, not from a chosen constant.
