@@ -12,7 +12,7 @@ BASEFLAGS   =
 
 OBJ512 = src/kernel1024.o src/be_avx512.o
 OBJGEN = src/balanced16.o src/balanced8.o
-OBJB   = src/dispatch.o
+OBJB   = src/dispatch.o src/matchfilt.o
 OBJ    = $(OBJ512) $(OBJGEN) $(OBJB)
 LIB    = libpeakfft.a
 
@@ -22,7 +22,7 @@ MKLLIB ?=
 FFTWLIB ?= -l:libfftw3f.so.3
 
 .PHONY: all test quick bench clean codelets ab
-all: $(LIB) tests/test_units tests/test_topk tests/test_batch tests/test_binmax
+all: $(LIB) tests/test_units tests/test_topk tests/test_batch tests/test_binmax tests/test_mf
 
 $(LIB): $(OBJ)
 	ar rcs $@ $^
@@ -70,16 +70,19 @@ tests/test_batch: tests/test_batch.c $(LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
 tests/test_binmax: tests/test_binmax.c $(LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
+tests/test_mf: tests/test_mf.c $(LIB)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
 
 # Correctness gate small enough to run between edits.  Not a substitute for
 # 'make test' - it is what you run 20 times an hour, not once.
-quick: tests/test_units tests/test_batch tests/test_binmax
+quick: tests/test_units tests/test_batch tests/test_binmax tests/test_mf
 	./tests/test_units
 	PF_QUICK=1 ./tests/test_batch
 	PF_QUICK=1 ./tests/test_binmax
+	PF_QUICK=1 ./tests/test_mf
 
-test: tests/test_units tests/test_topk tests/test_batch tests/test_binmax
-	./tests/test_units && ./tests/test_topk && ./tests/test_batch && ./tests/test_binmax
+test: tests/test_units tests/test_topk tests/test_batch tests/test_binmax tests/test_mf
+	./tests/test_units && ./tests/test_topk && ./tests/test_batch && ./tests/test_binmax && ./tests/test_mf
 	@echo "--- forcing the AVX2 back end ---"
 	PEAKFFT_ISA=avx2 ./tests/test_topk && PEAKFFT_ISA=avx2 ./tests/test_batch && PEAKFFT_ISA=avx2 ./tests/test_binmax
 	@echo "--- forcing the generic back end at 16 lanes ---"
@@ -95,7 +98,7 @@ bench: bench/bench
 	./bench/bench
 
 clean:
-	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_topk tests/test_batch tests/test_binmax bench/bench
+	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_topk tests/test_batch tests/test_binmax tests/test_mf bench/bench
 
 tests/test_vs_mkl: tests/test_vs_mkl.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -I$(MKLINC) $< $(LIB) -o $@ \

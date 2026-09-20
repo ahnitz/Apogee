@@ -88,6 +88,39 @@ int  pf_topk_q(pf_plan *p, const pf_qinput *q, int K, pf_peak *peaks, int sign,
    to the window.  start/end are clamped to [0, N]; start >= end returns 0.
    Outputs outside the window are never even tested, so a narrower window is
    slightly cheaper - the transform itself still costs the same. */
+/* ---- batched matched filter -----------------------------------------------
+   D data segments against T template segments, all length n.  For every pair,
+
+       z[k] = IFFT( FFT(data_d)[f] * conj(FFT(tmpl_t)[f]) )[k]
+
+   and the same peak report as pf_binmax: the loudest sample per bin of the
+   search window, with a detection floor.
+
+   The point of the separate plan is reuse.  Each segment is transformed once at
+   ingest and stored in the layout the pair loop wants, so the D*T pair loop never
+   repeats work that depends on only one side.  Forward transforms are D+T; pair
+   work is D*T.
+
+   Peaks for pair (d,t) land at peaks[((d-d0)*nt + (t-t0)) * nbins], dense and
+   indexed by bin exactly as pf_binmax.  counts, if given, holds one crossing
+   count per pair in the same order. */
+typedef struct pf_mf_plan pf_mf_plan;
+
+pf_mf_plan *pf_mf_create(size_t n, int ndata, int ntmpl);
+void        pf_mf_destroy(pf_mf_plan *p);
+size_t      pf_mf_nbins(const pf_mf_plan *p, size_t binsize, size_t start, size_t end);
+
+/* Ingest.  seg is n interleaved complex float32.  Returns 0, or -1 on error. */
+int pf_mf_set_data    (pf_mf_plan *p, int d, const float *seg);
+int pf_mf_set_template(pf_mf_plan *p, int t, const float *tmpl);
+
+/* Run the pairs [d0,d0+nd) x [t0,t0+nt).  Any sub-block must give the same
+   answer as the corresponding slice of the whole, which is what makes tiling
+   safe to tune.  Returns total crossings, or -1. */
+int pf_mf_run(pf_mf_plan *p, int d0, int nd, int t0, int nt,
+              size_t binsize, float threshold,
+              pf_peak *peaks, int *counts, size_t start, size_t end);
+
 /* ---- binned maximum -------------------------------------------------------
    The search window [start,end) is cut into bins of `binsize` output samples and
    the loudest member of each bin is reported.  This is the shape a matched-filter
