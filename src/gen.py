@@ -126,8 +126,8 @@ def build(n,radices,name,tw=False,preload=False):
     if (preload or tw) and len(radices)==1: flip=0
     body="\n".join(g.L)
     cdefs="\n".join("  const vf %s=V_SET1(%sf);"%(v,k) for k,v in g.consts.items())
-    args=("vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi"
-          if tw else "vf*ar,vf*ai,vf*br,vf*bi,const long S")
+    args=("vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi"
+          if tw else "vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S")
     sig=("static inline int %s(%s){\n"
          "  const vf Z=V_ZERO();\n%s\n%s\n  return %d;\n}\n")%(name,args,cdefs,body,flip)
     return sig
@@ -195,8 +195,8 @@ def build_sr(n,name,tw=False):
         g.emit("ar[S*%d]=%s; ai[S*%d]=%s;"%(k,X[k][0],k,X[k][1]))
     body="\n".join(g.L)
     cdefs="\n".join("  const vf %s=V_SET1(%sf);"%(v,k) for k,v in g.consts.items())
-    args=("vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi"
-          if tw else "vf*ar,vf*ai,vf*br,vf*bi,const long S")
+    args=("vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi"
+          if tw else "vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S")
     return ("static inline int %s(%s){\n  (void)br;(void)bi;\n  const vf Z=V_ZERO();\n%s\n%s\n  return 0;\n}\n"
             )%(name,args,cdefs,body)
 

@@ -199,10 +199,12 @@ void FN(destroy)(void *vp){
 
 /* Per-group work shared by the fp32 and pre-quantised load paths: element
    transform, four-step twiddle, corner turn, and the intermediate store. */
-static inline void stageA_body(BP*p,int g,vf*TR,vf*TI,vf*OR,vf*OI){
+static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
+                               vf*restrict OR,vf*restrict OI){
   const int N2=p->N2;
-    efft(N2,p->bR,p->bI,p->sR,p->sI,p->w2r,p->w2i);
-  vf *RR=p->bR,*RI=p->bI;
+  vf *restrict bR=p->bR, *restrict bI=p->bI, *restrict sR=p->sR, *restrict sI=p->sI;
+    efft(N2,bR,bI,sR,sI,p->w2r,p->w2i);
+  vf *restrict RR=bR,*restrict RI=bI;
   for(int b=0;b<N2/PF_W;b++){
     if(p->fulltw){
       const vf *twr=p->twr+(size_t)g*N2+PF_W*b, *twi=p->twi+(size_t)g*N2+PF_W*b;

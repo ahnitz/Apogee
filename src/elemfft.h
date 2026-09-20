@@ -41,7 +41,7 @@ static inline int einp(const emap *e,int n){        /* slot to place input eleme
    same padding that was worth 13x on the specialised path.
    Output element k then lives at EIDX(), not at k: the four-step leaves it
    transposed, and undoing that would cost more than indexing around it.        */
-static inline int codelet(int m,vf*ar,vf*ai,vf*br,vf*bi,long S){
+static inline int codelet(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,long S){
   switch(m){
     case  8: return fft8_42 (ar,ai,br,bi,S);
     case 16: return fftsr16 (ar,ai,br,bi,S);   /* split-radix: 1.4-1.5x the Stockham form here */
@@ -52,8 +52,8 @@ static inline int codelet(int m,vf*ar,vf*ai,vf*br,vf*bi,long S){
 /* Same, but the four-step twiddle is applied to the inputs as they are read.
    The alternative is a standalone pass that re-reads and re-writes the whole
    block purely to multiply it - this removes that pass entirely. */
-static inline int codelet_tw(int m,vf*ar,vf*ai,vf*br,vf*bi,long S,
-                             const float*twr,const float*twi){
+static inline int codelet_tw(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,long S,
+                             const float*restrict twr,const float*restrict twi){
   switch(m){
     case  8: return fft8_tw (ar,ai,br,bi,S,twr,twi);
     case 16: return fftsr16_tw(ar,ai,br,bi,S,twr,twi);
@@ -63,7 +63,8 @@ static inline int codelet_tw(int m,vf*ar,vf*ai,vf*br,vf*bi,long S,
 }
 /* itwr/itwi hold W_M[e1*k2p] laid out [k2p][e1], so the second half can consume
    them directly. */
-static void efft(int M,vf*X,vf*Xi,vf*S,vf*Si,const float*itwr,const float*itwi){
+static void efft(int M,vf*restrict X,vf*restrict Xi,vf*restrict S,vf*restrict Si,
+                 const float*restrict itwr,const float*restrict itwi){
   int M1,M2; efactor(M,&M1,&M2);
   if(M2==1){ codelet(M,X,Xi,S,Si,1); return; }
   const int st=ESTRIDE(M1);

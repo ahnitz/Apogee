@@ -4,7 +4,7 @@
 #define PF_CODELETS_H
 #include "simd.h"
 
-static inline int fft8_42(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fft8_42(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);
@@ -67,7 +67,7 @@ static inline int fft8_42(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fft32_84(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fft32_84(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);
@@ -437,7 +437,7 @@ static inline int fft32_84(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fft32_442(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fft32_442(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.98078528040323043f);
   const vf c1=V_SET1(0.19509032201612825f);
@@ -855,7 +855,7 @@ static inline int fft32_442(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 1;
 }
 
-static inline int fft16_44(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fft16_44(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);
@@ -1017,7 +1017,7 @@ static inline int fft16_44(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fft64_88(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fft64_88(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);
@@ -1869,7 +1869,7 @@ static inline int fft64_88(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fftsr8(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fftsr8(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -1928,7 +1928,7 @@ static inline int fftsr8(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fftsr8_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fftsr8_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -2001,7 +2001,7 @@ static inline int fftsr8_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr
   return 0;
 }
 
-static inline int fftsr16(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fftsr16(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -2145,7 +2145,7 @@ static inline int fftsr16(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fftsr16_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fftsr16_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -2319,7 +2319,7 @@ static inline int fftsr16_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*tw
   return 0;
 }
 
-static inline int fftsr32(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fftsr32(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -2659,7 +2659,7 @@ static inline int fftsr32(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fftsr32_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fftsr32_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -3061,7 +3061,7 @@ static inline int fftsr32_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*tw
   return 0;
 }
 
-static inline int fftsr64(vf*ar,vf*ai,vf*br,vf*bi,const long S){
+static inline int fftsr64(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -3856,7 +3856,7 @@ static inline int fftsr64(vf*ar,vf*ai,vf*br,vf*bi,const long S){
   return 0;
 }
 
-static inline int fftsr64_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fftsr64_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   (void)br;(void)bi;
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
@@ -4777,7 +4777,7 @@ static inline int fftsr64_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*tw
   return 0;
 }
 
-static inline int fft8_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fft8_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);
@@ -4854,7 +4854,7 @@ static inline int fft8_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,c
   return 0;
 }
 
-static inline int fft16_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fft16_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);
@@ -5062,7 +5062,7 @@ static inline int fft16_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,
   return 0;
 }
 
-static inline int fft32_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fft32_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);
@@ -5526,7 +5526,7 @@ static inline int fft32_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,
   return 0;
 }
 
-static inline int fft64_tw(vf*ar,vf*ai,vf*br,vf*bi,const long S,const float*twr,const float*twi){
+static inline int fft64_tw(vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi){
   const vf Z=V_ZERO();
   const vf c0=V_SET1(0.70710678118654757f);
   const vf c1=V_SET1(0.70710678118654746f);

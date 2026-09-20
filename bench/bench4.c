@@ -52,6 +52,26 @@ static void bench(size_t N,int K,int blocks,int batch){
   memcpy(si,in,N*8);
 
   pf_plan *p=pf_create(N); pf_peak pk[PF_MAX_K];
+
+  /* Accuracy on the same data that is about to be timed: top-K indices must match
+     MKL's ranking exactly, and the reported values must agree with MKL's. */
+  DftiComputeForward(h,in,out);
+  double *mag=malloc(N*sizeof(double));
+  for(size_t k=0;k<N;k++) mag[k]=(double)out[2*k]*out[2*k]+(double)out[2*k+1]*out[2*k+1];
+  int *ord=malloc(N*sizeof(int));
+  for(size_t k=0;k<N;k++) ord[k]=(int)k;
+  for(int a=0;a<K;a++){ int b=a;
+    for(size_t c=a+1;c<N;c++) if(mag[ord[c]]>mag[ord[b]]) b=(int)c;
+    int t=ord[a]; ord[a]=ord[b]; ord[b]=t; }
+  int nk=pf_topk(p,in,K,pk,PF_FORWARD);
+  int idxbad=0; double relerr=0;
+  for(int a=0;a<nk;a++){
+    if(pk[a].index!=ord[a]) idxbad++;
+    double d=hypot(pk[a].re-out[2*pk[a].index], pk[a].im-out[2*pk[a].index+1]);
+    double r=d/sqrt(mag[pk[a].index]);
+    if(r>relerr) relerr=r;
+  }
+  free(mag); free(ord);
   double *tk=malloc(blocks*8),*ts=malloc(blocks*8),*ta=malloc(blocks*8),*tp=malloc(blocks*8);
   for(int w=0;w<3;w++){ DftiComputeForward(h,in,out); s_exec(sp); fftwf_execute(ap);
                         pf_topk(p,in,K,pk,PF_FORWARD); }
@@ -62,11 +82,11 @@ static void bench(size_t N,int K,int blocks,int batch){
     t0=now();        for(int q=0;q<batch;q++) pf_topk(p,in,K,pk,PF_FORWARD);tp[b]=(now()-t0)/batch;
   }
   qsort(tk,blocks,8,cmpd);qsort(ts,blocks,8,cmpd);qsort(ta,blocks,8,cmpd);qsort(tp,blocks,8,cmpd);
-  printf("2^%-5d %9.2f %9.2f %9.2f %9.2f  %6.2fx %6.2fx %6.2fx\n",
+  printf("2^%-5d %9.2f %9.2f %9.2f %9.2f  %6.2fx %6.2fx %6.2fx   %8.1e %s\n",
          (int)lround(log2((double)N)),tk[0]*1e6,ts[0]*1e6,ta[0]*1e6,tp[0]*1e6,
-         tk[0]/tp[0], ts[0]/tp[0], ta[0]/tp[0]);
+         tk[0]/tp[0], ts[0]/tp[0], ta[0]/tp[0], relerr, idxbad?"IDX-MISMATCH":"idx ok");
   const char*csv=getenv("PF_CSV");
-  if(csv){FILE*f=fopen(csv,"a");fprintf(f,"%zu,%.9g,%.9g,%.9g,%.9g\n",N,tk[0],ts[0],ta[0],tp[0]);fclose(f);}
+  if(csv){FILE*f=fopen(csv,"a");fprintf(f,"%zu,%.9g,%.9g,%.9g,%.9g,%.3e,%d\n",N,tk[0],ts[0],ta[0],tp[0],relerr,idxbad);fclose(f);}
   pf_destroy(p); free(in); free(out);
 }
 
@@ -80,7 +100,7 @@ int main(int argc,char**argv){
   s_exp=dlsym(lib,"fftwf_export_wisdom_to_filename");
   if(!s_malloc||!s_plan||!s_exec){ fprintf(stderr,"dlsym failed\n"); return 1; }
   const char*csv=getenv("PF_CSV");
-  if(csv){FILE*f=fopen(csv,"w");fprintf(f,"N,mkl,sysfftw,amdfftw,peakfft\n");fclose(f);}
+  if(csv){FILE*f=fopen(csv,"w");fprintf(f,"N,mkl,sysfftw,amdfftw,peakfft,relerr,idxbad\n");fclose(f);}
   /* MKL exports its own fftwf_* wrapper symbols.  If FFTW is linked normally and
      MKL comes first on the link line, every fftwf_ call silently binds to MKL and
      the "FFTW" column is really a second MKL column.  Resolve FFTW through
@@ -92,8 +112,8 @@ int main(int argc,char**argv){
       printf("amd   FFTW  fftwf_execute -> %s\n",di.dli_fname);
   }
   printf("all four in one process, interleaved per timed block   (K=%d, backend=%s)\n",K,pf_isa());
-  printf("%-7s %9s %9s %9s %9s  %7s %7s %7s\n","N","MKL","FFTW","amdFFTW","pf_topk",
-         "vs MKL","vs FFTW","vs AMD");
+  printf("%-7s %9s %9s %9s %9s  %7s %7s %7s   %8s %s\n","N","MKL","FFTW","amdFFTW","pf_topk",
+         "vs MKL","vs FFTW","vs AMD","rel err","top-K indices");
   bench(1024,K,200,200);
   for(int lg=12;lg<=20;lg++){ size_t N=(size_t)1<<lg;
     int batch=N<=(1u<<15)?50:(N<=(1u<<18)?5:1);
