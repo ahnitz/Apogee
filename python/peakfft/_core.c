@@ -68,6 +68,42 @@ static PyObject *m_topk(PyObject *m,PyObject *args){
   return PyLong_FromLong(n);
 }
 
+/* topk_many(plan, in, dist, b, k, threshold, idx, val, mag, counts, sign, start, end)
+   -> total.  idx/val/mag hold b*k entries; counts holds b. */
+static PyObject *m_topk_many(PyObject *m,PyObject *args){
+  PlanObject *pl; Py_buffer bi,bidx,bval,bmag,bcnt;
+  int B,k,sign; float thr; Py_ssize_t dist,ws,we;
+  (void)m;
+  if(!PyArg_ParseTuple(args,"Oy*niifw*w*w*w*inn",(PyObject**)&pl,&bi,&dist,&B,&k,&thr,
+                       &bidx,&bval,&bmag,&bcnt,&sign,&ws,&we)) return NULL;
+  PyObject *err=NULL;
+  if(B<1) err=PyErr_Format(PyExc_ValueError,"batch must be at least 1");
+  else if(k<1||k>PF_MAX_K) err=PyErr_Format(PyExc_ValueError,"k must be between 1 and %d",PF_MAX_K);
+  else if(dist<pl->n) err=PyErr_Format(PyExc_ValueError,"dist must be at least n");
+  else if(bi.len < ((Py_ssize_t)(B-1)*dist+pl->n)*2*(Py_ssize_t)sizeof(float))
+    err=PyErr_Format(PyExc_ValueError,"input too short for %d transforms at stride %zd",B,dist);
+  else if(bidx.len < (Py_ssize_t)B*k*8 || bcnt.len < (Py_ssize_t)B*4)
+    err=PyErr_Format(PyExc_ValueError,"output arrays too short");
+  if(err){ PyBuffer_Release(&bi);PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
+           PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt); return NULL; }
+  pf_peak *peaks=(pf_peak*)PyMem_Malloc((size_t)B*k*sizeof(pf_peak));
+  if(!peaks){ PyBuffer_Release(&bi);PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
+              PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt); return PyErr_NoMemory(); }
+  int tot;
+  Py_BEGIN_ALLOW_THREADS
+  tot=pf_topk_many(pl->p,(const float*)bi.buf,(size_t)dist,B,k,thr,peaks,
+                   (int*)bcnt.buf,sign,(size_t)ws,(size_t)we);
+  Py_END_ALLOW_THREADS
+  long long *ix=(long long*)bidx.buf; float *vl=(float*)bval.buf,*mg=(float*)bmag.buf;
+  for(int a=0;a<B*k;a++){ ix[a]=(long long)peaks[a].index;
+    vl[2*a]=peaks[a].re; vl[2*a+1]=peaks[a].im; mg[a]=peaks[a].magnitude; }
+  PyMem_Free(peaks);
+  PyBuffer_Release(&bi);PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
+  PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt);
+  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"peakfft: batched search failed"); return NULL; }
+  return PyLong_FromLong(tot);
+}
+
 static PyTypeObject PlanType={
   PyVarObject_HEAD_INIT(NULL,0)
   .tp_name="peakfft._core.Plan", .tp_basicsize=sizeof(PlanObject),
@@ -78,6 +114,8 @@ static PyTypeObject PlanType={
 static PyMethodDef methods[]={
   {"fft",m_fft,METH_VARARGS,"fft(plan, in, out, sign)"},
   {"topk",m_topk,METH_VARARGS,"topk(plan, in, k, idx, val, mag, sign) -> n"},
+  {"topk_many",m_topk_many,METH_VARARGS,
+   "topk_many(plan, in, dist, b, k, thr, idx, val, mag, counts, sign, start, end) -> total"},
   {NULL,NULL,0,NULL}
 };
 static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"peakfft._core",NULL,-1,methods};

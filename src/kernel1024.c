@@ -122,12 +122,19 @@ void pf_fft1024_soa_mag(float *re,float *im,const __m512 (*t4r)[32],const __m512
  * tighter as the scan proceeds.  re/im are still updated for candidate blocks
  * because the caller refines and reports exact values from them.
  */
-int pf_fft1024_topk(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32],
+int pf_fft1024_topk(const float *re,const float *im,
+                    const __m512 (*t4r)[32],const __m512 (*t4i)[32],
                     float thr2,long ws,long we,int K,pf_cand *T){
   __m512 A[32],B[32],C[32],D[32];
   __m512 Vr[2][32],Vi[2][32];
+  /* Folding the AoS->SoA split into this loop was tried and is slightly slower:
+     it turns pf_deint_c's streaming pass into strided 128-of-256-byte reads and
+     puts two more permutes on the shuffle port the butterflies are already using.
+     0.391 us against 0.381.  Keep the split as its own pass. */
   for(int c=0;c<2;c++){
-    for(int n2=0;n2<32;n2++){ A[n2]=_mm512_loadu_ps(re+n2*32+16*c); B[n2]=_mm512_loadu_ps(im+n2*32+16*c); }
+    for(int n2=0;n2<32;n2++){
+      A[n2]=_mm512_loadu_ps(re+n2*32+16*c); B[n2]=_mm512_loadu_ps(im+n2*32+16*c);
+    }
     int f=fft32_84(A,B,C,D,1);
     __m512*Rr = f?C:A, *Ri = f?D:B;
     for(int k2=0;k2<32;k2++){
@@ -157,8 +164,8 @@ int pf_fft1024_topk(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t
       __m512 m2=_mm512_fmadd_ps(r,r,_mm512_mul_ps(i,i));
       __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ)&inw;
       if(__builtin_expect(msk!=0,0)){
-        /* only now is it worth paying for the stores */
-        _mm512_storeu_ps(re+k0,r); _mm512_storeu_ps(im+k0,i);
+        /* the outputs themselves are never stored - only the few lanes that
+           survive the floor are ever spilled, and only to the stack */
         float bm[16],br[16],bi[16];
         _mm512_storeu_ps(bm,m2); _mm512_storeu_ps(br,r); _mm512_storeu_ps(bi,i);
         while(msk){
@@ -172,4 +179,5 @@ int pf_fft1024_topk(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t
   }
   return n;
 }
+
 

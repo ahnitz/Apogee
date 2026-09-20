@@ -32,7 +32,8 @@ void pf_push(pf_cand *T, int K, int *n, float m2, int idx, float vr, float vi);
    full output store ever happen.  Needs a floor to be useful - with thr2 = 0 every
    block is a candidate and it degenerates to the unfused cost.  Returns the number
    of candidates in T (an unsorted min-heap of at most K). */
-int pf_fft1024_topk(float *re,float *im,const __m512 (*t4r)[32],const __m512 (*t4i)[32],
+int pf_fft1024_topk(const float *re,const float *im,
+                    const __m512 (*t4r)[32],const __m512 (*t4i)[32],
                     float thr2,long ws,long we,int K,pf_cand *T);
 
 /* Cheap lower bound on the K-th largest |X|^2 over an SoA block, used to prime the
