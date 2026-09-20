@@ -117,7 +117,14 @@ void *FN(create)(size_t N){
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
   { const char *e=getenv("APOGEE_N1");
-    if(e){ int v=atoi(e); if(v>=AP_W && v<=(int)(N/AP_W) && !(v&(v-1))){ n1=v; n2=(int)(N/v); } } }
+    if(e){ int v=atoi(e);
+      if(v>=AP_W && v<=(int)(N/AP_W) && !(v&(v-1)) && esupported(v) && esupported((int)(N/v))){
+        n1=v; n2=(int)(N/v);
+      } } }
+  /* The element transform only handles the sizes efactor knows.  A split it
+     cannot compute used to be accepted and produce silently wrong answers - an
+     impulse came back with error 1.0 - so refuse it instead. */
+  if(!esupported(n1) || !esupported(n2)) return NULL;
   BP *p=aligned_alloc(64,sizeof(BP)); if(!p) return NULL;
   memset(p,0,sizeof(BP));
   p->N=N; p->N1=n1; p->N2=n2; p->nmask=(unsigned)(N/AP_W-1);
@@ -684,6 +691,10 @@ int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,ap_peak*out,
 
 int FN(has_prod)(void *vp){ (void)vp; return 1; }   /* every length here is fused */
 
+int FN(split)(void *vp,int *n1,int *n2){
+  BP *p=vp; *n1=p->N1; *n2=p->N2; return 1;
+}
+
 int FN(binmax_prod)(void *vp,const float*dr,const float*di,
                     const float*tr,const float*ti,size_t binsize,
                     float thr,ap_peak*out,int conj,size_t ws,size_t we){
@@ -718,5 +729,5 @@ const ap_backend CAT(ap_be_bal,AP_W) = {
   "avx2",
 #endif
   FN(create), FN(destroy), FN(fft), FN(supported),
-  FN(binmax), FN(binmax_split), FN(has_prod), FN(binmax_prod)
+  FN(binmax), FN(binmax_split), FN(has_prod), FN(split), FN(binmax_prod)
 };

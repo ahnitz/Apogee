@@ -487,3 +487,35 @@ At 2^20 the corner turn is 14% and the element FFT only 9%; at 2^14 removing
 either is *slower*. Effective bandwidth at 2^20 is 24.6 MiB per transform in
 1958 us = 12.6 GB/s against 43.9 sequential, so the headroom is real but it is
 not in any single pass.
+
+## AVX2 tuning: two bugs, no knobs
+
+AVX2 is the likely deployment target, and every tuning threshold had been
+measured at 16 lanes and inherited by the 8-lane build untested.  Sweeping them:
+
+- **Stage-A group blocking**: no effect at any size (all within 1%).
+- **N1 x N2 split**: no valid configuration beats the balanced default beyond
+  the noise floor, which median-of-3 puts at ~2.5% (the default and its explicit
+  equivalent differ by that much at 2^14).  2^12 prefers 256x16 by ~4%, which is
+  marginal enough to leave alone.
+
+The sweep was worth running anyway, because it exposed two real bugs:
+
+1. **The matched filter recomputed the split** instead of asking the plan.  The
+   two agreed by luck.  Forcing a different split through `APOGEE_N1` made
+   group-major storage disagree with what stage A walked, and `test_mf` went from
+   0 to 6098 failures.  The plan now reports its split via `ap_plan_split`.
+2. **`ap_create` accepted splits the element transform cannot compute.**
+   `efactor` handles element sizes 8..1024; a 16 x 16384 split was accepted and
+   returned an impulse response with error 1.0 - silently, with no diagnostic.
+   Plan creation now rejects them.
+
+Both were latent: nothing reachable through the public API triggered either.
+They mattered because the *measurement* triggered them - the split sweep showed a
+"1.48x win" at 2^18 that was entirely wrong code doing less work.
+
+What remains on AVX2 is not a knob.  Our 8-lane path costs 1.2-1.7x our 16-lane
+path, which is close to the 2x the halved vector width implies, while amd-fftw
+barely gains from AVX-512 at all (2^14: 14.1 us AVX2 against 13.8 AVX-512).  So
+the AVX-512 lead was substantially "we use the wider vectors better than they
+do", and that advantage is simply absent at 8 lanes.

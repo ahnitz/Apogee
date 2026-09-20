@@ -24,6 +24,8 @@ typedef struct {
      reaches memory.  Inputs are read-only here, unlike binmax_split. */
   /* 1 if binmax_prod works for this plan's length */
   int   (*has_prod)(void *);
+  /* report the plan's N1 x N2 split; 0 if it has none */
+  int   (*split)(void *, int *n1, int *n2);
   int   (*binmax_prod)(void *, const float *dr, const float *di,
                        const float *tr, const float *ti, size_t binsize,
                        float thr, ap_peak *out, int conj, size_t start, size_t end);

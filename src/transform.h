@@ -16,6 +16,12 @@ void     ap_destroy(ap_plan *p);
 const char *ap_plan_backend(const ap_plan *p);
 int      ap_lane_width(void);
 
+/* The plan's actual N1 x N2 split.  The matched filter stores spectra in the
+   layout stage A walks, which depends on this - recomputing it independently
+   would silently diverge the moment the split heuristic changed.  Returns 0 if
+   the plan has no such split (the specialised 1024 kernel). */
+int      ap_plan_split(const ap_plan *p, int *n1, int *n2);
+
 /* Full transform, AP_FORWARD or AP_BACKWARD.  Neither direction scales by 1/N. */
 void ap_fft(ap_plan *p, const float *in, float *out, int sign);
 

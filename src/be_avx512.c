@@ -127,6 +127,12 @@ static int a512_has_prod(void *vp){
   return p->N!=1024;
 }
 
+static int a512_split(void *vp,int *n1,int *n2){
+  AP *p=vp;
+  if(p->N==1024) return 0;              /* specialised kernel, no exposed split */
+  return ap_be_bal16.split(p->bal,n1,n2);
+}
+
 static int a512_binmax_prod(void *vp,const float *dr,const float *di,
                             const float *tr,const float *ti,size_t binsize,
                             float thr,ap_peak *out,int conj,size_t ws,size_t we){
@@ -140,5 +146,5 @@ static int a512_binmax_prod(void *vp,const float *dr,const float *di,
 
 const ap_backend ap_be_avx512 = {
   "avx512", a512_create, a512_destroy, a512_fft, a512_supported,
-  a512_binmax, a512_binmax_split, a512_has_prod, a512_binmax_prod
+  a512_binmax, a512_binmax_split, a512_has_prod, a512_split, a512_binmax_prod
 };

@@ -6,6 +6,15 @@
 #include "codelets.h"
 
 /* factor M into two codelet-sized halves; M1 == M means "single codelet" */
+/* Element-transform sizes efactor can decompose.  Anything else must be
+   rejected at plan time rather than silently mis-transformed: forcing an
+   unsupported split used to return an impulse response with error 1.0. */
+static inline int esupported(int M){
+  switch(M){ case 8: case 16: case 32: case 64:
+             case 128: case 256: case 512: case 1024: return 1; }
+  return 0;
+}
+
 static inline void efactor(int M,int *M1,int *M2){
   switch(M){
     case 1024: *M1=32; *M2=32; break;
