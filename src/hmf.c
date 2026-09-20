@@ -410,9 +410,10 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   int total=0;
   for(int d=0;d<nd;d++){
     const float *Dc=p->cd+(size_t)(d0+d)*2*m;
-    if(p->prof) { }
+    unsigned long long _eb = p->prof ? __rdtsc() : 0;
     if(ap_mf_run(p->coarse,d0+d,1,t0,nt,cspan,minev,p->cebuf,NULL,
                  cstart,cend)<0) return -1;
+    if(p->prof) p->c_even += __rdtsc()-_eb;   /* batched: charged to the segment */
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
@@ -440,7 +441,6 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       unsigned long long _t0 = p->prof ? __rdtsc() : 0;
       ce = p->cebuf[t];
       if(ce.index>=0 && ce.magnitude<even_gate) ce.index=-1;   /* per-template gate */
-      if(p->prof){ unsigned long long t1=__rdtsc(); p->c_even+=t1-_t0; _t0=t1; }
       if(ce.index<0){
         if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
           fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "

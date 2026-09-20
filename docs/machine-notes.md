@@ -837,3 +837,47 @@ in high-trigger cells where refinement dominates.
 
 Source removed rather than left disabled: it was never wired into the library,
 and broken dead code is worse than a note.
+
+### The four-step is already fused, and the remaining gap is load/store, not arithmetic
+
+Asked whether fusing the stage twiddle and the corner turn into the codelet
+boundaries would close the gap to peak.  It would not, for two reasons.
+
+**They are already fused.**  `stageA_tail` applies the stage twiddle, does the
+`V_TRANSPOSE` and stores, in one pass immediately after the element FFT.  There
+is no separate twiddle pass and no separate transpose pass to eliminate.  The
+element-level twiddles are fused too, via `codelet_tw` inside `efft`.
+
+**And deleting them outright barely helps** -- which bounds any possible fusion
+gain from above, since a deletion is strictly better than a fusion:
+
+      AP_ABLATE        256-pt      4096-pt
+      0 baseline       0.174 us    3.351 us
+      1 no corner turn 0.168 (-3.4%)  3.194 (-4.7%)
+      3 no stage tw    0.173 (-0.6%)  3.324 (-0.8%)
+
+This reproduces at 256 what was already recorded at 2^14: the loop is throughput
+limited with its parts overlapping, so only total work matters.
+
+**Corrected utilisation.**  The earlier "48% of ceiling" used 5N log2 N, which
+omits the four-step's own stage twiddle.  The real count is
+5N log2 N + 6N (twiddle) + 4N (product):
+
+      n=4096  3.400 us  286720 flops  84.3 GF/s  52% of ceiling
+      n=2048  1.736 us  133120 flops  76.7 GF/s  47%
+      n=1024  0.781 us   61440 flops  78.7 GF/s  48%
+      n= 512  0.378 us   28160 flops  74.5 GF/s  46%
+      n= 256  0.185 us   12800 flops  69.2 GF/s  43%
+
+**Why ~50% is close to the real limit.**  The 162.3 GF/s ceiling is measured on
+a register-resident codelet with no loads or stores at all.  A real four-step
+moves each element through memory about four times (stage A in/out, stage B
+in/out).  At 256 that is ~1024 vector load/store ops against a similar number of
+arithmetic instructions, and there are fewer load/store ports than FP pipes.  The
+transform is co-limited by data movement, so no arrangement of the arithmetic
+reaches a ceiling measured without any.
+
+Conclusion: the implementation is close to the achievable limit for a transform
+that must touch memory.  Remaining gains have to come from doing fewer
+transforms -- the trigger rate and the odd-half early-out -- not from making each
+one faster.
