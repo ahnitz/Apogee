@@ -18,6 +18,9 @@ typedef struct {
   int   (*topk_q)(void *, const short *qhi, const signed char *qlo, const float *qs,
                   int K, pf_peak *out, int conj, size_t start, size_t end, float thr0);
   void  (*quantize)(void *, const float *in, short *qhi, signed char *qlo, float *qs);
+  /* binned maximum; writes exactly nbins dense entries */
+  int   (*binmax)(void *, const float *in, size_t binsize, float thr,
+                  pf_peak *out, int conj, size_t start, size_t end);
 } pf_backend;
 extern const pf_backend pf_be_avx512;   /* specialised: 1024 kernel + tuned 2^17..2^20 */
 extern const pf_backend pf_be_bal8;    /* width-generic balanced split, 8 lanes (AVX2)  */

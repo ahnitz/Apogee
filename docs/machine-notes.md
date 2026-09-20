@@ -289,3 +289,52 @@ resolve a few percent, even with the 3% floor, because their code and buffers ar
 mapped at different addresses. The cross-build run of this very change reported
 "B slower" at 2^12 and 2^15, which the single-build isolation then contradicted.
 To tune one parameter, hold the build fixed and vary it with `-e`.
+
+## Binned maximum
+
+`pf_binmax` reports the loudest sample in each bin of the search window, dense and
+indexed by bin, with the floor suppressing bins that never cross. Semantically it
+is what a matched-filter search wants; the interesting part is what it took to
+make it as fast as the top-K path rather than slower.
+
+Four wrong guesses before the measurement, all worth recording:
+
+1. "The heap is the cost." A standalone scan says per-bin max beats a top-K heap
+   1.5-2.0x. But the *floor-primed* top-K scan is a compare against a
+   loop-invariant threshold plus a branch that is never taken - about 4 ops - while
+   a naive per-bin max does four unconditional blends. The heap was never running.
+2. "It is the stack frame." Moving the many-bin accumulators out of line: no change.
+3. "It is the loop-carried max dependency." Four independent accumulators: no change.
+4. "It is the GPR->vector broadcast of k0." Carrying it as a vector counter:
+   0.642 -> 0.592, real but small.
+
+What actually mattered:
+
+- **Prime the running maximum with the detection floor.** A bin never reports below
+  it, so starting there is exact, and it turns the four blends into a branch that
+  is almost never taken. Same trick as the top-K path, which is why that path had
+  been winning.
+- **Keep the accumulators in registers when there is one bin.** Indexed by a runtime
+  bin number they live in memory and every surviving block is a four-vector
+  load-modify-store. A register fast path for nb==1 is worth ~1.25x at 2^12-2^16.
+
+Two measurement traps hit along the way, both already in this file and both hit
+anyway: a stale statically-linked benchmark reported 0.60x when the rebuilt one
+says 0.99x, and the two kernels take the threshold in different units (squared vs
+not), so an early head-to-head gave them wildly different selectivity and claimed
+a 1.9x that was not real.
+
+Result, us/transform at B=16 with the floor on, single bin over the window:
+
+| N | top-K | binmax | |
+|---|---|---|---|
+| 2^10 | 0.361 | 0.366 | 0.99x |
+| 2^12 | 2.442 | 2.343 | 1.04x |
+| 2^14 | 10.050 | 10.269 | 0.98x |
+| 2^16 | 51.493 | 50.773 | 1.01x |
+| 2^18 | 352.6 | 302.4 | **1.17x** |
+| 2^20 | 1832 | 1650 | **1.11x** |
+
+Many bins costs more than one bin - 16 bins at 2^10 is 0.67 against 0.37 - which is
+expected, since the accumulators leave registers and there are 16 outputs instead
+of one.

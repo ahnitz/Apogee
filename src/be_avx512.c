@@ -186,7 +186,19 @@ static void a512_quantize(void *vp,const float*in,short*qhi,signed char*qlo,floa
   AP *p=vp;
   if(p->bal) pf_be_bal16.quantize(p->bal,in,qhi,qlo,qs);
 }
+static int a512_binmax(void *vp,const float *in,size_t binsize,float thr,
+                       pf_peak *out,int conj,size_t ws,size_t we){
+  AP *p=vp;
+  if(p->N==1024){
+    pf_deint_c(in,p->re,p->im,1024,conj);
+    int r=pf_fft1024_binmax(p->re,p->im,p->t4r,p->t4i,binsize,thr,out,conj,
+                            (long)ws,(long)we);
+    if(r==0) return 0;            /* -1 only means too many bins for the fused path */
+  }
+  return pf_be_bal16.binmax(p->bal,in,binsize,thr,out,conj,ws,we);
+}
+
 const pf_backend pf_be_avx512 = {
   "avx512", a512_create, a512_destroy, a512_fft, a512_topk, a512_supported,
-  a512_topk_q, a512_quantize
+  a512_topk_q, a512_quantize, a512_binmax
 };

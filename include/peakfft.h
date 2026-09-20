@@ -88,6 +88,33 @@ int  pf_topk_q(pf_plan *p, const pf_qinput *q, int K, pf_peak *peaks, int sign,
    to the window.  start/end are clamped to [0, N]; start >= end returns 0.
    Outputs outside the window are never even tested, so a narrower window is
    slightly cheaper - the transform itself still costs the same. */
+/* ---- binned maximum -------------------------------------------------------
+   The search window [start,end) is cut into bins of `binsize` output samples and
+   the loudest member of each bin is reported.  This is the shape a matched-filter
+   search actually wants: one candidate per stretch of the spectrum, rather than K
+   winners that might all sit in the same place.
+
+   It is also cheaper than top-K.  A per-bin running maximum is a vector max and
+   an index blend with no branches, no heap and no final sort - where the top-K
+   path has an unpredictable branch per block and a heap push per candidate.
+
+   nbins = ceil((end-start)/binsize); pf_nbins() computes it.  peaks must hold
+   B*nbins entries: bin j of transform b lands at peaks[b*nbins + j], in
+   increasing frequency, so the output is dense and indexable without a search.
+
+   A bin whose maximum does not exceed `threshold` is reported with index -1 and
+   magnitude 0 rather than being dropped, so bin j stays at slot j.  counts[b]
+   receives how many bins in transform b did cross; counts may be NULL.
+
+   Pass threshold 0 to report every bin's maximum.
+
+   Returns the total number of crossings across the batch, or -1 on error. */
+size_t pf_nbins(const pf_plan *p, size_t binsize, size_t start, size_t end);
+
+int pf_binmax(pf_plan *p, const float *in, size_t dist, int B,
+              size_t binsize, float threshold, pf_peak *peaks, int *counts,
+              int sign, size_t start, size_t end);
+
 /* Batched top-K.  in holds B transforms; transform b starts at in + 2*b*dist,
    so dist is a complex-element stride (dist == N for a packed batch).  Each
    transform keeps its own L1-resident working set - the batch is an array of

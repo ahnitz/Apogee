@@ -12,6 +12,10 @@
 #if PF_W == 16
 typedef __m512 vf;
 #define V_ZERO()        _mm512_setzero_ps()
+/* select by mask: lane set -> take b, clear -> keep a */
+#define V_BLENDM(m,a,b)  _mm512_mask_blend_ps((__mmask16)(m),a,b)
+#define VI_BLENDM(m,a,b) _mm512_mask_blend_epi32((__mmask16)(m),a,b)
+#define VI_STOREU(p,v)   _mm512_storeu_si512((void*)(p),v)
 #define V_SET1(x)       _mm512_set1_ps(x)
 #define V_LOAD(p)       _mm512_load_ps(p)
 #define V_LOADU(p)      _mm512_loadu_ps(p)
@@ -34,6 +38,18 @@ typedef __m512 vf;
 #elif PF_W == 8
 typedef __m256 vf;
 #define V_ZERO()        _mm256_setzero_ps()
+/* AVX2 has no mask registers; V_GT_MASK hands back a movemask bitfield, so turn
+   it back into a lane mask for the blend.  Eight lanes, so a 256-bit table would
+   be 8 KiB - cheaper to splat the bits and test them. */
+static inline __m256 v_maskof(unsigned m){
+  const __m256i bit=_mm256_setr_epi32(1,2,4,8,16,32,64,128);
+  __m256i v=_mm256_and_si256(_mm256_set1_epi32((int)m),bit);
+  return _mm256_castsi256_ps(_mm256_cmpeq_epi32(v,bit));
+}
+#define V_BLENDM(m,a,b)  _mm256_blendv_ps(a,b,v_maskof(m))
+#define VI_BLENDM(m,a,b) _mm256_castps_si256(_mm256_blendv_ps( \
+                           _mm256_castsi256_ps(a),_mm256_castsi256_ps(b),v_maskof(m)))
+#define VI_STOREU(p,v)   _mm256_storeu_si256((__m256i*)(p),v)
 #define V_SET1(x)       _mm256_set1_ps(x)
 #define V_LOAD(p)       _mm256_load_ps(p)
 #define V_LOADU(p)      _mm256_loadu_ps(p)

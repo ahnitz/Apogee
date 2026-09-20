@@ -36,6 +36,13 @@ int pf_fft1024_topk(const float *re,const float *im,
                     const __m512 (*t4r)[32],const __m512 (*t4i)[32],
                     float thr2,long ws,long we,int K,pf_cand *T);
 
+/* Binned maximum, fused into the transform's final stage: branchless, no heap,
+   and the spectrum is never materialised.  Writes exactly nbins dense entries. */
+int pf_fft1024_binmax(float *re,float *im,
+                      const __m512 (*t4r)[32],const __m512 (*t4i)[32],
+                      size_t binsize,float thr,pf_peak *out,int conj,
+                      long ws,long we);
+
 /* Cheap lower bound on the K-th largest |X|^2 over an SoA block, used to prime the
    scan threshold.  Returns the minimum of the 16 per-lane maxima, which is the
    smallest of 16 actual array elements and therefore never exceeds the 16th largest

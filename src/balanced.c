@@ -83,6 +83,9 @@ typedef struct {
   float *ire,*iim;     /* fp32 intermediate, used when quantising would not pay */
   int useq;            /* 1 = quantised 24-bit, 0 = plain fp32                  */
   int gblk;            /* stage-A groups loaded per pass over the input          */
+  vf *bmx,*bre,*bim;   /* per-bin running max, and the winner's value            */
+  vi *bix;             /* per-bin block index of the current winner              */
+  size_t nbcap;
   size_t bstride;      /* vf elements between group buffers                      */
   vf *bR,*bI,*sR,*sI;
   vf *TLr,*TLi;
@@ -224,6 +227,7 @@ void *FN(create)(size_t N){
 
 void FN(destroy)(void *vp){
   BP *p=vp; if(!p) return;
+  free(p->bmx);free(p->bre);free(p->bim);free(p->bix);
   free(p->q);free(p->r8);free(p->scl);free(p->ire);free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
   free(p->TLr);free(p->TLi);free(p->w1r);free(p->w1i);free(p->w2r);free(p->w2i);
   free(p->hr);free(p->hi);free(p->lr);free(p->li);
@@ -482,6 +486,151 @@ static int FN(topk_core)(BP*p,int K,pf_peak*out,int conj,size_t ws,size_t we,flo
 }
 
 
+/* ---- binned maximum -------------------------------------------------------
+ * One running maximum per bin, carried as vectors so no horizontal reduction
+ * happens inside the loop - each bin is reduced once at the end.  The winning
+ * lane's re/im ride along in their own accumulators, which keeps the property
+ * that outputs are never written anywhere: the only thing that survives the
+ * transform is the per-bin best.
+ *
+ * Four blends per block instead of the top-K path's compare-and-branch, but they
+ * are unconditional, so the cost does not depend on the data and there is no
+ * heap, no candidate pool and no final sort.
+ */
+/* The bin accumulators depend on binsize, which is a call argument, so they are
+   grown on demand and kept for later calls rather than sized at plan time. */
+static int FN(bins_reserve)(BP*p,size_t nb){
+  if(nb<=p->nbcap) return 0;
+  free(p->bmx);free(p->bre);free(p->bim);free(p->bix);
+  p->bmx=aligned_alloc(64,nb*sizeof(vf)); p->bre=aligned_alloc(64,nb*sizeof(vf));
+  p->bim=aligned_alloc(64,nb*sizeof(vf)); p->bix=aligned_alloc(64,nb*sizeof(vi));
+  if(!p->bmx||!p->bre||!p->bim||!p->bix){ p->nbcap=0; return -1; }
+  p->nbcap=nb; return 0;
+}
+
+static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
+                            size_t ws,size_t we){
+  const int N1=p->N1,N2=p->N2;
+  const size_t nb=(we-ws+binsize-1)/binsize;
+  vf *bm=p->bmx, *br=p->bre, *bi=p->bim; vi *bx=p->bix;
+  const vf NEG=V_SET1(-1.f);
+  /* Prime with the detection floor: a bin never reports below it, so this is
+     exact, and it makes the blends a branch that is almost never taken. */
+  const vf PRIME = thr>0.f ? V_SET1(thr*thr) : NEG;
+  for(size_t j=0;j<nb;j++){ bm[j]=PRIME; br[j]=V_ZERO(); bi[j]=V_ZERO(); bx[j]=VI_SET1(-1); }
+  const unsigned allm=(PF_W==16)?0xFFFFu:0xFFu;
+
+  /* One bin over the whole window is the common case, and then the accumulators
+     can live in registers.  Indexed by a runtime bin number they cannot, and each
+     surviving block becomes a load-modify-store of four vectors. */
+  if(nb==1){
+    vf am=PRIME, arr=V_ZERO(), aii=V_ZERO(); vi axx=VI_SET1(-1);
+    for(int b=0;b<N2/PF_W;b++){
+      long base=(long)PF_W*b;
+      long lo=((long)ws-base-(PF_W-1)+N2-1)/N2, hi=((long)we-1-base)/N2;
+      if(lo<0) lo=0;
+      if(hi>N1-1) hi=N1-1;
+      if(lo>hi) continue;
+      vf *RR,*RI; stageB(p,b,&RR,&RI,1);
+      for(long k1=lo;k1<=hi;k1++){
+        int e=eidx(&p->ea,(int)k1);
+        long k0=k1*N2+base;
+        unsigned inw=allm;
+        if(k0<(long)ws || k0+PF_W>(long)we){
+          inw=0;
+          for(int l=0;l<PF_W;l++){ long k=k0+l;
+            if(k>=(long)ws && k<(long)we) inw|=1u<<l; }
+          if(!inw) continue;
+        }
+        vf m2=V_FMADD(RR[e],RR[e],V_MUL(RI[e],RI[e]));
+        if(inw!=allm) m2=V_BLENDM(inw,NEG,m2);
+        unsigned g=V_GT_MASK(m2,am);
+        if(__builtin_expect(g!=0,0)){
+          am =V_BLENDM(g,am,m2);
+          arr=V_BLENDM(g,arr,RR[e]);
+          aii=V_BLENDM(g,aii,RI[e]);
+          axx=VI_BLENDM(g,axx,VI_SET1((int)k0));
+        }
+      }
+    }
+    float mv[PF_W],rv[PF_W],iv[PF_W]; int xv[PF_W];
+    V_STOREU(mv,am); V_STOREU(rv,arr); V_STOREU(iv,aii); VI_STOREU(xv,axx);
+    int bl=-1;
+    for(int l=0;l<PF_W;l++) if(xv[l]>=0 && (bl<0 || mv[l]>mv[bl])) bl=l;
+    const float t2b = thr>0.f ? thr*thr : -1.f;
+    if(bl<0 || mv[bl]<=t2b){ out[0].index=-1; out[0].re=0.f; out[0].im=0.f; out[0].magnitude=0.f; }
+    else { out[0].index=(long)xv[bl]+bl; out[0].re=rv[bl];
+           out[0].im=conj?-iv[bl]:iv[bl]; out[0].magnitude=sqrtf(mv[bl]); }
+    return;
+  }
+
+  for(int b=0;b<N2/PF_W;b++){
+    long base=(long)PF_W*b;
+    long lo=((long)ws-base-(PF_W-1)+N2-1)/N2, hi=((long)we-1-base)/N2;
+    if(lo<0) lo=0;
+    if(hi>N1-1) hi=N1-1;
+    if(lo>hi) continue;
+    vf *RR,*RI; stageB(p,b,&RR,&RI,1);
+    for(long k1=lo;k1<=hi;k1++){
+      int e=eidx(&p->ea,(int)k1);
+      long k0=k1*N2+base;
+      unsigned inw=allm;
+      if(k0<(long)ws || k0+PF_W>(long)we){
+        inw=0;
+        for(int l=0;l<PF_W;l++){ long k=k0+l;
+          if(k>=(long)ws && k<(long)we) inw|=1u<<l; }
+        if(!inw) continue;
+      }
+      vf m2=V_FMADD(RR[e],RR[e],V_MUL(RI[e],RI[e]));
+      if(inw!=allm) m2=V_BLENDM(inw,NEG,m2);       /* outside the window can never win */
+      long j0=(k0-(long)ws)/(long)binsize, j1=(k0+PF_W-1-(long)ws)/(long)binsize;
+      if(j0==j1){                                   /* whole block in one bin */
+        unsigned g=V_GT_MASK(m2,bm[j0]);
+        if(__builtin_expect(g!=0,0)){
+          bm[j0]=V_BLENDM(g,bm[j0],m2);
+          br[j0]=V_BLENDM(g,br[j0],RR[e]);
+          bi[j0]=V_BLENDM(g,bi[j0],RI[e]);
+          bx[j0]=VI_BLENDM(g,bx[j0],VI_SET1((int)k0));
+        }
+      } else {                                      /* straddles a boundary */
+        for(int l=0;l<PF_W;l++){
+          if(!((inw>>l)&1u)) continue;
+          long k=k0+l, j=(k-(long)ws)/(long)binsize;
+          unsigned one=1u<<l;
+          if(V_GT_MASK(m2,bm[j]) & one){
+            bm[j]=V_BLENDM(one,bm[j],m2);
+            br[j]=V_BLENDM(one,br[j],RR[e]);
+            bi[j]=V_BLENDM(one,bi[j],RI[e]);
+            bx[j]=VI_BLENDM(one,bx[j],VI_SET1((int)k0));
+          }
+        }
+      }
+    }
+  }
+  /* one reduction per bin */
+  const float t2 = thr>0.f ? thr*thr : -1.f;
+  for(size_t j=0;j<nb;j++){
+    float mv[PF_W],rv[PF_W],iv[PF_W]; int xv[PF_W];
+    V_STOREU(mv,bm[j]); V_STOREU(rv,br[j]); V_STOREU(iv,bi[j]); VI_STOREU(xv,bx[j]);
+    int bl=-1;
+    for(int l=0;l<PF_W;l++) if(xv[l]>=0 && (bl<0 || mv[l]>mv[bl])) bl=l;
+    if(bl<0 || mv[bl]<=t2){ out[j].index=-1; out[j].re=0.f; out[j].im=0.f; out[j].magnitude=0.f; continue; }
+    out[j].index=(long)xv[bl]+bl;
+    out[j].re=rv[bl]; out[j].im=conj?-iv[bl]:iv[bl];
+    out[j].magnitude=sqrtf(mv[bl]);
+  }
+}
+
+int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,pf_peak*out,
+               int conj,size_t ws,size_t we){
+  BP *p=vp;
+  size_t nb=(we-ws+binsize-1)/binsize;
+  if(FN(bins_reserve)(p,nb)) return -1;
+  stageA(p,in,conj);
+  FN(binmax_core)(p,binsize,thr,out,conj,ws,we);
+  return 0;
+}
+
 int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we,float thr0){
   BP *p=vp;
   PT(_ta); stageA(p,in,conj); PACC(pf_pA,_ta);
@@ -524,5 +673,5 @@ const pf_backend CAT(pf_be_bal,PF_W) = {
   "avx2",
 #endif
   FN(create), FN(destroy), FN(fft), FN(topk), FN(supported),
-  FN(topk_q), FN(quantize_in)
+  FN(topk_q), FN(quantize_in), FN(binmax)
 };

@@ -108,6 +108,35 @@ int pf_topk_window(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign,
   return p->be->topk(p->h,in,K,peaks,sign==PF_BACKWARD,start,end,0.f);
 }
 
+size_t pf_nbins(const pf_plan *p,size_t binsize,size_t start,size_t end){
+  if(!p||!binsize) return 0;
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  return (end-start+binsize-1)/binsize;
+}
+
+int pf_binmax(pf_plan *p,const float *in,size_t dist,int B,
+              size_t binsize,float threshold,pf_peak *peaks,int *counts,
+              int sign,size_t start,size_t end){
+  if(B<1||!binsize) return 0;
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  if(!p->be->binmax) return -1;
+  const size_t nb=(end-start+binsize-1)/binsize;
+  const int conj = sign==PF_BACKWARD;
+  int total=0;
+  for(int b=0;b<B;b++){
+    pf_peak *o=peaks+(size_t)b*nb;
+    if(p->be->binmax(p->h,in+2*(size_t)b*dist,binsize,threshold,o,conj,start,end)<0)
+      return -1;
+    int c=0;
+    for(size_t j=0;j<nb;j++) if(o[j].index>=0) c++;
+    if(counts) counts[b]=c;
+    total+=c;
+  }
+  return total;
+}
+
 int pf_topk_many(pf_plan *p,const float *in,size_t dist,int B,
                  int K,float threshold,pf_peak *peaks,int *counts,int sign,
                  size_t start,size_t end){
