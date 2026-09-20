@@ -21,11 +21,33 @@ MKLINC ?=
 MKLLIB ?=
 FFTWLIB ?= -l:libfftw3f.so.3
 
-.PHONY: all test bench clean codelets
+.PHONY: all test quick bench clean codelets ab
 all: $(LIB) tests/test_units tests/test_topk tests/test_batch
 
 $(LIB): $(OBJ)
 	ar rcs $@ $^
+
+# Shared build, so bench/ab can hold two versions of the library at once.
+# -fPIC is applied to a separate object set to keep the static build unchanged.
+SO = libpeakfft.so
+$(SO): $(OBJ:.o=.pico)
+	$(CC) -shared -o $@ $^
+%.pico: %.c
+	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -fPIC -c $< -o $@
+src/balanced16.pico: src/balanced.c
+	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -fPIC -c $< -o $@
+src/balanced8.pico: src/balanced.c
+	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -fPIC -DPF_W=8 -c $< -o $@
+src/dispatch.pico: src/dispatch.c
+	$(CC) $(CFLAGS) $(BASEFLAGS) $(CPPFLAGS) -fPIC -c $< -o $@
+
+# Paired A/B of two library builds, interleaved so machine drift cancels.
+#   make ab BASE=/tmp/base.so
+bench/ab: bench/ab.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ -ldl -lm
+ab: bench/ab $(SO)
+	@test -n "$(BASE)" || { echo "set BASE=<baseline .so>; e.g. make $(SO) && cp $(SO) /tmp/base.so"; exit 1; }
+	./bench/ab $(BASE) ./$(SO) $(ABFLAGS)
 
 $(OBJ512): %.o: %.c
 	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -c $< -o $@
@@ -47,6 +69,12 @@ tests/test_topk: tests/test_topk.c $(LIB)
 tests/test_batch: tests/test_batch.c $(LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
 
+# Correctness gate small enough to run between edits.  Not a substitute for
+# 'make test' - it is what you run 20 times an hour, not once.
+quick: tests/test_units tests/test_batch
+	./tests/test_units
+	PF_QUICK=1 ./tests/test_batch
+
 test: tests/test_units tests/test_topk tests/test_batch
 	./tests/test_units && ./tests/test_topk && ./tests/test_batch
 	@echo "--- forcing the AVX2 back end ---"
@@ -64,7 +92,7 @@ bench: bench/bench
 	./bench/bench
 
 clean:
-	rm -f $(OBJ) src/*.o $(LIB) tests/test_units tests/test_topk tests/test_batch bench/bench
+	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_topk tests/test_batch bench/bench
 
 tests/test_vs_mkl: tests/test_vs_mkl.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -I$(MKLINC) $< $(LIB) -o $@ \

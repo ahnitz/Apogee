@@ -108,11 +108,18 @@ static void run(size_t N,int B,int K,int sign,size_t ws,size_t we,int usethr){
 
 int main(void){
   if(!pf_supported(1024)){ printf("test_batch: unsupported CPU, skipped\n"); return 0; }
-  const int Bs[]={16,32,64,128};
-  const size_t Ns[]={1024,4096,16384,65536};
-  for(unsigned i=0;i<sizeof(Ns)/sizeof(*Ns);i++){
+  /* PF_QUICK trims the matrix to something that runs between edits.  It keeps one
+     batch size and the two smallest lengths but every mode - threshold, window and
+     both directions - because those are where the bugs have actually been. */
+  const int quick = getenv("PF_QUICK") != NULL;
+  const int Bs_full[]={16,32,64,128}, Bs_quick[]={16};
+  const size_t Ns_full[]={1024,4096,16384,65536}, Ns_quick[]={1024,4096};
+  const int *Bs = quick?Bs_quick:Bs_full;
+  const size_t *Ns = quick?Ns_quick:Ns_full;
+  const int nB = quick?1:4, nN = quick?2:4;
+  for(int i=0;i<nN;i++){
     size_t N=Ns[i];
-    for(unsigned j=0;j<4;j++){
+    for(int j=0;j<nB;j++){
       int B=Bs[j]; if(N>=65536) B=Bs[j]>32?32:Bs[j];
       int K=(N>=65536)?8:16;
       run(N,B,K,PF_FORWARD,0,N,0);

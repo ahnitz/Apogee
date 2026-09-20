@@ -225,3 +225,34 @@ Three attempts on that, all measured, none kept:
 So A=6's 1022 us is 8 MiB of strided DRAM read *plus* 8 MiB of L2 buffer write, and
 the two are balanced - which is why trading one for the other does nothing. Getting
 past this needs the input read itself to become sequential, not merely wider.
+
+## Tooling for fast iteration
+
+Two things were slowing every experiment down: the full test suite is 40 s, and
+run-to-run spread at 2^18 is ~12%, which is larger than most changes worth making.
+Comparing two sequential runs cannot see a 5% effect, and several conclusions
+earlier in this work were drawn from exactly that kind of comparison.
+
+- `make quick` - 1.75 s correctness gate (unit tests plus a trimmed batch matrix
+  that keeps every *mode*: threshold, window, both directions). Run between edits;
+  `make test` still runs the full 283k checks before committing.
+- `bench/ab A.so B.so` - paired A/B of two library builds, dlopen'd into one
+  process and alternated round by round so machine drift hits both equally. It
+  checks the two builds return identical peaks before timing anything, reports the
+  median per-round ratio and the observed spread, and decides significance itself
+  with a two-sided sign test.
+
+Two calibration details that mattered, both found by running the harness against
+an identical pair of libraries and demanding it say "noise":
+
+- **R must be even.** The order alternates each round, so an odd R hands one side
+  the disadvantageous first slot once more than the other. At R=25 that produced a
+  consistent "B slower, p=0.043" between two copies of the same library.
+- **p<0.01, not 0.05.** A sweep is six rows; at 0.05 a false call appears roughly
+  every third run, which is often enough to believe one.
+
+Usage:
+
+    make libpeakfft.so && cp libpeakfft.so /tmp/base.so
+    ...edit...
+    make ab BASE=/tmp/base.so ABFLAGS="-t 10 12 14 16"
