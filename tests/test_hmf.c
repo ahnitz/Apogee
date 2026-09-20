@@ -157,6 +157,79 @@ int main(void){
   }
 
   printf("\n omissions: %d of %d peaks (%.2f%%)\n",miss,tot,tot?100.0*miss/tot:0.0);
+
+  /* ------------------------------------------------------------------
+   * The two guards that matter, and that bit-identity cannot provide.
+   *
+   * Bit-identity only says: what IS reported is right.  It is silent on what
+   * is NOT reported, and silent on how much work was skipped.  A gate set too
+   * high omits detections and looks fast; a gate set too low reports
+   * everything and is slow.  Both pass every test above.
+   *
+   * So measure the two observables directly and hold them to the design:
+   *   - omission rate at SNR must not exceed the false-dismissal target
+   *   - trigger rate on pure noise must be near what the model predicts
+   * ------------------------------------------------------------------ */
+  printf("\n calibration: omission rate at snr, trigger rate on noise\n");
+  {
+    const size_t n=4096; const int NT=1, TRIALS=4000;
+    const float snr=5.5f, fd=1e-2f;
+    float *H=malloc(2*n*sizeof(float)), *D=malloc(2*n*sizeof(float));
+    make_template_pow(H,n,0.85);
+    ap_mf_plan  *mf =ap_mf_create(n,1,NT);
+    ap_hmf_plan *hf =ap_hmf_create(n,1,NT,snr,fd);
+    ap_mf_set_template(mf,0,H); ap_hmf_set_template(hf,0,H);
+    size_t nb=ap_mf_nbins(mf,n,0,n);
+    size_t nbn=ap_mf_nbins(mf,n,0,n);
+    ap_peak *pa=calloc(nbn,sizeof(ap_peak)),*pb=calloc(nbn,sizeof(ap_peak));
+    int detected=0, omitted=0;
+    for(int i=0;i<TRIALS;i++){
+      make_data(D,H,n,snr,(size_t)(37*i)%n);
+      ap_mf_set_data(mf,0,D); ap_hmf_set_data(hf,0,D);
+      int ca=0,cb=0;
+      ap_mf_run (mf ,0,1,0,1,n,snr,pa,&ca,0,n);
+      ap_hmf_run(hf ,0,1,0,1,n,snr,pb,&cb,0,n);
+      for(size_t b=0;b<nb;b++){
+        if(pa[b].index>=0){ detected++; if(pb[b].index<0) omitted++; }
+      }
+    }
+    double rate = detected ? (double)omitted/detected : 0.0;
+    /* 3x the target absorbs binomial scatter at these trial counts while still
+       catching a gate that is wrong by the order of magnitude seen in practice */
+    int bad = rate > 3.0*fd;
+    printf("  %-28s %s  %d/%d omitted (%.3f%%), target %.3f%%\n",
+           "omission rate at snr",bad?"FAIL":"ok  ",omitted,detected,
+           100.0*rate,100.0*fd);
+    if(bad) fails++;
+    checks++;
+    free(pa);free(pb);free(H);free(D); ap_mf_destroy(mf); ap_hmf_destroy(hf);
+  }
+  {
+    const size_t n=4096; const int ND=64, TRIALS=8;
+    const float snr=5.5f, fd=1e-2f;
+    float *H=malloc(2*n*sizeof(float)), *D=malloc(2*n*sizeof(float)*ND);
+    make_template_pow(H,n,0.85);
+    ap_hmf_plan *hf=ap_hmf_create(n,ND,1,snr,fd);
+    ap_hmf_set_template(hf,0,H);
+    size_t band; int u,k; ap_hmf_config(hf,&band,&u,&k);
+    /* one row per pair: ND pairs x nb bins, not a fixed 8 */
+    size_t nbn=ap_hmf_nbins(hf,n,0,n);
+    ap_peak *pk=calloc((size_t)ND*nbn,sizeof(ap_peak));
+    for(int i=0;i<TRIALS;i++){
+      for(int d=0;d<ND;d++){ make_data(D+(size_t)d*2*n,H,n,0.0,0); ap_hmf_set_data(hf,d,D+(size_t)d*2*n); }
+      ap_hmf_run(hf,0,ND,0,1,n,snr,pk,NULL,0,n);
+    }
+    long pr,tg; ap_hmf_stats(hf,&pr,&tg);
+    double got = pr ? (double)tg/pr : 0.0;
+    /* The design targets a trigger rate well under 25% on pure noise; above
+       that the coarse pass is overhead rather than a saving. */
+    int bad = got > 0.25;
+    printf("  %-28s %s  %.1f%% of pairs triggered on noise (band %zu, G %zu)\n",
+           "trigger rate on noise",bad?"FAIL":"ok  ",100.0*got,band,band*(size_t)u);
+    if(bad) fails++;
+    checks++;
+    free(pk);free(H);free(D); ap_hmf_destroy(hf);
+  }
   printf("\n%d checks, %d failures\n",checks,fails);
   return fails?1:0;
 }

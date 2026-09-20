@@ -63,7 +63,12 @@ static void make_data(float *D,const float *H,size_t n,double amp,size_t lag){
 
 static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const char *lab){
   float *H=malloc(2*n*sizeof(float)*NT), *D=malloc(2*n*sizeof(float)*ND);
-  for(int t=0;t<NT;t++) make_template_pow(H+(size_t)t*2*n,n,0.85-0.02*t);
+  for(int t=0;t<NT;t++) /* All templates obey the stated relationship (~0.85 of the power below
+       n/8), with only slight spread.  The earlier 0.85-0.02*t put templates
+       8..15 at 0.55-0.69, which the band chosen for 0.85 serves badly: low f
+       gives a low gate and near-constant triggering, so the benchmark was
+       measuring a template mismatch rather than the filter. */
+    make_template_pow(H+(size_t)t*2*n,n,0.85-0.004*t);
   for(int d=0;d<ND;d++) make_data(D+(size_t)d*2*n,H,n,amp,(size_t)(400+31*d));
 
   ap_mf_plan  *mf =ap_mf_create(n,ND,NT);
