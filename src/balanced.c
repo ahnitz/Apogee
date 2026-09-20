@@ -96,6 +96,7 @@ typedef struct {
   float *ire,*iim;     /* fp32 intermediate, used when quantising would not pay */
   int useq;            /* 1 = quantised 24-bit, 0 = plain fp32                  */
   int gblk;            /* stage-A groups loaded per pass over the input          */
+  int bblk;            /* stage-B column blocks loaded per pass over the intermediate */
   vf *bmx,*bre,*bim;   /* per-bin running max, and the winner's value            */
   vi *bix;             /* per-bin block index of the current winner              */
   size_t nbcap;
@@ -199,8 +200,25 @@ void *FN(create)(size_t N){
     { const char *e=getenv("PEAKFFT_GBLK"); if(e){ long v=atol(e); if(v>0){ g=(size_t)v; if(g>g_max)g=g_max; } } }
     p->gblk=(int)g; p->bstride=me;
   }
-  p->bR=aligned_alloc(64,me*(size_t)p->gblk*sizeof(vf));
-  p->bI=aligned_alloc(64,me*(size_t)p->gblk*sizeof(vf));
+  /* Stage B reads the intermediate at [n1][k2], walking n1 with stride istr while
+     using only PF_W floats of each row: 64 bytes out of 4 KiB at 2^20, which is
+     the same 7.6 GB/s shape the stage-A blocking was introduced to fix.  Loading
+     several column blocks per pass widens the touched run to BB*64 bytes at no
+     change in total bytes read.  Same L2 tradeoff, so it is sized the same way. */
+  { size_t bmaxn=(size_t)n2/PF_W;
+    /* Measured: no gain, 1.02-1.05x worse at 2^18 and 2^20.  Stage B's walk is a
+       constant 4 KiB stride, which the hardware prefetcher already handles - the
+       stage-A input walk it was modelled on is not equivalent.  Default off; the
+       mechanism stays behind PEAKFFT_BBLK. */
+    size_t bb = 1;
+    if(bb>bmaxn) bb=bmaxn;
+    if(bb<1) bb=1;
+    { const char *e=getenv("PEAKFFT_BBLK"); if(e){ long v=atol(e); if(v>0){ bb=(size_t)v; if(bb>bmaxn)bb=bmaxn; } } }
+    p->bblk=(int)bb;
+  }
+  { size_t nbuf = (size_t)p->gblk > (size_t)p->bblk ? (size_t)p->gblk : (size_t)p->bblk;
+    p->bR=aligned_alloc(64,me*nbuf*sizeof(vf));
+    p->bI=aligned_alloc(64,me*nbuf*sizeof(vf)); }
   p->sR=aligned_alloc(64,me*sizeof(vf)); p->sI=aligned_alloc(64,me*sizeof(vf));
   p->TLr=aligned_alloc(64,(size_t)n2*sizeof(vf)); p->TLi=aligned_alloc(64,(size_t)n2*sizeof(vf));
   for(int k2=0;k2<n2;k2++){
@@ -401,6 +419,33 @@ static void stageA(BP*p,const float*in,int conj){
   }
 }
 
+/* Load BB consecutive column blocks in one walk over the intermediate rows, so
+   each row contributes BB*PF_W contiguous floats instead of PF_W.  Only the fp32
+   intermediate is blocked; the quantised path is off by default. */
+static void stageB_load_many(BP*p,int b0,int bb){
+  const int N1=PN1;
+  const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
+  for(int e2=0;e2<M2;e2++){
+    const float *sr=p->ire+(size_t)e2*M1*p->istr+PF_W*b0;
+    const float *si=p->iim+(size_t)e2*M1*p->istr+PF_W*b0;
+    for(int e1=0;e1<M1;e1++){
+      for(int j=0;j<bb;j++){
+        vf *dR=p->bR+(size_t)j*p->bstride+(size_t)e2*st;
+        vf *dI=p->bI+(size_t)j*p->bstride+(size_t)e2*st;
+        dR[e1]=V_LOADU(sr+(size_t)j*PF_W); dI[e1]=V_LOADU(si+(size_t)j*PF_W);
+      }
+      sr+=p->istr; si+=p->istr;
+    }
+  }
+}
+/* transform the j-th buffer that stageB_load_many filled */
+static void stageB_run(BP*p,int j,vf**RR,vf**RI){
+  const int N1=PN1;
+  vf *bR=p->bR+(size_t)j*p->bstride, *bI=p->bI+(size_t)j*p->bstride;
+  efft(N1,bR,bI,p->sR,p->sI,p->w1r,p->w1i);
+  *RR=bR; *RI=bI;
+}
+
 static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
   const int N1=PN1; (void)PN2; PT(_tb0);
   if(!p->useq){
@@ -565,13 +610,19 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
      the accumulators live in registers. */
   if(nb==1){
     vf am=V_SET1(t2), arr=V_ZERO(), aii=V_ZERO(); vi axx=VI_SET1(-1);
-    for(int b=0;b<N2/PF_W;b++){
+    const int NBK=N2/PF_W, BB=p->useq?1:p->bblk;
+    for(int b0=0;b0<NBK;b0+=BB){
+     const int bbn=(NBK-b0<BB)?NBK-b0:BB;
+     if(!p->useq && bbn>1) stageB_load_many(p,b0,bbn);
+     for(int jj=0;jj<bbn;jj++){
+      const int b=b0+jj;
       long base=(long)PF_W*b;
       long lo=((long)ws-base-(PF_W-1)+N2-1)/N2, hi=((long)we-1-base)/N2;
       if(lo<0) lo=0;
       if(hi>N1-1) hi=N1-1;
       if(lo>hi) continue;
-      vf *RR,*RI; stageB(p,b,&RR,&RI,1);
+      vf *RR,*RI;
+      if(!p->useq && bbn>1) stageB_run(p,jj,&RR,&RI); else stageB(p,b,&RR,&RI,1);
       for(long k1=lo;k1<=hi;k1++){
         int e=eidx(&p->ea,(int)k1);
         long k0=k1*N2+base;
@@ -592,6 +643,7 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
           axx=VI_BLENDM(g,axx,VI_SET1((int)k0));
         }
       }
+     }
     }
     float mv[PF_W],rv[PF_W],iv[PF_W]; int xv[PF_W];
     V_STOREU(mv,am); V_STOREU(rv,arr); V_STOREU(iv,aii); VI_STOREU(xv,axx);
@@ -614,13 +666,19 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
     bmax[j]=t2;
     out[j].index=-1; out[j].re=0.f; out[j].im=0.f; out[j].magnitude=0.f;
   }
-  for(int b=0;b<N2/PF_W;b++){
+  const int NBK2=N2/PF_W, BB2=p->useq?1:p->bblk;
+  for(int b0=0;b0<NBK2;b0+=BB2){
+   const int bbn=(NBK2-b0<BB2)?NBK2-b0:BB2;
+   if(!p->useq && bbn>1) stageB_load_many(p,b0,bbn);
+   for(int jj=0;jj<bbn;jj++){
+    const int b=b0+jj;
     long base=(long)PF_W*b;
     long lo=((long)ws-base-(PF_W-1)+N2-1)/N2, hi=((long)we-1-base)/N2;
     if(lo<0) lo=0;
     if(hi>N1-1) hi=N1-1;
     if(lo>hi) continue;
-    vf *RR,*RI; stageB(p,b,&RR,&RI,1);
+    vf *RR,*RI;
+    if(!p->useq && bbn>1) stageB_run(p,jj,&RR,&RI); else stageB(p,b,&RR,&RI,1);
     for(long k1=lo;k1<=hi;k1++){
       int e=eidx(&p->ea,(int)k1);
       long k0=k1*N2+base;
@@ -658,6 +716,7 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
         }
       }
     }
+   }
   }
   /* magnitude carried squared to keep the hot loop free of sqrt */
   for(size_t j=0;j<nb;j++) if(out[j].index>=0) out[j].magnitude=sqrtf(out[j].magnitude);

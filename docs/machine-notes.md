@@ -460,3 +460,30 @@ quantised (the pf_qinput API exists for exactly this): 0.152 + 0.03 + 0.02 = 0.2
 against 0.26, about 1.3x. That is a real option for a pipeline whose data is
 already fixed point, but it is not a like-for-like comparison with a library that
 must take fp32.
+
+## Stage-B blocking: no gain
+
+Stage A's input walk touches 128 bytes per 8 KiB row, and widening it with group
+blocking was worth 1.05-1.21x. Stage B reads the intermediate with the same shape
+- PF_W floats out of every `istr` row, 64 bytes per 4 KiB at 2^20 - so the same
+treatment looked obviously right.
+
+It is not: blocking 4, 8 or 16 column blocks per pass measures 1.02-1.05x *worse*
+at 2^18 and 2^20, and neutral at 2^16 (paired A/B, same build, only the knob
+varying). The difference from stage A is that stage B's stride is constant and
+short enough for the hardware prefetcher, and the wider buffers cost L2 for
+nothing. Default 1; mechanism kept behind `PEAKFFT_BBLK`.
+
+Ablation of the large sizes with the current build, windowed binmax, B=16:
+
+| | 2^14 | 2^16 | 2^18 | 2^20 |
+|---|---|---|---|---|
+| full | 10.43 | 52.39 | 311.73 | 1957.85 |
+| no stage-A body | 5.46 | 25.55 | 175.54 | 1013.37 |
+| no element FFT | 10.96 | 54.15 | 301.15 | 1773.38 |
+| no corner turn | 10.74 | 51.79 | 301.37 | 1691.21 |
+
+At 2^20 the corner turn is 14% and the element FFT only 9%; at 2^14 removing
+either is *slower*. Effective bandwidth at 2^20 is 24.6 MiB per transform in
+1958 us = 12.6 GB/s against 43.9 sequential, so the headroom is real but it is
+not in any single pass.
