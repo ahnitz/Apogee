@@ -55,27 +55,33 @@ do not apply — a coarse fold cannot find that peak.
 ## Numbers
 
 One core of an AMD Ryzen AI MAX+ 395 (Zen 5), idle. D=T=16 (256 pairs), 60%
-window, bin 1024, detection floor on. All three libraries are given spectra and
-run the same algorithm with the same reuse — forward transforms are outside the
-timing on every side, amd-fftw uses `fftwf_execute_dft` so it is not charged for
-copies, and the baselines get the same vectorised complex product.
+window, bin 1024, detection floor on.
 
-| N | MKL | amd-fftw | apogee | vs MKL | vs amd-fftw |
-|---|---|---|---|---|---|
-| 2^10 | 1.3 | 0.7 | **0.5** | 2.82x | 1.62x |
-| 2^12 | 6.2 | 3.9 | **2.5** | 2.52x | 1.56x |
-| 2^14 | 28.1 | 20.7 | **10.5** | 2.67x | 1.97x |
-| 2^16 | 140.7 | 113.3 | **62.4** | 2.25x | 1.82x |
-| 2^18 | 1206.8 | 616.6 | **384.6** | 3.14x | 1.60x |
+The baselines are charged for their **inverse transforms only** — no product, no
+peak scan, no forward transforms. apogee is charged for everything it does. That
+is deliberately generous to them: it removes any argument about how well the
+surrounding code was written, and sets the bar where it belongs, at "can a
+peak-only matched filter beat a bare FFT?"
 
-µs per pair, apogee's including its ingest. Faster than both at every size.
+µs per pair, versus amd-fftw's bare inverse transform:
 
-Per-pair cost improves as the work grows, which is what reuse should do: at 2^14,
-D=1/T=16 gives 25.6 µs/pair and D=32/T=32 gives 11.7.
+| N | AVX-512 | AVX2 |
+|---|---|---|
+| 2^10 | 0.65x | 0.37x |
+| 2^12 | 0.67x | 0.45x |
+| 2^14 | **1.31x** | 0.89x |
+| 2^16 | **1.14x** | 0.83x |
+| 2^18 | 0.99x | 0.75x |
 
-Caveat on the baselines: MKL takes its *generic* path on this AMD part
-(`MKL_VERBOSE` says "Intel(R) Architecture processors"), so some of that margin is
-dispatch rather than algorithm. That is why amd-fftw is the number to watch.
+So on AVX-512 the whole matched filter beats a bare inverse FFT at 2^14 and 2^16
+and is close elsewhere. On AVX2 it is not there yet — that path costs 1.3–2.2x
+its AVX-512 equivalent, while amd-fftw barely gains from AVX-512 at all (2^14:
+14.1 µs AVX2 against 13.8 AVX-512). Closing AVX2 is the current work.
+
+Against the *full* baseline route — product, inverse and scan, all vectorised —
+apogee is 1.26–1.72x on AVX-512 and 0.85–1.26x on AVX2. Caveat: MKL takes its
+generic path on this AMD part (`MKL_VERBOSE` says "Intel(R) Architecture
+processors"), which is why amd-fftw is the number to watch.
 
 ## Using it
 

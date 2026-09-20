@@ -128,22 +128,46 @@ int main(int argc,char**argv){
   memcpy(ds,dspec0,(size_t)D*2*n*4);
   for(int i=0;i<T;i++){ memcpy(ts+(size_t)i*2*n,tspec0+(size_t)i*2*n,2*n*4);
     float *q=ts+(size_t)i*2*n; for(size_t k=0;k<n;k++) q[2*k+1]=-q[2*k+1]; }
+  /* Precompute a handful of real products so the inverse transforms read
+     genuine, varying data rather than one hot buffer - without charging the
+     baselines for forming them. */
+  const int NPRE = D<8?D:8;
+  float *pre=aligned_alloc(64,(size_t)NPRE*2*n*4);
+  for(int i=0;i<NPRE;i++)
+    base_mul(ds+(size_t)i*2*n, ts+(size_t)(i%T)*2*n, pre+(size_t)i*2*n, n);
+
+  /* TIMED: D*T inverse transforms and nothing else. */
   #define PAIRLOOP(INV) do{                                                  \
     for(int d=0;d<D;d++) for(int t=0;t<T;t++){                               \
-      const float *A=ds+(size_t)d*2*n,*B=ts+(size_t)t*2*n;                   \
-      base_mul(A,B,prod,n);                                                  \
+      INV(pre+(size_t)((d*T+t)%NPRE)*2*n, outb);                             \
+      sink+=(size_t)outb[0];                                                 \
+    } }while(0)
+
+  /* NOT timed: the full baseline route, so the two agree on the answer. */
+  #define CROSSCHECK(INV) do{                                                \
+    for(int d=0;d<D;d++) for(int t=0;t<T;t++){                               \
+      base_mul(ds+(size_t)d*2*n,ts+(size_t)t*2*n,prod,n);                    \
       INV(prod,outb);                                                        \
       for(size_t j=0;j<nb;j++){ size_t lo=ws+j*bs,hi=lo+bs; if(hi>we)hi=we;  \
         size_t bi2; float best;                                              \
         base_binmax(outb,lo,hi,&bi2,&best);                                  \
-        sink+=bi2+(size_t)(sqrtf(best)>THR); }                               \
-    } }while(0)
+        ap_peak *q=&pk[((size_t)d*T+t)*nb+j];                                \
+        if(q->index>=0){                                                     \
+          if((size_t)q->index!=bi2) xbad++;                                  \
+          double rel=fabs(sqrt((double)best)-q->magnitude)/q->magnitude;      \
+          if(rel>xerr) xerr=rel;                                             \
+        } } } }while(0)
 
   volatile size_t sink=0;
+  int xbad=0; double xerr=0;
   #define MKLB(in,out) DftiComputeBackward(h,(void*)(in),(out))
   /* execute_dft runs the plan on other arrays, so amd-fftw is not charged for a
      copy in and out */
   #define AMDB(in,out) fftwf_execute_dft(abwd,(fftwf_complex*)(in),(fftwf_complex*)(out))
+
+  /* agree on the answer first, untimed */
+  ap_mf_run(mp,0,D,0,T,bs,0.f,pk,cnt,ws,we);
+  CROSSCHECK(AMDB);
 
   double bm=1e30,ba=1e30,bp=1e30,t0;
   int reps = n<=(1u<<14)?3:1;
@@ -157,11 +181,14 @@ int main(int argc,char**argv){
 
   double np=(double)D*T;
   printf("N=2^%-2d  D=%d T=%d  (%d pairs, 60%% window, bin %zu, floor on)\n",lg,D,T,(int)np,bs);
-  printf("  all three are given spectra; forward transforms are outside the timing\n");
-  printf("  %-24s %10.1f us total  %9.3f us/pair\n","MKL",bm*1e6,bm*1e6/np);
-  printf("  %-24s %10.1f us total  %9.3f us/pair\n","amd-fftw",ba*1e6,ba*1e6/np);
+  printf("  baselines are charged for their inverse transforms ONLY - no product,\n"
+         "  no peak scan, no forward transforms.  apogee pays for everything.\n");
+  printf("  cross-check against the full baseline route: %d index mismatches, worst rel err %.1e\n",
+         xbad,xerr);
+  printf("  %-24s %10.1f us total  %9.3f us/pair   (inverse transform only)\n","MKL",bm*1e6,bm*1e6/np);
+  printf("  %-24s %10.1f us total  %9.3f us/pair   (inverse transform only)\n","amd-fftw",ba*1e6,ba*1e6/np);
   printf("  %-24s %10.1f us total  %9.3f us/pair   vs MKL %.2fx  vs amd %.2fx\n",
-         "apogee (incl. ingest)",bp*1e6,bp*1e6/np,bm/bp,ba/bp);
+         "apogee FULL matched filter",bp*1e6,bp*1e6/np,bm/bp,ba/bp);
   printf("  (sink %zu)\n",(size_t)sink);
   return 0;
 }
