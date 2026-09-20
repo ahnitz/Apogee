@@ -196,13 +196,30 @@ def recovery(H, n, m, U, K, nsub=8):
         worst = min(worst, best / truth)
     return worst_raw, worst
 
+#: Measured cost of a matched-filter pair transform, in ps per n*log2(n), by
+#: transform size.  Small transforms do NOT reach their flop bound -- 256 points
+#: costs 90 ps against 69 at 4096 -- so pricing the coarse pass in raw flops
+#: under-charges small bands and makes the design buy too little band.
+_RATE = {256: 90.2, 512: 83.3, 1024: 76.5, 2048: 75.7, 4096: 69.2,
+         8192: 67.8, 16384: 68.5}
+
+
+def _cost_units(m):
+    """Cost of an m-point pair transform: flops weighted by measured efficiency."""
+    r = _RATE.get(m)
+    if r is None:
+        keys = sorted(_RATE)
+        r = _RATE[keys[0]] if m < keys[0] else _RATE[keys[-1]]
+    return 5.0 * m * np.log2(m) * r
+
+
 def design(n, want_f=POWER_FRAC, taps=(4, 8, 12),
            Rs=(2, 4, 8, 16, 32, 64, 128, 256, 512, 1024),
            Ts=(5.0, 5.5, 6.0), FDs=(1e-2, 1e-3, 1e-4), window=1.0):
     """Best (R,U,K) per (T,FD), with the cost model in units of the full inverse."""
     H = make_template(n, n // 8, want_f)
     pw = np.abs(H) ** 2
-    full = 5.0 * n * np.log2(n)
+    full = _cost_units(n)
     cand = []
     for R in Rs:
         m = n // R
@@ -235,8 +252,17 @@ def design(n, want_f=POWER_FRAC, taps=(4, 8, 12),
                 if not np.isfinite(t_c) or t_c <= 0: continue
                 trig = 1.0 - np.exp(-c['G'] * window * np.exp(-t_c ** 2 / 2))
                 ncand = max(1.0, c['G'] * window * np.exp(-t_c ** 2 / 2))
-                xf = c['U'] * 5.0 * c['m'] * np.log2(c['m'])
-                cost = (xf + 2.0 * c['G'] + c['K'] * 4 * 4 * ncand) / full + trig
+                # The odd half of a U=2 grid only runs when the even half clears
+                # graw1*t_c, which on noise is a minority of pairs.  Charging
+                # both halves unconditionally made U=2 look twice as expensive
+                # as it is and pushed the design toward bands that are too
+                # narrow -- which costs f, and f is what sets the trigger rate.
+                p_odd = 1.0
+                if c['U'] > 1:
+                    eg = t_c * c['graw1']
+                    p_odd = 1.0 - np.exp(-c['m'] * window * np.exp(-eg ** 2 / 2))
+                xf = _cost_units(c['m']) * (1.0 + p_odd * (c['U'] - 1))
+                cost = (xf + (2.0 * c['G'] + c['K'] * 16 * ncand) * 60.0) / full + trig
                 row = dict(c, t_c=t_c, trig=trig, cost=cost, speed=1.0 / cost)
                 if best is None or row['speed'] > best['speed']: best = row
             out[(T, a)] = best
