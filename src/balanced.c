@@ -136,16 +136,27 @@ void *FN(create)(size_t N){
   size_t s1=(a2==1)?(size_t)n1:(size_t)ESTRIDE(a1)*a2;
   size_t s2=(b2==1)?(size_t)n2:(size_t)ESTRIDE(b1)*b2;
   size_t me=s1>s2?s1:s2;
-  /* Quantising trades arithmetic for bytes moved.  That is only a win once the
-     intermediate stops fitting in cache - below that it is pure added work, and it
-     measured ~1.9x slower at 2^12.  L2 here is 1 MiB, so switch at 2^17. */
+  /* Quantising trades arithmetic for bytes moved.  It is now OFF at every size.
+     It was enabled above 2^17 on the argument that the intermediate no longer fits
+     cache, and that held while stage A read the input one group at a time.  Once
+     the group blocking widened the input stream, re-measuring with bench/ab (same
+     build, only this knob varying) says fp32 wins everywhere:
+
+        2^12 1.32x  2^14 1.39x  2^15 1.41x  2^16 1.34x  2^17 1.33x
+        2^18 1.18x  2^19 1.26x  2^20 1.10x      (all slower when quantised,
+                                                 0/48 and 0/16 rounds)
+
+     The pack/unpack arithmetic costs more than the 25% of intermediate bytes it
+     saves.  Kept behind PEAKFFT_USEQ because the balance moves with the access
+     pattern and this is the second time it has flipped. */
   /* Intermediate row stride.  Padding it off the power of two was tried - the
      element buffers needed exactly that, and ablating the store shows it costing
      13% at 2^12 and 20% at 2^14 - but isolated on one build it measures as noise
      at every size.  The store is simply the cost of writing the intermediate
      (128 KiB at 2^14, ~63 GB/s, which is L2 bandwidth), not set aliasing. */
   p->istr = (size_t)n2;
-  p->useq = (N*8 > (1u<<20));
+  p->useq = 0;
+  { const char *e=getenv("PEAKFFT_USEQ"); if(e) p->useq=atoi(e)?1:0; }
   if(p->useq){
     p->q  =aligned_alloc(64,(size_t)n1*p->istr*2*sizeof(short));
     p->r8 =aligned_alloc(64,(size_t)n1*p->istr*2);
