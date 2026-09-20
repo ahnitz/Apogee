@@ -2,7 +2,8 @@
 
 ## The problem
 
-D data segments and T template segments, all complex vectors of length N.  For
+D data segments and T template segments, supplied as SPECTRA - complex vectors of
+length N, the unnormalised forward transform of each segment.  For
 every pair we want the matched-filter output
 
     z_dt[k] = IFFT( D_d[f] * conj(H_t[f]) )[k]
@@ -91,3 +92,21 @@ Performance:
 - Sweep N, D, T, bin size, window; report per-pair cost so shapes compare.
 - Report **reuse efficiency**: per-pair cost as T grows with D fixed.  A flat line
   means reuse is working; a rising one means the tiling is wrong.
+
+
+## Settled by measurement
+
+**Input is frequency domain.**  Taking time-domain segments would let the ingest
+rearrangement fuse into a forward transform we performed ourselves, making it
+free.  Measured, that rearrangement is only 1.9-4.5% of total and shrinks as T
+grows:
+
+| N | D x T | ingest | pair loop | share |
+|---|---|---|---|---|
+| 2^12 | 16x16 | 26.7 us | 652 | 3.9% |
+| 2^12 | 16x256 | 228 | 11566 | 1.9% |
+| 2^14 | 16x16 | 104 | 2940 | 3.4% |
+| 2^16 | 16x64 | 2470 | 55566 | 4.3% |
+
+Not worth owning the forward transform for, especially since the caller's
+pipeline has the spectra anyway.

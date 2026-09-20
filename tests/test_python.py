@@ -10,10 +10,15 @@ import peakfft
 
 
 def _case(n, D, T, seed=0):
+    """Return time-domain segments and their spectra; the library takes spectra."""
     rng = np.random.default_rng(seed)
     d = (rng.standard_normal((D, n)) + 1j * rng.standard_normal((D, n))).astype(np.complex64)
     h = (rng.standard_normal((T, n)) + 1j * rng.standard_normal((T, n))).astype(np.complex64)
     return d, h
+
+
+def _spec(a):
+    return np.fft.fft(a, axis=-1).astype(np.complex64)
 
 
 def _ref(d, h):
@@ -27,8 +32,8 @@ def _ref(d, h):
 def test_matches_numpy(n, D, T):
     d, h = _case(n, D, T)
     mf = peakfft.MatchedFilter(n, D, T)
-    mf.set_data(d)
-    mf.set_templates(h)
+    mf.set_data(_spec(d))
+    mf.set_templates(_spec(h))
     bs = n // 4
     peaks = mf.run(binsize=bs)
     assert peaks.shape == (D, T, n // bs)
@@ -48,7 +53,7 @@ def test_threshold_and_empty_bins():
     n, bs = 4096, 512
     d, h = _case(n, 1, 1, seed=3)
     mf = peakfft.MatchedFilter(n, 1, 1)
-    mf.set_data(d); mf.set_templates(h)
+    mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     mag = np.abs(_ref(d[0], h[0]))
     thr = float(np.sort(mag)[::-1][2])
     peaks, counts = mf.run(binsize=bs, threshold=thr, counts=True)
@@ -68,7 +73,7 @@ def test_window():
     n, bs = 4096, 256
     d, h = _case(n, 1, 1, seed=5)
     mf = peakfft.MatchedFilter(n, 1, 1)
-    mf.set_data(d); mf.set_templates(h)
+    mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     ws, we = 800, 3000
     peaks = mf.run(binsize=bs, window=(ws, we))
     idx = peaks["index"].ravel()
@@ -80,7 +85,7 @@ def test_subrange_matches_full():
     n, D, T, bs = 1024, 4, 4, 256
     d, h = _case(n, D, T, seed=7)
     mf = peakfft.MatchedFilter(n, D, T)
-    mf.set_data(d); mf.set_templates(h)
+    mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     full = mf.run(binsize=bs)
     sub = mf.run(binsize=bs, data=(1, 2), templates=(2, 2))
     assert np.array_equal(sub["index"], full["index"][1:3, 2:4])
@@ -92,7 +97,7 @@ def test_known_lag():
     d = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64)
     h = np.roll(d, -lag)
     mf = peakfft.MatchedFilter(n, 1, 1)
-    mf.set_data(d, index=0); mf.set_templates(h, index=0)
+    mf.set_data(_spec(d), index=0); mf.set_templates(_spec(h), index=0)
     peaks = mf.run(binsize=n)
     assert peaks[0, 0, 0]["index"] == lag
     energy = float(np.sum(np.abs(d.astype(np.complex128)) ** 2))
@@ -114,7 +119,7 @@ def test_python_overhead_is_negligible():
     n, D, T = 4096, 8, 8
     d, h = _case(n, D, T, seed=13)
     mf = peakfft.MatchedFilter(n, D, T)
-    mf.set_data(d); mf.set_templates(h)
+    mf.set_data(_spec(d)); mf.set_templates(_spec(h))
     best_small = best_large = 1e30
     for _ in range(5):
         t0 = time.perf_counter(); mf.run(binsize=1024, data=(0, 1), templates=(0, 1))

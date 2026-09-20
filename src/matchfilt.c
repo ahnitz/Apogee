@@ -4,10 +4,9 @@
  * correlation.  See docs/matched-filter-plan.md for where the time goes and which
  * reuse opportunities are real.
  *
- * Round 0 is deliberately the obvious implementation: form the product, hand it
- * to the existing backward binned-max path.  It exists so the test suite is
- * meaningful before any of the interesting optimisations go in, and so each of
- * those can be A/B'd against something known-correct.
+ * Segments arrive already transformed.  Ingest only rearranges - conjugate the
+ * templates, and store both sides group-major so every pair transform reads
+ * sequentially - which keeps the D*T loop free of anything single-sided.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -133,19 +132,17 @@ static void split_store(const float *inter,float *re,float *im,size_t n,int conj
       }
 }
 
-int pf_mf_set_data(pf_mf_plan *p, int d, const float *seg){
+int pf_mf_set_data(pf_mf_plan *p, int d, const float *spec){
   if(!p||d<0||d>=p->nd) return -1;
-  pf_fft(p->fft, seg, p->scratch, PF_FORWARD);
-  split_store(p->scratch, p->dre+(size_t)d*p->n, p->dim+(size_t)d*p->n, p->n, 0,
+  split_store(spec, p->dre+(size_t)d*p->n, p->dim+(size_t)d*p->n, p->n, 0,
               p->gmajor?p->n1:0, p->n2, p->w);
   return 0;
 }
 
-int pf_mf_set_template(pf_mf_plan *p, int t, const float *tmpl){
+int pf_mf_set_template(pf_mf_plan *p, int t, const float *spec){
   if(!p||t<0||t>=p->nt) return -1;
-  pf_fft(p->fft, tmpl, p->scratch, PF_FORWARD);
   /* conjugate at ingest, not per pair: this runs T times, the pair loop D*T */
-  split_store(p->scratch, p->tre+(size_t)t*p->n, p->tim+(size_t)t*p->n, p->n, 1,
+  split_store(spec, p->tre+(size_t)t*p->n, p->tim+(size_t)t*p->n, p->n, 1,
               p->gmajor?p->n1:0, p->n2, p->w);
   return 0;
 }

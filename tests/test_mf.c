@@ -55,8 +55,12 @@ static void run(size_t n,int D,int T,size_t binsize,size_t ws,size_t we,int uset
     data[(size_t)d*2*n+2*k]=(float)gs(); data[(size_t)d*2*n+2*k+1]=(float)gs(); }
   for(int t=0;t<T;t++) for(size_t k=0;k<n;k++){
     tmpl[(size_t)t*2*n+2*k]=(float)gs(); tmpl[(size_t)t*2*n+2*k+1]=(float)gs(); }
-  for(int d=0;d<D;d++) CK(pf_mf_set_data(p,d,data+(size_t)d*2*n)==0,"set_data %d",d);
-  for(int t=0;t<T;t++) CK(pf_mf_set_template(p,t,tmpl+(size_t)t*2*n)==0,"set_template %d",t);
+  /* segments are supplied already transformed */
+  pf_plan *fp=pf_create(n); float *sp=malloc(2*n*4);
+  for(int d=0;d<D;d++){ pf_fft(fp,data+(size_t)d*2*n,sp,PF_FORWARD);
+    CK(pf_mf_set_data(p,d,sp)==0,"set_data %d",d); }
+  for(int t=0;t<T;t++){ pf_fft(fp,tmpl+(size_t)t*2*n,sp,PF_FORWARD);
+    CK(pf_mf_set_template(p,t,sp)==0,"set_template %d",t); }
 
   size_t nb=pf_mf_nbins(p,binsize,ws,we);
   pf_peak *pk=malloc((size_t)D*T*nb*sizeof(pf_peak));
@@ -110,8 +114,8 @@ static void run(size_t n,int D,int T,size_t binsize,size_t ws,size_t we,int uset
     }
     free(sub);free(sc);
   }
-  free(data);free(tmpl);free(pk);free(cnt);free(mag);free(zr);free(zi);
-  pf_mf_destroy(p);
+  free(data);free(tmpl);free(pk);free(cnt);free(mag);free(zr);free(zi);free(sp);
+  pf_destroy(fp); pf_mf_destroy(p);
 }
 
 /* template is a circular shift of the data: the peak must be exactly at that lag */
@@ -123,8 +127,11 @@ static void run_known(size_t n,int lag){
     energy += (double)d[2*k]*d[2*k] + (double)d[2*k+1]*d[2*k+1]; }
   for(size_t k=0;k<n;k++){ size_t src=(k+(size_t)lag)%n;
     h[2*k]=d[2*src]; h[2*k+1]=d[2*src+1]; }
-  pf_mf_set_data(p,0,d); pf_mf_set_template(p,0,h);
-  size_t nb=pf_mf_nbins(p,n,0,n);
+  { pf_plan *fp=pf_create(n); float *sp=malloc(2*n*4);
+    pf_fft(fp,d,sp,PF_FORWARD); pf_mf_set_data(p,0,sp);
+    pf_fft(fp,h,sp,PF_FORWARD); pf_mf_set_template(p,0,sp);
+    free(sp); pf_destroy(fp); }
+
   pf_peak pk[1]; int c[1];
   pf_mf_run(p,0,1,0,1,n,0.f,pk,c,0,n);
   CK(pk[0].index==lag,"known-answer n=%zu: peak at %ld, expected lag %d",n,pk[0].index,lag);
@@ -143,8 +150,10 @@ static void run_reuse(size_t n){
   for(size_t i=0;i<2*2*n;i++) d[i]=(float)gs();
   for(size_t i=0;i<3*2*n;i++) h[i]=(float)gs();
   memcpy(h+2*2*n, h, 2*n*sizeof(float));      /* template 2 == template 0 */
-  for(int i=0;i<2;i++) pf_mf_set_data(p,i,d+(size_t)i*2*n);
-  for(int i=0;i<3;i++) pf_mf_set_template(p,i,h+(size_t)i*2*n);
+  { pf_plan *fp=pf_create(n); float *sp=malloc(2*n*4);
+    for(int i=0;i<2;i++){ pf_fft(fp,d+(size_t)i*2*n,sp,PF_FORWARD); pf_mf_set_data(p,i,sp); }
+    for(int i=0;i<3;i++){ pf_fft(fp,h+(size_t)i*2*n,sp,PF_FORWARD); pf_mf_set_template(p,i,sp); }
+    free(sp); pf_destroy(fp); }
   size_t bs=n/4, nb=pf_mf_nbins(p,bs,0,n);
   pf_peak *pk=malloc(2*3*nb*sizeof(pf_peak)); int cnt[6];
   pf_mf_run(p,0,2,0,3,bs,0.f,pk,cnt,0,n);

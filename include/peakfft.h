@@ -62,9 +62,12 @@ void pf_fft(pf_plan *p, const float *in, float *out, int sign);
    and the same peak report as pf_binmax: the loudest sample per bin of the
    search window, with a detection floor.
 
-   Reuse is the point.  Each segment is transformed once at ingest and stored in
-   the layout the pair loop wants, so the D*T pair loop never repeats work that
-   depends on only one side.  Forward transforms are D+T; pair work is D*T.
+   Segments are supplied ALREADY TRANSFORMED - the caller's pipeline has them in
+   the frequency domain anyway, and D+T forward transforms have no business
+   inside a D*T loop.  Ingest here only rearranges: templates are conjugated, and
+   both sides are stored in the layout stage A walks, which is what lets every
+   one of the D*T pair transforms read sequentially.  That rearrangement is paid
+   once per segment, so it stays amortised however many pairs run.
 
    Peaks for pair (d,t) land at peaks[((d-d0)*nt + (t-t0)) * nbins], dense and
    indexed by bin exactly as pf_binmax.  counts, if given, holds one crossing
@@ -75,9 +78,11 @@ pf_mf_plan *pf_mf_create(size_t n, int ndata, int ntmpl);
 void        pf_mf_destroy(pf_mf_plan *p);
 size_t      pf_mf_nbins(const pf_mf_plan *p, size_t binsize, size_t start, size_t end);
 
-/* Ingest.  seg is n interleaved complex float32.  Returns 0, or -1 on error. */
-int pf_mf_set_data    (pf_mf_plan *p, int d, const float *seg);
-int pf_mf_set_template(pf_mf_plan *p, int t, const float *tmpl);
+/* Ingest.  spec is the segment's SPECTRUM: n interleaved complex float32, the
+   unnormalised forward transform of the segment, in natural frequency order.
+   Returns 0, or -1 on error. */
+int pf_mf_set_data    (pf_mf_plan *p, int d, const float *spec);
+int pf_mf_set_template(pf_mf_plan *p, int t, const float *spec);
 
 /* Run the pairs [d0,d0+nd) x [t0,t0+nt).  Any sub-block must give the same
    answer as the corresponding slice of the whole, which is what makes tiling

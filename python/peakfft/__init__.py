@@ -5,13 +5,15 @@ loudest sample in each bin of a search window:
 
     >>> import numpy as np, peakfft
     >>> mf = peakfft.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
-    >>> mf.set_data(data)            # (16, 16384) complex64
-    >>> mf.set_templates(templates)  # (16, 16384) complex64
+    >>> mf.set_data(data_spectra)         # (16, 16384) complex64, ALREADY FFT'd
+    >>> mf.set_templates(template_spectra)
     >>> peaks = mf.run(binsize=1024, threshold=t, window=(a, b))
     >>> peaks["index"], peaks["value"], peaks["magnitude"]
 
-Segments are transformed once when set and reused across every pair, so ingest
-cost is amortised over the D*T correlations.
+Inputs are FREQUENCY-DOMAIN: the unnormalised forward transform of each segment,
+in natural order.  Ingest only rearranges - templates are conjugated and both
+sides are stored in the layout the correlation loop walks - which measures at
+2-4% of total and shrinks as the number of templates grows.
 
 Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 """
@@ -37,9 +39,9 @@ def _as_c64(a, n, what):
 class MatchedFilter:
     """Correlate a set of data segments against a set of templates.
 
-    Every pair (d, t) gives ``IFFT(FFT(data_d) * conj(FFT(template_t)))``, of
-    which only the loudest sample per bin is computed to full accuracy and
-    reported.  The transform is unnormalised, matching FFTW and MKL, so a perfect
+    Inputs are the segments' spectra.  Every pair (d, t) gives
+    ``IFFT(data_d * conj(template_t))``, of which only the loudest sample per bin
+    is reported.  The transform is unnormalised, matching FFTW and MKL, so a perfect
     match returns ``n * energy``.
 
     ``ndata`` and ``ntemplates`` are arbitrary; they need not match or be powers
@@ -54,23 +56,30 @@ class MatchedFilter:
         self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
 
     # ---- ingest -------------------------------------------------------------
-    def set_data(self, segments, index=None):
-        """Set one segment (with ``index``) or all of them from a (ndata, n) array."""
+    def set_data(self, spectra, index=None):
+        """Set one data spectrum (with ``index``) or all from a (ndata, n) array.
+
+        Inputs are frequency domain - the unnormalised forward transform of the
+        segment, natural order.
+        """
         if index is not None:
-            self._mf.set_data(int(index), _as_c64(segments, self.n, "segment"))
+            self._mf.set_data(int(index), _as_c64(spectra, self.n, "spectrum"))
             return
-        a = np.ascontiguousarray(segments, dtype=np.complex64)
+        a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ndata, self.n):
             raise ValueError(f"expected shape ({self.ndata}, {self.n}), got {a.shape}")
         for i in range(self.ndata):
             self._mf.set_data(i, a[i])
 
-    def set_templates(self, templates, index=None):
-        """Set one template (with ``index``) or all of them from a (ntemplates, n) array."""
+    def set_templates(self, spectra, index=None):
+        """Set one template spectrum (with ``index``) or all from a (ntemplates, n) array.
+
+        Conjugation happens here, once, rather than in the pair loop.
+        """
         if index is not None:
-            self._mf.set_template(int(index), _as_c64(templates, self.n, "template"))
+            self._mf.set_template(int(index), _as_c64(spectra, self.n, "spectrum"))
             return
-        a = np.ascontiguousarray(templates, dtype=np.complex64)
+        a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ntemplates, self.n):
             raise ValueError(f"expected shape ({self.ntemplates}, {self.n}), got {a.shape}")
         for i in range(self.ntemplates):
