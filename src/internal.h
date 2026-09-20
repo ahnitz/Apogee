@@ -44,13 +44,13 @@ typedef struct PS PS;
 PS  *pfs_create(size_t N);
 void pfs_destroy(PS*);
 void pfs_exact(PS*,const float*in,float*out,int conj);
-int  pfs_topk (PS*,const float*in,int K,pf_peak*out,int conj);
+int  pfs_topk (PS*,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we);
 
 /* N=2^20 back end. */
 typedef struct P20 P20;
 P20 *pf20_create(size_t N);
 void pf20_destroy(P20 *);
 void pf20_exact(P20 *, const float *in, float *out, int conj);
-int  pf20_topk(P20 *, const float *in, int K, pf_peak *out, int conj);
+int  pf20_topk(P20 *, const float *in, int K, pf_peak *out, int conj, size_t ws, size_t we);
 
 #endif

@@ -70,6 +70,65 @@ static void run(size_t N,int K,int trials,int mode,double tol){
   pf_destroy(p); free(in); free(out); free(r);
 }
 
+/* Windowed search: peaks must match a brute-force ranking restricted to the same
+   window, for windows of every shape - full, aligned, ragged, tiny, and one that
+   deliberately excludes the global maximum (which is what breaks a scan whose
+   threshold was primed from the global max). */
+static void run_window(size_t N,int K,int trials){
+  float *in=pf_alloc(N*8), *out=pf_alloc(N*8);
+  rank_t *r=malloc(sizeof(rank_t)*N);
+  pf_plan *p=pf_create(N);
+  pf_peak pk[PF_MAX_K];
+  int bad=0, checks=0;
+  for(int t=0;t<trials;t++){
+    fill(in,N,t%4,0x5DEECE66DULL*(t+3)+N);
+    pf_fft(p,in,out,PF_FORWARD);
+    for(size_t k=0;k<N;k++){ r[k].m=(double)out[2*k]*out[2*k]+(double)out[2*k+1]*out[2*k+1];
+                             r[k].i=(int)k; }
+    qsort(r,N,sizeof(rank_t),cmp_rank);
+    size_t gmax=(size_t)r[0].i;
+    size_t wins[8][2];
+    wins[0][0]=0;           wins[0][1]=N;                    /* full            */
+    wins[1][0]=N/4;         wins[1][1]=N/4+N/2;              /* middle 50%      */
+    wins[2][0]=N/3+7;       wins[2][1]=N/3+7+(2*N)/3-11;     /* ragged 67%      */
+    wins[3][0]=0;           wins[3][1]=N/2;                  /* leading half    */
+    wins[4][0]=N/2;         wins[4][1]=N;                    /* trailing half   */
+    wins[5][0]=gmax+1;      wins[5][1]=N;                    /* excludes argmax */
+    wins[6][0]=N-3;         wins[6][1]=N;                    /* tiny, at end    */
+    wins[7][0]=gmax;        wins[7][1]=gmax+1;               /* exactly argmax  */
+    for(int w=0;w<8;w++){
+      size_t s=wins[w][0], e=wins[w][1];
+      if(s>=e || e>N) continue;
+      int n=pf_topk_window(p,in,K,pk,PF_FORWARD,s,e);
+      /* brute force over the same window */
+      int m=0;
+      for(size_t k=0;k<N;k++) if((size_t)r[k].i>=s && (size_t)r[k].i<e) { if(m<K) r[m++]=r[k]; }
+      int want = (int)((e-s) < (size_t)K ? (e-s) : (size_t)K);
+      checks++;
+      if(n!=want){ bad++; printf("  FAIL N=%zu win[%zu,%zu) returned %d want %d\n",N,s,e,n,want); continue; }
+      for(int a=0;a<n;a++){
+        if((size_t)pk[a].index< s || (size_t)pk[a].index>=e){
+          bad++; printf("  FAIL N=%zu win[%zu,%zu) idx %ld outside\n",N,s,e,pk[a].index); break; }
+      }
+      /* rebuild the in-window ranking cleanly and compare */
+      for(size_t k=0;k<N;k++){ r[k].m=(double)out[2*k]*out[2*k]+(double)out[2*k+1]*out[2*k+1];
+                               r[k].i=(int)k; }
+      qsort(r,N,sizeof(rank_t),cmp_rank);
+      int seen=0;
+      for(size_t k=0;k<N && seen<n;k++){
+        if((size_t)r[k].i<s||(size_t)r[k].i>=e) continue;
+        if(pk[seen].index!=r[k].i){
+          bad++; printf("  FAIL N=%zu win[%zu,%zu) rank %d: got %ld want %d\n",
+                        N,s,e,seen,pk[seen].index,r[k].i); break; }
+        seen++;
+      }
+    }
+  }
+  printf("  N=%-8zu K=%-3d x%-3d windows: %d checks, %d failures\n",N,K,trials,checks,bad);
+  CHECK(bad==0,"N=%zu windowed top-K disagrees with brute force in %d cases",N,bad);
+  pf_destroy(p); free(in); free(out); free(r);
+}
+
 int main(void){
   printf("peakfft top-K validation (tolerance 1e-5 relative)\n");
   for(int mode=0;mode<4;mode++) run(1024,8,40,mode,1e-5);
@@ -79,5 +138,13 @@ int main(void){
   for(int mode=0;mode<4;mode++) run(1048576,8,6,mode,1e-5);
   run(1048576,1,8,0,1e-5);
   run(1048576,PF_MAX_K,4,0,1e-5);
+  printf("windowed search\n");
+  run_window(1024,8,6);
+  run_window(4096,8,4);
+  run_window(1<<14,8,3);
+  run_window(1<<16,4,2);
+  run_window(1<<18,4,2);
+  run_window(1<<20,4,1);
+  run_window(1024,1,6);
   return pf_report("test_topk");
 }

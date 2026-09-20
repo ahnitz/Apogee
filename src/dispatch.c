@@ -66,8 +66,15 @@ void pf_fft(pf_plan *p,const float *in,float *out,int sign){
   p->be->fft(p->h,in,out,sign==PF_BACKWARD);
 }
 
-int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){
+int pf_topk_window(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign,
+                   size_t start,size_t end){
   if(K<1) return 0;
   if(K>PF_MAX_K) K=PF_MAX_K;
-  return p->be->topk(p->h,in,K,peaks,sign==PF_BACKWARD);
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  return p->be->topk(p->h,in,K,peaks,sign==PF_BACKWARD,start,end);
+}
+
+int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){
+  return pf_topk_window(p,in,K,peaks,sign,0,p->n);
 }

@@ -280,7 +280,7 @@ void pf20_exact(P20*p,const float*in,float*out,int conj){
 /* ---- top-K path: no output array is ever written ---- */
 
 
-int pf20_topk(P20*p,const float*in,int Kreq,pf_peak*out,int conj){
+int pf20_topk(P20*p,const float*in,int Kreq,pf_peak*out,int conj,size_t ws,size_t we){
   int K=Kreq*2+8; if(K>256)K=256;
   PROF_A; stage1(p,in,conj); PROF_B;
   const int N2=p->N2;
@@ -297,12 +297,27 @@ int pf20_topk(P20*p,const float*in,int Kreq,pf_peak*out,int conj){
         _mm512_store_ps(im+16*g,_mm512_mul_ps(_mm512_cvtepi32_ps(b),vs));
       } }
     pf_fft1024_soa(re,im,p->t4r,p->t4i);
-    if(k2==0){ float t0=pf_prime_threshold(re,im,1024,K); if(t0>thr) thr=t0; }
+    /* Priming uses a global per-lane maximum, which is only a valid bound when the
+       whole range is in play; with a window it could sit above the windowed K-th
+       largest and hide every real peak. */
+    if(k2==0 && ws==0 && we>=p->N){ float t0=pf_prime_threshold(re,im,1024,K); if(t0>thr) thr=t0; }
     __m512 vthr=_mm512_set1_ps(thr);
-    for(int k1=0;k1<1024;k1+=16){
+    /* output index is (k1+l)*N2 + k2, so the window restricts k1 */
+    long klo=((long)ws-k2+N2-1)/N2, khi=((long)we-1-k2)/N2;
+    if(klo<0) klo=0;
+    if(khi>1023) khi=1023;
+    if(klo>khi) continue;
+    for(long k1=klo&~15L;k1<=khi;k1+=16){
+      __mmask16 inw=0xFFFF;
+      if(k1<klo || k1+15>khi){
+        inw=0;
+        for(int l=0;l<16;l++){ long kk=k1+l;
+          if(kk>=klo&&kk<=khi) inw|=(__mmask16)(1u<<l); }
+        if(!inw) continue;
+      }
       __m512 r=_mm512_load_ps(re+k1), i2=_mm512_load_ps(im+k1);
       __m512 m2=_mm512_fmadd_ps(r,r,_mm512_mul_ps(i2,i2));
-      __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ);
+      __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ)&inw;
       if(msk){
         float b[16]; _mm512_storeu_ps(b,m2);
         while(msk){

@@ -10,7 +10,7 @@ from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
 BASE = ["-O3", "-fno-math-errno", "-std=gnu11"]
-AVX512 = ["-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
+AVX512 = ["-DPF_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 AVX2 = ["-mavx2", "-mfma"]
 
 # (source, extra flags, extra defines)
@@ -19,8 +19,8 @@ GROUPS = [
     ("src/fft_small.c",  AVX512, []),
     ("src/fft1m.c",      AVX512, []),
     ("src/be_avx512.c",  AVX512, []),
-    ("src/balanced.c",   AVX512, [("PF_W", "16")]),   # generic source, 16 lanes
-    ("src/balanced.c",   AVX2,   [("PF_W", "8")]),    # generic source, 8 lanes
+    ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
+    ("src/balanced.c",   AVX2,   [("PF_W", "8")]),      # generic source, 8 lanes
     ("src/dispatch.c",   [],     []),                 # baseline only
     ("python/peakfft/_core.c", [], []),
 ]

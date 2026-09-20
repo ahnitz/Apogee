@@ -78,3 +78,33 @@ def test_isa_env_is_honoured():
     if want in ("avx2", "avx512"):
         # the module picked a back end at import; just prove it still works
         assert peakfft.topk(_rand(1 << 14, 3), 1).size == 1
+
+
+@pytest.mark.parametrize("n", [1024, 4096, 1 << 16, 1 << 20])
+def test_window(n):
+    x = _rand(n, 31 + n)
+    ref = np.fft.fft(x.astype(np.complex128))
+    mag = np.abs(ref)
+    gmax = int(np.argmax(mag))
+    windows = [
+        (0, n),                       # full
+        (n // 4, n // 4 + n // 2),    # middle half
+        (n // 3 + 7, n // 3 + 7 + (2 * n) // 3 - 11),   # ragged ~67%
+        (gmax + 1, n),                # deliberately excludes the global max
+        (gmax, gmax + 1),             # exactly the global max
+    ]
+    for s, e in windows:
+        if s >= e or e > n:
+            continue
+        k = min(4, e - s)
+        peaks = peakfft.topk(x, k, window=(s, e))
+        order = [i for i in np.argsort(-mag) if s <= i < e][:k]
+        assert list(peaks["index"]) == order, f"window ({s},{e})"
+        assert np.all(peaks["index"] >= s) and np.all(peaks["index"] < e)
+
+
+def test_window_clamped_and_empty():
+    x = _rand(4096, 2)
+    assert peakfft.topk(x, 4, window=(0, 10**9)).size == 4   # end clamped to n
+    assert peakfft.topk(x, 4, window=(100, 100)).size == 0   # empty
+    assert peakfft.topk(x, 4, window=(500, 100)).size == 0   # reversed

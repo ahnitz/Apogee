@@ -6,7 +6,7 @@ LDLIBS   = -lm
 
 # AVX-512 sources, AVX2 sources and the ISA-neutral dispatcher are compiled with
 # different -m flags, so the library is safe to load on a machine without AVX-512.
-AVX512FLAGS = -mavx512f -mavx512dq -mavx512bw -mavx512vl
+AVX512FLAGS = -DPF_W=16 -mavx512f -mavx512dq -mavx512bw -mavx512vl
 AVX2FLAGS   = -mavx2 -mfma
 BASEFLAGS   =
 
@@ -30,7 +30,7 @@ $(LIB): $(OBJ)
 $(OBJ512): %.o: %.c
 	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -c $< -o $@
 src/balanced16.o: src/balanced.c
-	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -DPF_W=16 -c $< -o $@
+	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) -c $< -o $@
 src/balanced8.o: src/balanced.c
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -DPF_W=8 -c $< -o $@
 $(OBJB): %.o: %.c

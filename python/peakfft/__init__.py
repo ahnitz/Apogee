@@ -64,19 +64,30 @@ class Plan:
         _core.fft(self._p, x, out, _sign(direction))
         return out
 
-    def topk(self, x, k=1, direction=FORWARD):
+    def topk(self, x, k=1, direction=FORWARD, window=None):
         """The ``k`` loudest bins, ordered loudest first.
 
         Returns a structured array with fields ``index`` (int64), ``value``
         (complex64) and ``magnitude`` (float32), so both the location and the
         value of each peak are explicit.  The full spectrum is never formed.
+
+        ``window=(start, end)`` restricts the search to ``start <= k < end``.
+        Reported indices stay absolute.  Bins outside the window are never
+        tested, so a narrower window is slightly cheaper; the transform itself
+        costs the same either way.
         """
         x = self._check(x)
         k = int(k)
+        if window is None:
+            ws, we = 0, self.n
+        else:
+            ws, we = int(window[0]), int(window[1])
+            ws = max(0, min(ws, self.n))
+            we = max(0, min(we, self.n))
         idx = np.empty(max(k, 1), dtype=np.int64)
         val = np.empty(max(k, 1), dtype=np.complex64)
         mag = np.empty(max(k, 1), dtype=np.float32)
-        n = _core.topk(self._p, x, k, idx, val, mag, _sign(direction))
+        n = _core.topk(self._p, x, k, idx, val, mag, _sign(direction), ws, we)
         peaks = np.empty(n, dtype=PEAK_DTYPE)
         peaks["index"] = idx[:n]
         peaks["value"] = val[:n]
@@ -100,7 +111,7 @@ def fft(x, direction=FORWARD, out=None):
     return _plan(x.size).fft(x, direction, out)
 
 
-def topk(x, k=1, direction=FORWARD):
+def topk(x, k=1, direction=FORWARD, window=None):
     """One-shot :meth:`Plan.topk`, caching the plan by length."""
     x = np.ascontiguousarray(x, dtype=np.complex64)
-    return _plan(x.size).topk(x, k, direction)
+    return _plan(x.size).topk(x, k, direction, window)

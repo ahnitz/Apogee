@@ -45,6 +45,8 @@ static void bench(size_t N,int K,int blocks,int batch){
 
   double *tk=malloc(blocks*sizeof(double)), *tf=malloc(blocks*sizeof(double));
   double *te=malloc(blocks*sizeof(double)), *tt=malloc(blocks*sizeof(double));
+  double *tw=malloc(blocks*sizeof(double));
+  size_t ws=N/5, we=ws+(N*3)/5;   /* a 60% window */
   for(int w=0;w<3;w++){ DftiComputeForward(h,in,out); fftwf_execute(fp);
                         pf_fft(p,in,out,PF_FORWARD); pf_topk(p,in,K,pk,PF_FORWARD); }
   for(int b=0;b<blocks;b++){
@@ -52,16 +54,17 @@ static void bench(size_t N,int K,int blocks,int batch){
     t0=now();        for(int q=0;q<batch;q++) fftwf_execute(fp);             tf[b]=(now()-t0)/batch;
     t0=now();        for(int q=0;q<batch;q++) pf_fft(p,in,out,PF_FORWARD);              te[b]=(now()-t0)/batch;
     t0=now();        for(int q=0;q<batch;q++) pf_topk(p,in,K,pk,PF_FORWARD);     tt[b]=(now()-t0)/batch;
+    t0=now();        for(int q=0;q<batch;q++) pf_topk_window(p,in,K,pk,PF_FORWARD,ws,we); tw[b]=(now()-t0)/batch;
   }
   qsort(tk,blocks,sizeof(double),cmpd); qsort(tf,blocks,sizeof(double),cmpd);
-  qsort(te,blocks,sizeof(double),cmpd); qsort(tt,blocks,sizeof(double),cmpd);
-  printf("2^%-7d %9.2fus %9.2fus %9.2fus %9.2fus %7.2fx %7.2fx\n",
-         (int)lround(log2((double)N)), tk[0]*1e6, tf[0]*1e6, te[0]*1e6, tt[0]*1e6,
-         tk[0]/te[0], tk[0]/tt[0]);
+  qsort(te,blocks,sizeof(double),cmpd); qsort(tt,blocks,sizeof(double),cmpd); qsort(tw,blocks,sizeof(double),cmpd);
+  printf("2^%-7d %9.2fus %9.2fus %9.2fus %9.2fus %9.2fus %7.2fx %7.2fx\n",
+         (int)lround(log2((double)N)), tk[0]*1e6, tf[0]*1e6, te[0]*1e6, tt[0]*1e6, tw[0]*1e6,
+         tk[0]/tt[0], tk[0]/tw[0]);
   { const char *csv=getenv("PF_CSV");
     if(csv){ FILE*f=fopen(csv,"a");
-      fprintf(f,"%zu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",N,
-        tk[0],tk[blocks/2],tf[0],tf[blocks/2],te[0],te[blocks/2],tt[0],tt[blocks/2]);
+      fprintf(f,"%zu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g\n",N,
+        tk[0],tk[blocks/2],tf[0],tf[blocks/2],te[0],te[blocks/2],tt[0],tt[blocks/2],tw[0]);
       fclose(f);} }
   pf_destroy(p); free(in); free(out);
 }
@@ -69,9 +72,9 @@ static void bench(size_t N,int K,int blocks,int batch){
 int main(int argc,char**argv){
   int K = argc>1 ? atoi(argv[1]) : 8;
   const char *csv = getenv("PF_CSV");
-  if(csv){ FILE*f=fopen(csv,"w"); fprintf(f,"N,mkl_min,mkl_med,fftw_min,fftw_med,fft_min,fft_med,topk_min,topk_med\n"); fclose(f); }
+  if(csv){ FILE*f=fopen(csv,"w"); fprintf(f,"N,mkl_min,mkl_med,fftw_min,fftw_med,fft_min,fft_med,topk_min,topk_med,win_min\n"); fclose(f); }
   printf("peakfft benchmark - single threaded, complex-to-complex, float32   (K = %d)\n",K);
-  printf("%-9s %10s %10s %10s %10s %8s %8s\n","N","MKL","FFTW","pf_fft","pf_topk","fft/MKL","topk/MKL");
+  printf("%-9s %10s %10s %10s %10s %10s %8s %8s\n","N","MKL","FFTW","pf_fft","pf_topk","topk 60%","topk/MKL","win/MKL");
   bench(1024,K,200,200);
   for(int lg=12; lg<=20; lg++){
     size_t N=(size_t)1<<lg;

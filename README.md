@@ -49,11 +49,14 @@ Interleaved timing, minimum of 3 runs, K=8.
 | 2^19 | 5.67 ms | 5.43 ms | 3.23 ms | 1.76x | 6.35 ms |
 | 2^20 | 12.5 ms | 13.3 ms | 7.16 ms | 1.75x | 14.4 ms |
 
-The AVX-512 back end beats MKL at every size, 1.16x to 2.68x. The AVX2 back end
-is roughly at parity — ahead between 2^15 and 2^17, behind elsewhere. It is the
-generic implementation (no unrolled codelets, fp32 intermediate), so it gives up
-both of the things that make the AVX-512 path fast. Improving it means generating
-256-bit codelets and porting the quantised intermediate; neither is done.
+The AVX-512 back end beats MKL at every size. The AVX2 back end is roughly at
+parity. Running the *same* algorithm at both widths, AVX2 is 1.3–1.7x slower than
+AVX-512 — about what half the vector width should cost, with register spilling at
+3% of instructions, so there is no gross inefficiency left in the AVX2 code. The
+remaining gap at large N is algorithmic, not ISA: the specialised AVX-512 path
+moves 18 MiB at 2^20 thanks to its quantised intermediate, while the generic path
+still uses fp32 and moves 24 MiB. Porting the quantised intermediate to the
+generic path is the next thing that would matter, and it is not done.
 
 Two caveats. MKL takes its *generic* code path on this AMD part (`MKL_VERBOSE`
 says "Intel(R) Architecture processors"), so some of the margin is dispatch rather
@@ -75,12 +78,18 @@ pf_fft(p, in, out, PF_BACKWARD);                /* full transform, either direct
 pf_destroy(p);
 ```
 
+Restrict the search to a window with `pf_topk_window(p, in, K, peaks, sign, start, end)`.
+Reported indices stay absolute. Bins outside the window are never tested, so a
+narrower window is slightly cheaper (about 0.9x for a 60% window) — the transform
+itself costs the same.
+
 Python:
 
 ```python
 import numpy as np, peakfft
 x = (np.random.randn(1<<20) + 1j*np.random.randn(1<<20)).astype(np.complex64)
 peaks = peakfft.topk(x, 8)            # structured array
+peaks = peakfft.topk(x, 8, window=(a, b))   # only bins a <= k < b
 peaks["index"], peaks["value"], peaks["magnitude"]
 y = peakfft.fft(x, "backward")        # full transform
 ```

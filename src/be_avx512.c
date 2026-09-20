@@ -29,6 +29,26 @@ void pf_push(pf_cand *T,int K,int *n,float m2,int idx,float vr,float vi){
     { pf_cand t=T[i];T[i]=T[s];T[s]=t; } i=s; }
 }
 
+/* Same idea as the full-range prime, but restricted to whole 16-lane blocks that
+   lie strictly inside [lo,hi).  Every candidate is then a real in-window element,
+   so the K-th largest of the per-lane maxima is still a safe lower bound - and the
+   windowed scan keeps the tight threshold instead of falling back to a push storm. */
+static float prime_range(const float *re,const float *im,long lo,long hi,int K){
+  long a=(lo+15)&~15L, b=hi&~15L;
+  if(K>16 || b<=a) return -1.f;
+  __m512 vmax=_mm512_setzero_ps();
+  for(long k=a;k<b;k+=16){
+    __m512 r=_mm512_load_ps(re+k), i=_mm512_load_ps(im+k);
+    vmax=_mm512_max_ps(vmax,_mm512_fmadd_ps(r,r,_mm512_mul_ps(i,i)));
+  }
+  float lm[16]; _mm512_storeu_ps(lm,vmax);
+  int kk=K<16?K:16;
+  for(int x=0;x<kk;x++){ int y=x;
+    for(int c=x+1;c<16;c++) if(lm[c]>lm[y]) y=c;
+    float t=lm[x]; lm[x]=lm[y]; lm[y]=t; }
+  return nextafterf(lm[kk-1],-1.f);
+}
+
 float pf_prime_threshold(const float *re,const float *im,int n,int K){
   /* One branch-free pass gives 16 per-lane maxima.  Those are 16 genuine array
      elements, so their K-th largest never exceeds the K-th largest overall and is a
@@ -95,7 +115,7 @@ static void a512_fft(void *vp,const float *in,float *out,int conj){
   }
 }
 
-static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj){
+static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size_t ws,size_t we){
   AP *p=vp;
   if(K<1) return 0;
   if(K>PF_MAX_K) K=PF_MAX_K;
@@ -107,23 +127,33 @@ static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj){
     pf_deint_c(in,p->re,p->im,1024,conj);
     pf_fft1024_soa_mag(p->re,p->im,p->t4r,p->t4i,&vmax);
     float lm[16]; _mm512_storeu_ps(lm,vmax);
+    int full = (ws==0 && we>=1024);
     int kk = K<16?K:16;
     for(int a=0;a<kk;a++){ int b=a;
       for(int c=a+1;c<16;c++) if(lm[c]>lm[b]) b=c;
       float t=lm[a]; lm[a]=lm[b]; lm[b]=t; }
-    float thr = (K<=16) ? nextafterf(lm[kk-1],-1.f) : -1.f;
+    float thr = full ? ((K<=16) ? nextafterf(lm[kk-1],-1.f) : -1.f)
+                     : prime_range(p->re,p->im,(long)ws,(long)we,K);
     pf_cand T[PF_MAX_K]; int n=0;
     __m512 vthr=_mm512_set1_ps(thr);
-    for(int k=0;k<1024;k+=16){
+    long lo=(long)ws & ~15L, hi=(long)we;
+    for(long k=lo;k<hi;k+=16){
+      __mmask16 inw=0xFFFF;
+      if(k<(long)ws || k+16>(long)we){
+        inw=0;
+        for(int l=0;l<16;l++){ long kk2=k+l;
+          if(kk2>=(long)ws && kk2<(long)we) inw|=(__mmask16)(1u<<l); }
+        if(!inw) continue;
+      }
       __m512 r=_mm512_load_ps(p->re+k), i2=_mm512_load_ps(p->im+k);
       __m512 m2=_mm512_fmadd_ps(r,r,_mm512_mul_ps(i2,i2));
-      __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ);
+      __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ)&inw;
       if(msk){
         float bb[16]; _mm512_storeu_ps(bb,m2);
         while(msk){
           int l=__builtin_ctz((unsigned)msk); msk&=(__mmask16)(msk-1);
           if(bb[l]<=thr) continue;
-          pf_push(T,K,&n,bb[l],k+l,p->re[k+l],p->im[k+l]);
+          pf_push(T,K,&n,bb[l],(int)(k+l),p->re[k+l],p->im[k+l]);
           if(n==K){ thr=T[0].mag2; vthr=_mm512_set1_ps(thr); }
         }
       }
@@ -133,8 +163,8 @@ static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj){
       peaks[a].im=conj?-T[a].im:T[a].im; peaks[a].magnitude=sqrtf(T[a].mag2); }
     return n;
   }
-  if(p->ps) return pfs_topk(p->ps,in,K,peaks,conj);
-  return pf20_topk(p->p20,in,K,peaks,conj);
+  if(p->ps) return pfs_topk(p->ps,in,K,peaks,conj,ws,we);
+  return pf20_topk(p->p20,in,K,peaks,conj,ws,we);
 }
 
 const pf_backend pf_be_avx512 = {

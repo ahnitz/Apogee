@@ -53,6 +53,14 @@ void pf_fft(pf_plan *p, const float *in, float *out, int sign);
    Returns the number written.  The output array is never materialised. */
 int pf_topk(pf_plan *p, const float *in, int K, pf_peak *peaks, int sign);
 
+/* As pf_topk, but only bins with start <= k < end are considered.  Indices in
+   the result are still absolute (relative to the whole transform), not relative
+   to the window.  start/end are clamped to [0, N]; start >= end returns 0.
+   Outputs outside the window are never even tested, so a narrower window is
+   slightly cheaper - the transform itself still costs the same. */
+int pf_topk_window(pf_plan *p, const float *in, int K, pf_peak *peaks, int sign,
+                   size_t start, size_t end);
+
 #ifdef __cplusplus
 }
 #endif

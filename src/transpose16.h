@@ -1,3 +1,6 @@
+#ifndef PF_T16_H
+#define PF_T16_H
+#include <immintrin.h>
 #define CPD(x) _mm512_castps_pd(x)
 #define CPS(x) _mm512_castpd_ps(x)
 static inline void t16(const __m512*i,__m512*o){
@@ -20,3 +23,5 @@ static inline void t16(const __m512*i,__m512*o){
     o[k+8]=_mm512_shuffle_f32x4(t[k],t[k+8],0xdd);
   }
 }
+
+#endif

@@ -44,11 +44,11 @@ static PyObject *m_fft(PyObject *m,PyObject *args){
   Py_RETURN_NONE;
 }
 
-/* topk(plan, in, k, idx, val, mag, sign) -> number written */
+/* topk(plan, in, k, idx, val, mag, sign, start, end) -> number written */
 static PyObject *m_topk(PyObject *m,PyObject *args){
-  PlanObject *pl; Py_buffer bi,bidx,bval,bmag; int k,sign;
+  PlanObject *pl; Py_buffer bi,bidx,bval,bmag; int k,sign; Py_ssize_t ws,we;
   (void)m;
-  if(!PyArg_ParseTuple(args,"Oy*iw*w*w*i",(PyObject**)&pl,&bi,&k,&bidx,&bval,&bmag,&sign))
+  if(!PyArg_ParseTuple(args,"Oy*iw*w*w*inn",(PyObject**)&pl,&bi,&k,&bidx,&bval,&bmag,&sign,&ws,&we))
     return NULL;
   PyObject *err=NULL;
   if(bi.len < pl->n*2*(Py_ssize_t)sizeof(float))
@@ -59,7 +59,7 @@ static PyObject *m_topk(PyObject *m,PyObject *args){
            PyBuffer_Release(&bval);PyBuffer_Release(&bmag); return NULL; }
   pf_peak peaks[PF_MAX_K]; int n;
   Py_BEGIN_ALLOW_THREADS
-  n=pf_topk(pl->p,(const float*)bi.buf,k,peaks,sign);
+  n=pf_topk_window(pl->p,(const float*)bi.buf,k,peaks,sign,(size_t)ws,(size_t)we);
   Py_END_ALLOW_THREADS
   long long *ix=(long long*)bidx.buf; float *vl=(float*)bval.buf, *mg=(float*)bmag.buf;
   for(int a=0;a<n;a++){ ix[a]=(long long)peaks[a].index;

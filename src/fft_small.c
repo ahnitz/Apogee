@@ -140,23 +140,35 @@ void pfs_exact(PS*p,const float*in,float*out,int conj){
   }
 }
 
-int pfs_topk(PS*p,const float*in,int K,pf_peak*out,int conj){
+int pfs_topk(PS*p,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we){
   const int N1=p->N1,N2=p->N2;
   stageA(p,in,conj);
   pf_cand T[PF_MAX_K]; int n=0; float thr=-1.f;
   __m512 vthr=_mm512_set1_ps(thr);
   float br[16],bi[16],bm[16];
   for(int b=0;b<N2/16;b++){
+    long base=16L*b;
+    long lo=((long)ws-base-15+N2-1)/N2, hi=((long)we-1-base)/N2;
+    if(lo<0) lo=0;
+    if(hi>N1-1) hi=N1-1;
+    if(lo>hi) continue;
     __m512 *RR,*RI; stageB(p,b,&RR,&RI);
-    for(int k1=0;k1<N1;k1++){
+    for(long k1=lo;k1<=hi;k1++){
+      long k0=k1*N2+base;
+      __mmask16 inw=0xFFFF;
+      if(k0<(long)ws || k0+16>(long)we){
+        inw=0;
+        for(int l=0;l<16;l++){ long k=k0+l; if(k>=(long)ws&&k<(long)we) inw|=(__mmask16)(1u<<l); }
+        if(!inw) continue;
+      }
       __m512 m2=_mm512_fmadd_ps(RR[k1],RR[k1],_mm512_mul_ps(RI[k1],RI[k1]));
-      __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ);
+      __mmask16 msk=_mm512_cmp_ps_mask(m2,vthr,_CMP_GT_OQ)&inw;
       if(msk){
         _mm512_storeu_ps(bm,m2); _mm512_storeu_ps(br,RR[k1]); _mm512_storeu_ps(bi,RI[k1]);
         while(msk){
           int l=__builtin_ctz((unsigned)msk); msk&=(__mmask16)(msk-1);
           if(bm[l]<=thr) continue;
-          pf_push(T,K,&n,bm[l],(int)((size_t)k1*N2+16*b+l),br[l],bi[l]);
+          pf_push(T,K,&n,bm[l],(int)(k0+l),br[l],bi[l]);
           if(n==K){ thr=T[0].mag2; vthr=_mm512_set1_ps(thr); }
         }
       }
