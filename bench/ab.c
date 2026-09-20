@@ -46,6 +46,21 @@ static double sign_p(int wins,int R){
   return p>1.0?1.0:p;
 }
 
+/* Plans are allocated once per size, and whichever library creates its plan first
+   gets a different set of addresses.  At 2^12 the buffers are ~36 KiB, so which L1
+   sets they land on is decided by those addresses - and two byte-identical builds
+   measured 2/24 wins, p=3.6e-5, purely from that.  So each size is run over
+   several trials with the creation order swapped, and the per-round ratios are
+   pooled: layout luck averages out instead of masquerading as a result. */
+#define TRIALS 4
+/* Resolution floor.  The two libraries are separately mapped, so their code and
+   their plan buffers sit at different addresses and alias caches differently;
+   between two byte-identical builds that is worth a couple of percent and is
+   statistically significant if you only ask the sign test.  So a verdict needs
+   both significance AND an effect bigger than this.  Calibrated by demanding
+   that an identical pair reads "noise". */
+#define MIN_EFFECT 0.03
+
 typedef struct {
   void *h; const char *path;
   pf_plan *(*create)(size_t);
@@ -69,22 +84,37 @@ static int open_lib(lib *L,const char *path){
 int main(int argc,char**argv){
   if(argc<3){ fprintf(stderr,
       "usage: %s <libA.so> <libB.so> [-b batch] [-k K] [-r rounds] [-t] [lg ...]\n"
-      "  -t  use a detection floor (~1 crossing per 1000 bins)\n",argv[0]); return 2; }
+      "  -t              use a detection floor (~1 crossing per 1000 bins)\n"
+      "  -e NAME=a,b     set NAME to a around A's plan create and to b around B's,\n"
+      "                  so runtime-switched knobs can be compared without two builds\n",
+      argv[0]); return 2; }
   lib A,B;
   if(open_lib(&A,argv[1])||open_lib(&B,argv[2])) return 1;
 
   int Bsz=16,K=8,rounds=0,useThr=0;
   int lgs[32],nlg=0;
+  /* Several knobs here are read by getenv() at plan-creation time, so the two
+     sides can differ on one without needing two builds: set the variable one way
+     around A's create and the other way around B's.  -e NAME=valA,valB */
+  const char *envar=NULL,*eva=NULL,*evb=NULL;
+  char ebuf[256];
   for(int i=3;i<argc;i++){
     if(!strcmp(argv[i],"-b")) Bsz=atoi(argv[++i]);
     else if(!strcmp(argv[i],"-k")) K=atoi(argv[++i]);
     else if(!strcmp(argv[i],"-r")) rounds=atoi(argv[++i]);
     else if(!strcmp(argv[i],"-t")) useThr=1;
+    else if(!strcmp(argv[i],"-e")){
+      snprintf(ebuf,sizeof ebuf,"%s",argv[++i]);
+      char *eq=strchr(ebuf,'='), *cm=eq?strchr(eq,','):NULL;
+      if(!eq||!cm){ fprintf(stderr,"-e wants NAME=valA,valB\n"); return 2; }
+      *eq=0; *cm=0; envar=ebuf; eva=eq+1; evb=cm+1;
+    }
     else if(nlg<32) lgs[nlg++]=atoi(argv[i]);
   }
   if(!nlg){ int d[]={10,12,14,16,18,20}; for(unsigned i=0;i<6;i++) lgs[nlg++]=d[i]; }
 
   printf("A = %s   B = %s   (batch %d, K %d%s)\n",argv[1],argv[2],Bsz,K,useThr?", floor on":"");
+  if(envar) printf("    %s: A=%s  B=%s\n",envar,eva,evb);
   printf("%-6s %10s %10s %8s %8s %7s %-10s %s\n",
          "N","A median","B median","B/A","spread","B wins","verdict","check");
 
@@ -96,80 +126,97 @@ int main(int argc,char**argv){
     rs=(unsigned long long)lgs[i]*2654435761u+1;
     for(size_t j=0;j<(size_t)N*Bsz;j++){ in[2*j]=(float)gs(); in[2*j+1]=(float)gs(); }
 
-    pf_plan *pa=A.create(N), *pb=B.create(N);
-    if(!pa||!pb){ printf("2^%-4d  (unsupported)\n",lgs[i]); free(in); free(ref); continue; }
-
-    float thr=0.f;
-    if(useThr){
-      A.fft(pa,in,ref,PF_FORWARD);
-      double *m=malloc(N*sizeof(double));
-      for(size_t k=0;k<N;k++) m[k]=hypot(ref[2*k],ref[2*k+1]);
-      qsort(m,N,sizeof(double),cmpdd);
-      size_t q=N/1000; if(q<1) q=1;
-      thr=(float)(0.5*(m[q]+m[q+1])); free(m);
-    }
-
-    pf_peak *ka=malloc((size_t)Bsz*K*sizeof(pf_peak)),*kb=malloc((size_t)Bsz*K*sizeof(pf_peak));
-    int *ca=malloc(Bsz*4),*cb=malloc(Bsz*4);
-    A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
-    B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N);
-    int bad=0;
-    for(int b=0;b<Bsz;b++){
-      if(ca[b]!=cb[b]){ bad=1; break; }
-      for(int a=0;a<ca[b];a++){
-        pf_peak *x=&ka[b*K+a],*y=&kb[b*K+a];
-        if(x->index!=y->index){ bad=1; break; }
-        double d=hypot(x->re-y->re,x->im-y->im);
-        if(d > 1e-4*x->magnitude){ bad=1; break; }
-      }
-      if(bad) break;
-    }
-
-    /* R must be even: the order alternates every round, so an odd R gives one
-       side the disadvantageous first-slot once more than the other and shows up
-       as a consistent few-percent bias even between identical builds. */
-    int R = rounds ? rounds : (N<=(1u<<14)?24:(N<=(1u<<17)?16:8));
+    int R = rounds ? rounds : (N<=(1u<<14)?12:(N<=(1u<<17)?8:4));
     if(R&1) R++;
-    double *ra=malloc(R*sizeof(double)),*rb=malloc(R*sizeof(double)),*rt=malloc(R*sizeof(double));
-    for(int w=0;w<2;w++){ A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
-                          B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N); }
-    int bwin=0;
-    for(int r=0;r<R;r++){
-      /* alternate the order each round so neither side always runs on a warm cache */
-      double t0,t1,t2;
-      if(r&1){
-        t0=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
-        t1=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N); t2=now();
-        ra[r]=(t1-t0)/Bsz; rb[r]=(t2-t1)/Bsz;
+    int TOT=R*TRIALS;
+    double *ra=malloc(TOT*sizeof(double)),*rb=malloc(TOT*sizeof(double)),*rt=malloc(TOT*sizeof(double));
+    double *sa=malloc(TOT*sizeof(double)),*sb=malloc(TOT*sizeof(double));
+    int bwin=0,bad=0,n=0;
+    float thr=0.f;
+
+    for(int tr=0;tr<TRIALS;tr++){
+      pf_plan *pa,*pb;
+      if(tr&1){   /* swap which library allocates first */
+        if(envar) setenv(envar,evb,1);
+        pb=B.create(N);
+        if(envar) setenv(envar,eva,1);
+        pa=A.create(N);
       } else {
-        t0=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N);
-        t1=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N); t2=now();
-        rb[r]=(t1-t0)/Bsz; ra[r]=(t2-t1)/Bsz;
+        if(envar) setenv(envar,eva,1);
+        pa=A.create(N);
+        if(envar) setenv(envar,evb,1);
+        pb=B.create(N);
       }
-      rt[r]=rb[r]/ra[r];
-      if(rb[r]<ra[r]) bwin++;
+      if(envar) unsetenv(envar);
+      if(!pa||!pb){ printf("2^%-4d  (unsupported)\n",lgs[i]); goto next_size; }
+
+      if(tr==0 && useThr){
+        A.fft(pa,in,ref,PF_FORWARD);
+        double *m=malloc(N*sizeof(double));
+        for(size_t k=0;k<N;k++) m[k]=hypot(ref[2*k],ref[2*k+1]);
+        qsort(m,N,sizeof(double),cmpdd);
+        size_t q=N/1000; if(q<1) q=1;
+        thr=(float)(0.5*(m[q]+m[q+1])); free(m);
+      }
+
+      pf_peak *ka=malloc((size_t)Bsz*K*sizeof(pf_peak)),*kb=malloc((size_t)Bsz*K*sizeof(pf_peak));
+      int *ca=malloc(Bsz*4),*cb=malloc(Bsz*4);
+      A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
+      B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N);
+      for(int b=0;b<Bsz && !bad;b++){
+        if(ca[b]!=cb[b]){ bad=1; break; }
+        for(int a=0;a<ca[b];a++){
+          pf_peak *x=&ka[b*K+a],*y=&kb[b*K+a];
+          if(x->index!=y->index || hypot(x->re-y->re,x->im-y->im) > 1e-4*x->magnitude){ bad=1; break; }
+        }
+      }
+      /* A fresh plan's buffers are newly mapped, so the first passes take page
+         faults - at 2^12 that showed up as a single round 47x the median and a
+         spread of several thousand percent.  Warm until the pages are resident. */
+      for(int w=0;w<6;w++){ A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
+                            B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N); }
+      for(int r=0;r<R;r++){
+        double t0,t1,t2,ta,tb;
+        if(r&1){
+          t0=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N);
+          t1=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N); t2=now();
+          ta=(t1-t0)/Bsz; tb=(t2-t1)/Bsz;
+        } else {
+          t0=now(); B.many(pb,in,N,Bsz,K,thr,kb,cb,PF_FORWARD,0,N);
+          t1=now(); A.many(pa,in,N,Bsz,K,thr,ka,ca,PF_FORWARD,0,N); t2=now();
+          tb=(t1-t0)/Bsz; ta=(t2-t1)/Bsz;
+        }
+        ra[n]=ta; rb[n]=tb; rt[n]=tb/ta; if(tb<ta) bwin++; n++;
+      }
+      free(ka);free(kb);free(ca);free(cb);
+      A.destroy(pa); B.destroy(pb);
     }
-    qsort(ra,R,sizeof(double),cmpd); qsort(rb,R,sizeof(double),cmpd);
-    qsort(rt,R,sizeof(double),cmpd);
-    double ma=ra[R/2],mb=rb[R/2];
-    double spread=(ra[R-1]-ra[0])/ma;          /* how noisy the machine is right now */
-    double p=sign_p(bwin,R);
-    const char *verdict;
-    /* p<0.01 rather than 0.05: a sweep is six rows, so a 5% threshold yields a
-       false call roughly every three runs, which is exactly often enough to
-       believe one. */
-    if(p>0.01)              verdict="noise";
-    else if(rt[R/2]<0.98)   verdict="B FASTER";
-    else if(rt[R/2]>1.02)   verdict="B slower";
-    else                    verdict="same";
-    printf("2^%-4d %10.3f %10.3f %8.3f %7.0f%% %5d/%-2d %-10s %s\n",
-           lgs[i],ma*1e6,mb*1e6,rt[R/2],spread*100,bwin,R,verdict,
-           bad?"MISMATCH":"same peaks");
-    free(ra);free(rb);free(rt);free(ka);free(kb);free(ca);free(cb);
-    A.destroy(pa); B.destroy(pb); free(in); free(ref);
+
+    memcpy(sa,ra,n*sizeof(double)); memcpy(sb,rb,n*sizeof(double));
+    qsort(sa,n,sizeof(double),cmpd); qsort(sb,n,sizeof(double),cmpd);
+    qsort(rt,n,sizeof(double),cmpd);
+    { double ma=sa[n/2],mb=sb[n/2];
+      double spread=(sa[n-1]-sa[0])/ma;
+      double p=sign_p(bwin,n);
+      const char *verdict;
+      double eff=rt[n/2]-1.0;
+      if(p>0.01)                      verdict="noise";
+      else if(fabs(eff)<MIN_EFFECT)   verdict="< 3%";
+      else if(eff<0)                  verdict="B FASTER";
+      else                            verdict="B slower";
+      printf("2^%-4d %10.3f %10.3f %8.3f %7.0f%% %5d/%-3d %-10s %s\n",
+             lgs[i],ma*1e6,mb*1e6,rt[n/2],spread*100,bwin,n,verdict,
+             bad?"MISMATCH":"same peaks");
+    }
+next_size:
+    free(sa);free(sb);
+    free(ra);free(rb);free(rt);
+    free(in); free(ref);
   }
   printf("\nB/A below 1.0 means B is faster.  'verdict' is a two-sided sign test at\n"
-         "p<0.05 over the per-round pairings; 'noise' means the machine could not\n"
-         "separate them and the ratio should not be reported as a result.\n");
+         "p<0.01 over the per-round pairings, pooled across %d plan-layout trials,\n"
+         "AND an effect over %.0f%%.  Below that, two identical builds differ by as much\n"
+         "just from where their code and buffers happen to be mapped.\n",
+         TRIALS,MIN_EFFECT*100);
   return 0;
 }
