@@ -132,6 +132,23 @@ static PyObject *HMF_set(HMFObject *self,PyObject *args,int is_data){
   if(r<0) return PyErr_Format(PyExc_IndexError,"index %d out of range",i);
   Py_RETURN_NONE;
 }
+static PyObject *HMF_set_reference(HMFObject *self,PyObject *args){
+  Py_buffer b;
+  if(!PyArg_ParseTuple(args,"z*",&b)) return NULL;
+  int r;
+  if(!b.buf){ r=ap_hmf_set_reference(self->p,NULL); }
+  else {
+    if(b.len < self->n*(Py_ssize_t)sizeof(float)){
+      PyBuffer_Release(&b);
+      return PyErr_Format(PyExc_ValueError,
+                          "reference must hold %zd float32 values",self->n);
+    }
+    r=ap_hmf_set_reference(self->p,(const float*)b.buf);
+  }
+  PyBuffer_Release(&b);
+  if(r<0){ PyErr_SetString(PyExc_ValueError,"apogee: bad reference"); return NULL; }
+  Py_RETURN_NONE;
+}
 static PyObject *HMF_set_data(HMFObject *s,PyObject *a){ return HMF_set(s,a,1); }
 static PyObject *HMF_set_template(HMFObject *s,PyObject *a){ return HMF_set(s,a,0); }
 
@@ -181,6 +198,7 @@ static PyObject *HMF_config(HMFObject *self,PyObject *a){
 static PyMethodDef HMF_methods[]={
   {"set_data",(PyCFunction)HMF_set_data,METH_VARARGS,"set_data(i, buffer)"},
   {"set_template",(PyCFunction)HMF_set_template,METH_VARARGS,"set_template(i, buffer)"},
+  {"set_reference",(PyCFunction)HMF_set_reference,METH_VARARGS,"set_reference(buffer|None)"},
   {"run",(PyCFunction)HMF_run,METH_VARARGS,"run(...) -> total crossings"},
   {"nbins",(PyCFunction)HMF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},
   {"stats",(PyCFunction)HMF_stats,METH_NOARGS,"stats() -> (pairs, triggers)"},

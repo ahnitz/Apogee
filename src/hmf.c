@@ -66,8 +66,15 @@ struct ap_hmf_plan {
   float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
   float *ct0, *ct1;           /* [nt][2m]   coarse templates: even, half-shifted*/
   float *fpow;                /* [nt]       band power fraction per template    */
+  /* Reference SNR distribution, or ref_on=0 to measure per template.  The
+     output distribution is a property of the signal rather than of any one
+     template, so one reference serves a whole bank -- and skips the
+     per-template ingest measurement. */
+  int    ref_on;
+  float  ref_f, ref_g, ref_graw, ref_graw1;
   float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
   float *shift;               /* [2m]       scratch for the measurement         */
+  float *shift2;              /* [4m]       weighted template copies            */
   float *prod, *cev, *cod;    /* scratch: product and the two coarse halves     */
   float *taps;                /* [HMF_NSUB][K] complex interpolation bank       */
   float *tcbuf,*rawbuf,*evenbuf; /* [nt] per-template gates, derived once a run */
@@ -165,6 +172,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->tgraw=calloc((size_t)ntmpl,sizeof(float));
   p->tgraw1=calloc((size_t)ntmpl,sizeof(float));
   p->shift=aligned_alloc(64,2*band*sizeof(float));
+  p->shift2=aligned_alloc(64,4*band*sizeof(float));
   p->prod=aligned_alloc(64,2*band*sizeof(float));
   p->cev =aligned_alloc(64,2*band*sizeof(float));
   p->cod =aligned_alloc(64,2*band*sizeof(float));
@@ -173,7 +181,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
   p->cebuf=calloc((size_t)ntmpl,sizeof(ap_peak));
-  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||
+  if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   p->prof = getenv("APOGEE_HMF_PROF") ? 1 : 0;
@@ -192,7 +200,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->coarse) ap_mf_destroy(p->coarse);
   if(p->cf)   ap_destroy(p->cf);
   free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
-  free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);
+  free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);free(p->shift2);
   free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);
   free(p);
 }
@@ -227,6 +235,33 @@ void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *oversample,int *taps){
   if(band) *band=p->m;
   if(oversample) *oversample=p->U;
   if(taps) *taps=p->K;
+}
+
+static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a1,
+                             float *gout,float *grawout,float *graw1out);
+
+int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
+  if(!p) return -1;
+  if(!power){ p->ref_on=0; return 0; }
+  const size_t n=p->n,m=p->m;
+  double tot=0,lo=0;
+  for(size_t k=0;k<n;k++){ double e=power[k]>0?power[k]:0; tot+=e; if(k<m) lo+=e; }
+  if(tot<=0) return -1;
+  p->ref_f=(float)(lo/tot);
+  /* Recovery depends only on |H|^2, so a zero-phase template with magnitude
+     sqrt(power) has exactly the right autocorrelation shape. */
+  float *a0=p->shift2, *a1=p->shift2+2*m;
+  double s = lo>0 ? 1.0/sqrt(lo/tot) : 0.0;
+  for(size_t k=0;k<m;k++){
+    double re=sqrt(power[k]>0?power[k]:0)*s, im=0.0;
+    a0[2*k]=(float)re; a0[2*k+1]=(float)im;
+    double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
+    a1[2*k]  =(float)(re*c-im*sn);
+    a1[2*k+1]=(float)(re*sn+im*c);
+  }
+  measure_recovery(p,0,a0,a1,&p->ref_g,&p->ref_graw,&p->ref_graw1);
+  p->ref_on=1;
+  return 0;
 }
 
 int ap_hmf_set_data(ap_hmf_plan *p,int d,const float *spec){
@@ -335,7 +370,16 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
   }
   if(ap_mf_set_template(p->coarse,t,        a0)) return -1;
   if(ap_mf_set_template(p->coarse,p->nt+t,  a1)) return -1;
-  measure_recovery(p,t,a0,a1,&p->tg[t],&p->tgraw[t],&p->tgraw1[t]);
+  /* Recovery depends on the shape of the correlation peak, which is set by the
+     OUTPUT spectrum |H|^2 w -- not by the template alone.  Measure it on a
+     weighted copy; the stored template stays unweighted, because at run time
+     the data supplies w itself. */
+  if(p->ref_on){
+    p->fpow[t]=p->ref_f;   /* one reference serves the whole bank */
+    p->tg[t]=p->ref_g; p->tgraw[t]=p->ref_graw; p->tgraw1[t]=p->ref_graw1;
+  } else {
+    measure_recovery(p,t,a0,a1,&p->tg[t],&p->tgraw[t],&p->tgraw1[t]);
+  }
   return 0;
 }
 

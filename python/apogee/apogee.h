@@ -97,6 +97,24 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n, int ndata, int ntmpl, float snr, float f
 void         ap_hmf_destroy(ap_hmf_plan *p);
 
 size_t ap_hmf_nbins(const ap_hmf_plan *p, size_t binsize, size_t start, size_t end);
+/* Reference SNR distribution: expected power per bin of the filter OUTPUT,
+ * length n, real, any scale.  Setting it is usually the right thing to do.
+ *
+ * By default each template's band fraction and recovery factors are measured
+ * from the template itself, which assumes its own power distribution is the
+ * distribution of the SNR it produces.  That holds only when the data is white
+ * and the template is whitened.  It fails, for instance, when the template is a
+ * broadband ratio filter whose output reconstructs a strongly low-frequency
+ * signal: the gate would read the filter and be badly wrong.
+ *
+ * In practice the output distribution is a property of the SIGNAL, not of the
+ * individual template, and is near-identical across a bank -- so supply it once
+ * here rather than tuning per template.  Doing so also skips the per-template
+ * measurement at ingest entirely.
+ *
+ * Pass NULL to return to measuring each template.  Set before the templates. */
+int    ap_hmf_set_reference(ap_hmf_plan *p, const float *power);
+
 int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
 int    ap_hmf_set_template(ap_hmf_plan *p, int t, const float *spec);
 

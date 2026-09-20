@@ -197,6 +197,30 @@ class HierarchicalFilter(MatchedFilter):
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd,
                                  int(band), int(oversample or 2), int(taps or 8))
 
+    def set_reference(self, power):
+        """Set the reference SNR distribution: expected output power per bin.
+
+        By default each template's band fraction and recovery factors are
+        measured from the template itself, which assumes its own power
+        distribution is the distribution of the SNR it produces.  That holds
+        only when the data is white and the template whitened.  A broadband
+        ratio filter reconstructing a low-frequency signal breaks it badly --
+        the gate would read the filter, not the signal.
+
+        The output distribution is a property of the signal rather than of any
+        one template and is near-identical across a bank, so set it once here
+        rather than tuning per template.  Doing so also skips the per-template
+        ingest measurement.  Pass ``None`` to go back to measuring each
+        template.
+        """
+        if power is None:
+            self._mf.set_reference(None)
+            return
+        p = np.ascontiguousarray(power, dtype=np.float32)
+        if p.size != self.n:
+            raise ValueError(f"reference must have {self.n} values, got {p.size}")
+        self._mf.set_reference(p)
+
     @property
     def config(self):
         """``(band, oversample, taps)`` the design table selected."""

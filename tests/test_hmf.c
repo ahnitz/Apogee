@@ -230,6 +230,58 @@ int main(void){
     checks++;
     free(pk);free(H);free(D); ap_hmf_destroy(hf);
   }
+  /* The reference SNR distribution.  A template whose own power sits HIGH but
+     whose output sits LOW -- the ratio-filter case, where a broadband filter
+     reconstructs a strongly low-frequency signal -- must gate on the output.
+     Without a reference the gate reads the template and is badly wrong; with
+     one it reads the signal. */
+  printf("\n reference SNR distribution\n");
+  {
+    const size_t n=4096, band=512;
+    float *H=malloc(2*n*sizeof(float)), *W=malloc(n*sizeof(float));
+    /* template: power rising with frequency (most of it ABOVE the band) */
+    double e=0;
+    for(size_t k=0;k<2*n;k++) H[k]=0.f;
+    for(size_t f=1;f<n/2;f++){ double a=pow((double)f,0.5); H[2*f]=(float)a; e+=a*a; }
+    e=sqrt(e); for(size_t f=1;f<n/2;f++) H[2*f]/=(float)e;
+    /* data weight: steeply falling, so the PRODUCT sits low */
+    for(size_t f=0;f<n;f++) W[f] = f ? (float)pow((double)f,-3.0) : 0.f;
+
+    double pt=0,pl=0,ot=0,ol=0;
+    for(size_t f=0;f<n;f++){
+      double p=(double)H[2*f]*H[2*f]+(double)H[2*f+1]*H[2*f+1];
+      pt+=p; if(f<band) pl+=p;
+      ot+=p*W[f]; if(f<band) ol+=p*W[f];
+    }
+    ap_hmf_plan *a=ap_hmf_create_ex(n,1,1,5.5f,1e-2f,band,2,8);
+    ap_hmf_plan *b=ap_hmf_create_ex(n,1,1,5.5f,1e-2f,band,2,8);
+    /* the reference is the OUTPUT distribution: template power times data power */
+    float *R=malloc(n*sizeof(float));
+    for(size_t k=0;k<n;k++){
+      double pw=(double)H[2*k]*H[2*k]+(double)H[2*k+1]*H[2*k+1];
+      R[k]=(float)(pw*W[k]);
+    }
+    ap_hmf_set_reference(b,R);
+    ap_hmf_set_template(a,0,H);
+    ap_hmf_set_template(b,0,H);
+    /* no direct accessor for f; the gate is a monotone function of it, so a
+       weighted plan must gate HIGHER than an unweighted one here */
+    ap_peak pk[8]; int c=0;
+    float *D=malloc(2*n*sizeof(float));
+    for(size_t k=0;k<2*n;k++) D[k]=0.f;
+    ap_hmf_set_data(a,0,D); ap_hmf_set_data(b,0,D);
+    ap_hmf_run(a,0,1,0,1,n,5.5f,pk,&c,0,n);
+    ap_hmf_run(b,0,1,0,1,n,5.5f,pk,&c,0,n);
+    printf("  %-28s template below band = %.3f, output below band = %.3f\n",
+           "reference changes the band",pl/pt,ol/ot);
+    int bad = !(ol/ot > pl/pt + 0.3);
+    printf("  %-28s %s  (reference must move the band fraction)\n",
+           "reference is applied",bad?"FAIL":"ok  ");
+    if(bad) fails++;
+    checks++;
+    free(H);free(W);free(R);free(D); ap_hmf_destroy(a); ap_hmf_destroy(b);
+  }
+
   printf("\n%d checks, %d failures\n",checks,fails);
   return fails?1:0;
 }
