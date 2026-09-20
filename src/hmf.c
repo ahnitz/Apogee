@@ -236,14 +236,20 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
                              float *gout,float *grawout,float *graw1out){
   const size_t m=p->m,n=p->n; const int U=p->U,K=p->K;
   const size_t R=n/m;
-  size_t nsub=(R/(size_t)U); if(!nsub) nsub=1; if(nsub>16) nsub=16;
+  /* Sub-grid offsets run over 0..R/U-1, and the worst case is the half-step.
+     Capping the LOOP COUNT at 16 samples only the first 16 offsets, which at
+     large R are all near-aligned -- the recovery then comes back optimistic and
+     the gate ends up too high, losing detections.  Stride instead, so the
+     sampled set always spans the interval. */
+  size_t nstep=(R/(size_t)U); if(!nstep) nstep=1;
+  size_t stride=nstep/16; if(!stride) stride=1;
   double peak=0;
   for(size_t k=0;k<m;k++) peak+=(double)a0[2*k]*a0[2*k]+(double)a0[2*k+1]*a0[2*k+1];
   if(peak<=0){ *gout=1.f; *grawout=0.7f; *graw1out=0.7f; return; }
   const float pk=(float)peak;
   float gr=9.f,g1=9.f,gi=9.f;
   float *Ds=p->shift;
-  for(size_t s=0;s<nsub;s++){
+  for(size_t s=0;s<nstep;s+=stride){
     const double off=-2.0*M_PI*(double)(s*R/(size_t)U)/(double)n;
     for(size_t k=0;k<m;k++){
       double c=cos(off*(double)k), sn=sin(off*(double)k);
