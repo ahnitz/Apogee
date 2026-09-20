@@ -127,6 +127,8 @@ void *FN(create)(size_t N){
   if(!FN(supported)(N)) return NULL;
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
+  { const char *e=getenv("PEAKFFT_N1");
+    if(e){ int v=atoi(e); if(v>=PF_W && v<=(int)(N/PF_W) && !(v&(v-1))){ n1=v; n2=(int)(N/v); } } }
   BP *p=aligned_alloc(64,sizeof(BP)); if(!p) return NULL;
   memset(p,0,sizeof(BP));
   p->N=N; p->N1=n1; p->N2=n2; p->nmask=(unsigned)(N/PF_W-1);
@@ -224,7 +226,12 @@ void *FN(create)(size_t N){
      scalar part (8N/W bytes) so the large sizes do not pay extra traffic. */
   { size_t g_n=(size_t)n1/PF_W;
     p->scg=aligned_alloc(64,g_n*(size_t)n2*2*sizeof(float)+64);
-    p->fulltw = (N<= (1u<<16));
+    /* Precomputing the twiddle as full vectors (8N bytes) instead of keeping just
+       the scalar part (8N/W) was a win when it was measured, and is not any more:
+       2^12 7.7% slower (1/48 rounds), 2^16 2.5% (0/32), 2^14 and 2^18 neutral.
+       The table is extra traffic in a loop that is no longer short of ALU. */
+    p->fulltw = 0;
+    { const char *e=getenv("PEAKFFT_FULLTW"); if(e) p->fulltw=atoi(e)?1:0; }
     if(p->fulltw){
       p->twr=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
       p->twi=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
