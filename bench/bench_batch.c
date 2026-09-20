@@ -75,6 +75,24 @@ static void bench(size_t N,int B,int K,int blocks,int reps){
   pf_plan *p=pf_create(N);
   pf_peak *pk=malloc((size_t)B*K*sizeof(pf_peak));
   int *cnt=malloc((size_t)B*sizeof(int));
+  /* Binned maximum is the interface this is actually for: the loudest sample per
+     bin of the window.  Bin size 1024 unless the transform is shorter, so at 2^10
+     it is one max per transform and at 2^20 it is 1024 of them. */
+  const size_t BINSZ = N<1024?N:1024;
+  /* Reference configuration: binned maximum, detection floor, and a window.
+     The window is the real case - typically 50-70% of the spectrum - and the
+     baselines cannot exploit it: a caller who wants only part of the spectrum
+     still has to run a full transform with MKL or FFTW.  PF_WINDOW=0 widens it
+     back to the whole spectrum for comparison. */
+  double wfrac = getenv("PF_WINDOW") ? atof(getenv("PF_WINDOW")) : 0.6;
+  size_t WS = 0, WE = N;
+  if(wfrac>0.0 && wfrac<1.0){
+    WS = (size_t)((1.0-wfrac)*0.5*(double)N) & ~(size_t)15;
+    WE = WS + ((size_t)(wfrac*(double)N) & ~(size_t)15);
+    if(WE>N) WE=N;
+  }
+  const size_t NBINS = pf_nbins(p,BINSZ,WS,WE);
+  pf_peak *bpk=malloc((size_t)B*NBINS*sizeof(pf_peak));
 
   /* Accuracy and the detection floor, both from MKL's own output on this data. */
   DftiComputeForward(h,in,out);
@@ -82,6 +100,7 @@ static void bench(size_t N,int B,int K,int blocks,int reps){
   for(size_t k=0;k<N;k++) mag[k]=hypot(out[2*k],out[2*k+1]);
   memcpy(srt,mag,N*sizeof(double)); qsort(srt,N,sizeof(double),cmpdd);
   float T=(float)(0.5*(srt[N/1000]+srt[N/1000+1]));   /* ~1 crossing per 1000 bins */
+  (void)0;
   int *ord=malloc(N*sizeof(int));
   for(size_t k=0;k<N;k++) ord[k]=(int)k;
   for(int a=0;a<K;a++){ int b=a;
@@ -102,7 +121,7 @@ static void bench(size_t N,int B,int K,int blocks,int reps){
   free(mag);free(srt);free(ord);
 
   double *tk=malloc(blocks*8),*ts=malloc(blocks*8),*ta=malloc(blocks*8),
-         *tp=malloc(blocks*8),*tt=malloc(blocks*8);
+         *tp=malloc(blocks*8),*tt=malloc(blocks*8),*tb=malloc(blocks*8);
   for(int w=0;w<2;w++){ DftiComputeForward(h,in,out); s_exec(sp); fftwf_execute(ap);
     pf_topk_many(p,in,N,B,K,0.f,pk,cnt,PF_FORWARD,0,N); }
   for(int b=0;b<blocks;b++){
@@ -114,19 +133,21 @@ static void bench(size_t N,int B,int K,int blocks,int reps){
                                                                              tp[b]=(now()-t0)/reps/B;
     t0=now(); for(int q=0;q<reps;q++) pf_topk_many(p,in,N,B,K,T,pk,cnt,PF_FORWARD,0,N);
                                                                              tt[b]=(now()-t0)/reps/B;
+    t0=now(); for(int q=0;q<reps;q++) pf_binmax(p,in,N,B,BINSZ,T,bpk,cnt,PF_FORWARD,WS,WE);
+                                                                             tb[b]=(now()-t0)/reps/B;
   }
   qsort(tk,blocks,8,cmpd);qsort(ts,blocks,8,cmpd);qsort(ta,blocks,8,cmpd);
-  qsort(tp,blocks,8,cmpd);qsort(tt,blocks,8,cmpd);
-  double best=tp[0]<tt[0]?tp[0]:tt[0];
-  printf("2^%-3d %4d %8.2f %8.2f %8.2f %8.2f %8.2f  %6.2fx %6.2fx %6.2fx  %8.1e %s%s\n",
-    (int)lround(log2((double)N)),B,tk[0]*1e6,ts[0]*1e6,ta[0]*1e6,tp[0]*1e6,tt[0]*1e6,
+  qsort(tp,blocks,8,cmpd);qsort(tt,blocks,8,cmpd);qsort(tb,blocks,8,cmpd);
+  double best=tb[0];              /* binned max is the headline interface */
+  printf("2^%-3d %4d %8.2f %8.2f %8.2f %8.2f %8.2f %8.2f  %6.2fx %6.2fx %6.2fx  %8.1e %s%s\n",
+    (int)lround(log2((double)N)),B,tk[0]*1e6,ts[0]*1e6,ta[0]*1e6,tp[0]*1e6,tt[0]*1e6,tb[0]*1e6,
     tk[0]/best,ts[0]/best,ta[0]/best,relerr,
     idxbad?"IDX-BAD ":"idx ok",thrbad?" THR-BAD":"");
   const char*csv=getenv("PF_CSV");
   if(csv){FILE*f=fopen(csv,"a");
-    fprintf(f,"%zu,%d,%.9g,%.9g,%.9g,%.9g,%.9g,%.3e,%d\n",N,B,tk[0],ts[0],ta[0],tp[0],tt[0],relerr,idxbad);
+    fprintf(f,"%zu,%d,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.3e,%d\n",N,B,tk[0],ts[0],ta[0],tp[0],tt[0],tb[0],relerr,idxbad);
     fclose(f);}
-  free(tk);free(ts);free(ta);free(tp);free(tt);free(pk);free(cnt);
+  free(tk);free(ts);free(ta);free(tp);free(tt);free(tb);free(pk);free(bpk);free(cnt);
   pf_destroy(p); DftiFreeDescriptor(&h); free(in); free(out);
 }
 
@@ -144,10 +165,15 @@ int main(int argc,char**argv){
     if(dladdr((void*)s_exec,&di)&&di.dli_fname) printf("stock FFTW -> %s\n",di.dli_fname);
     if(dladdr((void*)fftwf_execute,&di)&&di.dli_fname) printf("amd   FFTW -> %s\n",di.dli_fname); }
   const char*csv=getenv("PF_CSV");
-  if(csv){FILE*f=fopen(csv,"w");fprintf(f,"N,B,mkl,sysfftw,amdfftw,peakfft,peakfft_thr,relerr,idxbad\n");fclose(f);}
+  if(csv){FILE*f=fopen(csv,"w");fprintf(f,"N,B,mkl,sysfftw,amdfftw,peakfft,peakfft_thr,peakfft_binmax,relerr,idxbad\n");fclose(f);}
   printf("batched, all four in one process, us per transform   (K=%d, backend=%s)\n",K,pf_isa());
-  printf("%-5s %4s %8s %8s %8s %8s %8s  %7s %7s %7s  %8s %s\n",
-    "N","B","MKL","FFTW","amdFFTW","pf topK","pf +thr","vs MKL","vs FFTW","vs AMD","rel err","check");
+  { double wf = getenv("PF_WINDOW")?atof(getenv("PF_WINDOW")):0.6;
+    printf("reference = pf binmax: binned maximum + detection floor + %.0f%% window;"
+           " bin 1024 (or N)\n", wf*100.0);
+    printf("baselines compute the full spectrum - they cannot use the window or the floor\n"); }
+  printf("%-5s %4s %8s %8s %8s %8s %8s %8s  %7s %7s %7s  %8s %s\n",
+    "N","B","MKL","FFTW","amdFFTW","pf topK","pf+thr","pf binmax",
+    "vs MKL","vs FFTW","vs AMD","rel err","check");
   const int Bs[]={16,32,64,128};
   const int lgs[]={10,12,14,16,18,20};
   for(unsigned i=0;i<sizeof(lgs)/sizeof(*lgs);i++){

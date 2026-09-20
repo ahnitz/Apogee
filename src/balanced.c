@@ -402,7 +402,7 @@ static void stageA(BP*p,const float*in,int conj){
 }
 
 static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
-  const int N1=PN1,N2=PN2; PT(_tb0);
+  const int N1=PN1; (void)PN2; PT(_tb0);
   if(!p->useq){
     { const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
       for(int e2=0;e2<M2;e2++){
@@ -552,19 +552,19 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
                             size_t ws,size_t we){
   const int N1=PN1,N2=PN2;
   const size_t nb=(we-ws+binsize-1)/binsize;
-  vf *bm=p->bmx, *br=p->bre, *bi=p->bim; vi *bx=p->bix;
+  const float t2 = thr>0.f ? thr*thr : -1.f;
   const vf NEG=V_SET1(-1.f);
-  /* Prime with the detection floor: a bin never reports below it, so this is
-     exact, and it makes the blends a branch that is almost never taken. */
-  const vf PRIME = thr>0.f ? V_SET1(thr*thr) : NEG;
-  for(size_t j=0;j<nb;j++){ bm[j]=PRIME; br[j]=V_ZERO(); bi[j]=V_ZERO(); bx[j]=VI_SET1(-1); }
   const unsigned allm=(PF_W==16)?0xFFFFu:0xFFu;
+  /* Bin index is (k - ws)/binsize, and a runtime divide is ~20 cycles in a loop
+     whose whole body is three instructions.  Bin sizes are powers of two in every
+     realistic use, so shift instead and keep the divide only as a fallback. */
+  const int bpow = (binsize & (binsize-1)) ? -1 : (int)__builtin_ctzl(binsize);
+#define BINOF(k) (bpow>=0 ? (((k)-(long)ws)>>bpow) : (((k)-(long)ws)/(long)binsize))
 
-  /* One bin over the whole window is the common case, and then the accumulators
-     can live in registers.  Indexed by a runtime bin number they cannot, and each
-     surviving block becomes a load-modify-store of four vectors. */
+  /* One bin over the whole window is the common case at the small sizes, and then
+     the accumulators live in registers. */
   if(nb==1){
-    vf am=PRIME, arr=V_ZERO(), aii=V_ZERO(); vi axx=VI_SET1(-1);
+    vf am=V_SET1(t2), arr=V_ZERO(), aii=V_ZERO(); vi axx=VI_SET1(-1);
     for(int b=0;b<N2/PF_W;b++){
       long base=(long)PF_W*b;
       long lo=((long)ws-base-(PF_W-1)+N2-1)/N2, hi=((long)we-1-base)/N2;
@@ -597,13 +597,23 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
     V_STOREU(mv,am); V_STOREU(rv,arr); V_STOREU(iv,aii); VI_STOREU(xv,axx);
     int bl=-1;
     for(int l=0;l<PF_W;l++) if(xv[l]>=0 && (bl<0 || mv[l]>mv[bl])) bl=l;
-    const float t2b = thr>0.f ? thr*thr : -1.f;
-    if(bl<0 || mv[bl]<=t2b){ out[0].index=-1; out[0].re=0.f; out[0].im=0.f; out[0].magnitude=0.f; }
+    if(bl<0){ out[0].index=-1; out[0].re=0.f; out[0].im=0.f; out[0].magnitude=0.f; }
     else { out[0].index=(long)xv[bl]+bl; out[0].re=rv[bl];
            out[0].im=conj?-iv[bl]:iv[bl]; out[0].magnitude=sqrtf(mv[bl]); }
     return;
   }
 
+  /* Many bins: keep only a SCALAR running maximum per bin and compare against a
+     broadcast of it.  The obvious form - a vector accumulator per bin - has to
+     load 64 bytes per block just to run the compare, which at 2^20 is 4 MiB of
+     loads and made this slower than the top-K scan it replaces.  A scalar costs
+     4 bytes, and the horizontal reduction needed to update it only runs when a
+     block actually beats the bin's best, which the detection floor makes rare. */
+  float *bmax=(float*)p->bmx;
+  for(size_t j=0;j<nb;j++){
+    bmax[j]=t2;
+    out[j].index=-1; out[j].re=0.f; out[j].im=0.f; out[j].magnitude=0.f;
+  }
   for(int b=0;b<N2/PF_W;b++){
     long base=(long)PF_W*b;
     long lo=((long)ws-base-(PF_W-1)+N2-1)/N2, hi=((long)we-1-base)/N2;
@@ -621,44 +631,37 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
           if(k>=(long)ws && k<(long)we) inw|=1u<<l; }
         if(!inw) continue;
       }
+      long j0=BINOF(k0), j1=BINOF(k0+PF_W-1);
       vf m2=V_FMADD(RR[e],RR[e],V_MUL(RI[e],RI[e]));
-      if(inw!=allm) m2=V_BLENDM(inw,NEG,m2);       /* outside the window can never win */
-      long j0=(k0-(long)ws)/(long)binsize, j1=(k0+PF_W-1-(long)ws)/(long)binsize;
-      if(j0==j1){                                   /* whole block in one bin */
-        unsigned g=V_GT_MASK(m2,bm[j0]);
-        if(__builtin_expect(g!=0,0)){
-          bm[j0]=V_BLENDM(g,bm[j0],m2);
-          br[j0]=V_BLENDM(g,br[j0],RR[e]);
-          bi[j0]=V_BLENDM(g,bi[j0],RI[e]);
-          bx[j0]=VI_BLENDM(g,bx[j0],VI_SET1((int)k0));
+      if(inw!=allm) m2=V_BLENDM(inw,NEG,m2);
+      if(j0==j1){
+        if(__builtin_expect(V_GT_MASK(m2,V_SET1(bmax[j0]))!=0,0)){
+          float mv[PF_W],rv[PF_W],iv[PF_W];
+          V_STOREU(mv,m2); V_STOREU(rv,RR[e]); V_STOREU(iv,RI[e]);
+          for(int l=0;l<PF_W;l++) if(mv[l]>bmax[j0]){
+            bmax[j0]=mv[l];
+            out[j0].index=k0+l; out[j0].re=rv[l];
+            out[j0].im=conj?-iv[l]:iv[l]; out[j0].magnitude=mv[l];
+          }
         }
-      } else {                                      /* straddles a boundary */
+      } else {
+        float mv[PF_W],rv[PF_W],iv[PF_W];
+        V_STOREU(mv,m2); V_STOREU(rv,RR[e]); V_STOREU(iv,RI[e]);
         for(int l=0;l<PF_W;l++){
           if(!((inw>>l)&1u)) continue;
-          long k=k0+l, j=(k-(long)ws)/(long)binsize;
-          unsigned one=1u<<l;
-          if(V_GT_MASK(m2,bm[j]) & one){
-            bm[j]=V_BLENDM(one,bm[j],m2);
-            br[j]=V_BLENDM(one,br[j],RR[e]);
-            bi[j]=V_BLENDM(one,bi[j],RI[e]);
-            bx[j]=VI_BLENDM(one,bx[j],VI_SET1((int)k0));
+          long j=BINOF(k0+l);
+          if(mv[l]>bmax[j]){
+            bmax[j]=mv[l];
+            out[j].index=k0+l; out[j].re=rv[l];
+            out[j].im=conj?-iv[l]:iv[l]; out[j].magnitude=mv[l];
           }
         }
       }
     }
   }
-  /* one reduction per bin */
-  const float t2 = thr>0.f ? thr*thr : -1.f;
-  for(size_t j=0;j<nb;j++){
-    float mv[PF_W],rv[PF_W],iv[PF_W]; int xv[PF_W];
-    V_STOREU(mv,bm[j]); V_STOREU(rv,br[j]); V_STOREU(iv,bi[j]); VI_STOREU(xv,bx[j]);
-    int bl=-1;
-    for(int l=0;l<PF_W;l++) if(xv[l]>=0 && (bl<0 || mv[l]>mv[bl])) bl=l;
-    if(bl<0 || mv[bl]<=t2){ out[j].index=-1; out[j].re=0.f; out[j].im=0.f; out[j].magnitude=0.f; continue; }
-    out[j].index=(long)xv[bl]+bl;
-    out[j].re=rv[bl]; out[j].im=conj?-iv[bl]:iv[bl];
-    out[j].magnitude=sqrtf(mv[bl]);
-  }
+  /* magnitude carried squared to keep the hot loop free of sqrt */
+  for(size_t j=0;j<nb;j++) if(out[j].index>=0) out[j].magnitude=sqrtf(out[j].magnitude);
+#undef BINOF
 }
 
 int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,pf_peak*out,
