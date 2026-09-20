@@ -338,3 +338,30 @@ Result, us/transform at B=16 with the floor on, single bin over the window:
 Many bins costs more than one bin - 16 bins at 2^10 is 0.67 against 0.37 - which is
 expected, since the accumulators leave registers and there are 16 outputs instead
 of one.
+
+## Two more measured negatives at 2^12-2^14
+
+Chasing the small-size gap, the ablation says stage A's *body* is 1.39 us of 2.30
+at 2^12, of which the codelets are only 0.41. Splitting that further:
+
+| ablation | 2^12 | 2^14 |
+|---|---|---|
+| full | 2.297 | 10.293 |
+| no corner turn | 2.350 | 9.955 |
+| no stage-A body | 1.225 | 5.197 |
+| **no intermediate store** | **2.006** | **8.273** |
+
+So the intermediate store is 13% at 2^12 and 20% at 2^14. Two hypotheses, both wrong:
+
+1. **Runtime N1/N2 indirection.** kernel1024.c is fully unrolled with compile-time
+   sizes and spends 47% outside its codelets; the generic path spends 67% at the
+   same codelet cost. Compiling balanced.c with N1/N2 as literals: 3-5%. Not it.
+2. **L1 set aliasing on the intermediate row stride.** N2 is a power of two, so a
+   tile column's PF_W stores land on sets a power of two apart - exactly what made
+   the element stride 33 instead of 32. Padding the row by one vector, isolated on
+   a single build with `-e`: noise at every size.
+
+The store costs what it costs: 128 KiB at 2^14 at ~63 GB/s is L2 write bandwidth.
+It is inherent to materialising the intermediate, and the only way past it is to
+make fewer passes over the data - which is the structural difference with FFTW,
+not a tuning knob.

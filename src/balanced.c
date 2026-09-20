@@ -25,11 +25,24 @@
    has been wrong here more often than it has been right.
      1 no corner turn   2 no element transform   3 no four-step twiddle
      4 contiguous load  5 no padded index remap  6 stage-A body removed
+     7 no intermediate store   8 no twiddle and no corner turn
    What it showed at 2^14: removing any single piece saves nothing, removing all of
    them saves half.  The loop is throughput-limited with its parts overlapping, so
    only total work matters - and the element transform is NOT the cost. */
 #ifndef PF_ABLATE
 #define PF_ABLATE 0
+#endif
+/* Compile-time specialisation probe: with PF_FIXED_N1/N2 set, the hot loops see
+   constants where they normally read plan fields.  kernel1024.c is fully unrolled
+   with compile-time sizes and spends 47% of its time outside the codelets; this
+   generic path spends 67% at the same codelet cost, so the question is how much
+   of that is runtime indirection. */
+#ifdef PF_FIXED_N1
+#define PN1 PF_FIXED_N1
+#define PN2 PF_FIXED_N2
+#else
+#define PN1 (p->N1)
+#define PN2 (p->N2)
 #endif
 /* Prefetching the strided loads was measured at every distance from 4 to 32 and
    gained nothing: the hardware prefetcher already handles a constant stride. */
@@ -87,6 +100,7 @@ typedef struct {
   vi *bix;             /* per-bin block index of the current winner              */
   size_t nbcap;
   size_t bstride;      /* vf elements between group buffers                      */
+  size_t istr;         /* intermediate row stride, padded off a power of two      */
   vf *bR,*bI,*sR,*sI;
   vf *TLr,*TLi;
   float *w1r,*w1i,*w2r,*w2i;
@@ -125,14 +139,20 @@ void *FN(create)(size_t N){
   /* Quantising trades arithmetic for bytes moved.  That is only a win once the
      intermediate stops fitting in cache - below that it is pure added work, and it
      measured ~1.9x slower at 2^12.  L2 here is 1 MiB, so switch at 2^17. */
+  /* Intermediate row stride.  Padding it off the power of two was tried - the
+     element buffers needed exactly that, and ablating the store shows it costing
+     13% at 2^12 and 20% at 2^14 - but isolated on one build it measures as noise
+     at every size.  The store is simply the cost of writing the intermediate
+     (128 KiB at 2^14, ~63 GB/s, which is L2 bandwidth), not set aliasing. */
+  p->istr = (size_t)n2;
   p->useq = (N*8 > (1u<<20));
   if(p->useq){
-    p->q  =aligned_alloc(64,N*2*sizeof(short));
-    p->r8 =aligned_alloc(64,N*2);
-    p->scl=aligned_alloc(64,(size_t)n1*(n2/PF_W)*sizeof(float)+64);
+    p->q  =aligned_alloc(64,(size_t)n1*p->istr*2*sizeof(short));
+    p->r8 =aligned_alloc(64,(size_t)n1*p->istr*2);
+    p->scl=aligned_alloc(64,(size_t)n1*(p->istr/PF_W+1)*sizeof(float)+64);
   } else {
-    p->ire=aligned_alloc(64,N*sizeof(float));
-    p->iim=aligned_alloc(64,N*sizeof(float));
+    p->ire=aligned_alloc(64,(size_t)n1*p->istr*sizeof(float));
+    p->iim=aligned_alloc(64,(size_t)n1*p->istr*sizeof(float));
   }
   /* Stage A walks the input with stride N1*8 bytes and, one group at a time, uses
      only 2*PF_W floats of each row.  Measured on this machine, touching 128 bytes
@@ -241,7 +261,7 @@ void FN(destroy)(void *vp){
 static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
                                vf*restrict OR,vf*restrict OI,
                                vf*restrict bR,vf*restrict bI){
-  const int N2=p->N2;
+  const int N2=PN2;
   vf *restrict sR=p->sR, *restrict sI=p->sI;
     efft(N2,bR,bI,sR,sI,p->w2r,p->w2i);
   vf *restrict RR=bR,*restrict RI=bI;
@@ -282,10 +302,12 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
          until stage B reads it back, so the read-for-ownership is wasted DRAM
          traffic.  Measured, it is 1.22x to 1.62x SLOWER (0/32 rounds); stage B
          wants the line and the store buffer is not the constraint. */
+#if PF_ABLATE!=7
       for(int i=0;i<PF_W;i++){
-        size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
+        size_t off=(size_t)(PF_W*g+i)*p->istr+PF_W*b;
         V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
       }
+#endif
       continue;
     }
     vf amax=V_MAX(V_ABS(OR[0]),V_ABS(OI[0]));
@@ -297,10 +319,10 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
     const vi CMAX=VI_SET1(8388607), CMIN=VI_SET1(-8388607);
     for(int i=0;i<PF_W;i++){
       int n1=PF_W*g+i;
-      p->scl[(size_t)n1*(N2/PF_W)+b]=dq;
+      p->scl[(size_t)n1*(p->istr/PF_W)+b]=dq;
       vi xr=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OR[i],vs))));
       vi xi=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OI[i],vs))));
-      size_t base=2*((size_t)n1*N2+PF_W*b);
+      size_t base=2*((size_t)n1*p->istr+PF_W*b);
       VI_STORE16(p->q+base,      VI_PACK16(VI_SRAI(xr,8)));
       VI_STORE16(p->q+base+PF_W,   VI_PACK16(VI_SRAI(xi,8)));
       VI_STORE8 (p->r8+base,       VI_PACK8(VI_AND(xr,VI_SET1(255))));
@@ -313,7 +335,7 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
 /* Quantised-input variant of the load: same 24-bit block floating point as the
    intermediate, so the unpack is the code already validated for that. */
 static void stageA_q(BP*p,const short*qhi,const signed char*qlo,const float*qs,int conj){
-  const int N1=p->N1,N2=p->N2;
+  const int N1=PN1,N2=PN2;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   vf TR[PF_W],TI[PF_W],OR[PF_W],OI[PF_W];
   for(int g=0;g<N1/PF_W;g++){
@@ -333,7 +355,7 @@ static void stageA_q(BP*p,const short*qhi,const signed char*qlo,const float*qs,i
 }
 
 static void stageA(BP*p,const float*in,int conj){
-  const int N1=p->N1,N2=p->N2,NG=N1/PF_W,G=p->gblk;
+  const int N1=PN1,N2=PN2,NG=N1/PF_W,G=p->gblk;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   vf TR[PF_W],TI[PF_W],OR[PF_W],OI[PF_W];
   const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
@@ -362,15 +384,15 @@ static void stageA(BP*p,const float*in,int conj){
 }
 
 static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
-  const int N1=p->N1,N2=p->N2; PT(_tb0);
+  const int N1=PN1,N2=PN2; PT(_tb0);
   if(!p->useq){
     { const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
       for(int e2=0;e2<M2;e2++){
-        const float *sr=p->ire+(size_t)e2*M1*N2+PF_W*b, *si=p->iim+(size_t)e2*M1*N2+PF_W*b;
+        const float *sr=p->ire+(size_t)e2*M1*p->istr+PF_W*b, *si=p->iim+(size_t)e2*M1*p->istr+PF_W*b;
         vf *dR=p->bR+(size_t)e2*st, *dI=p->bI+(size_t)e2*st;
         for(int e1=0;e1<M1;e1++){
           dR[e1]=V_LOADU(sr); dI[e1]=V_LOADU(si);
-          sr+=N2; si+=N2;
+          sr+=p->istr; si+=p->istr;
         }
       }
     }
@@ -382,8 +404,8 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
   { const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, stp=p->ea.st;
   for(int e2=0;e2<M2;e2++) for(int e1=0;e1<M1;e1++){
     int n1=e1+M1*e2, q=e1+stp*e2;
-    size_t base=2*((size_t)n1*N2+PF_W*b);
-    float s=p->scl[(size_t)n1*(N2/PF_W)+b];
+    size_t base=2*((size_t)n1*p->istr+PF_W*b);
+    float s=p->scl[(size_t)n1*(p->istr/PF_W)+b];
     vi hr=VI_UNPACK16(VI_LOAD16(p->q+base));
     vi hi=VI_UNPACK16(VI_LOAD16(p->q+base+PF_W));
     if(exact){
@@ -404,7 +426,7 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
 }
 
 void FN(fft)(void *vp,const float*in,float*out,int conj){
-  BP *p=vp; const int N1=p->N1,N2=p->N2;
+  BP *p=vp; const int N1=PN1,N2=PN2;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   stageA(p,in,conj);
   for(int b=0;b<N2/PF_W;b++){
@@ -416,7 +438,7 @@ void FN(fft)(void *vp,const float*in,float*out,int conj){
 
 /* everything after stage A, shared by the fp32 and pre-quantised entry points */
 static int FN(topk_core)(BP*p,int K,pf_peak*out,int conj,size_t ws,size_t we,float thr0){
-  const int N1=p->N1,N2=p->N2;
+  const int N1=PN1,N2=PN2;
   /* Screening is only 16-bit accurate, so the K-th and (K+1)-th candidate can be
      mis-ordered by it.  Keep a wider pool, refine all of it at 24 bits, then rank -
      otherwise a peak can be cut before it is ever looked at properly. */
@@ -510,7 +532,7 @@ static int FN(bins_reserve)(BP*p,size_t nb){
 
 static void FN(binmax_core)(BP*p,size_t binsize,float thr,pf_peak*out,int conj,
                             size_t ws,size_t we){
-  const int N1=p->N1,N2=p->N2;
+  const int N1=PN1,N2=PN2;
   const size_t nb=(we-ws+binsize-1)/binsize;
   vf *bm=p->bmx, *br=p->bre, *bi=p->bim; vi *bx=p->bix;
   const vf NEG=V_SET1(-1.f);
@@ -648,7 +670,7 @@ int FN(topk_q)(void *vp,const short*qhi,const signed char*qlo,const float*qs,
    stageA_q expects.  Not on any timed path: in real use the producer writes this
    directly and the fp32 array never exists. */
 void FN(quantize_in)(void *vp,const float*in,short*qhi,signed char*qlo,float*qs){
-  BP *p=vp; const int N1=p->N1,N2=p->N2;
+  BP *p=vp; const int N1=PN1,N2=PN2;
   const vi CMAX=VI_SET1(8388607), CMIN=VI_SET1(-8388607);
   for(int n2=0;n2<N2;n2++) for(int g=0;g<N1/PF_W;g++){
     vf r,i; v_deint(in+2*((size_t)n2*N1+(size_t)PF_W*g),&r,&i);
