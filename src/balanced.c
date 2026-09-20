@@ -97,6 +97,9 @@ typedef struct {
   float *scg;          /* [g][k2] scalar part of the stage-A twiddle, precomputed */
   vf *twr,*twi;        /* full twiddle vectors, when they are small enough to hold */
   int fulltw;
+  int fuse;     /* fused product in stage A; resolved once at plan build,
+                   never per transform -- getenv in stageA_prod_gm cost a
+                   library call on every pair. */
   unsigned nmask;
   int a1,a2,b1,b2;      /* codelet factorisation of N1 and N2 */
   emap ea,eb;           /* index maps for those factorisations */
@@ -266,6 +269,8 @@ void *FN(create)(size_t N){
        The table is extra traffic in a loop that is no longer short of ALU. */
     p->fulltw = 0;
     { const char *e=getenv("APOGEE_FULLTW"); if(e) p->fulltw=atoi(e)?1:0; }
+    p->fuse = eprod_ok(p->N2);
+    { const char *e=getenv("APOGEE_FUSE"); if(e) p->fuse = atoi(e) ? eprod_ok(p->N2) : 0; }
     if(p->fulltw){
       p->twr=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
       p->twi=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
@@ -417,8 +422,7 @@ static void stageA_split(BP*p,const float*inr,const float*ini,int conj){
 static void stageA_prod_gm(BP*p,const float*dr,const float*di,
                            const float*tr,const float*ti){
   const int N1=PN1,N2=PN2,NG=N1/AP_W;
-  int fuse=eprod_ok(N2);
-  { const char *e=getenv("APOGEE_FUSE"); if(e) fuse = atoi(e) ? eprod_ok(N2) : 0; }
+  const int fuse=p->fuse;
   vf TR[AP_W],TI[AP_W],OR[AP_W],OI[AP_W];
   for(int g=0;g<NG;g++){
     const size_t gb=(size_t)g*N2*AP_W;

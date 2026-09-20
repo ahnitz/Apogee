@@ -57,6 +57,7 @@ static void mulspec(const float *ar,const float *ai,const float *br,const float 
 struct ap_mf_plan {
   size_t n;
   int nd, nt;
+  int tile;            /* pair-loop tile; read once, not per run */
   ap_plan *fft;        /* shared transform plan: forward at ingest, backward per pair */
   int n1,n2,w;         /* the transform's split and lane count, for group-major storage */
   int gmajor;          /* 0 when the back end cannot take group-major input     */
@@ -92,6 +93,11 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
                  && (size_t)p->n1*p->n2==n && ap_has_fused_prod(p->fft)) ? 1 : 0;
     const char *e=getenv("APOGEE_GMAJOR"); if(e && !atoi(e)) p->gmajor=0;
   }
+  /* Read once here, not inside ap_mf_run.  The hierarchical filter calls
+     ap_mf_run once per pair rather than once per batch, which turned a
+     per-batch getenv into a per-pair one. */
+  p->tile = 8;
+  { const char *e=getenv("APOGEE_MFTILE"); if(e){ int v=atoi(e); if(v>0) p->tile=v; } }
   p->dre=aligned_alloc(64,(size_t)ndata*n*sizeof(float));
   p->dim=aligned_alloc(64,(size_t)ndata*n*sizeof(float));
   p->tre=aligned_alloc(64,(size_t)ntmpl*n*sizeof(float));
@@ -173,8 +179,7 @@ int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
   /* Measured at 16x16: 2^12 3.40 -> 2.98 (tile 8), 2^14 12.96 -> 12.34, 2^16
      within noise once two spectra fill L2.  8 is never worse, so take it. */
   (void)spec;
-  int tile = 8;
-  { const char *e=getenv("APOGEE_MFTILE"); if(e){ int v=atoi(e); if(v>0) tile=v; } }
+  const int tile = p->tile;
   int total=0;
   for(int dt=0;dt<nd;dt+=tile) for(int tt=0;tt<nt;tt+=tile){
    const int dend=(nd-dt<tile)?nd:dt+tile, tend=(nt-tt<tile)?nt:tt+tile;
