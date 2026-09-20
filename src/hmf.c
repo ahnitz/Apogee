@@ -355,10 +355,15 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
     tot+=e; if(k<m) lo+=e;
   }
   float f = tot>0 ? (float)(lo/tot) : 0.f;
+  if(p->ref_on) f = p->ref_f;      /* the signal's fraction, not the filter's */
   p->fpow[t]=f;
   /* Scale by 1/sqrt(f) so the coarse output carries the same noise level as the
-     full one and the two thresholds are directly comparable. */
-  double s = lo>0 ? 1.0/sqrt(lo/tot) : 0.0;
+     full one and the two thresholds are directly comparable.  f here must be
+     the SIGNAL's band fraction: the coarse noise variance is
+     s^2 * sum_{k<m}|H|^2 W and the full one sum_k |H|^2 W, so s^2 = 1/f with
+     the same W the reference describes.  Using the template's own fraction
+     would mis-scale the coarse output and shift the gate off calibration. */
+  double s = f>0.f ? 1.0/sqrt((double)f) : 0.0;
   float *a0=p->ct0+(size_t)t*2*m, *a1=p->ct1+(size_t)t*2*m;
   for(size_t k=0;k<m;k++){
     double re=spec[2*k]*s, im=spec[2*k+1]*s;
@@ -375,7 +380,6 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
      weighted copy; the stored template stays unweighted, because at run time
      the data supplies w itself. */
   if(p->ref_on){
-    p->fpow[t]=p->ref_f;   /* one reference serves the whole bank */
     p->tg[t]=p->ref_g; p->tgraw[t]=p->ref_graw; p->tgraw1[t]=p->ref_graw1;
   } else {
     measure_recovery(p,t,a0,a1,&p->tg[t],&p->tgraw[t],&p->tgraw1[t]);
