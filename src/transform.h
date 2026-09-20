@@ -30,6 +30,11 @@ int ap_binmax(ap_plan *p, const float *in, size_t dist, int B,
 int ap_binmax_split(ap_plan *p, const float *re, const float *im,
                     size_t binsize, float threshold, ap_peak *peaks, int *count,
                     int sign, size_t start, size_t end);
+/* Does this plan have a fused product path?  The matched filter needs to know
+   before ingest, because group-major storage is only correct if the fused
+   loader will consume it. */
+int ap_has_fused_prod(const ap_plan *p);
+
 int ap_binmax_prod(ap_plan *p, const float *dr, const float *di,
                    const float *tr, const float *ti,
                    size_t binsize, float threshold, ap_peak *peaks, int *count,

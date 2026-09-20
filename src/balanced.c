@@ -682,6 +682,8 @@ int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,ap_peak*out,
   return 0;
 }
 
+int FN(has_prod)(void *vp){ (void)vp; return 1; }   /* every length here is fused */
+
 int FN(binmax_prod)(void *vp,const float*dr,const float*di,
                     const float*tr,const float*ti,size_t binsize,
                     float thr,ap_peak*out,int conj,size_t ws,size_t we){
@@ -716,5 +718,5 @@ const ap_backend CAT(ap_be_bal,AP_W) = {
   "avx2",
 #endif
   FN(create), FN(destroy), FN(fft), FN(supported),
-  FN(binmax), FN(binmax_split), FN(binmax_prod)
+  FN(binmax), FN(binmax_split), FN(has_prod), FN(binmax_prod)
 };

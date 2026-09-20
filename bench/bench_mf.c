@@ -27,9 +27,10 @@ static double u(void){rs^=rs<<13;rs^=rs>>7;rs^=rs<<17;return (double)(rs>>11)/90
 static double gauss(void){return sqrt(-2.0*log(u()+1e-300))*cos(2.0*M_PI*u());}
 static int cmpd(const void*a,const void*b){double x=*(const double*)a,y=*(const double*)b;return x<y?-1:x>y;}
 
-/* The baselines get a vectorised product too.  A scalar loop here would be a
-   straw man - the comparison is meant to be against a competent implementation
-   of the same algorithm, not against the first thing one might type. */
+/* The baselines get vectorised versions of everything apogee vectorises - the
+   product and the per-bin peak scan.  A scalar loop in either place would be a
+   straw man: the comparison is against a competent implementation of the same
+   algorithm, not against the first thing one might type. */
 #include <immintrin.h>
 __attribute__((target("avx512f")))
 static void base_mul(const float *a,const float *b,float *o,size_t n){
@@ -47,6 +48,37 @@ static void base_mul(const float *a,const float *b,float *o,size_t n){
     _mm512_storeu_ps(o+2*k,   _mm512_permutex2var_ps(pr,LO,pi));
     _mm512_storeu_ps(o+2*k+16,_mm512_permutex2var_ps(pr,HI,pi));
   }
+}
+
+/* Per-bin maximum of |z|^2 over an interleaved complex array, vectorised the
+   same way apogee does it internally.  Returns the winning index and value. */
+__attribute__((target("avx2,fma")))
+static void base_binmax(const float *z,size_t lo,size_t hi,size_t *bidx,float *bmax){
+  __m256 mx=_mm256_set1_ps(-1.f);
+  __m256i ix=_mm256_set1_epi32(-1);
+  size_t k=lo;
+  for(; k+4<=hi; k+=4){
+    __m256 v=_mm256_loadu_ps(z+2*k);            /* r0 i0 r1 i1 r2 i2 r3 i3 */
+    __m256 sq=_mm256_mul_ps(v,v);
+    /* horizontal pairs: r^2+i^2 for four complex, broadcast into 8 lanes */
+    __m256 m=_mm256_hadd_ps(sq,sq);             /* m0 m1 m0 m1 m2 m3 m2 m3 */
+    __m256 cand=_mm256_permutevar8x32_ps(m,_mm256_setr_epi32(0,1,4,5,0,1,4,5));
+    __m256i kv=_mm256_add_epi32(_mm256_set1_epi32((int)k),
+                                _mm256_setr_epi32(0,1,2,3,0,1,2,3));
+    __m256 g=_mm256_cmp_ps(cand,mx,_CMP_GT_OQ);
+    mx=_mm256_blendv_ps(mx,cand,g);
+    ix=_mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(ix),
+                                            _mm256_castsi256_ps(kv),g));
+  }
+  float mv[8]; int iv[8];
+  _mm256_storeu_ps(mv,mx); _mm256_storeu_si256((__m256i*)iv,ix);
+  float best=-1.f; size_t bi=lo;
+  for(int l=0;l<4;l++) if(iv[l]>=0 && mv[l]>best){ best=mv[l]; bi=(size_t)iv[l]; }
+  for(; k<hi; k++){
+    float m=z[2*k]*z[2*k]+z[2*k+1]*z[2*k+1];
+    if(m>best){ best=m; bi=k; }
+  }
+  *bidx=bi; *bmax=best;
 }
 
 int main(int argc,char**argv){
@@ -102,10 +134,8 @@ int main(int argc,char**argv){
       base_mul(A,B,prod,n);                                                  \
       INV(prod,outb);                                                        \
       for(size_t j=0;j<nb;j++){ size_t lo=ws+j*bs,hi=lo+bs; if(hi>we)hi=we;  \
-        float best=-1; size_t bi2=lo;                                        \
-        for(size_t k=lo;k<hi;k++){                                           \
-          float m=outb[2*k]*outb[2*k]+outb[2*k+1]*outb[2*k+1];               \
-          if(m>best){best=m;bi2=k;} }                                        \
+        size_t bi2; float best;                                              \
+        base_binmax(outb,lo,hi,&bi2,&best);                                  \
         sink+=bi2+(size_t)(sqrtf(best)>THR); }                               \
     } }while(0)
 

@@ -95,6 +95,11 @@ int ap_binmax_split(ap_plan *p,const float *re,const float *im,
 }
 
 /* matched-filter product fused into the transform's load; -1 if unavailable */
+int ap_has_fused_prod(const ap_plan *p){
+  if(!p||!p->be->has_prod||!p->be->binmax_prod) return 0;
+  return p->be->has_prod(p->h);
+}
+
 int ap_binmax_prod(ap_plan *p,const float *dr,const float *di,
                    const float *tr,const float *ti,
                    size_t binsize,float threshold,ap_peak *peaks,int *count,

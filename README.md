@@ -185,6 +185,11 @@ Benchmarks need MKL and an AOCL-FFTW build:
 make bench/bench_mf MKLINC=/path/include MKLLIB=/path/lib AMDFFTW=/path/aocl
 ```
 
+If you have neither, `python -m apogee.benchmark` needs only numpy. It runs the
+same matched filter both ways, checks the answers agree, and reports per-pair
+times — so you can see whether apogee works and is fast on *your* machine rather
+than trusting numbers from one developer box. numpy is a floor, not a rival.
+
 ## Tests
 
 `tests/test_mf.c` checks the matched filter against an independent

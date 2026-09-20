@@ -82,7 +82,11 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
   { int m=0; while(((size_t)1<<m)<n) m++;
     p->n1=1<<((m+1)/2); p->n2=1<<(m/2);
     p->w = ap_lane_width();
-    p->gmajor = (p->w>0 && p->n1%p->w==0 && n!=1024) ? 1 : 0;
+    /* Group-major storage is only correct if the fused loader consumes it, so
+       ask the plan rather than assuming.  The AVX-512 1024 kernel has no fused
+       variant, but AVX2 at 1024 runs on the generic back end, which does - and
+       hard-coding n!=1024 silently cost the AVX2 path its fused product. */
+    p->gmajor = (p->w>0 && p->n1%p->w==0 && ap_has_fused_prod(p->fft)) ? 1 : 0;
     const char *e=getenv("APOGEE_GMAJOR"); if(e && !atoi(e)) p->gmajor=0;
   }
   p->dre=aligned_alloc(64,(size_t)ndata*n*sizeof(float));

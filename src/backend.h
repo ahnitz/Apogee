@@ -22,6 +22,8 @@ typedef struct {
                         float thr, ap_peak *out, int conj, size_t start, size_t end);
   /* matched filter: form conj(D*T) inside stage A's load, so the product never
      reaches memory.  Inputs are read-only here, unlike binmax_split. */
+  /* 1 if binmax_prod works for this plan's length */
+  int   (*has_prod)(void *);
   int   (*binmax_prod)(void *, const float *dr, const float *di,
                        const float *tr, const float *ti, size_t binsize,
                        float thr, ap_peak *out, int conj, size_t start, size_t end);

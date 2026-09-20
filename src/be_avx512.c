@@ -120,6 +120,13 @@ static int a512_binmax_split(void *vp,const float *re,const float *im,size_t bin
   return ap_be_bal16.binmax_split(p->bal,re,im,binsize,thr,out,conj,ws,we);
 }
 
+static int a512_has_prod(void *vp){
+  AP *p=vp;
+  /* the specialised 1024 kernel has no fused variant; everything else delegates
+     to the generic back end, which does */
+  return p->N!=1024;
+}
+
 static int a512_binmax_prod(void *vp,const float *dr,const float *di,
                             const float *tr,const float *ti,size_t binsize,
                             float thr,ap_peak *out,int conj,size_t ws,size_t we){
@@ -133,5 +140,5 @@ static int a512_binmax_prod(void *vp,const float *dr,const float *di,
 
 const ap_backend ap_be_avx512 = {
   "avx512", a512_create, a512_destroy, a512_fft, a512_supported,
-  a512_binmax, a512_binmax_split, a512_binmax_prod
+  a512_binmax, a512_binmax_split, a512_has_prod, a512_binmax_prod
 };
