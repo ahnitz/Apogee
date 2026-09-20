@@ -19,6 +19,10 @@ so sparse-FFT methods don't apply.
 
 - **Only the top K bins are right.** `pf_topk` never computes the other N−K to
   full accuracy and never writes them anywhere.
+- **A detection floor is expected.** Give `pf_topk_many` a magnitude threshold and
+  the search fuses into the transform's last stage: the compare happens while the
+  outputs are still in registers, so there is no scan pass and no output store.
+  Without a floor the same code still works, just slower.
 - **Accuracy is spent, not maximised.** The budget is 1e-5 relative to MKL. Above
   2^16 most of the arithmetic runs on a 24-bit block-floating-point intermediate.
   Worst case measured over 266 checks is 3.6e-7, so there is room left, but the
@@ -31,39 +35,53 @@ so sparse-FFT methods don't apply.
 
 ## Numbers
 
-One core of an AMD Ryzen AI MAX+ 395 (Zen 5), machine under heavy load.
-Interleaved timing, minimum of 3 runs, K=8.
+One core of an AMD Ryzen AI MAX+ 395 (Zen 5). Batched, K=8, all four libraries in
+one process interleaved per timed block, minimum over blocks. The baselines are
+batched too — MKL through `DFTI_NUMBER_OF_TRANSFORMS`, both FFTWs through
+`fftwf_plan_many_dft` — because batching speeds them up as well and comparing a
+batched peakfft against unbatched baselines would mean nothing.
 
-![benchmark](bench.png)
+![benchmark](bench_batch.png)
 
-| N | MKL | FFTW | `pf_topk` AVX-512 | vs MKL | `pf_topk` AVX2 |
-|---|---|---|---|---|---|
-| 2^10 | 0.85 µs | 0.86 µs | 0.60 µs | 1.40x | 1.69 µs |
-| 2^12 | 4.61 µs | 4.87 µs | 3.98 µs | 1.16x | 5.92 µs |
-| 2^13 | 12.7 µs | 12.1 µs | 8.49 µs | 1.50x | 12.8 µs |
-| 2^14 | 25.3 µs | 27.6 µs | 16.9 µs | 1.50x | 28.5 µs |
-| 2^15 | 78.5 µs | 68.4 µs | 41.1 µs | 1.91x | 65.2 µs |
-| 2^16 | 210 µs | 295 µs | 90.0 µs | 2.34x | 141 µs |
-| 2^17 | 655 µs | 855 µs | 446 µs | 1.47x | 515 µs |
-| 2^18 | 2.31 ms | 2.20 ms | 0.86 ms | 2.68x | 2.97 ms |
-| 2^19 | 5.67 ms | 5.43 ms | 3.23 ms | 1.76x | 6.35 ms |
-| 2^20 | 12.5 ms | 13.3 ms | 7.16 ms | 1.75x | 14.4 ms |
+AVX-512, idle machine, µs per transform:
 
-The AVX-512 back end beats MKL at every size. The AVX2 back end is roughly at
-parity. Running the *same* algorithm at both widths, AVX2 is 1.3–1.7x slower than
-AVX-512 — about what half the vector width should cost, with register spilling at
-3% of instructions, so there is no gross inefficiency left in the AVX2 code. The
-remaining gap at large N is algorithmic, not ISA: the specialised AVX-512 path
-moves 18 MiB at 2^20 thanks to its quantised intermediate, while the generic path
-still uses fp32 and moves 24 MiB. Porting the quantised intermediate to the
-generic path is the next thing that would matter, and it is not done.
+| N | B | MKL | FFTW | amd-fftw | peakfft | vs MKL | vs FFTW | vs amd |
+|---|---|---|---|---|---|---|---|---|
+| 2^10 | 16 | 0.81 | 0.40 | 0.29 | 0.46 | 1.74x | 0.87x | **0.62x** |
+| 2^12 | 16 | 4.11 | 2.29 | 1.59 | 2.68 | 1.54x | 0.86x | **0.60x** |
+| 2^14 | 16 | 21.6 | 11.3 | 8.62 | 10.3 | 2.09x | 1.10x | 0.84x |
+| 2^14 | 128 | 42.7 | 25.5 | 20.4 | 14.5 | 2.94x | 1.75x | 1.40x |
+| 2^16 | 16 | 130 | 76.5 | 63.8 | 55.4 | 2.35x | 1.38x | 1.15x |
+| 2^16 | 128 | 233 | 182 | 115 | 74.4 | 3.13x | 2.45x | 1.54x |
+| 2^18 | 32 | 1146 | 645 | 538 | 456 | 2.51x | 1.41x | 1.18x |
+| 2^20 | 64 | 3925 | 6301 | 4533 | 2329 | 1.69x | 2.71x | 1.95x |
 
-Two caveats. MKL takes its *generic* code path on this AMD part (`MKL_VERBOSE`
-says "Intel(R) Architecture processors"), so some of the margin is dispatch rather
-than algorithm — which is why FFTW is in the table too. And at 2^10–2^13 `pf_fft`
-is actually faster than `pf_topk`: the full output write costs 0.04 µs there, so
-there is nothing for the top-K path to save, while scanning the magnitudes costs
-more than that.
+Relative error against MKL is 1.1e-07 to 3.2e-07 across the whole sweep, and the
+top-K indices match MKL's ranking exactly everywhere.
+
+**It beats MKL at every size and batch.** It beats amd-fftw from 2^14 upward, by up
+to 1.95x at 2^20. **It loses to amd-fftw at 2^10 and 2^12**, by about 1.6x, and that
+is the honest state of things.
+
+Why it loses there, measured rather than guessed: the generated codelets run at
+303 GF/s, 93% of this machine's AVX-512 FMA peak, so the arithmetic is not the
+problem — at 2^12 it is 0.81 µs of a 2.61 µs transform. The other 1.80 µs is
+spread across eight passes over 32 KiB with no hotspot; ablating the corner turn,
+the four-step twiddle, the index remap or the load pattern each saves nothing, and
+several make it slower. amd-fftw's entire non-arithmetic budget at that size is
+0.78 µs. Closing this needs fewer passes (twiddle-fused codelets, so the four-step
+twiddle rides inside the last butterfly), not more tuning. Not done.
+
+Under contention the picture changes in our favour — the baselines move more bytes
+and suffer more — but those measurements swing by several-fold run to run even
+taking minima, so treat them as a trend and not as numbers.
+
+Two caveats on the baselines. MKL takes its *generic* path on this AMD part
+(`MKL_VERBOSE` says "Intel(R) Architecture processors"), so some of that margin is
+dispatch rather than algorithm, which is why both FFTWs are in the table. And MKL
+exports its own `fftwf_*` symbols, so the harness `dlopen`s stock FFTW with
+`RTLD_DEEPBIND`, links amd-fftw whole-archive ahead of MKL, and prints `dladdr`
+provenance on every run — without that, both FFTW columns silently become MKL.
 
 ## Using it
 
@@ -83,6 +101,27 @@ Reported indices stay absolute. Bins outside the window are never tested, so a
 narrower window is slightly cheaper (about 0.9x for a 60% window) — the transform
 itself costs the same.
 
+Batched, which is the interface that gets tuned:
+
+```c
+pf_peak peaks[B * K];  int counts[B];
+int total = pf_topk_many(p, in, /*dist*/N, B, K, threshold,
+                         peaks, counts, PF_FORWARD, start, end);
+/* transform b's peaks are peaks[b*K .. b*K+counts[b]), loudest first */
+```
+
+`dist` is the complex-element stride between transforms, so the batch is an array
+of separate transforms rather than an interleave — each one keeps its own
+cache-resident working set. (Interleaving was tried: it deletes the four-step
+corner turn entirely, which is real, but multiplies the inter-stage working set by
+the vector width and lands at 0.21–0.47x. `docs/machine-notes.md` has the numbers.)
+
+`threshold` is a magnitude floor combined with K: the result is the K loudest bins
+that are also above the floor. Pass 0 to disable. A non-zero floor is also the
+fast path — it primes the candidate test instead of filtering afterwards, which at
+K=64 is worth 10.6x at 2^10 and 3.0x at 2^12, and at N=1024 lets the search fuse
+into the transform's final stage.
+
 Python:
 
 ```python
@@ -92,6 +131,9 @@ peaks = peakfft.topk(x, 8)            # structured array
 peaks = peakfft.topk(x, 8, window=(a, b))   # only bins a <= k < b
 peaks["index"], peaks["value"], peaks["magnitude"]
 y = peakfft.fft(x, "backward")        # full transform
+
+xs = x.reshape(64, -1)                        # a batch, one transform per row
+rows = peakfft.topk_many(xs, 8, threshold=t)  # list of 64 structured arrays
 ```
 
 Neither direction scales by 1/N, matching FFTW and MKL, so forward then backward
@@ -114,9 +156,13 @@ machine without AVX-512.
 
 ## How it works
 
-Above 2^16 the transform is DRAM-bandwidth bound, so the design counts bytes, not
-flops. A traffic model (`time ≈ bytes ÷ 2.7 GB/s`) predicted every measurement
-here to within a few percent and picked every optimisation.
+Above 2^16 the transform is memory bound, so the design counts bytes, not flops.
+Not bandwidth bound, though — that distinction took a while to get right. At 2^20
+stage A walks the input with an 8 KiB stride, and on this core that shape sustains
+7.6 GB/s where a sequential read of the same volume gets 43.9. The load alone is
+53% of the transform. Widening the touched run recovers the rate in a
+microbenchmark (512 B gives 19.1 GB/s), but doing it for real needs group buffers
+that then evict L2 exactly as fast as the wider stream helps, so it nets nothing.
 
 Four-step decomposition throughout: 1024×1024 at 2^20 with a 24-bit quantised
 intermediate, a balanced N₁×N₂ ≈ √N split below 2^17 where everything is
@@ -125,19 +171,27 @@ real/imag registers), so a complex multiply is 4 FMAs with no shuffles. The
 32-point units are generated unrolled Stockham codelets (`src/gen.py`), radix-8×4,
 which is 2 passes instead of radix-2's 5 — worth 1.65x on its own at 2^10.
 
-Each stage is SIMD-across-16-transforms, which does two jobs at once: strided
-column reads become full-cache-line granules, and the SIMD lane index *is* the
-intermediate's column index, so no stage needs an in-register transpose.
+Each element-space stage is SIMD-across-16-transforms, so every twiddle inside a
+codelet is a broadcast and the codelets themselves contain no shuffles. The
+four-step corner turn between the stages is a register transpose, fused into stage
+A; it costs about 8% and is the one place lanes have to move.
 
-Three things that mattered more than expected: padding the element stride from 32
-to 33, because stride-2048B access mapped onto about two L1 sets and thrashed
-(13x on that sub-stage); non-temporal stores for the intermediate, avoiding
-read-for-ownership (4x on that write); and a two-level twiddle factorisation
+Two things that mattered more than expected: padding the element stride from 32 to
+33, because stride-2048B access mapped onto about two L1 sets and thrashed (13x on
+that sub-stage); and a two-level twiddle factorisation
 `W_N[n₁k₂] = W_N[16g·k₂]·W_N[l·k₂]`, which keeps the tables at 128 KiB instead of
 8 MiB.
 
-What top-K buys: the output is never materialised (8 MiB not written at 2^20,
-about 3 ms), and the intermediate can be stored at reduced precision. That
+`docs/machine-notes.md` is the lab notebook — measured instruction throughput,
+pipe-overlap rules, the amd-fftw disassembly, and every idea that was tried and
+dropped with the number that killed it. Non-temporal stores, huge pages, stage-A
+group blocking, batch-interleaved layout, split-radix at 32/64, prefetching at any
+distance, bf16, IFMA: all measured, none kept.
+
+What top-K buys: the output is never materialised (8 MiB not written at 2^20), the
+intermediate can be stored at reduced precision, and — given a detection floor —
+the search itself collapses into the transform's final stage instead of being a
+pass over the results. That
 intermediate is 24-bit block floating point split across a 16-bit screening plane
 and an 8-bit residual; screening reads only the 16-bit plane, and the residual is
 touched only for the few columns that hold a winner, which then get recomputed at
@@ -168,6 +222,12 @@ size in both directions — impulse response, pure tone, Parseval, linearity, an
 `tests/test_topk.c` checks `pf_topk` against a brute-force ranking of `pf_fft`
 over white noise, noise+tone, noise+5 tones and a deliberate near-tie, for
 K = 1, 8, 64.
+
+`tests/test_batch.c` is the strict one for the batched path — 283k checks over
+size x batch x K x direction x window x threshold. The threshold cases matter most:
+a floor that primes the candidate test wrongly shows up as a *missing* peak, not a
+wrong value, so every row is compared against a brute-force scan for count, rank,
+index, value and an explicit no-false-negative bound.
 
 `tests/test_vs_mkl.c` is the one that matters for accuracy: the other two are
 self-consistent by construction and cannot see the error the reduced-precision
