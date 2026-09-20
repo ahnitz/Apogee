@@ -100,34 +100,33 @@ static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const 
      sizes comparable and shows whether a route is hitting its flop bound or
      paying overhead. */
   double nl = (double)n * log2((double)n);
-  printf("  %-20s %7zu %6zu | %8.2f %8.2f | %7.1f %7.1f | %6.2fx %6.1f%%\n",
-         lab,n,band,tmf*1e6,thf*1e6,tmf*1e12/nl,thf*1e12/nl,
+  (void)nl;(void)lab;
+  printf("  %6zu %6.1f %7.0e %6zu | %8.2f %8.2f | %6.2fx %6.1f%%\n",
+         n,(double)snr,(double)fd,band,tmf*1e6,thf*1e6,
          tmf/thf,100.0*(g1-g0)/(double)(p1-p0));
   free(pk);free(H);free(D); ap_mf_destroy(mf); ap_hmf_destroy(hf);
 }
 
 int main(int argc,char **argv){
   (void)argc;(void)argv;
+  /* The design matrix to optimise against: SNR x false-dismissal x size.
+     Reported on pure noise, which is the regime a real search spends its time
+     in -- signals are rare.  trig is the fraction of pairs that needed the full
+     correlation, and it is what the speedup rides on. */
   printf("hierarchical vs full matched filter, backend %s\n",ap_isa());
-  printf("D=T=16 (16x16=256 pairs), bin n/4, whole record searched.\n");
-  printf("us/pair is wall time per (data,template) pair; ps/nlogn normalises by\n");
-  printf("the full inverse's own work so sizes are comparable.\n\n");
-  printf("  %-20s %7s %6s | %8s %8s | %7s %7s | %6s %7s\n",
-         "case","n","band","mf us","hmf us","mf ps","hmf ps","speedup","trig");
-  printf(" pure noise - the gate should almost never open\n");
-  run_case(2048,16,16,5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
-  run_case(4096,16,16,5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
-  run_case(4096,16,16,5.0f,1e-4f,0.0,"snr5.0 fd1e-4");
-  run_case(8192,16,16,6.0f,1e-2f,0.0,"snr6.0 fd1e-2");
-  run_case(16384,16,16,5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
-  run_case(65536, 8, 8, 5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
-  run_case(262144,4, 4, 5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
-  run_case(1048576,2,2, 5.5f,1e-2f,0.0,"snr5.5 fd1e-2");
-  printf("\n every data segment carries a signal - the worst case for the gate\n");
-  run_case(2048,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");
-  run_case(4096,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");
-  run_case(4096,16,16,5.0f,1e-4f,7.0,"snr5.0 fd1e-4");
-  run_case(8192,16,16,6.0f,1e-2f,7.0,"snr6.0 fd1e-2");
-  run_case(16384,16,16,5.5f,1e-2f,7.0,"snr5.5 fd1e-2");
+  printf("D=T=16 (256 pairs), bin n/4, whole record, pure noise.\n");
+  printf("Templates carry ~0.85 of their power below n/8 at every size.\n\n");
+  printf("  %6s %6s %7s %6s | %8s %8s | %7s %7s\n",
+         "n","snr","fd","band","mf us","hmf us","speedup","trig");
+  const float SNRS[4]={5.0f,5.5f,6.0f,6.5f};
+  const float FDS[3]={1e-2f,1e-3f,1e-4f};
+  const size_t NS[2]={2048,4096};
+  for(int si=0;si<2;si++){
+    for(int fi=0;fi<3;fi++){
+      for(int ti=0;ti<4;ti++)
+        run_case(NS[si],16,16,SNRS[ti],FDS[fi],0.0,"");
+      printf("\n");
+    }
+  }
   return 0;
 }
