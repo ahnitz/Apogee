@@ -71,6 +71,7 @@ struct ap_hmf_plan {
      template, so one reference serves a whole bank -- and skips the
      per-template ingest measurement. */
   int    ref_on;
+  float  even_margin;
   float  ref_f, ref_g, ref_graw, ref_graw1;
   float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
   float *shift;               /* [2m]       scratch for the measurement         */
@@ -184,6 +185,8 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
+  p->even_margin=0.999f;
+  { const char *e=getenv("APOGEE_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
   p->prof = getenv("APOGEE_HMF_PROF") ? 1 : 0;
   return p;
 }
@@ -260,6 +263,68 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
     a1[2*k+1]=(float)(re*sn+im*c);
   }
   measure_recovery(p,0,a0,a1,&p->ref_g,&p->ref_graw,&p->ref_graw1);
+
+  /* graw1 from the average spectrum is not a bound on a realisation.
+   *
+   * The early-out skips the odd transform when the even samples alone cannot
+   * reach the gate, which needs a bound on even_max/combined_max.  Derived
+   * from the reference's autocorrelation that is a MEAN shape: an individual
+   * noise peak can be sharper, the even grid then loses more than the mean
+   * predicts, and the peak is dismissed.  Measured in a real search this cost
+   * 2.9% of triggers against a 0.1% budget -- and it only bites where the grid
+   * is fine (R small), which is why a coarser configuration never showed it.
+   *
+   * So measure the ratio over realisations and take a low quantile.  This runs
+   * once per reference, not per template.
+   */
+  {
+    const int K=128;
+    float *rat=malloc(K*sizeof(float));
+    unsigned long long rs=0x9E3779B97F4A7C15ULL;
+    for(int r=0;r<K;r++){
+      for(size_t k=0;k<m;k++){
+        /* signal at a random lag plus noise, both shaped by the reference */
+        rs^=rs<<13; rs^=rs>>7; rs^=rs<<17;
+        double u1=((rs>>11)*(1.0/9007199254740992.0))+1e-12;
+        rs^=rs<<13; rs^=rs>>7; rs^=rs<<17;
+        double u2=(rs>>11)*(1.0/9007199254740992.0);
+        double g1=sqrt(-2*log(u1))*cos(2*M_PI*u2);
+        double g2=sqrt(-2*log(u1))*sin(2*M_PI*u2);
+        double amp=sqrt(power[k]>0?power[k]:0);
+        /* Fractional lag: coarse index j is full lag j*R, so an integer index
+           only ever lands on the even grid -- exactly the blind spot being
+           measured.  Step in quarters so odd and inter-sample lags are covered. */
+        double L=0.25*(double)(r%32);
+        double ph=2.0*M_PI*(double)k*L/(double)m;
+        p->prod[2*k]  =(float)(amp*(cos(ph)+0.35*g1));
+        p->prod[2*k+1]=(float)(amp*(sin(ph)+0.35*g2));
+      }
+      ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
+      for(size_t k=0;k<m;k++){
+        double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
+        float xr=p->prod[2*k], xi=p->prod[2*k+1];
+        p->shift[2*k]  =(float)(xr*c-xi*sn);
+        p->shift[2*k+1]=(float)(xr*sn+xi*c);
+      }
+      ap_fft(p->cf,p->shift,p->cod,AP_BACKWARD);
+      float be=0.f,bo=0.f;
+      for(size_t j=0;j<m;j++){
+        float e=p->cev[2*j]*p->cev[2*j]+p->cev[2*j+1]*p->cev[2*j+1];
+        float o=p->cod[2*j]*p->cod[2*j]+p->cod[2*j+1]*p->cod[2*j+1];
+        if(e>be) be=e;
+        if(o>bo) bo=o;
+      }
+      float comb = be>bo?be:bo;
+      rat[r] = comb>0.f ? sqrtf(be/comb) : 1.f;
+    }
+    /* low quantile: second smallest of 128 is about the 1% point */
+    for(int i=0;i<3;i++)
+      for(int j=i+1;j<K;j++)
+        if(rat[j]<rat[i]){ float t=rat[i]; rat[i]=rat[j]; rat[j]=t; }
+    float q=rat[1];
+    if(q<p->ref_graw1) p->ref_graw1=q;
+    free(rat);
+  }
   p->ref_on=1;
   return 0;
 }
@@ -293,12 +358,15 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
                              float *gout,float *grawout,float *graw1out){
   const size_t m=p->m,n=p->n; const int U=p->U,K=p->K;
   const size_t R=n/m;
-  /* Sub-grid offsets run over 0..R/U-1, and the worst case is the half-step.
-     Capping the LOOP COUNT at 16 samples only the first 16 offsets, which at
-     large R are all near-aligned -- the recovery then comes back optimistic and
-     the gate ends up too high, losing detections.  Stride instead, so the
-     sampled set always spans the interval. */
-  size_t nstep=(R/(size_t)U); if(!nstep) nstep=1;
+  /* Offsets must span the coarsest grid being measured, which is the EVEN
+     grid, spacing R -- not the combined U=2 grid, spacing R/U.
+     graw1 describes what the even samples alone recover, so offsets that only
+     span R/U never test a peak sitting between two even samples.  At R=2, U=2
+     that left exactly one offset, the aligned one, and graw1 came back 1.0 when
+     the true figure was 0.958: the even gate was then ~4% too high and every
+     peak on an odd lag was silently dismissed.  Spanning R covers both grids.
+     Stride so the sampled set spans the interval even when R is large. */
+  size_t nstep=R; if(!nstep) nstep=1;
   size_t stride=nstep/16; if(!stride) stride=1;
   double peak=0;
   for(size_t k=0;k<m;k++) peak+=(double)a0[2*k]*a0[2*k]+(double)a0[2*k+1]*a0[2*k+1];
@@ -307,7 +375,7 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
   float gr=9.f,g1=9.f,gi=9.f;
   float *Ds=p->shift;
   for(size_t s=0;s<nstep;s+=stride){
-    const double off=-2.0*M_PI*(double)(s*R/(size_t)U)/(double)n;
+    const double off=-2.0*M_PI*(double)s/(double)n;   /* s is in lags */
     for(size_t k=0;k<m;k++){
       double c=cos(off*(double)k), sn=sin(off*(double)k);
       Ds[2*k]  =(float)(a0[2*k]*c-a0[2*k+1]*sn);
@@ -437,7 +505,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       float gt=p->tg[t0+t];
       tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd);
       rawg[t] =tcs[t]*p->tgraw [t0+t]*0.999f;
-      eveng[t]=tcs[t]*p->tgraw1[t0+t]*0.999f;
+      eveng[t]=tcs[t]*p->tgraw1[t0+t]*p->even_margin;
     }
   }
   /* Coarse lag window.  Even sample j maps to full lag j*R, odd to j*R + R/2,

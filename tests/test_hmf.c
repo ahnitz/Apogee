@@ -282,6 +282,56 @@ int main(void){
     free(H);free(W);free(R);free(D); ap_hmf_destroy(a); ap_hmf_destroy(b);
   }
 
+  /* Regression: the even-grid recovery must be measured over offsets spanning
+     the EVEN grid's spacing R, not the combined U=2 grid's spacing R/U.
+     At band = n/2 those differ by exactly the factor that matters: R=2, U=2
+     leaves one offset, the aligned one, so graw1 came back 1.0 when the truth
+     was 0.958.  The even gate was then too high and every peak landing on an
+     odd lag was dismissed -- invisible to every other test here, because a
+     dismissed peak is simply absent and bit-identity says nothing about it.
+
+     Construct exactly that: a wide band so R is small, and a signal placed on
+     an ODD lag so only the odd half of the grid can see it. */
+  printf("\n even-grid recovery spans the even grid\n");
+  {
+    const size_t n=4096, band=n/2;
+    const float snr=6.0f;
+    float *H=malloc(2*n*sizeof(float)), *D=malloc(2*n*sizeof(float));
+    float *R=malloc(n*sizeof(float));
+    make_template_pow(H,n,0.85);
+    for(size_t k=0;k<n;k++){
+      double p=(double)H[2*k]*H[2*k]+(double)H[2*k+1]*H[2*k+1];
+      R[k]=(float)p;
+    }
+    ap_hmf_plan *hf=ap_hmf_create_ex(n,1,1,snr,1e-2f,band,2,8);
+    ap_mf_plan  *mf=ap_mf_create(n,1,1);
+    ap_hmf_set_reference(hf,R);
+    ap_hmf_set_template(hf,0,H); ap_mf_set_template(mf,0,H);
+    int miss=0,tot=0;
+    for(int trial=0;trial<200;trial++){
+      size_t lag = 2*(size_t)(37*trial % (n/4)) + 1;      /* always ODD */
+      make_data(D,H,n,snr+0.6,lag);
+      ap_hmf_set_data(hf,0,D); ap_mf_set_data(mf,0,D);
+      ap_peak a,b; int ca=0,cb=0;
+      a.index=b.index=-1;
+      ap_mf_run (mf ,0,1,0,1,n,snr,&a,&ca,0,n);
+      ap_hmf_run(hf ,0,1,0,1,n,snr,&b,&cb,0,n);
+      if(a.index>=0){ tot++; if(b.index<0) miss++; }
+    }
+    /* Hold this to the false-dismissal target, not to a tolerance picked to
+       accommodate whatever the code currently does.  3x absorbs binomial
+       scatter at this trial count; anything beyond that is a real breach of the
+       budget.  An earlier version of this test used a 5% bar and passed at
+       4.8% while the gate was losing 3% of real triggers. */
+    double rate = tot ? (double)miss/tot : 0.0;
+    int bad = rate > 3.0*1e-2;
+    printf("  %-28s %s  %d/%d peaks on odd lags dismissed (%.1f%%, budget %.1f%%)\n",
+           "odd-lag peaks survive",bad?"FAIL":"ok  ",miss,tot,100.0*rate,100.0*1e-2);
+    if(bad) fails++;
+    checks++;
+    free(H);free(D);free(R); ap_hmf_destroy(hf); ap_mf_destroy(mf);
+  }
+
   printf("\n%d checks, %d failures\n",checks,fails);
   return fails?1:0;
 }
