@@ -180,3 +180,38 @@ still be catastrophic in the *computational* sense, and the test suite will not
 notice, because conservative gating produces correct answers.  Only the
 benchmark catches it, and only on data whose peak shape differs from the design
 template's.
+
+## Open: the gate does not behave as modelled at large N
+
+At 2^18 and 2^20 the measured trigger rate disagrees with the design model, and
+the disagreement is in the unsafe direction.
+
+      n      model                        measured
+    2^18   t_c=4.93, trig 50.4%, 1.04x    trig 0.0%, 5.01x
+    2^20   t_c=1.32, trig  100%, 1.00x    trig 0.0%, 2933x
+
+The model is the one to believe here.  The gate sits below the detection
+threshold by construction, and with ~10^6 lags the coarse maximum in pure noise
+reaches about sqrt(2 ln G) ~ 3.7 -- far above a gate of ~1.5.  Essentially every
+pair should trigger.  A measured 0% means the run-time gate is much higher than
+the calibration intends, and **a gate that is too high dismisses real signals
+silently**.  Reported peaks stay bit-identical either way, so the test suite
+cannot see this; only the trigger rate can.
+
+Traced so far: the template's band fraction at 2^20 really is f=0.427, which
+after the f_eff clamp should give t_c ~ 1.55 and fire on almost every pair.  The
+C path does not do that and the cause is not yet found.
+
+Two things this also makes clear, independent of the bug:
+
+- **A realistic threshold at large N is not 5.5.**  The full filter alone
+  expects n*exp(-t^2/2) noise crossings per pair - about 0.3 at 2^20 and t=5.5 -
+  so a real search would set the threshold from the trials factor.  The
+  hierarchical gate's usefulness depends on the margin between that threshold
+  and sqrt(2 ln G), which shrinks as N grows.
+- **The gate is per pair, not per bin.**  The output is one peak per bin, but
+  one loud bin drags the whole pair through the full correlation.  For a search
+  that wants a trigger in every window this is the binding limitation, and the
+  cost model does not currently account for it.
+
+Until this is resolved, treat 2^10..2^16 as measured and 2^18..2^20 as unverified.
