@@ -61,7 +61,11 @@ static void make_data(float *D,const float *H,size_t n,double amp,size_t lag){
   }
 }
 
-static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const char *lab){
+/* band=0 lets the design table choose; otherwise the band is pinned.  Both
+   paths go through this one routine so a configuration cannot produce two
+   different numbers depending on which harness measured it. */
+static void run_case_band(size_t n,int ND,int NT,float snr,float fd,double amp,
+                          const char *lab,size_t pin){
   float *H=malloc(2*n*sizeof(float)*NT), *D=malloc(2*n*sizeof(float)*ND);
   for(int t=0;t<NT;t++) /* All templates obey the stated relationship (~0.85 of the power below
        n/8), with only slight spread.  The earlier 0.85-0.02*t put templates
@@ -72,7 +76,8 @@ static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const 
   for(int d=0;d<ND;d++) make_data(D+(size_t)d*2*n,H,n,amp,(size_t)(400+31*d));
 
   ap_mf_plan  *mf =ap_mf_create(n,ND,NT);
-  ap_hmf_plan *hf =ap_hmf_create(n,ND,NT,snr,fd);
+  ap_hmf_plan *hf = pin ? ap_hmf_create_ex(n,ND,NT,snr,fd,pin,2,8)
+                        : ap_hmf_create(n,ND,NT,snr,fd);
   if(!mf||!hf){ printf("  %-22s SKIP\n",lab); return; }
   for(int d=0;d<ND;d++){ ap_mf_set_data(mf,d,D+(size_t)d*2*n); ap_hmf_set_data(hf,d,D+(size_t)d*2*n); }
   for(int t=0;t<NT;t++){ ap_mf_set_template(mf,t,H+(size_t)t*2*n); ap_hmf_set_template(hf,t,H+(size_t)t*2*n); }
@@ -82,6 +87,10 @@ static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const 
   ap_peak *pk=calloc((size_t)ND*NT*nb,sizeof(ap_peak));
   const float thr=(float)snr;
 
+  /* The trigger rate is a tail statistic: at a true rate of ~10%, 256 pairs of
+     one noise realisation has a binomial spread wide enough that the same
+     configuration measured twice differed 6.2% vs 20.3%.  Re-draw the noise
+     between repetitions so the reported rate averages over realisations. */
   int reps = n<=8192 ? 20 : 5;
   for(int i=0;i<3;i++) ap_mf_run(mf,0,ND,0,NT,bs,thr,pk,NULL,start,end);
   double t0=now();
@@ -91,8 +100,19 @@ static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const 
   for(int i=0;i<3;i++) ap_hmf_run(hf,0,ND,0,NT,bs,thr,pk,NULL,start,end);
   long p0,g0; ap_hmf_stats(hf,&p0,&g0);
   t0=now();
-  for(int i=0;i<reps;i++) ap_hmf_run(hf,0,ND,0,NT,bs,thr,pk,NULL,start,end);
-  double thf=(now()-t0)/reps/((double)ND*NT);
+  double hsec=0;
+  for(int i=0;i<reps;i++){
+    if(i){                                   /* fresh noise for each repetition */
+      for(int d=0;d<ND;d++){
+        make_data(D+(size_t)d*2*n,H,n,amp,(size_t)(400+31*d+7*i));
+        ap_hmf_set_data(hf,d,D+(size_t)d*2*n);
+      }
+    }
+    double s0=now();
+    ap_hmf_run(hf,0,ND,0,NT,bs,thr,pk,NULL,start,end);
+    hsec+=now()-s0;
+  }
+  double thf=hsec/reps/((double)ND*NT);
   long p1,g1; ap_hmf_stats(hf,&p1,&g1);
 
   size_t band; int u,k; ap_hmf_config(hf,&band,&u,&k);
@@ -105,6 +125,10 @@ static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const 
          n,(double)snr,(double)fd,band,tmf*1e6,thf*1e6,
          tmf/thf,100.0*(g1-g0)/(double)(p1-p0));
   free(pk);free(H);free(D); ap_mf_destroy(mf); ap_hmf_destroy(hf);
+}
+
+static void run_case(size_t n,int ND,int NT,float snr,float fd,double amp,const char *lab){
+  run_case_band(n,ND,NT,snr,fd,amp,lab,0);
 }
 
 int main(int argc,char **argv){
@@ -127,6 +151,13 @@ int main(int argc,char **argv){
         run_case(NS[si],16,16,SNRS[ti],FDS[fi],0.0,"");
       printf("\n");
     }
+  }
+  printf("\n band sweep at snr 5.5, fd 1e-2 (same routine, band pinned)\n");
+  printf("  %6s %6s %7s %6s | %8s %8s | %7s %7s\n",
+         "n","snr","fd","band","mf us","hmf us","speedup","trig");
+  for(int si=0;si<2;si++){
+    for(size_t b=256;b<=NS[si]/2;b<<=1) run_case_band(NS[si],16,16,5.5f,1e-2f,0.0,"",b);
+    printf("\n");
   }
   return 0;
 }
