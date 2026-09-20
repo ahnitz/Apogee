@@ -27,7 +27,7 @@ from . import _core
 #: dtype of the arrays returned by :meth:`MatchedFilter.run`.
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
 
-__all__ = ["MatchedFilter", "PEAK_DTYPE"]
+__all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE"]
 
 
 def _as_c64(a, n, what):
@@ -155,3 +155,67 @@ def include_dir():
     """
     import os
     return os.path.dirname(os.path.abspath(__file__))
+
+
+class HierarchicalFilter(MatchedFilter):
+    """Matched filter that correlates the low band first and refines on demand.
+
+    Most of a template's SNR sits in the low part of its band.  This correlates
+    only that part, on a coarse lag grid, and pays for the full correlation only
+    where the coarse result could still become a detection.
+
+        >>> hf = apogee.HierarchicalFilter(1 << 12, ndata=16, ntemplates=16,
+        ...                                snr=5.5, fd=1e-2)
+        >>> hf.set_data(data_spectra)
+        >>> hf.set_templates(template_spectra)
+        >>> peaks = hf.run(binsize=1024, threshold=t)
+        >>> hf.trigger_rate        # fraction of pairs that needed the full filter
+
+    The guarantee is one-sided and exact.  Every peak it reports is
+    bit-identical to :class:`MatchedFilter`'s, because when the gate fires it
+    runs that filter.  It never invents a peak and never shifts one.  What it can
+    do is MISS one, with probability at most ``fd`` for a signal of strength
+    ``snr``.  If that is not acceptable, use :class:`MatchedFilter`.
+
+    ``snr`` is the |rho| of the weakest signal that must be kept; ``fd`` is the
+    tolerated false-dismissal probability for such a signal.  Lowering either
+    costs speed, because the gate has to open wider.  Band, oversampling and tap
+    count come from a compiled-in measured table - apogee does not autotune -
+    and can be pinned with ``band`` / ``oversample`` / ``taps`` for testing.
+    """
+
+    def __init__(self, n, ndata=1, ntemplates=1, snr=5.5, fd=1e-2,
+                 band=None, oversample=None, taps=None):
+        self.n = int(n)
+        self.ndata = int(ndata)
+        self.ntemplates = int(ntemplates)
+        self.snr = float(snr)
+        self.fd = float(fd)
+        if band is None:
+            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd)
+        else:
+            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd,
+                                 int(band), int(oversample or 2), int(taps or 8))
+
+    @property
+    def config(self):
+        """``(band, oversample, taps)`` the design table selected."""
+        band, u, k = self._mf.config()
+        return band, u, k
+
+    @property
+    def stats(self):
+        """``(pairs, triggers)`` accumulated since construction."""
+        return self._mf.stats()
+
+    @property
+    def trigger_rate(self):
+        """Fraction of pairs that needed the full correlation.
+
+        This is what the speedup rides on, and the first thing to look at when
+        the filter is slower than expected: a data set noisier than the design
+        assumed opens the gate more often, and at a high enough trigger rate the
+        coarse pass is pure overhead.
+        """
+        pairs, trig = self._mf.stats()
+        return trig / pairs if pairs else 0.0

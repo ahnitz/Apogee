@@ -83,6 +83,40 @@ apogee is 1.26–1.72x on AVX-512 and 0.85–1.26x on AVX2. Caveat: MKL takes it
 generic path on this AMD part (`MKL_VERBOSE` says "Intel(R) Architecture
 processors"), which is why amd-fftw is the number to watch.
 
+## The hierarchical filter
+
+Most of a template's SNR sits in the low part of its band.  `HierarchicalFilter`
+correlates only that part, on a coarse lag grid, and pays for the full
+correlation only where the coarse result could still become a detection.
+
+```python
+hf = apogee.HierarchicalFilter(1 << 12, ndata=16, ntemplates=16, snr=5.5, fd=1e-2)
+hf.set_data(data_spectra)
+hf.set_templates(template_spectra)
+peaks = hf.run(binsize=1024, threshold=5.5)
+hf.trigger_rate      # fraction of pairs that needed the full correlation
+```
+
+The guarantee is one-sided and exact: every peak it reports is **bit-identical**
+to `MatchedFilter`'s, because when the gate fires it runs that filter.  It never
+invents a peak and never shifts one.  It can MISS one, with probability at most
+`fd` for a signal of strength `snr`.
+
+`snr` is the |rho| of the weakest signal that must be kept; `fd` is the tolerated
+false-dismissal probability for it.  Both are in units where the noise has
+unit-variance components, so the caller is expected to have normalised.
+Lowering either costs speed, because the gate has to open wider.
+
+Band, oversampling and tap count come from a compiled-in measured table
+(`tools/hmf_design.py` generates it offline; apogee does not autotune).
+`docs/hierarchical.md` explains why the coarse grid is oversampled, why that is
+not a zero-padded transform, and why the interpolation kernel has to be the
+Dirichlet one rather than a plain sinc.
+
+`trigger_rate` is the number to watch: the whole speedup rides on it, and it
+depends on the data rather than only on the design.  On data noisier than the
+design assumed, the gate opens more often and the coarse pass becomes overhead.
+
 ## Using it
 
 C:

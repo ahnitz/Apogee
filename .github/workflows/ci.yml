@@ -79,6 +79,14 @@ jobs:
           make all CC=${{ matrix.cc }} \
             CFLAGS="-O3 -mavx512f -mavx512dq -mavx512bw -mavx512vl -Wall -Wextra -Wno-unused-parameter -Werror"
 
+      - name: The design table must match tools/hmf_design.py
+        run: |
+          python3 -m pip install --quiet numpy scipy
+          cp src/hmf_table.h /tmp/hmf_table.committed.h
+          python3 tools/hmf_design.py emit
+          diff -u /tmp/hmf_table.committed.h src/hmf_table.h \
+            || { echo "::error::src/hmf_table.h is stale; re-run 'python3 tools/hmf_design.py emit'"; exit 1; }
+
       - name: Generated codelets must match gen.py
         run: |
           cp src/codelets.h /tmp/codelets.committed.h
@@ -91,6 +99,7 @@ jobs:
           if grep -qm1 avx2 /proc/cpuinfo; then
             APOGEE_ISA=avx2 ./tests/test_binmax
             APOGEE_ISA=avx2 ./tests/test_mf
+            APOGEE_ISA=avx2 ./tests/test_hmf
           else
             echo "::warning::Runner lacks AVX2; nothing can run natively."
           fi
@@ -98,8 +107,10 @@ jobs:
             ./tests/test_units
             ./tests/test_binmax
             ./tests/test_mf
+            ./tests/test_hmf
             APOGEE_ISA=balanced512 ./tests/test_binmax
             APOGEE_ISA=balanced512 ./tests/test_mf
+            APOGEE_ISA=balanced512 ./tests/test_hmf
           else
             echo "::notice::Runner lacks AVX-512; that back end is built but not run here."
           fi
@@ -127,3 +138,4 @@ jobs:
           ./sde/sde64 -spr -- ./tests/test_units
           ./sde/sde64 -spr -- ./tests/test_binmax
           ./sde/sde64 -spr -- ./tests/test_mf
+          ./sde/sde64 -spr -- ./tests/test_hmf

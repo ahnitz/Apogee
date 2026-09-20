@@ -70,6 +70,48 @@ int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
               ap_peak *peaks, int *counts, size_t start, size_t end);
 
 /* Is this length supported?  1024, and the powers of two from 4096 to 2^20. */
+/* ---------------------------------------------------------------------------
+ * Hierarchical matched filter.
+ *
+ * Most of a template's signal-to-noise sits in the low part of the band.  This
+ * filter correlates only that part, on a coarse lag grid, and pays for the full
+ * correlation only where the coarse result could plausibly become a detection.
+ *
+ * The guarantee is one-sided and exact: every peak this reports is bit-identical
+ * to what ap_mf_run would report for the same inputs.  It never invents a peak
+ * and never shifts one.  What it can do is MISS a peak, at a rate bounded by the
+ * false-dismissal target given at construction.  If that trade is not acceptable,
+ * use ap_mf_run.
+ *
+ * snr is the |rho| of the weakest signal that must be kept (5 is typical); fd is
+ * the tolerated false-dismissal probability for such a signal (1e-2 .. 1e-4).
+ * Band, oversampling and tap count come from a compiled-in measured table -
+ * apogee does not autotune - and can be overridden for testing with
+ * ap_hmf_create_ex.
+ */
+typedef struct ap_hmf_plan ap_hmf_plan;
+
+ap_hmf_plan *ap_hmf_create(size_t n, int ndata, int ntmpl, float snr, float fd);
+ap_hmf_plan *ap_hmf_create_ex(size_t n, int ndata, int ntmpl, float snr, float fd,
+                              size_t band, int oversample, int taps);
+void         ap_hmf_destroy(ap_hmf_plan *p);
+
+size_t ap_hmf_nbins(const ap_hmf_plan *p, size_t binsize, size_t start, size_t end);
+int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
+int    ap_hmf_set_template(ap_hmf_plan *p, int t, const float *spec);
+
+/* Same arguments and same output layout as ap_mf_run. */
+int ap_hmf_run(ap_hmf_plan *p, int d0, int nd, int t0, int nt,
+               size_t binsize, float threshold,
+               ap_peak *peaks, int *counts, size_t start, size_t end);
+
+/* Diagnostics: pairs examined and pairs that went to the full correlation.
+   The ratio is the measured trigger rate, which is what the speedup rides on. */
+void ap_hmf_stats(const ap_hmf_plan *p, long *pairs, long *triggers);
+
+/* The band / oversampling / taps / gate the table chose, for reporting. */
+void ap_hmf_config(const ap_hmf_plan *p, size_t *band, int *oversample, int *taps);
+
 int ap_supported(size_t n);
 
 /* Which back end the CPU selected: "avx512", "avx2", or "unsupported". */

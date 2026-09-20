@@ -560,3 +560,181 @@ So the AVX2 gap is not pass count or fusion.  It is operation count: FFTW's
 codelets do measurably less arithmetic than a generated radix-8 Stockham chain.
 Closing it needs a lower-flop algorithm - split-radix, or larger radices that cut
 twiddle multiplies - not a better arrangement of the current one.
+
+## Coarse-stage interpolation: the kernel must be the Dirichlet one
+
+The coarse series is **analytic** -- its spectrum lives on nu in [0,1), not
+[-1/2,1/2).  The exact periodic interpolator is therefore the Dirichlet kernel
+
+    D(x) = (1/m) sum_{f<m} e^{2 pi i f x/m}
+         = e^{i pi x (m-1)/m} sin(pi x)/(m sin(pi x/m))   ~   e^{i pi x} sinc(x)
+
+a **modulated** sinc.  A plain sinc silently relabels every bin above m/2 as a
+negative frequency, so it reconstructs a different signal.  Validated: the
+full-length Dirichlet reproduces the zero-padded truth to 2e-14.
+
+This bug is nearly invisible, and that is worth remembering.  Both conventions
+agree *exactly* at the integer samples, so a spot check at d=0 reproduces the
+sample perfectly and looks correct.  They disagree only between samples -- which
+is the entire point of interpolating.  The tell was that the plain sinc did not
+converge as taps were added: it sat at 82.2% and its error against the truth
+plateaued at 0.168 even at FULL length.  A full-length kernel that does not
+converge is not a truncation problem, it is the wrong kernel.
+
+Recovery of the ideal coarse peak, N=2^12, R=8, U=1, raw sampling = 82.1%:
+
+     taps        8     16     32     64    128    256    512
+     Dirichlet  81.0%  82.1%  83.1%  86.9%  96.7% 102.8% 100.0%
+     plain sinc 81.5%  81.9%  82.1%  82.2%  82.2%  82.2%  82.2%
+
+So a truncated kernel does converge, but at critical sampling the error falls
+only like 1/K: 32 taps buys about one point, and ~128 taps are needed for 96.7%.
+Short kernels work on series that already carry some oversampling; they do not
+rescue a critically sampled one.
+
+Two further results that run against intuition:
+
+- **Windowing the Dirichlet makes it worse** at every length (83.4% vs 86.9% at
+  64 taps).  The Lanczos window attenuates the band-edge content, and the band
+  edge is precisely what sharpens the peak.
+- **256 taps overshoots to 102.8%.**  Truncation ringing.  Harmless for
+  triggering -- an inflated value cannot cause a dismissal -- but the coarse
+  statistic is then biased, not merely noisy, and the threshold calibration has
+  to be measured with the interpolator in the loop rather than assumed.
+
+Why the band edge carries so much weight despite the power law: the *sharpness*
+of the correlation peak is set by the band edge, not by where the power sits.
+Half the in-band power lies below nu=0.027, yet the peak is only ~R samples
+wide, because the tail running out to bin m is what makes it sharp.
+
+### Equal-cost comparison, which is what sets the design
+
+At a FIXED coarse transform size G, filling a wide band vs zero-padding a narrow
+one.  f is the fraction of total power retained, so sqrt(f)*recovery is the
+fraction of full-filter SNR reaching the trigger.
+
+      G  band  U  taper      f |   raw     L6 | sqrt(f)*best
+    512   512  1  0.000  0.850 | 82.1% 82.1% |       0.757
+    512   512  1  0.750  0.775 | 90.8% 90.8% |       0.800
+    512   256  2  0.000  0.772 | 94.0%  100% |       0.879
+   1024  1024  1  0.000  0.926 | 83.5% 83.5% |       0.803
+   1024   512  2  0.000  0.850 | 94.5%  100% |       0.922
+
+**Zero-padding a narrow band beats filling a wide one at the same cost**, 0.879
+against 0.800 at G=512.  Dropping f from 0.850 to 0.772 buys back more in
+scalloping than it costs in band.  At U=2 six taps already reach 100%, so
+tapering the cut is unnecessary and slightly harmful (0.868 vs 0.879): it only
+costs f.
+
+The open trade, to be settled in the design sweep rather than by argument:
+U=2 with 6 taps costs 2x the transform, while U=1 with ~128 taps costs 1x the
+transform plus 128 complex MACs per sub-offset per candidate.  Which wins
+depends on the trigger rate, so it belongs in the cost model.
+
+Implementation detail that silently produces wrong answers: interpolate the
+complex rho, never |rho|.  |rho| is not band-limited; rho is.
+
+Traps hit again while measuring this:
+- `pkill -f <pattern>` matches the command line of the shell running it when the
+  pattern appears in a heredoc.  Killed its own run, exit 144.  Third time.
+  Already documented under with_load.sh and still reached for.
+- Designing interpolator weights inside the lag loop: weights depend only on
+  (kernel, sub-offset), so it was 48x redundant and the sweep timed out.
+- A band-limited process has a singular autocorrelation matrix, so an MMSE
+  interpolator design needs diagonal loading.  Without it `solve` returns noise
+  and MMSE scores *below* Lanczos -- which it cannot do, and which is how the
+  bug showed.  Note this whole MMSE line was chasing the wrong kernel anyway.
+
+### Window choice, and why the long-kernel route is dominated
+
+Analytic (modulated) sinc at N=2^12, R=8, U=1.  Raw sampling recovers 82.1%.
+Worst case over injected lags:
+
+     taps    none  lanczos  kaiser6  kaiser8  kaiser10
+       32   82.9%    82.3%    82.1%    82.1%     82.1%
+       64   84.9%    83.1%    82.6%    82.4%     82.2%
+      128   92.0%    85.1%    84.1%    83.7%     83.3%
+
+**At critical sampling every window hurts, monotonically in how hard it
+windows.**  A window is a low-pass; its transition band has to live somewhere,
+and at U=1 there is no empty spectrum to put it in, so it eats the band-edge
+content that sharpens the peak.  Kaiser is the right window when headroom
+exists for the stopband to sit in -- which is why a 128-tap Kaiser-sinc is
+sound in a pipeline whose coarse rate is already oversampled, and wrong here.
+
+Equal transform size G=512, the comparison that settles it:
+
+    U=1, 512 bins, 128-tap unwindowed:  f=0.850, 92.0% -> 0.848, ~1800 FMA/cand
+    U=2, 256 bins,   6-tap           :  f=0.772,  100% -> 0.879,   ~90 FMA/cand
+
+Same transform cost, better sensitivity, ~20x cheaper interpolation.  So: buy
+headroom in the transform, where it is cheap, rather than fighting for it in the
+filter.  The coarse stage is a 2x-oversampled narrow band with a short kernel.
+
+### Implementation form (from a working Cython kernel for a related problem)
+
+Worth keeping even though the long-kernel route lost, because the *form* is the
+right one for whatever kernel we end up with:
+
+- Keep the LUT weights **real**.  Fold the analytic modulation in as (-1)^index
+  on the samples plus one complex rotation e^{i pi x} per evaluation.  The tap
+  loop is then 2 FMAs per tap on complex data, no complex kernel.
+- Better still for us: demodulate the coarse block **once** at production rather
+  than flipping a sign per tap.  The block is reused across every evaluation.
+- Our fine grid is an exact integer subdivision of the coarse grid, so the
+  sub-positions are exactly i/R.  The LUT needs **R rows, not 1024** -- 4 KiB at
+  R=8 instead of 512 KiB, L1-resident, and it makes the operation a polyphase
+  bank of R fixed filters.
+- Gate with L1 norms: |re|+|im| >= |z|, so it is a valid upper bound and skips
+  without a sqrt.  Gate at block level first, then per sample.
+- The gate bound must be padded for interpolation overshoot (measured up to
+  102.8% at 256 taps).  Overshoot inflates, so it can never cause a dismissal,
+  but the bound has to allow for it or the gate will.
+
+### Corrections to the above, found by head-to-head
+
+Three results earlier in this section were inflated or inverted by bugs.  All
+three are normalisation, and one is a repeat.
+
+**Unnormalised kernels inflate.**  A 2-tap sinc at d=0.5 has weights
+sinc(+/-0.5)=0.6366 summing to 1.27, so it reports 127% "recovery" that is pure
+bias.  Lanczos weights do not sum to 1 either, so the earlier "6 taps reach
+100% at U=2" was partly this artifact.  With normalised weights at R=8, U=2:
+6 taps plain gives 95.6% against raw 94.5%, and 8 taps centred+Kaiser reach
+100.0%.  Interpolation still helps at U=2; it helps less than first reported.
+
+**The Dirichlet kernel must not be normalised by sum(w).**  Its modulated
+weights nearly cancel, so sum(w) ~ 0 and the division explodes (t_c came out as
+1.5e15).  It is exact unnormalised; truncated, normalise against the band-centre
+exponential, i.e. by sum of the real sinc.
+
+**The zero-pad scale factor, again.**  rho_c(k) = 2m * ifft_2m(P_padded), not
+m * ifft.  Using m halves every U=2 coarse value, which made U=2 lose all 18
+cells of the design sweep and appeared to refute the equal-cost argument.  This
+is the *same* bug already found and fixed once in the interpolation script, then
+reintroduced in the sweep.  Any zero-padded inverse needs its scale re-derived,
+not copied from the unpadded case.
+
+Head-to-head after the fixes, N=2^12, T=5.5, FD=1%:
+
+      R  U   K  band     G   t_c    trig   xform  speedup
+      8  1  32   512   512  4.18   7.80%   0.098    5.68x
+     16  2   8   256   512  4.25   5.86%   0.087    6.85x
+     16  1  32   256   256  3.86  13.86%   0.044    5.49x
+      4  2   8  1024  2048  5.04   0.64%   0.433    2.27x
+
+At equal transform cost the narrow band at U=2 beats the wide band at U=1
+(6.85x vs 5.68x): the higher t_c more than halves the trigger rate.  The
+equal-cost argument stands; the sweep that contradicted it was miscalibrated.
+
+### U=2 is two m-point transforms, not one 2m-point transform
+
+Output parity splits it exactly (verified to 2.7e-14):
+
+    even: y[2k']   = m-point IDFT of P
+    odd : y[2k'+1] = m-point IDFT of P[f] * e^{i pi f/m}
+
+The odd twiddle is a half-sample shift, so it folds into the stored conjugated
+template at preprocessing and costs nothing at run time -- no new transform size,
+no padding, just the existing fused-product transform run twice against two
+template copies.  Charging it as one 2m-point FFT overcharges by 11% at m=512.

@@ -132,3 +132,58 @@ def test_python_overhead_is_negligible():
     assert per_pair_small < 25 * per_pair_large, (
         f"per-pair cost {per_pair_small*1e6:.1f} us for a single pair vs "
         f"{per_pair_large*1e6:.1f} us amortised - Python overhead is not negligible")
+
+
+def test_hierarchical_matches_full_filter():
+    """The hierarchical filter's peaks must be identical to the full filter's.
+
+    Not close - identical.  When its gate fires it runs the full filter, so any
+    difference at all means the gate or the output plumbing is wrong, and a
+    tolerance here would hide exactly that.
+    """
+    n, nd, nt = 1 << 12, 4, 4
+    rng = np.random.default_rng(3)
+    f = np.arange(n)
+    H = np.zeros((nt, n), np.complex64)
+    for t in range(nt):
+        h = np.zeros(n, complex)
+        h[1:n // 2] = np.arange(1, n // 2) ** (-0.9 - 0.05 * t)
+        H[t] = (h / np.linalg.norm(h)).astype(np.complex64)
+    D = (rng.standard_normal((nd, n)) + 1j * rng.standard_normal((nd, n))).astype(np.complex64)
+    for d in range(nd):                      # inject a loud signal so the gate fires
+        D[d] += (12.0 * H[0] * np.exp(-2j * np.pi * f * (300 + 17 * d) / n)).astype(np.complex64)
+
+    mf = apogee.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    hf = apogee.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5, fd=1e-2)
+    for o in (mf, hf):
+        o.set_data(D)
+        o.set_templates(H)
+    a = mf.run(binsize=1024, threshold=5.5)
+    b = hf.run(binsize=1024, threshold=5.5)
+
+    fired = b["index"] >= 0
+    assert fired.any(), "gate never opened on a 12-sigma signal"
+    assert not (fired & (a["index"] < 0)).any(), "reported a peak the full filter did not"
+    np.testing.assert_array_equal(a["index"][fired], b["index"][fired])
+    np.testing.assert_array_equal(a["value"][fired], b["value"][fired])
+    np.testing.assert_array_equal(a["magnitude"][fired], b["magnitude"][fired])
+
+    band, u, k = hf.config
+    assert band < n and u in (1, 2) and k >= 2
+    assert 0.0 <= hf.trigger_rate <= 1.0
+
+
+def test_hierarchical_gate_stays_shut_on_noise():
+    """On pure noise nothing should reach the full filter."""
+    n = 1 << 12
+    rng = np.random.default_rng(11)
+    h = np.zeros(n, complex)
+    h[1:n // 2] = np.arange(1, n // 2) ** -0.9
+    H = (h / np.linalg.norm(h)).astype(np.complex64)
+    D = (rng.standard_normal((8, n)) + 1j * rng.standard_normal((8, n))).astype(np.complex64)
+    hf = apogee.HierarchicalFilter(n, ndata=8, ntemplates=1, snr=5.5, fd=1e-2)
+    hf.set_data(D)
+    hf.set_templates(H[None, :])
+    peaks = hf.run(binsize=1024, threshold=5.5)
+    assert (peaks["index"] < 0).all()
+    assert hf.trigger_rate < 0.2

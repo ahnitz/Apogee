@@ -95,12 +95,114 @@ static PyTypeObject MFType={
   .tp_methods=MF_methods, .tp_doc="apogee matched filter (opaque)",
 };
 
+/* ---------------- hierarchical matched filter ---------------- */
+/* Same shape as MF, so the Python class can share almost all of its code.  The
+   only genuinely new surface is stats(), which reports the trigger rate - the
+   quantity the whole speedup rides on, and the first thing to look at when the
+   filter is slower than expected on a particular data set. */
+typedef struct { PyObject_HEAD ap_hmf_plan *p; Py_ssize_t n; int nd,nt; } HMFObject;
+
+static int HMF_init(HMFObject *self,PyObject *args,PyObject *kw){
+  Py_ssize_t n; int nd,nt; double snr,fd; (void)kw;
+  Py_ssize_t band=0; int u=0,k=0;
+  if(!PyArg_ParseTuple(args,"niidd|nii",&n,&nd,&nt,&snr,&fd,&band,&u,&k)) return -1;
+  self->p = band ? ap_hmf_create_ex((size_t)n,nd,nt,(float)snr,(float)fd,(size_t)band,u,k)
+                 : ap_hmf_create((size_t)n,nd,nt,(float)snr,(float)fd);
+  if(!self->p){ PyErr_Format(PyExc_ValueError,
+      "no hierarchical design for n=%zd snr=%g fd=%g",n,snr,fd); return -1; }
+  self->n=n; self->nd=nd; self->nt=nt; return 0;
+}
+static void HMF_dealloc(HMFObject *self){
+  if(self->p) ap_hmf_destroy(self->p);
+  Py_TYPE(self)->tp_free((PyObject*)self);
+}
+static PyObject *HMF_set(HMFObject *self,PyObject *args,int is_data){
+  int i; Py_buffer b;
+  if(!PyArg_ParseTuple(args,"iy*",&i,&b)) return NULL;
+  if(b.len < self->n*2*(Py_ssize_t)sizeof(float)){
+    PyBuffer_Release(&b);
+    return PyErr_Format(PyExc_ValueError,"segment must hold %zd complex64 samples",self->n);
+  }
+  int r;
+  Py_BEGIN_ALLOW_THREADS
+  r = is_data ? ap_hmf_set_data(self->p,i,(const float*)b.buf)
+              : ap_hmf_set_template(self->p,i,(const float*)b.buf);
+  Py_END_ALLOW_THREADS
+  PyBuffer_Release(&b);
+  if(r<0) return PyErr_Format(PyExc_IndexError,"index %d out of range",i);
+  Py_RETURN_NONE;
+}
+static PyObject *HMF_set_data(HMFObject *s,PyObject *a){ return HMF_set(s,a,1); }
+static PyObject *HMF_set_template(HMFObject *s,PyObject *a){ return HMF_set(s,a,0); }
+
+static PyObject *HMF_run(HMFObject *self,PyObject *args){
+  int d0,nd,t0,nt; Py_ssize_t binsize,start,end; double thr;
+  Py_buffer bidx,bval,bmag,bcnt;
+  if(!PyArg_ParseTuple(args,"iiiindnnw*w*w*w*",&d0,&nd,&t0,&nt,&binsize,&thr,
+                       &start,&end,&bidx,&bval,&bmag,&bcnt)) return NULL;
+  size_t nb=ap_hmf_nbins(self->p,(size_t)binsize,(size_t)start,(size_t)end);
+  Py_ssize_t rows=(Py_ssize_t)nd*nt, need=(Py_ssize_t)(rows*(Py_ssize_t)nb);
+  if(bidx.len<need*8 || bval.len<need*8 || bmag.len<need*4 || bcnt.len<rows*4){
+    PyErr_Format(PyExc_ValueError,"output arrays too small for %zd pairs x %zu bins",rows,nb);
+    PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
+    PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt); return NULL; }
+  ap_peak *pk=(ap_peak*)PyMem_Malloc((size_t)need*sizeof(ap_peak));
+  if(!pk){ PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
+           PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt); return PyErr_NoMemory(); }
+  int tot;
+  Py_BEGIN_ALLOW_THREADS
+  tot=ap_hmf_run(self->p,d0,nd,t0,nt,(size_t)binsize,(float)thr,pk,(int*)bcnt.buf,
+                 (size_t)start,(size_t)end);
+  Py_END_ALLOW_THREADS
+  if(tot>=0){
+    long long *ix=(long long*)bidx.buf; float *vl=(float*)bval.buf,*mg=(float*)bmag.buf;
+    for(Py_ssize_t a=0;a<need;a++){
+      ix[a]=(long long)pk[a].index; vl[2*a]=pk[a].re; vl[2*a+1]=pk[a].im; mg[a]=pk[a].magnitude;
+    }
+  }
+  PyMem_Free(pk);
+  PyBuffer_Release(&bidx);PyBuffer_Release(&bval);PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt);
+  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"apogee: hierarchical filter failed"); return NULL; }
+  return PyLong_FromLong(tot);
+}
+static PyObject *HMF_nbins(HMFObject *self,PyObject *args){
+  Py_ssize_t bs,st,en;
+  if(!PyArg_ParseTuple(args,"nnn",&bs,&st,&en)) return NULL;
+  return PyLong_FromSize_t(ap_hmf_nbins(self->p,(size_t)bs,(size_t)st,(size_t)en));
+}
+static PyObject *HMF_stats(HMFObject *self,PyObject *a){
+  long pr=0,tg=0; (void)a; ap_hmf_stats(self->p,&pr,&tg);
+  return Py_BuildValue("(ll)",pr,tg);
+}
+static PyObject *HMF_config(HMFObject *self,PyObject *a){
+  size_t band=0; int u=0,k=0; (void)a; ap_hmf_config(self->p,&band,&u,&k);
+  return Py_BuildValue("(nii)",(Py_ssize_t)band,u,k);
+}
+static PyMethodDef HMF_methods[]={
+  {"set_data",(PyCFunction)HMF_set_data,METH_VARARGS,"set_data(i, buffer)"},
+  {"set_template",(PyCFunction)HMF_set_template,METH_VARARGS,"set_template(i, buffer)"},
+  {"run",(PyCFunction)HMF_run,METH_VARARGS,"run(...) -> total crossings"},
+  {"nbins",(PyCFunction)HMF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},
+  {"stats",(PyCFunction)HMF_stats,METH_NOARGS,"stats() -> (pairs, triggers)"},
+  {"config",(PyCFunction)HMF_config,METH_NOARGS,"config() -> (band, oversample, taps)"},
+  {NULL}
+};
+static PyTypeObject HMFType={
+  PyVarObject_HEAD_INIT(NULL,0)
+  .tp_name="apogee._core.HMF", .tp_basicsize=sizeof(HMFObject),
+  .tp_flags=Py_TPFLAGS_DEFAULT, .tp_new=PyType_GenericNew,
+  .tp_init=(initproc)HMF_init, .tp_dealloc=(destructor)HMF_dealloc,
+  .tp_methods=HMF_methods, .tp_doc="apogee hierarchical matched filter (opaque)",
+};
+
 static PyMethodDef methods[]={{NULL,NULL,0,NULL}};
 static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"apogee._core",NULL,-1,methods};
 PyMODINIT_FUNC PyInit__core(void){
   if(PyType_Ready(&MFType)<0) return NULL;
+  if(PyType_Ready(&HMFType)<0) return NULL;
   PyObject *m=PyModule_Create(&mod);
   if(!m) return NULL;
   Py_INCREF(&MFType);   PyModule_AddObject(m,"MF",(PyObject*)&MFType);
+  Py_INCREF(&HMFType);  PyModule_AddObject(m,"HMF",(PyObject*)&HMFType);
   return m;
 }

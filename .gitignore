@@ -17,3 +17,5 @@ four*.csv
 matrix.*
 bench/loadgen
 bench/bench4
+tests/test_hmf
+bench/bench_hmf

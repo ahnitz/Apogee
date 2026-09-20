@@ -23,6 +23,7 @@ GROUPS = [
     ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
     ("src/balanced.c",   AVX2,   [("AP_W", "8")]),      # generic source, 8 lanes
     ("src/matchfilt.c",  BASE,   []),
+    ("src/hmf.c",        BASE,   []),
     ("src/dispatch.c",   [],     []),                 # baseline only
     ("python/apogee/_core.c", [], []),
 ]
