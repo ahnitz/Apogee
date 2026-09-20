@@ -163,6 +163,17 @@ static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size
   return pf_be_bal16.topk(p->bal,in,K,peaks,conj,ws,we);
 }
 
+static int a512_topk_q(void *vp,const short*qhi,const signed char*qlo,const float*qs,
+                       int K,pf_peak*out,int conj,size_t ws,size_t we){
+  AP *p=vp;
+  if(!p->bal) return -1;               /* N=1024 uses the specialised kernel */
+  return pf_be_bal16.topk_q(p->bal,qhi,qlo,qs,K,out,conj,ws,we);
+}
+static void a512_quantize(void *vp,const float*in,short*qhi,signed char*qlo,float*qs){
+  AP *p=vp;
+  if(p->bal) pf_be_bal16.quantize(p->bal,in,qhi,qlo,qs);
+}
 const pf_backend pf_be_avx512 = {
-  "avx512", a512_create, a512_destroy, a512_fft, a512_topk, a512_supported
+  "avx512", a512_create, a512_destroy, a512_fft, a512_topk, a512_supported,
+  a512_topk_q, a512_quantize
 };

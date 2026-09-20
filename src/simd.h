@@ -22,6 +22,8 @@ typedef __m512 vf;
 #define V_MUL(a,b)      _mm512_mul_ps(a,b)
 #define V_FMADD(a,b,c)  _mm512_fmadd_ps(a,b,c)
 #define V_FMSUB(a,b,c)  _mm512_fmsub_ps(a,b,c)
+#define V_FNMADD(a,b,c) _mm512_fnmadd_ps(a,b,c)   /* -(a*b)+c */
+#define V_FNMSUB(a,b,c) _mm512_fnmsub_ps(a,b,c)   /* -(a*b)-c */
 #define V_MAX(a,b)      _mm512_max_ps(a,b)
 #define V_XOR(a,b)      _mm512_xor_ps(a,b)
 #define V_SIGNMASK()    _mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000))
@@ -42,6 +44,8 @@ typedef __m256 vf;
 #define V_MUL(a,b)      _mm256_mul_ps(a,b)
 #define V_FMADD(a,b,c)  _mm256_fmadd_ps(a,b,c)
 #define V_FMSUB(a,b,c)  _mm256_fmsub_ps(a,b,c)
+#define V_FNMADD(a,b,c) _mm256_fnmadd_ps(a,b,c)
+#define V_FNMSUB(a,b,c) _mm256_fnmsub_ps(a,b,c)
 #define V_MAX(a,b)      _mm256_max_ps(a,b)
 #define V_XOR(a,b)      _mm256_xor_ps(a,b)
 #define V_SIGNMASK()    _mm256_castsi256_ps(_mm256_set1_epi32((int)0x80000000))

@@ -44,7 +44,7 @@ static inline int einp(const emap *e,int n){        /* slot to place input eleme
 static inline int codelet(int m,vf*ar,vf*ai,vf*br,vf*bi,long S){
   switch(m){
     case  8: return fft8_42 (ar,ai,br,bi,S);
-    case 16: return fft16_44(ar,ai,br,bi,S);
+    case 16: return fftsr16 (ar,ai,br,bi,S);   /* split-radix: 1.4-1.5x the Stockham form here */
     case 32: return fft32_84(ar,ai,br,bi,S);
     default: return fft64_88(ar,ai,br,bi,S);
   }
@@ -56,7 +56,7 @@ static inline int codelet_tw(int m,vf*ar,vf*ai,vf*br,vf*bi,long S,
                              const float*twr,const float*twi){
   switch(m){
     case  8: return fft8_tw (ar,ai,br,bi,S,twr,twi);
-    case 16: return fft16_tw(ar,ai,br,bi,S,twr,twi);
+    case 16: return fftsr16_tw(ar,ai,br,bi,S,twr,twi);
     case 32: return fft32_tw(ar,ai,br,bi,S,twr,twi);
     default: return fft64_tw(ar,ai,br,bi,S,twr,twi);
   }

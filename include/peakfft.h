@@ -57,6 +57,32 @@ void pf_fft(pf_plan *p, const float *in, float *out, int sign);
    Returns the number written.  The output array is never materialised. */
 int pf_topk(pf_plan *p, const float *in, int K, pf_peak *peaks, int sign);
 
+/* ---- pre-quantised input ------------------------------------------------
+   The input read is the one cost the top-K structure could never remove: it is
+   8 MiB of fp32 at N=2^20 and must all be touched.  If the producer can store
+   the data in reduced form instead, that read shrinks.
+
+   pf_qinput holds the input as 24-bit block floating point (blocks of 16 complex):
+   6 bytes per complex instead of 8, so the read drops by a quarter.  Accuracy is
+   ~2e-8 relative, i.e. essentially free - unlike a 16-bit form, which would cost
+   ~5e-6 and is irreversible, since no refinement can recover detail the input
+   never carried.
+
+   pf_qinput_fill() is a convenience for benchmarking and testing; in real use the
+   producer would write this format directly and the fp32 array would never exist. */
+typedef struct {
+  short       *hi;    /* high 16 bits, [block][16 re | 16 im] */
+  signed char *lo;    /* low 8 bits, same layout              */
+  float       *scale; /* one per block of 16 complex          */
+  size_t       n;
+} pf_qinput;
+
+int  pf_qinput_alloc(pf_plan *p, pf_qinput *q);
+void pf_qinput_free(pf_qinput *q);
+void pf_qinput_fill(pf_plan *p, pf_qinput *q, const float *in);
+int  pf_topk_q(pf_plan *p, const pf_qinput *q, int K, pf_peak *peaks, int sign,
+               size_t start, size_t end);
+
 /* As pf_topk, but only bins with start <= k < end are considered.  Indices in
    the result are still absolute (relative to the whole transform), not relative
    to the window.  start/end are clamped to [0, N]; start >= end returns 0.

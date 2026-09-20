@@ -179,6 +179,93 @@ void FN(destroy)(void *vp){
   free(p->scg);free(p->twr);free(p->twi);free(p);
 }
 
+
+
+/* Per-group work shared by the fp32 and pre-quantised load paths: element
+   transform, four-step twiddle, corner turn, and the intermediate store. */
+static inline void stageA_body(BP*p,int g,vf*TR,vf*TI,vf*OR,vf*OI){
+  const int N2=p->N2;
+    efft(N2,p->bR,p->bI,p->sR,p->sI,p->w2r,p->w2i);
+  vf *RR=p->bR,*RI=p->bI;
+  for(int b=0;b<N2/PF_W;b++){
+    if(p->fulltw){
+      const vf *twr=p->twr+(size_t)g*N2+PF_W*b, *twi=p->twi+(size_t)g*N2+PF_W*b;
+      for(int t=0;t<PF_W;t++){
+        int eb=eidx(&p->eb,PF_W*b+t);
+        vf xr=RR[eb],xi=RI[eb];
+        TR[t]=V_FMSUB(xr,twr[t],V_MUL(xi,twi[t]));
+        TI[t]=V_FMADD(xr,twi[t],V_MUL(xi,twr[t]));
+      }
+    } else {
+      const float *sc=p->scg+2*((size_t)g*N2+PF_W*b);
+      for(int t=0;t<PF_W;t++){
+        int k2=PF_W*b+t;
+        vf SR=V_SET1(sc[2*t]),SI=V_SET1(sc[2*t+1]);
+        vf tr=V_FMSUB(SR,p->TLr[k2],V_MUL(SI,p->TLi[k2]));
+        vf ti=V_FMADD(SR,p->TLi[k2],V_MUL(SI,p->TLr[k2]));
+        int eb=eidx(&p->eb,k2);
+        vf xr=RR[eb],xi=RI[eb];
+        TR[t]=V_FMSUB(xr,tr,V_MUL(xi,ti));
+        TI[t]=V_FMADD(xr,ti,V_MUL(xi,tr));
+      }
+    }
+    V_TRANSPOSE(TR,OR); V_TRANSPOSE(TI,OI);
+    /* One block-floating-point scale for the whole W x W tile, not one per row.
+       The horizontal reduce and the divide were costing more than either FFT
+       stage; sharing them over the tile makes them W times rarer.  A tile max is
+       a little larger than a row max, so the quantiser is marginally coarser -
+       24 bits leaves plenty of margin for that. */
+    if(!p->useq){
+      for(int i=0;i<PF_W;i++){
+        size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
+        V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
+      }
+      continue;
+    }
+    vf amax=V_MAX(V_ABS(OR[0]),V_ABS(OI[0]));
+    for(int i=1;i<PF_W;i++) amax=V_MAX(amax,V_MAX(V_ABS(OR[i]),V_ABS(OI[i])));
+    float mx=v_reduce_max(amax);
+    float sc = mx>0.f ? 8388607.0f/mx : 1.f;
+    float dq = mx>0.f ? mx*(1.0f/8388607.0f) : 1.f;
+    vf vs=V_SET1(sc);
+    const vi CMAX=VI_SET1(8388607), CMIN=VI_SET1(-8388607);
+    for(int i=0;i<PF_W;i++){
+      int n1=PF_W*g+i;
+      p->scl[(size_t)n1*(N2/PF_W)+b]=dq;
+      vi xr=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OR[i],vs))));
+      vi xi=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OI[i],vs))));
+      size_t base=2*((size_t)n1*N2+PF_W*b);
+      VI_STORE16(p->q+base,        VI_PACK16(VI_SRAI(xr,8)));
+      VI_STORE16(p->q+base+PF_W,   VI_PACK16(VI_SRAI(xi,8)));
+      VI_STORE8 (p->r8+base,       VI_PACK8(VI_AND(xr,VI_SET1(255))));
+      VI_STORE8 (p->r8+base+PF_W,  VI_PACK8(VI_AND(xi,VI_SET1(255))));
+    }
+
+  }
+}
+
+/* Quantised-input variant of the load: same 24-bit block floating point as the
+   intermediate, so the unpack is the code already validated for that. */
+static void stageA_q(BP*p,const short*qhi,const signed char*qlo,const float*qs,int conj){
+  const int N1=p->N1,N2=p->N2;
+  const vf sg = conj?V_SIGNMASK():V_ZERO();
+  vf TR[PF_W],TI[PF_W],OR[PF_W],OI[PF_W];
+  for(int g=0;g<N1/PF_W;g++){
+    for(int n2=0;n2<N2;n2++){
+      size_t blk=(size_t)n2*(N1/PF_W)+g, base=2*blk*PF_W;
+      vf vs=V_SET1(qs[blk]);
+      vi hr=VI_UNPACK16(VI_LOAD16(qhi+base));
+      vi hi=VI_UNPACK16(VI_LOAD16(qhi+base+PF_W));
+      vi lr=VI_UNPACKU8(VI_LOAD8(qlo+base));
+      vi li=VI_UNPACKU8(VI_LOAD8(qlo+base+PF_W));
+      int q=einp(&p->eb,n2);
+      p->bR[q]=V_MUL(VI_CVTF(VI_OR(VI_SLLI(hr,8),lr)),vs);
+      p->bI[q]=V_XOR(V_MUL(VI_CVTF(VI_OR(VI_SLLI(hi,8),li)),vs),sg);
+    }
+    stageA_body(p,g,TR,TI,OR,OI);
+  }
+}
+
 static void stageA(BP*p,const float*in,int conj){
   const int N1=p->N1,N2=p->N2;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
@@ -190,63 +277,7 @@ static void stageA(BP*p,const float*in,int conj){
       int q=einp(&p->eb,n2);
       p->bR[q]=r; p->bI[q]=V_XOR(i,sg);
     }
-    efft(N2,p->bR,p->bI,p->sR,p->sI,p->w2r,p->w2i);
-    vf *RR=p->bR,*RI=p->bI;
-    for(int b=0;b<N2/PF_W;b++){
-      if(p->fulltw){
-        const vf *twr=p->twr+(size_t)g*N2+PF_W*b, *twi=p->twi+(size_t)g*N2+PF_W*b;
-        for(int t=0;t<PF_W;t++){
-          int eb=eidx(&p->eb,PF_W*b+t);
-          vf xr=RR[eb],xi=RI[eb];
-          TR[t]=V_FMSUB(xr,twr[t],V_MUL(xi,twi[t]));
-          TI[t]=V_FMADD(xr,twi[t],V_MUL(xi,twr[t]));
-        }
-      } else {
-        const float *sc=p->scg+2*((size_t)g*N2+PF_W*b);
-        for(int t=0;t<PF_W;t++){
-          int k2=PF_W*b+t;
-          vf SR=V_SET1(sc[2*t]),SI=V_SET1(sc[2*t+1]);
-          vf tr=V_FMSUB(SR,p->TLr[k2],V_MUL(SI,p->TLi[k2]));
-          vf ti=V_FMADD(SR,p->TLi[k2],V_MUL(SI,p->TLr[k2]));
-          int eb=eidx(&p->eb,k2);
-          vf xr=RR[eb],xi=RI[eb];
-          TR[t]=V_FMSUB(xr,tr,V_MUL(xi,ti));
-          TI[t]=V_FMADD(xr,ti,V_MUL(xi,tr));
-        }
-      }
-      V_TRANSPOSE(TR,OR); V_TRANSPOSE(TI,OI);
-      /* One block-floating-point scale for the whole W x W tile, not one per row.
-         The horizontal reduce and the divide were costing more than either FFT
-         stage; sharing them over the tile makes them W times rarer.  A tile max is
-         a little larger than a row max, so the quantiser is marginally coarser -
-         24 bits leaves plenty of margin for that. */
-      if(!p->useq){
-        for(int i=0;i<PF_W;i++){
-          size_t off=(size_t)(PF_W*g+i)*N2+PF_W*b;
-          V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
-        }
-        continue;
-      }
-      vf amax=V_MAX(V_ABS(OR[0]),V_ABS(OI[0]));
-      for(int i=1;i<PF_W;i++) amax=V_MAX(amax,V_MAX(V_ABS(OR[i]),V_ABS(OI[i])));
-      float mx=v_reduce_max(amax);
-      float sc = mx>0.f ? 8388607.0f/mx : 1.f;
-      float dq = mx>0.f ? mx*(1.0f/8388607.0f) : 1.f;
-      vf vs=V_SET1(sc);
-      const vi CMAX=VI_SET1(8388607), CMIN=VI_SET1(-8388607);
-      for(int i=0;i<PF_W;i++){
-        int n1=PF_W*g+i;
-        p->scl[(size_t)n1*(N2/PF_W)+b]=dq;
-        vi xr=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OR[i],vs))));
-        vi xi=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(OI[i],vs))));
-        size_t base=2*((size_t)n1*N2+PF_W*b);
-        VI_STORE16(p->q+base,        VI_PACK16(VI_SRAI(xr,8)));
-        VI_STORE16(p->q+base+PF_W,   VI_PACK16(VI_SRAI(xi,8)));
-        VI_STORE8 (p->r8+base,       VI_PACK8(VI_AND(xr,VI_SET1(255))));
-        VI_STORE8 (p->r8+base+PF_W,  VI_PACK8(VI_AND(xi,VI_SET1(255))));
-      }
-
-    }
+    stageA_body(p,g,TR,TI,OR,OI);
   }
 }
 
@@ -297,9 +328,9 @@ void FN(fft)(void *vp,const float*in,float*out,int conj){
   }
 }
 
-int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we){
-  BP *p=vp; const int N1=p->N1,N2=p->N2;
-  PT(_ta); stageA(p,in,conj); PACC(pf_pA,_ta);
+/* everything after stage A, shared by the fp32 and pre-quantised entry points */
+static int FN(topk_core)(BP*p,int K,pf_peak*out,int conj,size_t ws,size_t we){
+  const int N1=p->N1,N2=p->N2;
   /* Screening is only 16-bit accurate, so the K-th and (K+1)-th candidate can be
      mis-ordered by it.  Keep a wider pool, refine all of it at 24 bits, then rank -
      otherwise a peak can be cut before it is ever looked at properly. */
@@ -364,11 +395,48 @@ int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t
   return nout;
 }
 
+
+int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we){
+  BP *p=vp;
+  PT(_ta); stageA(p,in,conj); PACC(pf_pA,_ta);
+  return FN(topk_core)(p,K,out,conj,ws,we);
+}
+
+int FN(topk_q)(void *vp,const short*qhi,const signed char*qlo,const float*qs,
+               int K,pf_peak*out,int conj,size_t ws,size_t we){
+  BP *p=vp;
+  stageA_q(p,qhi,qlo,qs,conj);
+  return FN(topk_core)(p,K,out,conj,ws,we);
+}
+
+/* fp32 -> 24-bit block floating point, blocks of PF_W complex, in the layout
+   stageA_q expects.  Not on any timed path: in real use the producer writes this
+   directly and the fp32 array never exists. */
+void FN(quantize_in)(void *vp,const float*in,short*qhi,signed char*qlo,float*qs){
+  BP *p=vp; const int N1=p->N1,N2=p->N2;
+  const vi CMAX=VI_SET1(8388607), CMIN=VI_SET1(-8388607);
+  for(int n2=0;n2<N2;n2++) for(int g=0;g<N1/PF_W;g++){
+    vf r,i; v_deint(in+2*((size_t)n2*N1+(size_t)PF_W*g),&r,&i);
+    float mx=v_reduce_max(V_MAX(V_ABS(r),V_ABS(i)));
+    float sc = mx>0.f ? 8388607.0f/mx : 1.f;
+    size_t blk=(size_t)n2*(N1/PF_W)+g, base=2*blk*PF_W;
+    qs[blk] = mx>0.f ? mx*(1.0f/8388607.0f) : 1.f;
+    vf vs=V_SET1(sc);
+    vi xr=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(r,vs))));
+    vi xi=VI_MAX(CMIN,VI_MIN(CMAX,VI_CVT(V_MUL(i,vs))));
+    VI_STORE16(qhi+base,      VI_PACK16(VI_SRAI(xr,8)));
+    VI_STORE16(qhi+base+PF_W, VI_PACK16(VI_SRAI(xi,8)));
+    VI_STORE8 (qlo+base,      VI_PACK8(VI_AND(xr,VI_SET1(255))));
+    VI_STORE8 (qlo+base+PF_W, VI_PACK8(VI_AND(xi,VI_SET1(255))));
+  }
+}
+
 const pf_backend CAT(pf_be_bal,PF_W) = {
 #if PF_W==16
   "balanced-avx512",
 #else
   "avx2",
 #endif
-  FN(create), FN(destroy), FN(fft), FN(topk), FN(supported)
+  FN(create), FN(destroy), FN(fft), FN(topk), FN(supported),
+  FN(topk_q), FN(quantize_in)
 };
