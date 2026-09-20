@@ -806,3 +806,34 @@ is a large change rather than a microoptimisation.
 peak and was overhead-bound.  That figure came from timing a whole ap_mf_run at
 n=256 rather than the coarse phase itself; the phase profile says 57%.  The
 dismissal was wrong.)
+
+### int16 coarse transform: tried, 10x slower, abandoned in this form
+
+Built an int16 Q15 coarse transform for band 256 (16x16, AVX2, `ffti16_16`
+doing all 16 length-16 transforms of a stage at once, one 16x16 int16
+transpose between stages).  Two results, and the second is the decisive one.
+
+**It was wrong.**  Its maximum landed at lag 178 where the exact backward DFT
+says 210 and the forward says 46 -- neither, so an indexing fault in the
+twiddle or the transpose rather than a sign convention.  Magnitude was 10% low
+and 200/200 argmax values disagreed.
+
+**And it was 10x slower**: 5866 cycles against the float path's 615 for the same
+work.  That is the part worth remembering, because it would not have been fixed
+by debugging the indexing.  The float path fuses the product into stage A's
+first butterfly and folds the maximum into the binned max, so nothing is ever
+materialised.  The int16 path as written materialises three times -- a scalar
+quantise pass over 256 values, the transform, then a scalar max pass -- and
+those two scalar passes cost more than the arithmetic saved.
+
+**The lesson generalises: fusion beat precision here.**  int16 is worth
+1.55-1.64x on codelet arithmetic, but arithmetic is only ~570 of the 615 cycles
+and the surrounding passes are free only because they are fused.  An int16
+coarse stage has to be fused to the same degree to win at all -- quantise inside
+the product, take the maximum inside stage B -- which is a rewrite of the whole
+coarse pipeline in Q15, not a drop-in transform.  Expected payoff even then is
+~1.2x on the even transform, so ~1.15x overall in low-trigger cells and nothing
+in high-trigger cells where refinement dominates.
+
+Source removed rather than left disabled: it was never wired into the library,
+and broken dead code is worse than a note.
