@@ -56,8 +56,10 @@ struct ap_hmf_plan {
      rather than a hand-rolled product + transform + scan buys the fused product
      loader (the product never reaches memory), group-major spectrum storage and
      the floor-primed binned max -- all of which already exist and are tuned.
-     Templates are stored in pairs: 2t is the even output half, 2t+1 the
-     half-sample-shifted odd half. */
+     Even halves occupy [0, nt) and odd halves [nt, 2nt), NOT interleaved as
+     2t/2t+1.  The even half is the only one touched on the ~78% of pairs where
+     the early-out fires, so keeping the evens contiguous walks 16 KiB of
+     templates instead of striding through 32 KiB. */
   ap_mf_plan *coarse;
   ap_plan   *cf;              /* explicit m-point plan, for the rare interpolation
                                  path that needs the series materialised        */
@@ -324,8 +326,8 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
     a1[2*k]  =(float)(re*c-im*sn);
     a1[2*k+1]=(float)(re*sn+im*c);
   }
-  if(ap_mf_set_template(p->coarse,2*t,  a0)) return -1;
-  if(ap_mf_set_template(p->coarse,2*t+1,a1)) return -1;
+  if(ap_mf_set_template(p->coarse,t,        a0)) return -1;
+  if(ap_mf_set_template(p->coarse,p->nt+t,  a1)) return -1;
   measure_recovery(p,t,a0,a1,&p->tg[t],&p->tgraw[t],&p->tgraw1[t]);
   return 0;
 }
@@ -412,7 +414,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * odd half would have found. */
       const float even_gate = gate*p->tgraw1[t0+t]*0.999f;
       unsigned long long _t0 = p->prof ? __rdtsc() : 0;
-      if(ap_mf_run(p->coarse,d0+d,1,2*(t0+t),1,cspan,even_gate,&ce,&cc,
+      if(ap_mf_run(p->coarse,d0+d,1,t0+t,1,cspan,even_gate,&ce,&cc,
                    cstart,cend)<0) return -1;
       if(p->prof){ unsigned long long t1=__rdtsc(); p->c_even+=t1-_t0; _t0=t1; }
       if(ce.index<0){
@@ -423,7 +425,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
         p->nskip++;
         goto verdict;
       }
-      if(U>1 && ap_mf_run(p->coarse,d0+d,1,2*(t0+t)+1,1,cspan,raw_gate,&co,&cc,
+      if(U>1 && ap_mf_run(p->coarse,d0+d,1,p->nt+t0+t,1,cspan,raw_gate,&co,&cc,
                           cstart,cend)<0) return -1;
       if(p->prof){ unsigned long long t1=__rdtsc(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;

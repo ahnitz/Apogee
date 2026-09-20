@@ -771,3 +771,38 @@ Measured negatives from this round:
   win.  It is not one; keep the hoist for cleanliness, not for speed.
 - **Batching the coarse call across pairs gains nothing** (1.01-1.03x at every
   size from 256 to 16384).  Per-pair ap_mf_run is already as cheap as batched.
+
+### Coarse-stage microoptimisations: five tried, none kept for speed
+
+The profile says the even coarse transform is 71% of the time below ~5% trigger,
+so that is where these were aimed.  All five measured neutral or worse.
+
+1. **Hoist getenv out of stageA_prod_gm and ap_mf_run** -- within noise.  These
+   were a library call per *transform* and per *run* respectively, which looked
+   certain.  Kept for cleanliness only.
+2. **Batch the coarse call across pairs** -- 1.01-1.03x at every size from 256
+   to 16384.  Per-pair ap_mf_run is already as cheap as batched.
+3. **Force the generic back end at m=1024 on AVX-512** -- worse, 0.69 -> 0.77 us,
+   even though the specialised 1024 kernel has no fused product and therefore
+   pays a separate product pass.
+4. **Store the even coarse templates contiguously** ([0,nt) and [nt,2nt) rather
+   than 2t/2t+1).  The evens are the only half touched on ~78% of pairs, so this
+   should have walked 16 KiB instead of striding 32 KiB.  Neutral: even 600 ->
+   615 cycles.  The working set is too small for locality to matter.
+5. **Retune the N1xN2 split at 256 and 512.**  The measured split table only
+   carries entries for 2^12 and 2^18, so the coarse sizes looked untuned.  They
+   are already optimal: at 256 the default 16x16 is 0.178 us against 0.183-0.193
+   for 8x32 / 32x8; at 512 the default 32x16 is 0.378 against 0.374 for 16x32,
+   which is inside noise.
+
+What the profile leaves.  The even 256-point fused pair transform runs at
+11264 flops / 615 cycles = 18.3 flops/cycle, 57% of the AVX2 FMA peak of 32.
+That is not overhead-bound, and the coarse stage provably needs no accuracy --
+refinement is a separate exact transform.  int16 measured 1.55-1.64x on these
+codelets.  It is the one remaining lever with a measured case behind it, and it
+is a large change rather than a microoptimisation.
+
+(An earlier note dismissed int16 on the grounds the coarse stage ran at 38% of
+peak and was overhead-bound.  That figure came from timing a whole ap_mf_run at
+n=256 rather than the coarse phase itself; the phase profile says 57%.  The
+dismissal was wrong.)
