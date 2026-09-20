@@ -418,3 +418,45 @@ with it, then compute the winning bin's value exactly.
 clock_gettime on each side. Amortise over enough calls that the timer is <1% of
 the region, or the result is dominated by measurement overhead - it cost a 1.64x
 here and was read as 1.19x for several rounds of reasoning.
+
+## int16 screening pipeline: prototype results
+
+Built a standalone prototype of the int16 screening transform at N=1024 with
+lanes = batch (32 int16 lanes = 32 transforms), which removes the four-step corner
+turn: the lane index *is* the transform index, so both stages are plain
+element-space transforms and the four-step twiddle becomes a scalar broadcast.
+
+| piece | us/transform |
+|---|---|
+| codelets alone (2 x ffti16_32_ns) | 0.0936 |
+| both stages integrated, contiguous layout | **0.1522** |
+| same with the twiddle+renormalise removed (wrong results) | 0.1625 |
+| fp32 codelets alone, for reference | 0.1533 |
+| quantise + interleave, **scalar** | 3.93 |
+
+Three things this establishes:
+
+1. **The integrated int16 transform is 0.152 us/transform** against the fp32 path's
+   integrated ~0.29 (0.36 total binmax minus deint and scan). So the arithmetic
+   route works - roughly 1.9x on the transform itself.
+2. **But it does not reach the 0.094 the codelets promise.** The inter-stage
+   load/store costs 0.058, and removing the twiddle makes it *slower*, so the loop
+   is throughput-bound rather than paying for any one piece. Same pattern as every
+   other size in this project.
+3. **The corner turn has not gone away - it moved into the quantise pass.** Writing
+   batch-major int16 from per-transform fp32 input is a 32x32 int16 transpose. The
+   scalar version costs 3.93 us/transform and is the whole ballgame.
+
+Projected total at 2^10 with a vectorised quantise (32x32 int16 transpose via
+vpermt2w, ~160 instr per 2 KiB block, ~0.05 us/transform):
+
+    quantise 0.05 + transform 0.152 + scan 0.03 + refine 0.02 = 0.25 us
+
+against amd-fftw's 0.26. **A tie, not the 1.25x projected earlier** - because the
+integrated transform is 0.152, not the 0.094 the isolated codelets suggested.
+
+The one way it becomes a clear win is if the caller supplies input already
+quantised (the pf_qinput API exists for exactly this): 0.152 + 0.03 + 0.02 = 0.20
+against 0.26, about 1.3x. That is a real option for a pipeline whose data is
+already fixed point, but it is not a like-for-like comparison with a library that
+must take fp32.
