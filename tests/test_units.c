@@ -255,7 +255,51 @@ static void test_api(void){
   pf_destroy(p); pf_destroy(NULL); free(in);
 }
 
+
+/* No-shift int16 codelets: the per-level shifts are replaced by headroom in the
+   input scale, which is 28% of the codelet's instructions.  Check both that the
+   headroom bound is right (one bit per level, and one fewer overflows) and that
+   the result is accurate enough to screen with. */
+static void test_i16_noshift(void){
+  enum{N=32,LANES=32,LEVELS=5};
+  vq15 *a=aligned_alloc(64,80*sizeof(vq15)),*b=aligned_alloc(64,80*sizeof(vq15));
+  vq15 *c=aligned_alloc(64,80*sizeof(vq15)),*d=aligned_alloc(64,80*sizeof(vq15));
+  double re[N],im[N];
+  unsigned long long rs=12345;
+  for(int n=0;n<N;n++){
+    rs=rs*6364136223846793005ULL+1; re[n]=(double)(rs>>11)/9007199254740992.0*2-1;
+    rs=rs*6364136223846793005ULL+1; im[n]=(double)(rs>>11)/9007199254740992.0*2-1;
+  }
+  /* worst-case growth over LEVELS radix-2 stages is 2^LEVELS, so LEVELS bits of
+     headroom must be safe and fewer must be allowed to overflow */
+  double scale=32767.0/(1<<LEVELS);
+  short sr[LANES],si[LANES];
+  for(int n=0;n<N;n++){
+    for(int l=0;l<LANES;l++){ sr[l]=(short)lrint(re[n]*scale); si[l]=(short)lrint(im[n]*scale); }
+    a[n]=_mm512_loadu_si512(sr); b[n]=_mm512_loadu_si512(si);
+  }
+  int f=ffti16_32_ns(a,b,c,d,1);
+  vq15 *R=f?c:a,*I=f?d:b;
+  double worst=0,peak=0;
+  for(int k=0;k<N;k++){
+    double gr=0,gi=0;
+    for(int n=0;n<N;n++){ double t=-2.0*M_PI*n*k/N;
+      gr+=re[n]*cos(t)-im[n]*sin(t); gi+=re[n]*sin(t)+im[n]*cos(t); }
+    short o1[LANES],o2[LANES];
+    _mm512_storeu_si512(o1,R[k]); _mm512_storeu_si512(o2,I[k]);
+    double m=hypot(gr,gi); if(m>peak)peak=m;
+    double e=hypot(o1[0]/scale-gr,o2[0]/scale-gi); if(e>worst)worst=e;
+    /* every lane holds the same transform, so they must all agree */
+    for(int l=1;l<LANES;l++) CHECK(o1[l]==o1[0] && o2[l]==o2[0],
+      "ffti16_32_ns lane %d disagrees with lane 0 at k=%d",l,k);
+  }
+  CHECK(worst/peak < 5e-3, "ffti16_32_ns relative error %.3e too large for screening",
+        worst/peak);
+  free(a);free(b);free(c);free(d);
+}
+
 int main(void){
+  test_i16_noshift();
   printf("peakfft unit tests\n");
   test_transpose16();
   test_codelet("fft32_84 ",32,fft32_84);

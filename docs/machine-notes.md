@@ -365,3 +365,56 @@ The store costs what it costs: 128 KiB at 2^14 at ~63 GB/s is L2 write bandwidth
 It is inherent to materialising the intermediate, and the only way past it is to
 make fewer passes over the data - which is the structural difference with FFTW,
 not a tuning knob.
+
+## Packed-instruction throughput, and a correction
+
+Definitive table, 512-bit, 12 independent chains, every accumulator drained:
+
+| instruction | instr/cyc | useful G MAC/s | vs fp32 FMA |
+|---|---|---|---|
+| `vfmadd ps` (16 fp32) | 2.04 | 153.3 | 1.00x |
+| `vpdpwssd` (VNNI i16) | 1.53 | 230.1 | 1.50x |
+| `vpdpbusd` (VNNI i8) | 1.53 | 460.2 | 3.00x |
+| `vdpbf16ps` (bf16) | 1.90 | 286.2 | 1.87x |
+| **`vpmaddwd`** (i16->i32) | **2.04** | **307.1** | **2.00x** |
+| `vpmulhrsw` (Q15 i16) | 2.05 | 307.6 | 2.01x |
+| **`vpaddw`** (i16 add) | **2.72** | **408.4** | **2.67x** |
+| `vaddps` (16 fp32 add) | 2.04 | 153.7 | 1.00x |
+
+VNNI is the wrong instruction here: it issues at 1.53/cyc, giving back most of its
+2-MACs-per-lane advantage. The plain int16 ops are at full issue rate, and since
+butterflies are ~69% adds the available arithmetic speedup is ~2.2x.
+
+**Correction to the earlier "int16 is only 1.19x" note.** That measurement called
+`clock_gettime` twice around a ~150 ns region, and the timer is ~25 ns a side - a
+third of what was being measured. Amortising the timer over 40 calls:
+
+| | ns/call | per 1024-pt transform | |
+|---|---|---|---|
+| fp32 `fft32_84` | 38.32 | 0.1533 us | - |
+| int16 `ffti16_32` | 49.57 | 0.0991 us | 1.55x |
+| int16 `ffti16_32_ns` | 46.82 | 0.0936 us | **1.64x** |
+
+So int16 is worth 1.55x as it stood and 1.64x with the per-level shifts removed -
+not 1.19x. The conclusion drawn from that number ("reduced precision cannot pay
+for the refinement it forces") was wrong.
+
+The shifts were 320 of 1162 instructions, 28%, and exist only to stop `|a +- b|`
+overflowing. Replacing them with headroom in the input scale gives 0.90
+instr/point against fp32's 1.50. Measured accuracy of the no-shift 32-point
+codelet, worst case over all outputs:
+
+| headroom | rel err vs peak |
+|---|---|
+| 3 bits | 1.9 (overflows, as the 2^levels bound says it must) |
+| 4 bits | 3.5e-04 |
+| 5 bits | 4.9e-04 |
+| 6 bits | 9.7e-04 (less input precision) |
+
+5 bits is the safe choice for a 5-level codelet. That is screening accuracy: rank
+with it, then compute the winning bin's value exactly.
+
+**New measurement trap:** never time a region shorter than ~1 us with a
+clock_gettime on each side. Amortise over enough calls that the timer is <1% of
+the region, or the result is dominated by measurement overhead - it cost a 1.64x
+here and was read as 1.19x for several rounds of reasoning.

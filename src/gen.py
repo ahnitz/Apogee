@@ -300,8 +300,13 @@ if __name__=="__main__":
     out.append(build(64,[8,8],"fft64_88"))
     for nn,rr in ((8,[8]),(16,[8,2]),(32,[8,4]),(64,[8,8])):
         out.append(build_i16(nn,rr,"ffti16_%d"%nn))
-        # same codelet with the per-stage shifts removed: the caller supplies
-        # log2(n)+1 bits of headroom instead, trading precision for instructions
+        # Same codelet with the per-stage shifts removed.  Those shifts are 320 of
+        # the 1160 instructions in ffti16_32 - 28% - and they exist only to stop
+        # |a +- b| from overflowing.  The caller can instead supply log2(n) bits of
+        # headroom in the input scale, which costs precision the screening pass has
+        # to spare and buys back the whole instruction-count advantage int16 is
+        # supposed to have.
+        out.append(build_i16(nn,rr,"ffti16_%d_ns"%nn,shift=False))
 
     for nn in (8,16,32,64):
         out.append(build_sr(nn,"fftsr%d"%nn))
