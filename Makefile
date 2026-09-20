@@ -22,7 +22,10 @@ MKLLIB ?=
 FFTWLIB ?= -l:libfftw3f.so.3
 
 .PHONY: all test quick bench clean codelets ab
-all: $(LIB) tests/test_units tests/test_binmax tests/test_mf tests/test_hmf
+# bench_hmf is in `all` deliberately: it was not, so `make all` left a stale
+# benchmark binary linked against an older library and the numbers it printed
+# were from code that no longer existed.
+all: $(LIB) tests/test_units tests/test_binmax tests/test_mf tests/test_hmf bench/bench_hmf
 
 # hmf.c includes the generated design table, and nothing told make that.
 # Regenerating the table left a stale hmf.o linked into every binary, which

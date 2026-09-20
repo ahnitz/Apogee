@@ -400,13 +400,21 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       const float even_gate = gate*p->tgraw1[t0+t]*0.999f;
       if(ap_mf_run(p->coarse,d0+d,1,2*(t0+t),1,cspan,even_gate,&ce,&cc,
                    cstart,cend)<0) return -1;
-      if(ce.index<0){                       /* cannot reach the gate: done */
+      if(ce.index<0){
+        if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
+          fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
+                  "even max BELOW even_gate\n",p->pairs,gate,even_gate);
+                                            /* cannot reach the gate: done */
         p->nskip++;
         goto verdict;
       }
       if(U>1 && ap_mf_run(p->coarse,d0+d,1,2*(t0+t)+1,1,cspan,raw_gate,&co,&cc,
                           cstart,cend)<0) return -1;
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
+      if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
+        fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
+                "coarse max=%.3f (even %.3f odd %.3f)\n",
+                p->pairs,gate,even_gate,bestmag,ce.magnitude,co.magnitude);
       fire = bestmag>=gate;
       if(!fire && bestmag>=raw_gate){
         /* Rare: the raw maximum sits in [graw*gate, gate), the only window where
