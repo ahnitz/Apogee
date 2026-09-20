@@ -215,12 +215,10 @@ Three attempts on that, all measured, none kept:
 2. **Huge pages for the big buffers** (`MADV_HUGEPAGE`). No change. The strided walk
    is over the *caller's* input buffer, which we do not allocate. Kept anyway - it
    costs nothing and the TLB argument still holds for the intermediate.
-3. **Blocking stage A over G groups per input pass** (`PEAKFFT_GBLK`). Widens the
-   touched run to G*128 B at no extra total bytes. Gains nothing: G group buffers
-   need G*N2*PF_W*16 bytes, so G=4 at 2^20 is 1 MiB and evicts L2 exactly as fast as
-   the wider stream helps. G=1 405/2120, G=2 408/2118, G=4 406/2162 against 405-455
-   of run-to-run noise. Kept at a conservative G because it is never worse and helps
-   the mid sizes slightly.
+3. **Blocking stage A over G groups per input pass** (`PEAKFFT_GBLK`). Recorded here
+   originally as "gains nothing". **That was wrong** - see the correction below. The
+   sequential runs it was judged on had 405-455 us of spread at 2^18, larger than the
+   effect, so no conclusion was available either way.
 
 So A=6's 1022 us is 8 MiB of strided DRAM read *plus* 8 MiB of L2 buffer write, and
 the two are balanced - which is why trading one for the other does nothing. Getting
@@ -256,3 +254,38 @@ Usage:
     make libpeakfft.so && cp libpeakfft.so /tmp/base.so
     ...edit...
     make ab BASE=/tmp/base.so ABFLAGS="-t 10 12 14 16"
+
+
+## Correction: group blocking was real, and the first heuristic had it backwards
+
+The three items above were judged on sequential before/after runs whose spread
+exceeded the effect. Re-measured with `bench/ab` (paired, drift-cancelled, sign
+test, 4 plan-layout trials), holding everything but G fixed inside one build:
+
+| N | old G | best G | effect |
+|---|---|---|---|
+| 2^12 | 4 | 1 | G=1 **3.8% faster** (38/48) |
+| 2^14 | 8 | 1 | G=1 **4.3-5.6% faster** (0/48 for every larger G) |
+| 2^15 | 8 | — | within the 3% resolution floor either way |
+| 2^16 | 4 | 4 | G=4 3.1% faster than G=1 (32/32); G=16 3.2% *slower* |
+| 2^17 | 4 | 4-16 | ~12.5% faster than G=1 (32/32) |
+| 2^18 | 2 | 32 | **10.8% faster** (16/16) |
+| 2^20 | 1 | 32 | **12.7% faster** (16/16) |
+
+The first heuristic sized G to keep the G group buffers inside L2. That is exactly
+backwards: it capped G small at the large sizes, which is the only place a wider
+stream helps, and left it large at the small sizes, where it only adds L2 pressure.
+What actually decides it is where the *input* lives:
+
+    input <= 256 KiB   G = 1     already cache-resident, wider stream buys nothing
+    input <= 1 MiB     G = 4     in L2; a moderate G wins, a large one loses
+    input  > 1 MiB     G = 32    out of L2; stream shape is worth a fifth of runtime
+
+Net against the original: 2^12 1.06x, 2^14 1.05x, 2^18 1.11x, 2^20 1.21x, others
+unchanged.
+
+**Methodological limit worth remembering:** comparing two *different* builds cannot
+resolve a few percent, even with the 3% floor, because their code and buffers are
+mapped at different addresses. The cross-build run of this very change reported
+"B slower" at 2^12 and 2^15, which the single-build isolation then contradicted.
+To tune one parameter, hold the build fixed and vary it with `-e`.

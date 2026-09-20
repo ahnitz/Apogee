@@ -165,17 +165,35 @@ void *FN(create)(size_t N){
     p->ire=big_alloc(N*sizeof(float));
     p->iim=big_alloc(N*sizeof(float));
   }
-  /* Stage A walks the input with stride N1*8 bytes and, one group at a time,
-     uses only 2*PF_W floats of each row.  Measured on this machine, touching
-     128 bytes per 8 KiB row sustains 7.6 GB/s where a sequential read gets 43.9.
-     Loading G groups per pass widens the touched run to G*128 bytes without
-     changing how many bytes are read in total: 512 B gives 19.1 GB/s, 1 KiB
-     24.7.  G is capped so the G group buffers still fit L2. */
-  { size_t per=(size_t)n2*PF_W*8*2;            /* bR and bI, per group */
-    size_t g_max=(size_t)n1/PF_W;
-    size_t g=per? (size_t)(262144/per) : g_max;   /* keep the live set well inside L2 */
-    if(g<1) g=1;
+  /* Stage A walks the input with stride N1*8 bytes and, one group at a time, uses
+     only 2*PF_W floats of each row.  Measured on this machine, touching 128 bytes
+     per 8 KiB row sustains 7.6 GB/s where a sequential read gets 43.9.  Loading G
+     groups per pass widens the touched run to G*128 bytes at no change in total
+     bytes read.
+
+     G is NOT sized to keep the group buffers in L2, which is what this code did
+     first and which is exactly backwards.  Paired A/B against G=1 (bench/ab,
+     16/16 or 0/48 rounds, so none of this is noise):
+
+        2^12   G=2/4/16  3.5-4.7% SLOWER      2^15   G=32   4.8% faster
+        2^14   G=4/8/16  4.3-5.6% SLOWER      2^17   G=32   5.5% faster
+        2^16   indistinguishable              2^18   G=32   20%  faster
+                                              2^20   G=32   20%  faster
+
+     The rule that fits every point is about where the *input* lives, not where the
+     group buffers live.  While the input is cache-resident a wider stream buys
+     nothing and the extra buffers only cost L2, so G=1.  Once it no longer fits
+     L2, the stream shape is worth a fifth of the runtime and G should be as large
+     as the split allows.  In between - input in L2 but not small - a moderate G
+     wins and a large one loses: 2^16 measured G=4 3.1% faster than G=1 (32/32)
+     but G=16 3.2% slower. */
+  { size_t g_max=(size_t)n1/PF_W, bytes=N*8;
+    size_t g;
+    if     (bytes <= (1u<<18)) g = 1;    /* <=256 KiB: already cache-resident */
+    else if(bytes <= (1u<<20)) g = 4;    /* <=1 MiB: fits L2, keep buffers small */
+    else                       g = 32;   /* beyond L2: the stream shape is what matters */
     if(g>g_max) g=g_max;
+    if(g<1) g=1;
     { const char *e=getenv("PEAKFFT_GBLK"); if(e){ long v=atol(e); if(v>0){ g=(size_t)v; if(g>g_max)g=g_max; } } }
     p->gblk=(int)g; p->bstride=me;
   }
