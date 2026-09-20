@@ -103,7 +103,7 @@ test: tests/test_units tests/test_binmax tests/test_mf tests/test_hmf
 	APOGEE_ISA=balanced512 ./tests/test_hmf
 
 clean:
-	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_binmax tests/test_mf tests/test_hmf bench/bench
+	rm -f $(OBJ) src/*.o src/*.pico $(LIB) $(SO) bench/ab tests/test_units tests/test_binmax tests/test_mf tests/test_hmf bench/bench bench/bench_hmf
 
 tests/test_vs_mkl: tests/test_vs_mkl.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -I$(MKLINC) $< $(LIB) -o $@ \

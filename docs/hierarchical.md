@@ -215,3 +215,39 @@ Two things this also makes clear, independent of the bug:
   cost model does not currently account for it.
 
 Until this is resolved, treat 2^10..2^16 as measured and 2^18..2^20 as unverified.
+
+## Next: int16 for the coarse stage
+
+The phase profile puts the even coarse transform at 71% of the time below ~5%
+trigger, running at 18.3 flops/cycle -- 57% of the AVX2 FMA peak.  It is not
+overhead-bound, so the only way through is less arithmetic, and the coarse stage
+is the one place in apogee that can afford it: refinement is a separate exact
+transform, so a ~1e-3 relative error in the coarse values cannot change a
+reported peak, only the gate decision.
+
+The int16 codelets already exist and are tested (`ffti16_8/16/32/64`, with and
+without shift, covered by tests/test_units).  Band 256 splits 16x16, so both
+stages land on `ffti16_16`.  What is missing is the driver:
+
+1. Quantise the coarse product to Q15 with per-block scaling, tracking headroom.
+   The existing `_ns` (no-shift) variants exist precisely for the blocks where
+   headroom is provably sufficient.
+2. An int16 stage A / stage B driver in balanced.c, fused with the product
+   loader as the float path is.
+3. An int16 binned maximum, or dequantise the few candidate lanes only.
+4. **Re-calibrate g, graw and graw1 with the int16 kernel in the loop.**  This
+   is not optional.  Quantisation changes the distribution of the coarse
+   statistic, so inheriting float-calibrated recovery factors would leave the
+   false-dismissal bound approximately right instead of exactly right -- which
+   defeats the point of having a lever on it.  tests/test_hmf's omission-rate
+   check is what verifies this held.
+
+Expected gain: the codelets measured 1.55-1.64x on arithmetic.  With the even
+transform at 71% of the low-trigger cells, that is roughly 1.4x overall there,
+and nothing in the high-trigger cells, where refinement dominates and only the
+trigger rate matters.
+
+This is a substantial change, not a microoptimisation: a new transform path plus
+a re-calibration.  It should not be attempted in a context too small to finish
+and re-validate it, because a half-finished gate that is slightly wrong looks
+*faster*, and the correctness suite cannot see it.
