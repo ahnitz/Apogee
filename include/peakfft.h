@@ -88,6 +88,25 @@ int  pf_topk_q(pf_plan *p, const pf_qinput *q, int K, pf_peak *peaks, int sign,
    to the window.  start/end are clamped to [0, N]; start >= end returns 0.
    Outputs outside the window are never even tested, so a narrower window is
    slightly cheaper - the transform itself still costs the same. */
+/* Batched top-K.  in holds B transforms; transform b starts at in + 2*b*dist,
+   so dist is a complex-element stride (dist == N for a packed batch).  Each
+   transform keeps its own L1-resident working set - the batch is an array of
+   separate transforms, not an interleave.
+
+   peaks needs room for B*K entries; transform b's results land at peaks + b*K,
+   already sorted loudest first.  counts[b] receives how many that transform
+   produced (may be < K in threshold mode); counts may be NULL.
+
+   threshold is a magnitude floor: bins with |X[k]| <= threshold are never
+   reported.  Pass 0 to disable.  It is combined with K, so the result is the
+   K loudest bins that are also above the floor.  A non-zero floor is also
+   faster, because it primes the candidate test instead of only filtering after.
+
+   Returns the total number of peaks across the batch, or -1 on error. */
+int pf_topk_many(pf_plan *p, const float *in, size_t dist, int B,
+                 int K, float threshold, pf_peak *peaks, int *counts, int sign,
+                 size_t start, size_t end);
+
 int pf_topk_window(pf_plan *p, const float *in, int K, pf_peak *peaks, int sign,
                    size_t start, size_t end);
 

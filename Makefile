@@ -22,7 +22,7 @@ MKLLIB ?=
 FFTWLIB ?= -l:libfftw3f.so.3
 
 .PHONY: all test bench clean codelets
-all: $(LIB) tests/test_units tests/test_topk
+all: $(LIB) tests/test_units tests/test_topk tests/test_batch
 
 $(LIB): $(OBJ)
 	ar rcs $@ $^
@@ -44,13 +44,15 @@ tests/test_units: tests/test_units.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX512FLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
 tests/test_topk: tests/test_topk.c $(LIB)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
+tests/test_batch: tests/test_batch.c $(LIB)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< $(LIB) -o $@ $(LDLIBS)
 
-test: tests/test_units tests/test_topk
-	./tests/test_units && ./tests/test_topk
+test: tests/test_units tests/test_topk tests/test_batch
+	./tests/test_units && ./tests/test_topk && ./tests/test_batch
 	@echo "--- forcing the AVX2 back end ---"
-	PEAKFFT_ISA=avx2 ./tests/test_topk
+	PEAKFFT_ISA=avx2 ./tests/test_topk && PEAKFFT_ISA=avx2 ./tests/test_batch
 	@echo "--- forcing the generic back end at 16 lanes ---"
-	PEAKFFT_ISA=balanced512 ./tests/test_topk
+	PEAKFFT_ISA=balanced512 ./tests/test_topk && PEAKFFT_ISA=balanced512 ./tests/test_batch
 
 # Benchmark against MKL and FFTW.  Requires MKLINC/MKLLIB to be set:
 #   make bench MKLINC=/path/to/include MKLLIB=/path/to/lib
@@ -62,7 +64,7 @@ bench: bench/bench
 	./bench/bench
 
 clean:
-	rm -f $(OBJ) src/*.o $(LIB) tests/test_units tests/test_topk bench/bench
+	rm -f $(OBJ) src/*.o $(LIB) tests/test_units tests/test_topk tests/test_batch bench/bench
 
 tests/test_vs_mkl: tests/test_vs_mkl.c $(LIB)
 	$(CC) $(CFLAGS) $(AVX2FLAGS) $(CPPFLAGS) -I$(MKLINC) $< $(LIB) -o $@ \

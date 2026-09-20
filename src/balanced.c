@@ -365,13 +365,17 @@ void FN(fft)(void *vp,const float*in,float*out,int conj){
 }
 
 /* everything after stage A, shared by the fp32 and pre-quantised entry points */
-static int FN(topk_core)(BP*p,int K,pf_peak*out,int conj,size_t ws,size_t we){
+static int FN(topk_core)(BP*p,int K,pf_peak*out,int conj,size_t ws,size_t we,float thr0){
   const int N1=p->N1,N2=p->N2;
   /* Screening is only 16-bit accurate, so the K-th and (K+1)-th candidate can be
      mis-ordered by it.  Keep a wider pool, refine all of it at 24 bits, then rank -
      otherwise a peak can be cut before it is ever looked at properly. */
   const int KP = p->useq ? ((K*2+8 > 256) ? 256 : K*2+8) : K;
-  cand T[256]; int n=0; float thr=-1.f;
+  cand T[256]; int n=0;
+  /* Priming thr with the detection threshold is the whole point of threshold mode:
+     the vector compare below then rejects almost every block outright, so the
+     scalar push loop and the heap-fill phase never run on noise. */
+  float thr = thr0>0.f ? thr0*thr0 : -1.f;
   vf vthr=V_SET1(thr);
   float br[PF_W],bi[PF_W],bm[PF_W];
   const unsigned allm=(PF_W==16)?0xFFFFu:0xFFu;
@@ -432,17 +436,17 @@ static int FN(topk_core)(BP*p,int K,pf_peak*out,int conj,size_t ws,size_t we){
 }
 
 
-int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we){
+int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we,float thr0){
   BP *p=vp;
   PT(_ta); stageA(p,in,conj); PACC(pf_pA,_ta);
-  return FN(topk_core)(p,K,out,conj,ws,we);
+  return FN(topk_core)(p,K,out,conj,ws,we,thr0);
 }
 
 int FN(topk_q)(void *vp,const short*qhi,const signed char*qlo,const float*qs,
-               int K,pf_peak*out,int conj,size_t ws,size_t we){
+               int K,pf_peak*out,int conj,size_t ws,size_t we,float thr0){
   BP *p=vp;
   stageA_q(p,qhi,qlo,qs,conj);
-  return FN(topk_core)(p,K,out,conj,ws,we);
+  return FN(topk_core)(p,K,out,conj,ws,we,thr0);
 }
 
 /* fp32 -> 24-bit block floating point, blocks of PF_W complex, in the layout

@@ -96,7 +96,7 @@ int pf_topk_q(pf_plan *p,const pf_qinput *q,int K,pf_peak *peaks,int sign,
   if(end>p->n) end=p->n;
   if(start>=end) return 0;
   if(!p->be->topk_q) return -1;
-  return p->be->topk_q(p->h,q->hi,q->lo,q->scale,K,peaks,sign==PF_BACKWARD,start,end);
+  return p->be->topk_q(p->h,q->hi,q->lo,q->scale,K,peaks,sign==PF_BACKWARD,start,end,0.f);
 }
 
 int pf_topk_window(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign,
@@ -105,7 +105,29 @@ int pf_topk_window(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign,
   if(K>PF_MAX_K) K=PF_MAX_K;
   if(end>p->n) end=p->n;
   if(start>=end) return 0;
-  return p->be->topk(p->h,in,K,peaks,sign==PF_BACKWARD,start,end);
+  return p->be->topk(p->h,in,K,peaks,sign==PF_BACKWARD,start,end,0.f);
+}
+
+int pf_topk_many(pf_plan *p,const float *in,size_t dist,int B,
+                 int K,float threshold,pf_peak *peaks,int *counts,int sign,
+                 size_t start,size_t end){
+  if(B<1||K<1) return 0;
+  if(K>PF_MAX_K) K=PF_MAX_K;
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  const int conj = sign==PF_BACKWARD;
+  int total=0;
+  for(int b=0;b<B;b++){
+    int n=p->be->topk(p->h,in+2*(size_t)b*dist,K,peaks+(size_t)b*K,conj,
+                      start,end,threshold);
+    if(n<0) return -1;
+    /* thr0 primes the search but a partly-filled heap can still hold
+       sub-threshold entries, so trim.  Results are sorted, so one scan. */
+    if(threshold>0.f){ int m=0; while(m<n && peaks[(size_t)b*K+m].magnitude>threshold) m++; n=m; }
+    if(counts) counts[b]=n;
+    total+=n;
+  }
+  return total;
 }
 
 int pf_topk(pf_plan *p,const float *in,int K,pf_peak *peaks,int sign){

@@ -112,7 +112,7 @@ static void a512_fft(void *vp,const float *in,float *out,int conj){
   }
 }
 
-static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size_t ws,size_t we){
+static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size_t ws,size_t we,float thr0){
   AP *p=vp;
   if(K<1) return 0;
   if(K>PF_MAX_K) K=PF_MAX_K;
@@ -131,6 +131,8 @@ static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size
       float t=lm[a]; lm[a]=lm[b]; lm[b]=t; }
     float thr = full ? ((K<=16) ? nextafterf(lm[kk-1],-1.f) : -1.f)
                      : prime_range(p->re,p->im,(long)ws,(long)we,K);
+    /* a supplied detection floor can only tighten the primed threshold */
+    if(thr0>0.f && thr0*thr0>thr) thr=thr0*thr0;
     pf_cand T[PF_MAX_K]; int n=0;
     __m512 vthr=_mm512_set1_ps(thr);
     long lo=(long)ws & ~15L, hi=(long)we;
@@ -160,14 +162,14 @@ static int a512_topk(void *vp,const float *in,int K,pf_peak *peaks,int conj,size
       peaks[a].im=conj?-T[a].im:T[a].im; peaks[a].magnitude=sqrtf(T[a].mag2); }
     return n;
   }
-  return pf_be_bal16.topk(p->bal,in,K,peaks,conj,ws,we);
+  return pf_be_bal16.topk(p->bal,in,K,peaks,conj,ws,we,thr0);
 }
 
 static int a512_topk_q(void *vp,const short*qhi,const signed char*qlo,const float*qs,
-                       int K,pf_peak*out,int conj,size_t ws,size_t we){
+                       int K,pf_peak*out,int conj,size_t ws,size_t we,float thr0){
   AP *p=vp;
   if(!p->bal) return -1;               /* N=1024 uses the specialised kernel */
-  return pf_be_bal16.topk_q(p->bal,qhi,qlo,qs,K,out,conj,ws,we);
+  return pf_be_bal16.topk_q(p->bal,qhi,qlo,qs,K,out,conj,ws,we,thr0);
 }
 static void a512_quantize(void *vp,const float*in,short*qhi,signed char*qlo,float*qs){
   AP *p=vp;
