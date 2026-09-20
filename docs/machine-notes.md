@@ -155,3 +155,37 @@ purely a memory-system result. Two causes:
 Lesson: the corner turn was never the bottleneck, so paying cache residency to delete it
 is a bad trade. Batching has to preserve per-transform L1 residency, which means the batch
 must be an array of separate contiguous transforms (stride 2N), not an interleave.
+
+## Phase 1b: what batching actually bought
+
+Not the corner turn (see above). Two things:
+
+**1. A detection floor removes the heap-fill phase.** Without a floor the candidate
+heap starts empty and every bin pushes until it holds KP = 2K+8 entries; on white
+noise that is most of the early scan. Priming from the floor skips it entirely.
+Gain (B=16, us/transform):
+
+| N | K=8 | K=64 |
+|---|---|---|
+| 2^10 | 1.45x | **10.60x** |
+| 2^12 | 1.18x | 3.02x |
+| 2^14 | 1.04x | 1.55x |
+| 2^16 | 1.01x | 1.17x |
+| 2^18 | 1.13x | 1.19x |
+| 2^20 | 1.00x | 1.05x |
+
+At K=64 the unfloored 2^10 case costs 3.93 us against 0.37 us floored - the search
+was costing 10x the transform. With a floor the cost is flat in K.
+
+**2. The floor lets the search fuse into the transform's last stage** (N=1024 path).
+The compare happens on registers, so the scan pass and almost all of the output
+stores never happen: 0.540 -> 0.381 us. A general-purpose FFT cannot do this because
+it must materialise every output.
+
+### Benchmarking note: single-buffer runs overstate large N
+
+Earlier single-transform runs reused one 8 MiB buffer, which is partly L3-resident,
+and reported ~400 us at 2^20. Batched over 16 distinct inputs (128 MiB, nothing
+cached) the same work costs ~2200 us. The batched figure is the honest one for the
+intended use. All four libraries get distinct data in bench_batch, so the comparison
+is unaffected - but do not compare a batched number against an old unbatched one.
