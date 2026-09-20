@@ -106,6 +106,27 @@ static inline void v_inter(float *p, vf re, vf im){
 }
 #endif
 
+/* ---- int16 Q15 arithmetic (AVX-512 only for now) ----
+   32 lanes per register.  VQ15_MUL is vpmulhrsw: (a*b + 0x4000) >> 15, i.e. a Q15
+   multiply whose built-in >>15 means twiddles never grow the data. */
+#if PF_W == 16
+typedef __m512i vq15;
+#define VQ15_SET1(x)   _mm512_set1_epi16(x)
+#define VQ15_ADD(a,b)  _mm512_add_epi16(a,b)
+#define VQ15_SUB(a,b)  _mm512_sub_epi16(a,b)
+#define VQ15_NEG(a)    _mm512_sub_epi16(_mm512_setzero_si512(),a)
+#define VQ15_SRA(a,n)  ((n)?_mm512_srai_epi16(a,n):(a))
+#define VQ15_MUL(a,b) _mm512_mulhrs_epi16(a,b)
+#else
+typedef __m256i vq15;
+#define VQ15_SET1(x)   _mm256_set1_epi16(x)
+#define VQ15_ADD(a,b)  _mm256_add_epi16(a,b)
+#define VQ15_SUB(a,b)  _mm256_sub_epi16(a,b)
+#define VQ15_NEG(a)    _mm256_sub_epi16(_mm256_setzero_si256(),a)
+#define VQ15_SRA(a,n)  ((n)?_mm256_srai_epi16(a,n):(a))
+#define VQ15_MUL(a,b) _mm256_mulhrs_epi16(a,b)
+#endif
+
 /* ---- fixed-point conversion for the quantised intermediate ----
    The screening pass only needs ~1e-2 relative accuracy, so the intermediate is
    kept as 24-bit block floating point: a 16-bit plane that screening reads, and an

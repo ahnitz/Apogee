@@ -79,3 +79,51 @@ is marginal for screening, so int8 is only viable for early stages.
 | AVX-512 FMA peak | 324 GF/s | 320 (hogs are memory-bound) | 129 |
 
 L3 is shared and collapses to DRAM speed under load — design for L1/L2 residency.
+
+## Phase 0 result: int16 Q15 transform
+
+A generated, fully-unrolled 32-point codelet, radix [8,4], split re/im, `vpmulhrsw`
+twiddles and `vpaddw`/`vpsubw` butterflies, one arithmetic shift per stage to pay
+for growth.
+
+| codelet | ns per transform | rel err vs double DFT |
+|---|---|---|
+| fp32 `fft32_84` [8,4] | 2.191 | exact |
+| **int16 `ffti16_32` [8,4]** | **1.609** | 8.5e-04 |
+
+**1.36x on compute, 2x on memory.** Less than the ~2x the raw instruction rates
+suggested, because the codelet is not purely arithmetic-bound — the loads, stores and
+dependency chains are unchanged in count, only narrower.
+
+Things that turned out not to matter, each measured rather than assumed:
+- Removing the per-stage shifts entirely (carrying headroom instead) was **no faster**
+  (1.862 vs 1.819 ns) and slightly less accurate. The shifts were not the cost.
+- Radix choice mattered more than any of it: [4,4,2] gave 1.78 ns, [8,4] gives 1.61.
+  Comparing an int16 [4,4,2] against an fp32 [8,4] understated int16 by a third.
+
+Accuracy budget: 8.5e-04 against a 1e-2 screening requirement is 12x of margin, and
+reported peaks are still refined exactly in fp32, so the 1e-5 output budget is
+untouched.
+
+Two bugs worth remembering from building this:
+- The Stockham index mapping is **DIF** (butterfly first, twiddle the difference).
+  Writing a DIT butterfly under it produced a relative error of 1.57 — completely
+  wrong, but the impulse test still passed, because an impulse never exercises the
+  twiddles. Test with a tone, not an impulse.
+- `Re(w*b)` computed as a difference of two rounded products is bounded by
+  `|b|*sqrt(2)`, so `a +- w*b` reaches 2.41x the input max. int16 needs headroom for
+  that, not just for the nominal 2x of the butterfly.
+
+## What amd-fftw actually does (disassembled)
+
+Extracted from `libfftw3f.a` and counted:
+- **Zero integer-SIMD arithmetic.** No `vpmulhrsw`, `vpmaddwd`, `vpdpwssd`,
+  `vpdpbusd`, `vdpbf16ps`, `vpaddw`, not even `vcvtps2dq`. The 28 `vpaddd` and 17
+  `vpmull` in the whole library are address arithmetic. The low-precision avenue is
+  entirely unexploited by them.
+- **AoS interleaved complex** with `vfmsubadd`/`vfmaddsub` (2109 uses) plus heavy
+  `vpermilps` (2109) and `vmovsldup`/`vmovshdup`. Costed: AoS is 3 instructions per 8
+  complex = 0.375/complex; split SoA is 4 per 16 = 0.25/complex. Our SoA layout is
+  already the better one and avoids their permute traffic.
+- `vaddps` and `vsubps` at 5601 each vs `vmulps` 3043 — **adds are ~55% of their
+  arithmetic**, which is exactly where int16's 3x add advantage applies.
