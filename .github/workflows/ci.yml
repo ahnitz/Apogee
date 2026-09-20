@@ -1,9 +1,5 @@
 name: CI
 
-# apogee builds as a Python extension, so the wheel job is the one that matters.
-# The make-based job exists because the C tests are far more thorough than the
-# Python ones and are what actually guard the kernels.
-
 on:
   push:
     branches: [ main, master ]
@@ -11,135 +7,109 @@ on:
   workflow_dispatch:
 
 jobs:
-  wheel:
+  test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.11", "3.12"]
+        python: ["3.9", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "${{ matrix.python }}" }
 
-      - name: Build and install the wheel
-        run: |
-          python -m pip install --upgrade pip build pytest numpy
-          python -m build --wheel
-          python -m pip install dist/*.whl
-
-      - name: Run the Python tests on whatever the runner supports
-        run: |
-          if grep -qm1 avx2 /proc/cpuinfo; then
-            APOGEE_ISA=avx2 python -m pytest -q tests/test_python.py
-            if grep -qm1 avx512vl /proc/cpuinfo; then
-              python -m pytest -q tests/test_python.py
-            fi
-          else
-            echo "::warning::Runner lacks AVX2; wheel built but not exercised."
-          fi
-
-      - name: The shipped header must compile on its own
-        run: |
-          printf '#include "apogee.h"\nint main(void){ return ap_supported(1024) ? 0 : 1; }\n' > /tmp/hdr.c
-          cc -I"$(python -c 'import apogee; print(apogee.include_dir())')" \
-             -fsyntax-only /tmp/hdr.c
-
-      # The wheel is a CI artifact, not a repo file.  One was committed once;
-      # building it here is what makes that unnecessary, and is the step a
-      # future PyPI upload would hang off.
-      - uses: actions/upload-artifact@v4
-        if: matrix.python == '3.11'
-        with:
-          name: apogee-wheel-py${{ matrix.python }}
-          path: dist/*.whl
-          if-no-files-found: error
-
-  c-tests:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        cc: [gcc, clang]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install clang
-        if: matrix.cc == 'clang'
-        run: sudo apt-get update && sudo apt-get install -y clang
-
-      - name: Report runner CPU
+      - name: Report the runner's CPU
+        # Which back end runs depends entirely on this, so record it: a green
+        # run on a host without AVX-512 has not exercised that path at all.
         run: |
           grep -m1 'model name' /proc/cpuinfo
-          for f in avx2 avx512f avx512dq avx512bw avx512vl; do
+          for f in avx2 avx512f avx512vl; do
             echo "$f: $(grep -qm1 $f /proc/cpuinfo && echo yes || echo no)"
           done
 
-      # Explicit ISA flags rather than -march=native, so the result does not
-      # depend on whichever host the runner lands on.
-      - name: Build
+      - name: Install
         run: |
-          make clean
-          make all CC=${{ matrix.cc }} \
-            CFLAGS="-O3 -mavx512f -mavx512dq -mavx512bw -mavx512vl -Wall -Wextra -Wno-unused-parameter -Werror"
+          python -m pip install --upgrade pip build
+          python -m pip install .[test]
 
-      - name: The design table must match tools/hmf_design.py
+      - name: Test
+        # Run from a scratch directory so the tests import the installed
+        # package rather than the source tree next to them.
         run: |
-          python3 -m pip install --quiet numpy scipy
-          cp src/hmf_table.h /tmp/hmf_table.committed.h
-          python3 tools/hmf_design.py emit
-          diff -u /tmp/hmf_table.committed.h src/hmf_table.h \
-            || { echo "::error::src/hmf_table.h is stale; re-run 'python3 tools/hmf_design.py emit'"; exit 1; }
+          mkdir -p /tmp/run && cd /tmp/run
+          python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
 
-      - name: Generated codelets must match gen.py
+      - name: Test again on the AVX2 back end
+        # The dispatcher picks the widest ISA the host supports, so on an
+        # AVX-512 runner the AVX2 kernels would otherwise never run.
+        if: always()
         run: |
-          cp src/codelets.h /tmp/codelets.committed.h
-          (cd src && python3 gen.py)
-          diff -u /tmp/codelets.committed.h src/codelets.h \
-            || { echo "::error::src/codelets.h is stale; re-run 'make codelets'"; exit 1; }
+          mkdir -p /tmp/run && cd /tmp/run
+          APOGEE_ISA=avx2 python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
 
-      - name: Run tests (AVX2 back end always; AVX-512 when the runner has it)
-        run: |
-          if grep -qm1 avx2 /proc/cpuinfo; then
-            APOGEE_ISA=avx2 ./tests/test_binmax
-            APOGEE_ISA=avx2 ./tests/test_mf
-            APOGEE_ISA=avx2 ./tests/test_hmf
-          else
-            echo "::warning::Runner lacks AVX2; nothing can run natively."
-          fi
-          if grep -qm1 avx512vl /proc/cpuinfo; then
-            ./tests/test_units
-            ./tests/test_binmax
-            ./tests/test_mf
-            ./tests/test_hmf
-            APOGEE_ISA=balanced512 ./tests/test_binmax
-            APOGEE_ISA=balanced512 ./tests/test_mf
-            APOGEE_ISA=balanced512 ./tests/test_hmf
-          else
-            echo "::notice::Runner lacks AVX-512; that back end is built but not run here."
-          fi
-
-  # GitHub's runner pool may have no AVX-512 host, so emulate one.  Advisory:
-  # SDE is fetched by scraping Intel's download page, which is not stable enough
-  # to gate a merge on.
-  test-under-sde:
+  generated-files:
+    # Both of these are committed, and both have been stale in a way that
+    # produced wrong answers rather than a build error.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: make all CFLAGS="-O3 -mavx512f -mavx512dq -mavx512bw -mavx512vl -Wall -Wextra -Wno-unused-parameter"
-      - name: Fetch Intel SDE
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install --quiet numpy scipy
+
+      - name: src/codelets.h must match src/gen.py
         run: |
-          set -e
-          url=$(curl -sL https://www.intel.com/content/www/us/en/developer/articles/tool/software-development-emulator.html \
-                | grep -oE 'https://downloadmirror[^"]*sde-external[^"]*-lin\.tar\.xz' | head -1)
-          test -n "$url"
-          curl -sL "$url" -o sde.tar.xz
-          mkdir sde && tar xf sde.tar.xz -C sde --strip-components=1
-      - name: Run tests on an emulated Sapphire Rapids
+          cp src/codelets.h /tmp/committed.h
+          (cd src && python3 gen.py)
+          diff -u /tmp/committed.h src/codelets.h \
+            || { echo "::error::src/codelets.h is stale; re-run 'python3 src/gen.py'"; exit 1; }
+
+      - name: src/hmf_table.h must match tools/hmf_design.py
         run: |
-          ./sde/sde64 -spr -- ./tests/test_units
-          ./sde/sde64 -spr -- ./tests/test_binmax
-          ./sde/sde64 -spr -- ./tests/test_mf
-          ./sde/sde64 -spr -- ./tests/test_hmf
+          cp src/hmf_table.h /tmp/committed_table.h
+          python3 tools/hmf_design.py emit
+          diff -u /tmp/committed_table.h src/hmf_table.h \
+            || { echo "::error::src/hmf_table.h is stale; re-run 'python3 tools/hmf_design.py emit'"; exit 1; }
+
+  benchmark:
+    # Advisory only.  A shared runner's timings are too noisy to gate a merge
+    # on; this is here so the numbers stay visible and an order-of-magnitude
+    # regression is obvious in the log.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install --upgrade pip && python -m pip install .
+
+      - name: Benchmark
+        run: |
+          cd /tmp
+          python -m apogee.benchmark --n 4096 16384 --data 4 --templates 16 --reps 3 \
+            | tee /tmp/bench.txt
+
+      - name: Publish to the run summary
+        if: always()
+        run: |
+          { echo '## Benchmark'; echo; echo '```'; cat /tmp/bench.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install --upgrade pip build && python -m build --wheel
+
+      - name: The shipped header must compile on its own
+        run: |
+          python -m pip install dist/*.whl
+          printf '#include "apogee.h"\nint main(void){ return ap_supported(1024) ? 0 : 1; }\n' > /tmp/hdr.c
+          cc -I"$(python -c 'import apogee; print(apogee.include_dir())')" -fsyntax-only /tmp/hdr.c
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+          if-no-files-found: error

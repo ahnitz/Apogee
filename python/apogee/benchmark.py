@@ -94,6 +94,61 @@ def _one(n, nd, nt, binsize, window, reps, check):
     return best / pairs * 1e6, (npy / pairs * 1e6 if npy else None), ok
 
 
+def _inspiral_power(n, frac=0.85, fmax_frac=0.125):
+    """An f^(-7/3) spectrum scaled so `frac` of the power sits below n*fmax_frac.
+
+    Fixing the *fraction* rather than the exponent is what keeps the sizes
+    comparable: a fixed exponent puts 99% of the power below n/8 at n=2^20 and
+    60% at n=2^11, so the lengths would be measuring different problems.
+    """
+    k = np.arange(1, n // 2, dtype=np.float64)
+    p = k ** (-7.0 / 3.0)
+    cut = max(2, int(n * fmax_frac))
+    tail = p[cut - 1:]
+    tail *= (p[:cut - 1].sum() * (1 - frac) / frac) / tail.sum()
+    out = np.zeros(n, np.float32)
+    out[1:n // 2] = (p / p.sum()).astype(np.float32)
+    return out
+
+
+def _bench_hier(n, nd, nt, snr, fd, reps):
+    """Gate vs flat filter on the same pure-noise data.
+
+    Pure noise is the case the gate is built for -- almost nothing survives, so
+    the skipped work is real.  On data where every pair triggers the gate can
+    only add cost, and the ratio would drop below 1.
+    """
+    rng = np.random.default_rng(7)
+    power = _inspiral_power(n)
+    amp = np.sqrt(power)
+    h = (amp * np.exp(1j * rng.uniform(0, 2 * np.pi, (nt, n)))).astype(np.complex64)
+    h /= np.sqrt((np.abs(h) ** 2).sum(axis=1, keepdims=True))
+    d = (rng.standard_normal((nd, n)) + 1j * rng.standard_normal((nd, n))).astype(np.complex64)
+
+    flat = apogee.MatchedFilter(n, nd, nt)
+    flat.set_data(d)
+    flat.set_templates(h)
+
+    hf = apogee.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd,
+                                   band=max(256, n // 8), oversample=2, taps=8)
+    hf.set_reference(power)
+    hf.set_data(d)
+    hf.set_templates(h)
+
+    def best_of(fn):
+        fn()
+        b = float("inf")
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            fn()
+            b = min(b, time.perf_counter() - t0)
+        return b
+
+    tf = best_of(lambda: flat.run(binsize=n, threshold=snr))
+    th = best_of(lambda: hf.run(binsize=n, threshold=snr))
+    return tf, th, hf.trigger_rate
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -108,6 +163,10 @@ def main(argv=None):
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--no-check", action="store_true",
                     help="skip the numpy cross-check (much faster for large n)")
+    ap.add_argument("--no-hier", action="store_true",
+                    help="skip the hierarchical-gate table")
+    ap.add_argument("--fd", type=float, default=1e-3,
+                    help="false-dismissal budget for the gate")
     a = ap.parse_args(argv)
 
     print(f"apogee benchmark   {platform.processor() or platform.machine()}")
@@ -141,6 +200,26 @@ def main(argv=None):
     print("\nTimes are microseconds per (data, template) pair, best of "
           f"{a.reps}.\nnumpy is a floor, not a rival - it is here so the "
           "comparison runs anywhere.")
+
+    if not a.no_hier:
+        print(f"\n\nHierarchical gate vs the flat filter, pure noise, "
+              f"false dismissal {a.fd:g}")
+        print(f"  {'n':>8} {'snr':>5} {'flat':>11} {'gated':>11} "
+              f"{'speedup':>9} {'triggered':>10}")
+        for n in a.n:
+            for snr in (5.0, 5.5, 6.0, 6.5):
+                try:
+                    tf, th, rate = _bench_hier(n, a.data, a.templates, snr,
+                                               a.fd, a.reps)
+                except (ValueError, RuntimeError) as e:
+                    print(f"  {n:>8} {snr:>5.1f}   unsupported: {e}")
+                    continue
+                print(f"  {n:>8} {snr:>5.1f} {tf * 1e3:>10.2f}ms "
+                      f"{th * 1e3:>10.2f}ms {tf / th:>8.2f}x {rate:>9.1%}")
+        print("\nThe gate skips a pair when a cheap low-band estimate rules out\n"
+              "any sample reaching the threshold, so the speedup grows with the\n"
+              "threshold and falls to ~1 on data where everything triggers.")
+
     return 1 if fails else 0
 
 

@@ -1,6 +1,6 @@
-# apogee builds as a Python extension.  `pip install .` is the build; the
-# Makefile exists for development (tests and benchmarks) and is not needed to
-# use the package.
+# `pip install .` is the whole build.  There is no Makefile: the one C test
+# that survives compiles itself from tests/test_internals.py, so `pytest` is
+# the single entry point for the suite.
 [build-system]
 requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -24,6 +24,7 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+bench = ["numpy>=1.20"]
 
 [project.urls]
 Homepage = "https://github.com/ahnitz/peak-fft"
@@ -39,4 +40,4 @@ apogee = ["*.h"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_python.py"]
+python_files = ["test_*.py"]

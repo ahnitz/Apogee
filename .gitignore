@@ -1,26 +1,13 @@
+# build products
+build/
+dist/
+*.egg-info/
 *.o
 *.a
-tests/test_units
-tests/test_topk
-tests/test_vs_mkl
-bench/bench
-fftw.wisdom
-bench*.csv
-bench_merged.json
-build/
-*.egg-info/
 *.so
+*.pico
 __pycache__/
-*.wisdom
-m_*.csv
-four*.csv
-matrix.*
-bench/loadgen
-bench/bench4
-tests/test_hmf
-bench/bench_hmf
+*.pyc
 
-# Build artifacts. Wheels are produced by CI, never committed.
-dist/
-*.whl
-*.egg-info/
+# FFTW plan caches, dropped by benchmark runs
+*.wisdom

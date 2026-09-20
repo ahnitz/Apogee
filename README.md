@@ -1,289 +1,132 @@
 # apogee
 
-**Work in progress.** A testbed, not something to depend on yet. It has run on
-one machine with one compiler, the API still moves, and the size list is short.
+A fast single-threaded matched filter for x86. You give it a batch of data
+segments and a batch of templates; it correlates every pair and hands back only
+the peaks.
 
-A single-threaded batched matched filter. Correlate D data segments against T
-templates and get back, for each pair, the loudest sample in each bin of a search
-window — index, complex value and magnitude. The full correlation output is never
-formed.
+Not returning the full correlation is the point. Most searches threshold the
+output and throw the rest away, and once you say so up front the filter can
+skip work that could not have produced a peak anyway.
 
-It started as an FFT specialised for finding the loudest bins. The matched filter
-is what that was always for, and it is now the interface; the transform is an
-internal detail.
-
-## The goal
-
-Beat MKL and FFTW on one core at the thing a matched-filter search actually does,
-using information they cannot assume: only the top point per bin matters, there
-is a detection threshold, and only part of the output is searched.
-
-The case it is built for is a white-noise time series where the peak is a ~5σ
-fluctuation among a million bins. The output is not sparse, so sparse-FFT methods
-do not apply — a coarse fold cannot find that peak.
-
-## What it gives up
-
-- **Only the loudest sample per bin is right.** Everything else is never computed
-  to full accuracy and never written anywhere.
-- **Accuracy is spent, not maximised.** The budget is 1e-5 relative to a
-  double-precision reference. Worst measured across the test suite is 3.2e-07, so
-  there is room left, but the design assumes the budget exists.
-- **c2c float32, single-threaded, powers of two: 1024 and 2^12…2^20.** Not 2048 —
-  the balanced split needs both factors at least one vector wide.
-- **x86 with AVX2 minimum.** No scalar fallback.
-- **Tuned for a busy machine**, where per-core bandwidth is scarce and the shared
-  L3 is thrashed. On an idle box some choices would land differently.
-
-## Interface assumptions
-
-1. Inputs are **frequency domain** — the unnormalised forward transform of each
-   segment, natural order, interleaved complex float32. Your pipeline has them
-   that way; D+T forward transforms have no business inside a D×T loop.
-2. Data and templates are the **same length**.
-3. Correlation is **circular**. Zero-pad before ingest if you want linear.
-4. The inverse is **unnormalised**, matching FFTW and MKL: a perfect match
-   returns `n × energy`.
-5. The window is in **lag space**, `[start, end)`.
-6. Bins tile the window from `start`; the last may be ragged. Any size works,
-   powers of two take the fast index path.
-7. The threshold is on **magnitude**, one value per run.
-8. **One peak per bin** — two candidates in one bin gives you the louder.
-9. Ingest is amortised: spectra are stored in the layout the pair loop walks,
-   which costs a rearrangement per segment and 2–4% of total.
-
-## Numbers
-
-One core of an AMD Ryzen AI MAX+ 395 (Zen 5), idle. D=T=16 (256 pairs), 60%
-window, bin 1024, detection floor on.
-
-The baselines are charged for their **inverse transforms only** - no product, no
-peak scan, no forward transforms. apogee is charged for everything it does. That
-is deliberately generous to them: it removes any argument about how well the
-surrounding code was written, and sets the bar at "can a peak-only matched filter
-beat a bare FFT?"
-
-µs per pair, versus amd-fftw's bare inverse transform:
-
-| N | AVX-512 | AVX2 |
-|---|---|---|
-| 2^10 | 0.65x | 0.37x |
-| 2^12 | 0.67x | 0.45x |
-| 2^14 | **1.31x** | 0.89x |
-| 2^16 | **1.14x** | 0.83x |
-| 2^18 | 0.99x | 0.75x |
-
-Against the *full* baseline route - product, inverse and scan, all vectorised -
-apogee is 1.26-1.72x on AVX-512 and 0.85-1.26x on AVX2. Caveat: MKL takes its
-generic path on this AMD part (`MKL_VERBOSE` says "Intel(R) Architecture
-processors"), which is why amd-fftw is the number to watch.
-
-### How close to the hardware
-
-The transform is at **52% of the achievable ceiling** at 2^12 and 43% at 256,
-where the ceiling is `fft16_44` measured register-resident with no loads or
-stores (162.3 GF/s on AVX2 - which beats a pure FMA chain at 142.9, because on
-Zen 5 FP add and FP mul issue on disjoint pipes and an FFT is add-heavy).
-
-That gap is not recoverable by restructuring. `stageA_tail` already fuses the
-stage twiddle, the corner turn and the store into one pass; deleting those pieces
-outright - an upper bound on any fusion - saves 3.4% and 0.6%. A real four-step
-moves each element through memory four times, so it is co-limited by data
-movement and cannot reach a ceiling measured without any. Remaining gains have to
-come from doing *fewer* transforms, not faster ones. `docs/machine-notes.md` has
-the full ablation.
-
-## The hierarchical filter
-
-Most of a template's SNR sits in the low part of its band.  `HierarchicalFilter`
-correlates only that part, on a coarse lag grid, and pays for the full
-correlation only where the coarse result could still become a detection.
-
-```python
-hf = apogee.HierarchicalFilter(1 << 12, ndata=16, ntemplates=16, snr=5.5, fd=1e-2)
-hf.set_data(data_spectra)
-hf.set_templates(template_spectra)
-peaks = hf.run(binsize=1024, threshold=5.5)
-hf.trigger_rate      # fraction of pairs that needed the full correlation
-```
-
-The guarantee is one-sided and exact: every peak it reports is **bit-identical**
-to `MatchedFilter`'s, because when the gate fires it runs that filter.  It never
-invents a peak and never shifts one.  It can MISS one, with probability at most
-`fd` for a signal of strength `snr`.
-
-`snr` is the |rho| of the weakest signal that must be kept; `fd` is the tolerated
-false-dismissal probability for it.  Both are in units where the noise has
-unit-variance components, so the caller is expected to have normalised.
-Lowering either costs speed, because the gate has to open wider.
-
-Band, oversampling and tap count come from a compiled-in measured table
-(`tools/hmf_design.py` generates it offline; apogee does not autotune).
-`docs/hierarchical.md` explains why the coarse grid is oversampled, why that is
-not a zero-padded transform, and why the interpolation kernel has to be the
-Dirichlet one rather than a plain sinc.
-
-### Measured, AVX2, pure noise
-
-D=T=16, per pair, against the ordinary filter on the same inputs. Templates
-carry ~0.85 of their power below n/8 (= 256 Hz at a 2048 Hz sample rate, at
-every size). Cells are speedup, with the fraction of pairs that needed the full
-correlation in brackets - that trigger rate is what the speedup rides on.
-
-n = 2^11, full filter 1.77 µs/pair:
-
-| fd | snr 5.0 | 5.5 | 6.0 | 6.5 |
-|---|---|---|---|---|
-| 1e-2 | 2.32x (18%) | 5.06x (3%) | 6.99x (0%) | **7.80x** (0%) |
-| 1e-3 | 1.72x (15%) | 3.17x (10%) | 5.12x (3%) | 7.27x (0%) |
-| 1e-4 | 2.02x (0%) | 2.43x (6%) | 3.75x (6%) | 5.84x (1%) |
-
-n = 2^12, full filter 3.43 µs/pair:
-
-| fd | snr 5.0 | 5.5 | 6.0 | 6.5 |
-|---|---|---|---|---|
-| 1e-2 | 1.74x (31%) | 3.16x (18%) | 6.84x (5%) | **11.48x** (1%) |
-| 1e-3 | 1.91x (1%) | 2.27x (21%) | 4.42x (4%) | 6.85x (5%) |
-| 1e-4 | 1.92x (1%) | 1.85x (10%) | 2.90x (12%) | — |
-
-AVX-512 is faster in absolute terms (2^12 full filter 2.15 µs against 3.43) and
-so shows lower ratios - 8.72x at its best cell rather than 11.48x. The gate saves
-less when the baseline is already fast.
-
-`python -m apogee.benchmark` and `bench/bench_hmf` reproduce these.
-
-## Using it
-
-C:
-
-```c
-#include "apogee.h"
-
-ap_mf_plan *mf = ap_mf_create(1u<<14, 16, 16);
-for (int d = 0; d < 16; d++) ap_mf_set_data(mf, d, data_spectrum[d]);
-for (int t = 0; t < 16; t++) ap_mf_set_template(mf, t, tmpl_spectrum[t]);
-
-size_t nb = ap_mf_nbins(mf, 1024, start, end);
-ap_peak *peaks = malloc(16*16*nb*sizeof *peaks);
-int counts[16*16];
-ap_mf_run(mf, 0,16, 0,16, 1024, threshold, peaks, counts, start, end);
-/* pair (d,t) bin j -> peaks[(d*16 + t)*nb + j]; index -1 means no crossing */
-ap_mf_destroy(mf);
-```
-
-Python:
+> **Status: work in progress.** The API still moves, and there is a known
+> calibration weakness in the hierarchical filter — see
+> [Caveats](#caveats).
 
 ```python
 import numpy as np, apogee
-mf = apogee.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
-mf.set_data(data_spectra)           # (16, 16384) complex64, already transformed
-mf.set_templates(template_spectra)
-peaks = mf.run(binsize=1024, threshold=t, window=(a, b))
-peaks["index"], peaks["value"], peaks["magnitude"]   # (16, 16, nbins)
+
+mf = apogee.MatchedFilter(16384, ndata=16, ntemplates=64)
+mf.set_data(data_spectra)          # (16, 16384) complex64, already FFT'd
+mf.set_templates(template_spectra) # (64, 16384) complex64
+
+peaks = mf.run(binsize=1024, threshold=5.5)
+peaks["index"], peaks["value"], peaks["magnitude"]
 ```
 
-The whole D×T loop is one call into C — measured at 1.4% over the C path, so the
-class costs nothing. `run(data=(d0,nd), templates=(t0,nt))` runs a sub-block and
-gives exactly the matching slice of a full run.
+## Install
 
-There is no plan object to manage. The filter is the plan: build it once with
-`(n, ndata, ntemplates)` and reuse it. Produce the spectra with whatever you
-already use — apogee has no reason to own that step.
+```bash
+pip install git+https://github.com/ahnitz/peak-fft
+```
+
+Needs numpy and a C compiler. x86-64 with AVX2; AVX-512 is used when present.
 
 ## How it works
 
-The pair loop is 89% of the transforms before any optimisation, so every decision
-is made about the pair loop.
+Inputs are **frequency domain** — the unnormalised forward transform of each
+segment, in natural order. Produce them with whatever you already use (numpy,
+MKL, FFTW); apogee does not need to own that step.
 
-Each pair is `IFFT(D_d · conj(H_t))` with the peak search fused in. The product
-is formed inside the transform's first load, so it never reaches memory — 1 MiB
-of L2 traffic per pair at 2^16. The backward transform's input conjugation folds
-into that same multiply for free.
+The filter is built once and reused. Ingest conjugates the templates and
+stores both sides in the layout the correlation loop walks, which costs a few
+percent of a run and less as the batch grows.
 
-Spectra are stored **group-major**, `[n1 block][n2][lane]`. Stage A otherwise
-reads a vector then jumps `N1` floats, a shape that sustains 7.6 GB/s here
-against 43.9 sequential; owning the layout makes one group's whole pass
-sequential. Ingest pays a transpose per segment so that all D×T pair transforms
-read in order.
+`run` returns a structured array of shape `(ndata, ntemplates, nbins)` with
+fields `index`, `value` and `magnitude`. Bins whose peak fell below the
+threshold carry `index == -1`.
 
-The peak search is a per-bin running maximum primed with the detection floor. A
-bin never reports below the floor, so priming is exact, and it turns four
-unconditional blends into a branch that is almost never taken.
+Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 
-Underneath: four-step decomposition with a balanced N₁×N₂ ≈ √N split, split
-(real/imag separated) complex data so a complex multiply is four FMAs and no
-shuffles, and generated unrolled Stockham codelets (`src/gen.py`) at radix 8×4 or
-8×8 — two passes instead of radix-2's five. Those codelets run at 303 GF/s, 93%
-of this machine's AVX-512 FMA peak.
+### Performance
 
-`docs/machine-notes.md` is the lab notebook: measured instruction throughput,
-pipe-overlap rules, the amd-fftw disassembly, and every idea that was tried and
-dropped with the number that killed it. Non-temporal stores, huge pages, a
-quantised intermediate, batch-interleaved layout, VNNI, bf16, split-radix,
-prefetching at any distance — all measured, none kept.
-`docs/matched-filter-plan.md` is the design and test plan for the current
-interface.
+Per (data, template) pair, 8×32 batch, one core of a Zen 5 desktop:
 
-## Build
+| n | apogee | numpy | |
+|---:|---:|---:|---:|
+| 1024 | 0.61 µs | 18.98 µs | 31× |
+| 4096 | 2.08 µs | 37.81 µs | 18× |
+| 16384 | 9.98 µs | 127.04 µs | 13× |
+| 65536 | 48.87 µs | 568.56 µs | 12× |
 
-apogee builds as a Python extension. That is the build:
+numpy is a floor, not a rival — it is there so the comparison runs anywhere.
+Against MKL or FFTW the margin is much smaller, and part of what is left comes
+from computing peaks instead of a full correlation. Measure on your own box:
 
-```sh
-pip install .
+```bash
+python -m apogee.benchmark
 ```
 
-`pyproject.toml` is authoritative; `setup.py` exists only because the extension
-needs per-source compiler flags (the AVX-512 sources, the AVX2 sources and the
-dispatcher must be compiled differently so the module *loads* on a machine
-without AVX-512 and still picks a working back end at runtime), which
-declarative config cannot express.
+## Hierarchical filtering
 
-The Makefile is for development — it builds the C tests and benchmarks, which
-are much more thorough than the Python ones:
+`HierarchicalFilter` adds a cheap pre-pass: correlate against a low-frequency
+slice of the template, and only run the full-length filter where that slice
+leaves a peak plausible.
 
-```sh
-make test       # full suite on every back end
-make quick      # 2 s correctness gate for use between edits
-make codelets   # regenerate src/codelets.h from gen.py
+**This helps only under an assumption about your templates** — that enough of
+the matched-filter output power sits in the low band that a narrow slice gives
+a usable bound on the full result. For chirp-like templates whose power is
+concentrated at low frequency that tends to hold. For templates whose power is
+spread flat across the band, or concentrated high, the slice bounds nothing
+useful, and the pre-pass is pure added cost. It is worth checking against your
+own templates before relying on it.
+
+```python
+hf = apogee.HierarchicalFilter(16384, ndata=16, ntemplates=64,
+                               snr=6.0,      # threshold you intend to use
+                               fd=1e-3,      # false-dismissal budget
+                               band=2048)    # width of the cheap slice
+
+hf.set_reference(expected_output_power)      # power spectrum of the OUTPUT
+hf.set_templates(template_spectra)
+hf.set_data(data_spectra)
+peaks = hf.run(binsize=16384, threshold=6.0)
 ```
 
-Using it from C is not the priority, but it is allowed: the header ships in the
-wheel and `apogee.include_dir()` points a compiler at it.
+`set_reference` takes the power spectrum of the filter **output**, not of the
+template. Those differ whenever the data is coloured, and passing the template's
+spectrum will mis-set the gate.
 
-```sh
-cc myprog.c -I"$(python -c 'import apogee; print(apogee.include_dir())')" ...
+The gate is one-sided by construction: peaks it reports are bit-identical to
+the flat filter's. It can only omit, never invent. `fd` is the budget for how
+often it is allowed to omit one.
+
+On pure noise at n=4096 the gate runs about **7× faster** than the flat filter.
+The saving scales with how little survives, so it grows with your threshold and
+falls toward 1× on data where most pairs trigger.
+
+## Caveats
+
+- **The false-dismissal budget is not currently met at low thresholds.**
+  `fd` is honoured well at snr ≳ 6, but at snr 5.0–5.5 with a coarse band the
+  gate omits more than it should — measured at 1.4% against a 0.1% budget in a
+  418-template search. The cause is that the gate's recovery factors are
+  measured from a mean spectrum, which is not a bound on any individual
+  realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
+  in [docs/hierarchical.md](docs/hierarchical.md).
+- Single-threaded by design. Parallelism is the caller's to arrange.
+- x86-64 only.
+
+## Development
+
+```bash
+pip install -e .[test]
+pytest              # includes a C test that builds itself from source
+python -m apogee.benchmark
 ```
 
-Benchmarks need MKL and an AOCL-FFTW build:
+Design notes and measured dead ends live in [docs/](docs/) — including the
+things that did *not* work, which is most of them.
 
-```sh
-make bench/bench_mf MKLINC=/path/include MKLLIB=/path/lib AMDFFTW=/path/aocl
-```
+## License
 
-If you have neither, `python -m apogee.benchmark` needs only numpy. It runs the
-same matched filter both ways, checks the answers agree, and reports per-pair
-times — so you can see whether apogee works and is fast on *your* machine rather
-than trusting numbers from one developer box. numpy is a floor, not a rival.
-
-## Tests
-
-`tests/test_mf.c` checks the matched filter against an independent
-double-precision radix-2 FFT: every pair separately, a known-answer case
-(template a circular shift of the data — the peak must be at exactly that lag
-with magnitude `n × energy`), reuse invariance (a duplicated template must give
-identical rows, which catches state leaking between pairs), blocking invariance
-(any sub-block equals the matching slice of the whole), and shapes 1×1, 1×16,
-16×1, 3×5, 16×16, 17×13.
-
-`tests/test_binmax.c` covers the peak search itself against a brute-force scan —
-481k checks over size × bin size × direction × window × threshold, including
-empty bins, ragged final bins, bins that straddle vector blocks, and window
-starts that are not bin-aligned.
-
-`tests/test_units.c` covers the transpose, each codelet against a direct DFT, the
-no-shift int16 codelets and their headroom bound, and analytic identities at
-every size in both directions — impulse response, pure tone, Parseval, linearity,
-and `backward(forward(x)) == n·x`.
-
-`tests/test_python.py` checks the class API against numpy, including that the
-Python layer adds no measurable cost.
+MIT
