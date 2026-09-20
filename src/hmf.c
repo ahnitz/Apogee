@@ -70,11 +70,12 @@ struct ap_hmf_plan {
   float *shift;               /* [2m]       scratch for the measurement         */
   float *prod, *cev, *cod;    /* scratch: product and the two coarse halves     */
   float *taps;                /* [HMF_NSUB][K] complex interpolation bank       */
-  float *tcbuf;               /* [nt] gate per template for the current run     */
+  float *tcbuf,*rawbuf,*evenbuf; /* [nt] per-template gates, derived once a run */
+  ap_peak *cebuf;             /* [nt] even coarse maxima for one data segment */
   long pairs, trig;
   /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
-  unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
+  unsigned long long c_even,c_odd,c_ref,c_fill,c_tot; int prof;
   long npre, ninterp, nskip;   /* diagnostics: pre-gate passes, interpolations run */
   float lastgate;
 };
@@ -169,8 +170,11 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->cod =aligned_alloc(64,2*band*sizeof(float));
   p->taps=aligned_alloc(64,(size_t)2*HMF_NSUB*taps*sizeof(float));
   p->tcbuf=calloc((size_t)ntmpl,sizeof(float));
+  p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
+  p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
+  p->cebuf=calloc((size_t)ntmpl,sizeof(ap_peak));
   if(!p->full||!p->coarse||!p->cf||!p->cd||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||
-     !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf){ ap_hmf_destroy(p); return NULL; }
+     !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   p->prof = getenv("APOGEE_HMF_PROF") ? 1 : 0;
   return p;
@@ -189,7 +193,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->cf)   ap_destroy(p->cf);
   free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
   free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);
-  free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);
+  free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);
   free(p);
 }
 
@@ -201,12 +205,13 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
   if(pairs) *pairs=p->pairs;
   if(triggers) *triggers=p->trig;
   if(p->prof && p->pairs){
-    double tot=(double)(p->c_even+p->c_odd+p->c_ref+p->c_fill);
-    fprintf(stderr,"    [prof] per pair: even=%.0f odd=%.0f refine=%.0f fill=%.0f cycles"
-            "  (even %.0f%%, odd %.0f%%, refine %.0f%%, fill %.0f%%)\n",
-            (double)p->c_even/p->pairs,(double)p->c_odd/p->pairs,
+    double acc=(double)(p->c_even+p->c_odd+p->c_ref+p->c_fill);
+    double tot=(double)p->c_tot;
+    fprintf(stderr,"    [prof] per pair: total=%.0f | even=%.0f odd=%.0f refine=%.0f "
+            "fill=%.0f | UNACCOUNTED=%.0f (%.0f%%)\n",
+            tot/p->pairs,(double)p->c_even/p->pairs,(double)p->c_odd/p->pairs,
             (double)p->c_ref/p->pairs,(double)p->c_fill/p->pairs,
-            100*p->c_even/tot,100*p->c_odd/tot,100*p->c_ref/tot,100*p->c_fill/tot);
+            (tot-acc)/p->pairs,100.0*(tot-acc)/tot);
   }
   if(getenv("APOGEE_HMF_DIAG"))
     fprintf(stderr,"    [diag] pairs=%ld pre-gate passes=%ld (%.1f/pair) "
@@ -371,12 +376,19 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
          anyway, and calibrating for them only opens the gate needlessly.
      Both the threshold and snr are in units where the noise has unit-variance
      components, which is the caller's pre-normalisation contract. */
-  float *tcs=p->tcbuf;
+  /* All three gates depend only on the template, so derive them once per run
+     rather than per pair.  With D data segments and T templates the pair loop
+     runs D*T times and this runs T times: the whole point of the D x T shape is
+     that anything one-sided belongs outside the product. */
+  float *tcs=p->tcbuf, *rawg=p->rawbuf, *eveng=p->evenbuf;
   {
     float T = threshold>p->snr ? threshold : p->snr;
-    for(int t=0;t<nt;t++)
-      { float gt=p->tg[t0+t];
-        tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd); }
+    for(int t=0;t<nt;t++){
+      float gt=p->tg[t0+t];
+      tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd);
+      rawg[t] =tcs[t]*p->tgraw [t0+t]*0.999f;
+      eveng[t]=tcs[t]*p->tgraw1[t0+t]*0.999f;
+    }
   }
   /* Coarse lag window.  Even sample j maps to full lag j*R, odd to j*R + R/2,
      so one range covers both to within half a coarse step; widening by one step
@@ -387,14 +399,26 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   size_t cend   = (end+R-1)/R; if(cend>m) cend=m;
   if(cstart>0) cstart--;
   const size_t cspan = cend>cstart ? cend-cstart : 1;
+  /* Even coarse pass for ALL templates of a data segment in one call.  The
+     data spectrum is read once and stays resident across the whole template
+     sweep, and consecutive transforms are no longer separated by the gate
+     branch, so they can overlap.  One threshold has to serve every template, so
+     use the lowest: a template whose own gate is higher is filtered below, and
+     a lower threshold only ever reports MORE peaks. */
+  float minev=eveng[0];
+  for(int t=1;t<nt;t++) if(eveng[t]<minev) minev=eveng[t];
   int total=0;
   for(int d=0;d<nd;d++){
     const float *Dc=p->cd+(size_t)(d0+d)*2*m;
+    if(p->prof) { }
+    if(ap_mf_run(p->coarse,d0+d,1,t0,nt,cspan,minev,p->cebuf,NULL,
+                 cstart,cend)<0) return -1;
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
+      unsigned long long _tt = p->prof ? __rdtsc() : 0;
       const float gate = tcs[t]; p->lastgate=gate;
-      const float raw_gate  = gate*p->tgraw[t0+t]*0.999f;
+      const float raw_gate  = rawg[t];
       int fire=0;
       /* Fused coarse pass: product, transform and maximum in one kernel, with
        * the product never reaching memory.  One bin spanning the whole coarse
@@ -403,7 +427,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * Threshold at raw_gate: below it, interpolation cannot reach the gate,
        * so ap_mf_run returns index<0 and there is nothing more to do. */
       ap_peak ce,co; int cc=0;
-      ce.index=co.index=-1; ce.magnitude=co.magnitude=0.f;
+      co.index=-1; co.magnitude=0.f;
       /* Even half first, thresholded at graw1*gate rather than graw*gate.  The
        * even samples alone are the U=1 series, so if their maximum falls below
        * graw1*gate the true continuous peak cannot reach the gate no matter
@@ -412,10 +436,10 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * of pairs.  It must be graw1 and not graw: graw describes the combined
        * U=2 grid, which recovers more, so using it here would cut off peaks the
        * odd half would have found. */
-      const float even_gate = gate*p->tgraw1[t0+t]*0.999f;
+      const float even_gate = eveng[t];
       unsigned long long _t0 = p->prof ? __rdtsc() : 0;
-      if(ap_mf_run(p->coarse,d0+d,1,t0+t,1,cspan,even_gate,&ce,&cc,
-                   cstart,cend)<0) return -1;
+      ce = p->cebuf[t];
+      if(ce.index>=0 && ce.magnitude<even_gate) ce.index=-1;   /* per-template gate */
       if(p->prof){ unsigned long long t1=__rdtsc(); p->c_even+=t1-_t0; _t0=t1; }
       if(ce.index<0){
         if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
@@ -475,6 +499,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
         if(counts) counts[row]=0;
         if(p->prof) p->c_fill += __rdtsc()-f0;
       }
+      if(p->prof) p->c_tot += __rdtsc()-_tt;
     }
   }
   return total;
