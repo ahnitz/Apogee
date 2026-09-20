@@ -144,6 +144,14 @@ int pf_mf_run(pf_mf_plan *p, int d0, int nd, int t0, int nt,
    Returns the total number of crossings across the batch, or -1 on error. */
 size_t pf_nbins(const pf_plan *p, size_t binsize, size_t start, size_t end);
 
+/* As pf_binmax for a single transform, but the input is already split into
+   separate real and imaginary arrays.  Saves the deinterleave for callers that
+   naturally hold data that way - the matched filter forms its products directly
+   into split arrays. */
+int pf_binmax_split(pf_plan *p, const float *re, const float *im,
+                    size_t binsize, float threshold, pf_peak *peaks, int *count,
+                    int sign, size_t start, size_t end);
+
 int pf_binmax(pf_plan *p, const float *in, size_t dist, int B,
               size_t binsize, float threshold, pf_peak *peaks, int *counts,
               int sign, size_t start, size_t end);

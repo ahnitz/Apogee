@@ -198,7 +198,20 @@ static int a512_binmax(void *vp,const float *in,size_t binsize,float thr,
   return pf_be_bal16.binmax(p->bal,in,binsize,thr,out,conj,ws,we);
 }
 
+static int a512_binmax_split(void *vp,const float *re,const float *im,size_t binsize,
+                             float thr,pf_peak *out,int conj,size_t ws,size_t we){
+  AP *p=vp;
+  if(p->N==1024){
+    /* consumed in place, and already conjugated by the caller if needed - so no
+       copy and no conjugate pass, which is the whole point of this entry point */
+    int r=pf_fft1024_binmax((float*)re,(float*)im,p->t4r,p->t4i,binsize,thr,out,conj,
+                            (long)ws,(long)we);
+    if(r==0) return 0;
+  }
+  return pf_be_bal16.binmax_split(p->bal,re,im,binsize,thr,out,conj,ws,we);
+}
+
 const pf_backend pf_be_avx512 = {
   "avx512", a512_create, a512_destroy, a512_fft, a512_topk, a512_supported,
-  a512_topk_q, a512_quantize, a512_binmax
+  a512_topk_q, a512_quantize, a512_binmax, a512_binmax_split
 };

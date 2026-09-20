@@ -21,6 +21,14 @@ typedef struct {
   /* binned maximum; writes exactly nbins dense entries */
   int   (*binmax)(void *, const float *in, size_t binsize, float thr,
                   pf_peak *out, int conj, size_t start, size_t end);
+  /* Same, but the input is already split into re/im.  Two contract differences
+     that exist to keep the matched filter's pair loop free of copies:
+       - re/im are CONSUMED IN PLACE and left undefined on return;
+       - the input is NOT conjugated for a backward transform.  The caller folds
+         that into however it produced the data (for a product it is free), and
+         conj here only sets the sign of the reported imaginary parts. */
+  int   (*binmax_split)(void *, const float *re, const float *im, size_t binsize,
+                        float thr, pf_peak *out, int conj, size_t start, size_t end);
 } pf_backend;
 extern const pf_backend pf_be_avx512;   /* specialised: 1024 kernel + tuned 2^17..2^20 */
 extern const pf_backend pf_be_bal8;    /* width-generic balanced split, 8 lanes (AVX2)  */

@@ -115,6 +115,22 @@ size_t pf_nbins(const pf_plan *p,size_t binsize,size_t start,size_t end){
   return (end-start+binsize-1)/binsize;
 }
 
+/* split-input binned max, for callers that already hold re/im apart */
+int pf_binmax_split(pf_plan *p,const float *re,const float *im,
+                    size_t binsize,float threshold,pf_peak *peaks,int *count,
+                    int sign,size_t start,size_t end){
+  if(!p||!binsize) return -1;
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  if(!p->be->binmax_split) return -1;
+  const size_t nb=(end-start+binsize-1)/binsize;
+  if(p->be->binmax_split(p->h,re,im,binsize,threshold,peaks,sign==PF_BACKWARD,start,end)<0)
+    return -1;
+  int c=0; for(size_t j=0;j<nb;j++) if(peaks[j].index>=0) c++;
+  if(count) *count=c;
+  return c;
+}
+
 int pf_binmax(pf_plan *p,const float *in,size_t dist,int B,
               size_t binsize,float threshold,pf_peak *peaks,int *counts,
               int sign,size_t start,size_t end){

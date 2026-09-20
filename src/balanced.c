@@ -390,6 +390,34 @@ static void stageA_q(BP*p,const short*qhi,const signed char*qlo,const float*qs,i
   }
 }
 
+/* Stage A from split input.  Identical structure to stageA; only the load
+   differs - no v_deint, because the caller already has re and im apart. */
+static void stageA_split(BP*p,const float*inr,const float*ini,int conj){
+  const int N1=PN1,N2=PN2,NG=N1/PF_W,G=p->gblk;
+  const vf sg = conj?V_SIGNMASK():V_ZERO();
+  vf TR[PF_W],TI[PF_W],OR[PF_W],OI[PF_W];
+  const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
+  for(int g0=0;g0<NG;g0+=G){
+    const int GG = (NG-g0<G)?NG-g0:G;
+    for(int e2=0;e2<M2;e2++){
+      const float *sr=inr+(size_t)PF_W*g0+(size_t)e2*M1*N1;
+      const float *si=ini+(size_t)PF_W*g0+(size_t)e2*M1*N1;
+      for(int e1=0;e1<M1;e1++){
+        for(int gg=0;gg<GG;gg++){
+          vf r=V_LOADU(sr+(size_t)PF_W*gg), i=V_LOADU(si+(size_t)PF_W*gg);
+          vf *dR=p->bR+(size_t)gg*p->bstride+(size_t)e2*st;
+          vf *dI=p->bI+(size_t)gg*p->bstride+(size_t)e2*st;
+          dR[e1]=r; dI[e1]=V_XOR(i,sg);
+        }
+        sr+=N1; si+=N1;
+      }
+    }
+    for(int gg=0;gg<GG;gg++)
+      stageA_body(p,g0+gg,TR,TI,OR,OI,
+                  p->bR+(size_t)gg*p->bstride,p->bI+(size_t)gg*p->bstride);
+  }
+}
+
 static void stageA(BP*p,const float*in,int conj){
   const int N1=PN1,N2=PN2,NG=N1/PF_W,G=p->gblk;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
@@ -733,6 +761,16 @@ int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,pf_peak*out,
   return 0;
 }
 
+int FN(binmax_split)(void *vp,const float*inr,const float*ini,size_t binsize,
+                     float thr,pf_peak*out,int conj,size_t ws,size_t we){
+  BP *p=vp;
+  size_t nb=(we-ws+binsize-1)/binsize;
+  if(FN(bins_reserve)(p,nb)) return -1;
+  stageA_split(p,inr,ini,0);     /* caller already folded any input conjugation */
+  FN(binmax_core)(p,binsize,thr,out,conj,ws,we);
+  return 0;
+}
+
 int FN(topk)(void *vp,const float*in,int K,pf_peak*out,int conj,size_t ws,size_t we,float thr0){
   BP *p=vp;
   PT(_ta); stageA(p,in,conj); PACC(pf_pA,_ta);
@@ -775,5 +813,5 @@ const pf_backend CAT(pf_be_bal,PF_W) = {
   "avx2",
 #endif
   FN(create), FN(destroy), FN(fft), FN(topk), FN(supported),
-  FN(topk_q), FN(quantize_in), FN(binmax)
+  FN(topk_q), FN(quantize_in), FN(binmax), FN(binmax_split)
 };
