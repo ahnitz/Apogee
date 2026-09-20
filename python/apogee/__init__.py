@@ -141,3 +141,17 @@ class MatchedFilter:
         return (peaks, cnt.reshape(nd, nt)) if counts else peaks
 
 
+
+
+def include_dir():
+    """Directory holding apogee.h, for building C code against this package.
+
+    Direct C use is not the main path - the Python class is - but linking is
+    cheap to support::
+
+        cc myprog.c $(python -c "import apogee; print('-I'+apogee.include_dir())") ...
+
+    The C interface is the same ten functions the class wraps; see apogee.h.
+    """
+    import os
+    return os.path.dirname(os.path.abspath(__file__))

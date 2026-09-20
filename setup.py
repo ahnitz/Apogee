@@ -1,9 +1,12 @@
-"""Builds the apogee extension with per-source ISA flags.
+"""Build hook for the apogee extension.
+
+Project metadata lives in pyproject.toml; this file exists only because the
+build needs per-source compiler flags, which declarative config cannot express.
 
 The AVX-512 sources, the AVX2 sources and the dispatcher must be compiled with
-different -m flags so the resulting module can be *loaded* on a machine without
-AVX-512 and still pick a working back end at runtime.  setuptools has no notion
-of per-file flags, so we compile the groups ourselves and link them together.
+different -m flags so the module can be *loaded* on a machine without AVX-512
+and still select a working back end at runtime.  setuptools has no notion of
+per-file flags, so the groups are compiled here and linked together.
 """
 import os
 from setuptools import setup, Extension
@@ -50,6 +53,6 @@ class BuildExt(build_ext):
 
 
 setup(
-    ext_modules=[Extension("apogee._core", sources=[], include_dirs=["include", "src"])],
+    ext_modules=[Extension("apogee._core", sources=[], include_dirs=["python/apogee", "src"])],
     cmdclass={"build_ext": BuildExt},
 )

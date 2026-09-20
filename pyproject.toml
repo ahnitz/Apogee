@@ -1,3 +1,6 @@
+# apogee builds as a Python extension.  `pip install .` is the build; the
+# Makefile exists for development (tests and benchmarks) and is not needed to
+# use the package.
 [build-system]
 requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -5,16 +8,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apogee"
 version = "0.1.0"
-description = "Single-threaded AVX-512 FFT specialised for finding the loudest bins"
+description = "Single-threaded batched matched filter with peak-only output"
 readme = "README.md"
 requires-python = ">=3.9"
+license = "MIT"
 dependencies = ["numpy>=1.20"]
+keywords = ["matched-filter", "correlation", "fft", "avx512", "signal-processing"]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
   "Programming Language :: C",
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering",
 ]
+
+[project.optional-dependencies]
+test = ["pytest"]
 
 [project.urls]
 Homepage = "https://github.com/ahnitz/peak-fft"
@@ -22,3 +31,12 @@ Homepage = "https://github.com/ahnitz/peak-fft"
 [tool.setuptools]
 package-dir = {"" = "python"}
 packages = ["apogee"]
+
+# The C header ships inside the package.  Direct C use is not the priority, but
+# allowing it costs nothing, so apogee.include_dir() points a compiler at it.
+[tool.setuptools.package-data]
+apogee = ["*.h"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_python.py"]

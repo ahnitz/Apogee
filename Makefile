@@ -1,7 +1,7 @@
 # apogee - single-threaded AVX-512 FFT specialised for loudest-bin search.
 CC      ?= gcc
 CFLAGS  ?= -O3 -Wall -Wextra -Wno-unused-parameter
-CPPFLAGS = -Iinclude -Isrc
+CPPFLAGS = -Ipython/apogee -Isrc
 LDLIBS   = -lm
 
 # AVX-512 sources, AVX2 sources and the ISA-neutral dispatcher are compiled with

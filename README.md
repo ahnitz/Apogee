@@ -151,15 +151,33 @@ interface.
 
 ## Build
 
+apogee builds as a Python extension. That is the build:
+
 ```sh
-make            # library and tests
-make test       # full suite on every back end
-make quick      # 2 s correctness gate for use between edits
-pip install .   # Python extension
+pip install .
 ```
 
-`make codelets` regenerates `src/codelets.h`. CI builds with explicit ISA flags,
-runs what the runner supports, and fails if `codelets.h` drifts from `gen.py`.
+`pyproject.toml` is authoritative; `setup.py` exists only because the extension
+needs per-source compiler flags (the AVX-512 sources, the AVX2 sources and the
+dispatcher must be compiled differently so the module *loads* on a machine
+without AVX-512 and still picks a working back end at runtime), which
+declarative config cannot express.
+
+The Makefile is for development — it builds the C tests and benchmarks, which
+are much more thorough than the Python ones:
+
+```sh
+make test       # full suite on every back end
+make quick      # 2 s correctness gate for use between edits
+make codelets   # regenerate src/codelets.h from gen.py
+```
+
+Using it from C is not the priority, but it is allowed: the header ships in the
+wheel and `apogee.include_dir()` points a compiler at it.
+
+```sh
+cc myprog.c -I"$(python -c 'import apogee; print(apogee.include_dir())')" ...
+```
 
 Benchmarks need MKL and an AOCL-FFTW build:
 
