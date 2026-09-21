@@ -1,24 +1,29 @@
-# The Google Highway back end
+# The SIMD layer: Google Highway
 
-A third SIMD layer behind the same `V_*` macro surface the intrinsic and
-vector-extension layers use, so `codelets.h` and `balanced.c` are byte for
-byte the same source across all three. Selected with `MF_ISA=highway`.
+The kernel is written once, against the `V_*` macros in `src/simd.h`, which
+bind to Google Highway. Highway lowers each op to the target's intrinsics, so
+the same source serves AVX2, AVX-512, NEON, SVE and the rest.
 
-Built only when Highway's headers are found -- set `HIGHWAY_ROOT` to a
-checkout, or install them. Absent otherwise, so nothing in the library
-depends on it yet.
+It is compiled once per lane count -- 4, 8 and 16 -- because Highway's
+`FixedTag` cannot exceed the target's native vector. `src/dispatch.c` picks
+the widest the CPU supports at run time; `MF_ISA=highway4|highway8|highway16`
+forces one.
 
-## Why it is interesting
+## What was removed, and what it cost
 
-The hand-written intrinsics cover AVX-512 and AVX2 and nothing else. The
-vector-extension layer covers everything a compiler targets but sits 7-18%
-behind, needs `-fno-tree-slp-vectorize` to avoid a 2.3x pessimisation, and
-carries its own runtime dispatch and symbol mangling.
+There used to be three SIMD layers: hand-written AVX-512 and AVX2 intrinsics,
+a GCC/Clang vector-extension layer for everything else, and Highway. That is
+gone -- `kernel1024.c`, `be_avx512.c`, `transpose16.h`, `simd_portable.h`, the
+intrinsic half of `simd.h`, the per-ISA compilation in `setup.py`, the
+symbol mangling that kept five back ends from colliding, and the C unit test
+that exercised kernels which no longer exist. About 1400 lines.
 
-Highway would replace all of that: it has NEON, SVE, SVE2, RVV, AltiVec and
-WASM targets, its own runtime dispatch (`HWY_DYNAMIC_DISPATCH`), and per-target
-compilation (`foreach_target.h`) that subsumes the multiversioning `setup.py`
-does by hand. It is also maintained and tuned by people who do only this.
+On AVX2 -- the target that matters, and the only one on most machines --
+Highway matches the intrinsics it replaced. On AVX-512 it is 23% behind the
+generic intrinsic kernel and 27% behind the specialised one, which had a
+tuned 1024 codelet and size-specific paths. That is a deliberate trade: the
+specialised AVX-512 path was roughly 500 lines serving hardware that most
+runs will not have.
 
 ## Measured
 

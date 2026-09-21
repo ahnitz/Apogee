@@ -30,23 +30,17 @@ typedef struct {
                        const float *tr, const float *ti, size_t binsize,
                        float thr, ap_peak *out, int conj, size_t start, size_t end);
 } ap_backend;
-extern const ap_backend ap_be_avx512;   /* specialised: 1024 kernel + tuned 2^17..2^20 */
-extern const ap_backend ap_be_bal8;    /* width-generic balanced split, 8 lanes (AVX2)  */
-extern const ap_backend ap_be_bal16;   /* same source at 16 lanes, for cross-checking  */
-/* The same source compiled against compiler vector extensions.  Level 0 is
-   baseline x86-64 (or whatever the target's default is) and is the fallback
-   that must run anywhere; level 2 adds AVX2 and FMA.  Only level 0 exists off
-   x86, where there is nothing to fall back from. */
-#ifdef AP_WITH_HIGHWAY
-/* The same width-generic kernel on Google Highway, one per lane count.
-   Highway's FixedTag cannot exceed the target's native vector, so the width
-   and the target go together: 16 needs AVX-512, 8 needs AVX2. */
+
+/* The one kernel, built once per lane count.  Highway's FixedTag cannot
+   exceed the target's native vector, so the width and the target go
+   together: 16 needs AVX-512, 8 needs AVX2 and FMA, 4 runs anywhere. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern const ap_backend ap_be_hwy4;
 extern const ap_backend ap_be_hwy8;
 extern const ap_backend ap_be_hwy16;
-#endif
-extern const ap_backend ap_be_port80;
-#if defined(__x86_64__) || defined(__i386__)
-extern const ap_backend ap_be_port81;   /* AVX: 256-bit float, no FMA  */
-extern const ap_backend ap_be_port82;   /* AVX2 + FMA                  */
+#ifdef __cplusplus
+}
 #endif
 #endif

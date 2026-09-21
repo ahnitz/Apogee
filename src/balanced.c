@@ -72,20 +72,9 @@ static inline double pnow(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,
 #define STR(x) STR2(x)
 /* Static helpers need distinct names too, for the same reason as the back-end
    struct: several copies of this file end up in one object set. */
-#if defined(AP_HIGHWAY)
+/* The same source is compiled once per lane count, so the statics need
+   names that carry the width or the copies collide at link time. */
 #define FN(name) CAT(CAT(pfh,AP_W),_##name)
-#elif defined(AP_PORTABLE)
-/* The portable source is compiled more than once on x86: at baseline, which
-   runs on any x86-64, and again with -mavx2 -mfma.  AP_PORT_LEVEL keeps the
-   two sets of symbols apart so both can live in one binary and be chosen at
-   run time. */
-#ifndef AP_PORT_LEVEL
-#define AP_PORT_LEVEL 0
-#endif
-#define FN(name) CAT(CAT(CAT(pfp,AP_W),AP_PORT_LEVEL),_##name)
-#else
-#define FN(name) CAT(CAT(pfb,AP_W),_##name)
-#endif
 
 
 typedef struct {
@@ -798,21 +787,8 @@ int FN(binmax_split)(void *vp,const float*inr,const float*ini,size_t binsize,
    symbol name has to carry which one this is, or the copies collide at link
    time.  Building the portable variant alongside the intrinsic one is what
    lets them be compared inside a single process. */
-#if defined(AP_HIGHWAY)
-extern "C" const ap_backend CAT(ap_be_hwy,AP_W);
-extern "C" const ap_backend CAT(ap_be_hwy,AP_W) = {
+const ap_backend CAT(ap_be_hwy,AP_W) = {
   "highway" STR(AP_W),
-#elif defined(AP_PORTABLE)
-const ap_backend CAT(CAT(ap_be_port,AP_W),AP_PORT_LEVEL) = {
-  "portable" STR(AP_W) "-" STR(AP_PORT_LEVEL),
-#else
-const ap_backend CAT(ap_be_bal,AP_W) = {
-#if AP_W==16
-  "balanced-avx512",
-#else
-  "avx2",
-#endif
-#endif
   FN(create), FN(destroy), FN(fft), FN(supported),
   FN(binmax), FN(binmax_split), FN(has_prod), FN(split), FN(binmax_prod)
 };

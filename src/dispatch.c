@@ -29,14 +29,8 @@ struct ap_plan { const ap_backend *be; void *h; size_t n; };
    per architecture from one source set: the arm64 slice must not reference
    back ends that were never compiled, and neither must the x86_64 slice of a
    build that chose the portable set.  setup.py decides and says so. */
-#ifndef AP_WITH_X86_KERNELS
-#  if defined(__x86_64__) || defined(__i386__)
-#    define AP_WITH_X86_KERNELS 1
-#  else
-#    define AP_WITH_X86_KERNELS 0
-#  endif
-#endif
-#if AP_WITH_X86_KERNELS && (defined(__x86_64__) || defined(__i386__))
+/* __builtin_cpu_supports is x86-only, and so is everything it guards. */
+#if (defined(__x86_64__) || defined(__i386__)) && !defined(AP_NO_WIDE_KERNELS)
 #define AP_HAVE_X86 1
 static int have_avx512(void){
   return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq")
@@ -45,55 +39,29 @@ static int have_avx512(void){
 static int have_avx2(void){
   return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 }
-/* AVX without AVX2 or FMA: Sandy Bridge and Ivy Bridge.  256-bit float
-   arithmetic, which is most of what the transform does, so this recovers the
-   bulk of the gap between the baseline build and the AVX2 one. */
-static int have_avx(void){ return __builtin_cpu_supports("avx"); }
 #else
 #define AP_HAVE_X86 0
 #endif
 
+static const ap_backend *widest(void){
+#if AP_HAVE_X86
+  if(have_avx512()) return &ap_be_hwy16;
+  if(have_avx2())   return &ap_be_hwy8;
+#endif
+  return &ap_be_hwy4;
+}
+
 static const ap_backend *pick(void){
   const char *e = getenv("MF_ISA");
-  if(e && *e){
-#ifdef AP_WITH_HIGHWAY
-    if(!strcmp(e,"highway"))     return have_avx512() ? &ap_be_hwy16 : &ap_be_hwy8;
-    if(!strcmp(e,"highway8"))    return &ap_be_hwy8;
-    if(!strcmp(e,"highway16"))   return have_avx512() ? &ap_be_hwy16 : NULL;
-#endif
-    if(!strcmp(e,"portable0"))   return &ap_be_port80;
+  if(!e || !*e)              return widest();
+  if(!strcmp(e,"highway"))   return widest();
+  if(!strcmp(e,"highway4"))  return &ap_be_hwy4;
 #if AP_HAVE_X86
-    if(!strcmp(e,"portable1"))   return have_avx() ? &ap_be_port81 : NULL;
+  if(!strcmp(e,"highway8"))  return have_avx2()   ? &ap_be_hwy8  : NULL;
+  if(!strcmp(e,"highway16")) return have_avx512() ? &ap_be_hwy16 : NULL;
 #endif
-    if(!strcmp(e,"portable")){
-#if AP_HAVE_X86
-      /* Pick the best portable build, so forcing "portable" to compare it
-         against the intrinsics compares like with like. */
-      if(have_avx2()) return &ap_be_port82;
-      if(have_avx())  return &ap_be_port81;
-#endif
-      return &ap_be_port80;
-    }
-#if AP_HAVE_X86
-    if(!strcmp(e,"avx512"))      return have_avx512() ? &ap_be_avx512 : NULL;
-    if(!strcmp(e,"avx2"))        return have_avx2()   ? &ap_be_bal8   : NULL;
-    if(!strcmp(e,"balanced512")) return have_avx512() ? &ap_be_bal16  : NULL;
-#endif
-    fprintf(stderr,"matchedfilter: unknown or unavailable MF_ISA=\"%s\"\n",e);
-    return NULL;
-  }
-#if AP_HAVE_X86
-  if(have_avx512()) return &ap_be_avx512;
-  if(have_avx2())   return &ap_be_bal8;
-#endif
-#if AP_HAVE_X86
-  /* Sandy/Ivy Bridge: no AVX2, but 256-bit float arithmetic is available and
-     is most of what the transform does. */
-  if(have_avx()) return &ap_be_port81;
-#endif
-  /* arm64, where the baseline build is the only one, or an x86 old enough to
-     lack even AVX, where it is the only build that can legally execute. */
-  return &ap_be_port80;
+  fprintf(stderr,"matchedfilter: unknown or unavailable MF_ISA=\"%s\"\n", e);
+  return NULL;
 }
 
 const char *ap_isa(void){ const ap_backend *b=pick(); return b?b->name:"unsupported"; }
@@ -209,14 +177,7 @@ int ap_binmax(ap_plan *p,const float *in,size_t dist,int B,
 int ap_lane_width(void){
   const ap_backend *b=pick();
   if(!b) return 0;
-#ifdef AP_WITH_HIGHWAY
   if(b==&ap_be_hwy16) return 16;
   if(b==&ap_be_hwy8)  return 8;
-#endif
-  if(b==&ap_be_bal8 || b==&ap_be_port80
-#if AP_HAVE_X86
-     || b==&ap_be_port81 || b==&ap_be_port82
-#endif
-    ) return 8;
-  return 16;
+  return 4;
 }

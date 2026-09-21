@@ -41,137 +41,71 @@ def target_arches():
 ARCHES = target_arches()
 IS_X86 = all(a in _X86 for a in ARCHES)
 
-BASE = ["-O3", "-fno-math-errno", "-std=gnu11"]
+BASE = ["-O3", "-fno-math-errno"]
+CXX = BASE + ["-std=c++17"]
 
-# The portable back end is already explicitly vectorised, and GCC's SLP pass
-# tries to vectorise it again: it re-splits and recombines vectors that were
-# fine, and the result runs 2.3x slower than the AVX2 intrinsics at -O3 while
-# executing the same number of instructions.  Disabling that one pass takes
-# the transform from 2.30x to 1.02x.  -O2 also avoids it, at the cost of
-# everything else -O3 does.
-#
-# Clang does not show the same regression, so the flags are GCC-only and are
-# probed rather than assumed -- an unknown flag is a hard error on some
-# toolchains, and silently dropping it would put the 2.3x back.
-PORTABLE_TUNING = ["-fno-tree-slp-vectorize", "-fno-unswitch-loops"]
+# Highway's AVX2 and AVX-512 targets need more than -mavx2/-mavx512f; without
+# the rest its baseline detection silently falls back to SSE4 and FixedTag
+# hands back 4 lanes where 8 or 16 were asked for.
+HWY_AVX2 = CXX + ["-mavx2", "-mfma", "-mbmi", "-mbmi2", "-mf16c", "-mlzcnt"]
+HWY_AVX3 = HWY_AVX2 + ["-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
+HWY_BASE = CXX + (["-msse4.2"] if platform.machine().lower()
+                  in ("x86_64", "amd64") else [])
 
-
-def _accepted(compiler, flags):
-    """Keep only flags this compiler actually accepts."""
-    import tempfile
-    ok = []
-    with tempfile.TemporaryDirectory() as d:
-        src = os.path.join(d, "probe.c")
-        with open(src, "w") as fh:
-            fh.write("int main(void){return 0;}\n")
-        for f in flags:
-            try:
-                compiler.compile([src], output_dir=d, extra_postargs=[f, "-Werror"])
-                ok.append(f)
-            except Exception:
-                pass
-    return ok
-AVX512 = ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
-AVX2 = ["-mavx2", "-mfma"]
-
-# Google Highway, if the headers are there.  Optional: the library builds and
-# runs without it, and this back end exists to be compared against the
-# hand-written one rather than to replace it yet.  Point HIGHWAY_ROOT at a
-# checkout, or install the headers somewhere the compiler finds them.
 HIGHWAY_ROOT = os.environ.get("HIGHWAY_ROOT", "")
 
 
-def highway_available():
-    if HIGHWAY_ROOT:
-        return os.path.isfile(os.path.join(HIGHWAY_ROOT, "hwy", "highway.h"))
+def highway_include():
+    """Where Highway's headers are, or None."""
+    if HIGHWAY_ROOT and os.path.isfile(
+            os.path.join(HIGHWAY_ROOT, "hwy", "highway.h")):
+        return HIGHWAY_ROOT
     for d in ("/usr/include", "/usr/local/include"):
         if os.path.isfile(os.path.join(d, "hwy", "highway.h")):
-            return True
-    return False
+            return d
+    return None
 
 
-# Highway's AVX2 target needs more than -mavx2 -mfma; without the rest it
-# silently falls back to SSE4 and gives 4 lanes where 8 were asked for.
-HWY_AVX2 = ["-mavx2", "-mfma", "-mbmi", "-mbmi2", "-mf16c", "-mlzcnt",
-            "-std=c++17"]
-HWY_AVX3 = ["-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl",
-            "-mavx2", "-mfma", "-mbmi", "-mbmi2", "-mf16c", "-mlzcnt",
-            "-std=c++17"]
+HWY_INC = highway_include()
+if HWY_INC is None:
+    sys.exit(
+        "matchedfilter needs Google Highway headers to build.\n"
+        "Install them, or set HIGHWAY_ROOT to a checkout of\n"
+        "https://github.com/google/highway"
+    )
 
-# Compiled into every slice, so an arm64 slice of a universal2 build never
-# references kernels that were not built.
-X86_KERNELS = ("AP_WITH_X86_KERNELS", "1" if IS_X86 else "0")
+IS_X86 = platform.machine().lower() in ("x86_64", "amd64", "i386", "i686")
 
-# Tell dispatch.c whether the Highway back end exists, and at what width.
-HWY_DEFS = ([("AP_WITH_HIGHWAY", "1")] if highway_available() else [])
-
-# (source, extra flags, extra defines)
+# One kernel, compiled once per lane count.  Highway's FixedTag cannot exceed
+# the target's native vector, so width and target flags go together.  Off x86
+# only the 4-lane build applies, which is what NEON gives.
+GROUPS = [
+    ("src/balanced_hwy.cc", HWY_BASE,
+     [("AP_W", "4"), ("AP_HIGHWAY", "1"), ("HWY_COMPILE_ONLY_STATIC", "1")]),
+]
+X86_ONLY = [] if IS_X86 else [("AP_NO_WIDE_KERNELS", "1")]
 if IS_X86:
-    GROUPS = [
-        ("src/kernel1024.c", AVX512, []),
-        ("src/be_avx512.c",  AVX512, []),
-        ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
-        ("src/balanced.c",   AVX2,   [("AP_W", "8")]),      # generic source, 8 lanes
-        # Same source a third time, compiler-vectorised, and deliberately
-        # built at BASELINE on x86 with no -m flags.
-        #
-        # This is the back end the dispatcher falls through to when the CPU
-        # has neither AVX-512 nor AVX2+FMA -- a pre-Haswell Xeon, say.  Built
-        # with -mavx2 -mfma it contained 1340 FMA instructions, so the safe
-        # fallback was made of exactly the instructions the fallback case
-        # lacks, and would have died with SIGILL on the first transform.
-        # Nothing caught it because every machine in CI has AVX2.
-        ("src/balanced.c",   [],     [("AP_W", "8"), ("AP_PORTABLE", "1"),
-                                      ("AP_PORT_LEVEL", "0")]),
-        # ...again for AVX only.  Sandy and Ivy Bridge have 256-bit float
-        # arithmetic but no AVX2 and no FMA, and the transform is almost all
-        # float add/sub/mul, so this recovers most of the gap.
-        ("src/balanced.c",   ["-mavx"], [("AP_W", "8"), ("AP_PORTABLE", "1"),
-                                         ("AP_PORT_LEVEL", "1")]),
-        # ...and again with AVX2, so a capable CPU is not stuck on either
-        # fallback.  The dispatcher chooses between them at run time.
-        ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1"),
-                                      ("AP_PORT_LEVEL", "2")]),
-        ("src/matchfilt.c",  BASE,   [X86_KERNELS]),
-        ("src/hmf.c",        BASE,   []),
-        ("src/dispatch.c",   [],     [X86_KERNELS] + HWY_DEFS),   # baseline only
-        ("python/matchedfilter/_core.c", [], []),
+    GROUPS += [
+        ("src/balanced_hwy.cc", HWY_AVX2,
+         [("AP_W", "8"), ("AP_HIGHWAY", "1"), ("HWY_COMPILE_ONLY_STATIC", "1"),
+          ("HWY_BASELINE_TARGETS", "HWY_AVX2")]),
+        ("src/balanced_hwy.cc", HWY_AVX3,
+         [("AP_W", "16"), ("AP_HIGHWAY", "1"), ("HWY_COMPILE_ONLY_STATIC", "1"),
+          ("HWY_BASELINE_TARGETS", "HWY_AVX3")]),
     ]
-    if highway_available():
-        # One object per lane count.  Highway's FixedTag will not exceed the
-        # target's native vector, so the width and the target go together.
-        GROUPS.append(
-            ("src/balanced_hwy.cc", HWY_AVX2,
-             [("AP_W", "8"), ("AP_HIGHWAY", "1"),
-              ("HWY_COMPILE_ONLY_STATIC", "1"),
-              ("HWY_BASELINE_TARGETS", "HWY_AVX2")]))
-        GROUPS.append(
-            ("src/balanced_hwy.cc", HWY_AVX3,
-             [("AP_W", "16"), ("AP_HIGHWAY", "1"),
-              ("HWY_COMPILE_ONLY_STATIC", "1"),
-              ("HWY_BASELINE_TARGETS", "HWY_AVX3")]))
-else:
-    # No -m flags: the vector extensions lower to whatever the target has
-    # (NEON on arm64), and naming an ISA here would only restrict it.
-    GROUPS = [
-        ("src/balanced.c",   [], [("AP_W", "8"), ("AP_PORTABLE", "1"),
-                                  ("AP_PORT_LEVEL", "0")]),
-        ("src/matchfilt.c",  BASE, [X86_KERNELS]),
-        ("src/hmf.c",        BASE, []),
-        ("src/dispatch.c",   [],   [X86_KERNELS]),
-        ("python/matchedfilter/_core.c", [], []),
-    ]
-
+GROUPS += [
+    ("src/matchfilt.c",  BASE, []),
+    ("src/hmf.c",        BASE, []),
+    ("src/dispatch.c",   [],   X86_ONLY),      # baseline only: runs first
+    ("python/matchedfilter/_core.c", [], []),
+]
 
 class BuildExt(build_ext):
     def build_extension(self, ext):
         objects = []
         tmp = self.build_temp
         os.makedirs(tmp, exist_ok=True)
-        tuning = _accepted(self.compiler, PORTABLE_TUNING)
         for i, (src, flags, defines) in enumerate(GROUPS):
-            if ("AP_PORTABLE", "1") in defines:
-                flags = flags + tuning
             outdir = os.path.join(tmp, "g%d" % i)
             objs = self.compiler.compile(
                 [src],
@@ -193,7 +127,6 @@ class BuildExt(build_ext):
 setup(
     ext_modules=[Extension(
         "matchedfilter._core", sources=[],
-        include_dirs=(["python/matchedfilter", "src"]
-                      + ([HIGHWAY_ROOT] if HIGHWAY_ROOT else [])))],
+        include_dirs=["python/matchedfilter", "src", HWY_INC])],
     cmdclass={"build_ext": BuildExt},
 )
