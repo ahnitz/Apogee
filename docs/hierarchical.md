@@ -1,9 +1,12 @@
 # The hierarchical matched filter
 
-Most of a template's signal-to-noise sits in the low part of its band.  The
-hierarchical filter correlates only that part, on a coarse lag grid, and pays
+The hierarchical filter assumes that enough of a template's signal-to-noise
+sits in the low part of its band for a narrow slice to bound the full result.
+Where that holds, it correlates only that slice, on a coarse lag grid, and pays
 for the full correlation only where the coarse result could still become a
-detection.
+detection.  Where it does not hold -- power spread flat across the band, or
+concentrated high -- the slice bounds nothing useful and the pre-pass is added
+cost with no saving.
 
 The guarantee is deliberately one-sided.  Every peak it reports is
 **bit-identical** to `ap_mf_run`'s, because when the gate fires it *is*
@@ -66,7 +69,7 @@ a modulated sinc.  Two consequences worth stating plainly:
   so it cancels.  demodulate -> interpolate -> re-modulate collapses into one
   complex tap `w_k * exp(i pi (d-k)/U)` applied to the raw series.
 
-Because our fine grid is an exact integer subdivision of the coarse one, the tap
+Because the fine grid is an exact integer subdivision of the coarse one, the tap
 bank needs `HMF_NSUB` rows rather than the ~1024 a general resampler would: a few
 hundred bytes, L1-resident, effectively a polyphase bank.
 

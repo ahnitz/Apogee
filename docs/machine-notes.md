@@ -1,14 +1,14 @@
 # Zen 5 instruction notes (measured, not from documentation)
 
 Measured on AMD Ryzen AI MAX+ 395, one core, `taskset -c 4`, 4.86 GHz assumed for
-the ipc figures. **Treat these as a starting point, not truth** — they were taken
+the ipc figures. **Treat these as a starting point, not truth** - they were taken
 on a machine with variable load, the ipc numbers assume a clock that was not
 independently verified, and several of them changed once dead-code elimination and
 latency-vs-throughput confounds were fixed. Re-measure before relying on any of it.
 
-Reproduce with `/tmp/isurvey.c` and `/tmp/mix2.c` patterns: 8 independent chains
-per stream, and **drain every accumulator** or the compiler deletes the loop (this
-bit me twice — an early run reported 246983 ipc and another reported 0.0 ns).
+To reproduce: 8 independent dependency chains per stream, and **drain every
+accumulator** or the compiler deletes the loop (this
+bit me twice - an early run reported 246983 ipc and another reported 0.0 ns).
 
 ## Primitive throughput
 
@@ -25,14 +25,14 @@ bit me twice — an early run reported 246983 ipc and another reported 0.0 ns).
 | `vpmaddubsw` int8 2-dot | 2.02 | **629 G mul/s** | saturating |
 | `vpmullw` int16 mul low | 1.78 | 277 G mul/s | |
 | `vdpbf16ps` bf16 2-dot+acc | 1.37 | 213 G mul/s | dominated by int16 paths |
-| `vpmadd52luq` IFMA 52-bit MAC | 1.86 | 72 G mul/s | only 8 lanes — not competitive |
+| `vpmadd52luq` IFMA 52-bit MAC | 1.86 | 72 G mul/s | only 8 lanes - not competitive |
 | `vpshrdw` VBMI2 funnel shift | 2.05 | 320 G/s | block-float renormalisation |
 | `vpternlogd` 3-input bitop | 2.05 | 160 G/s | fuse sign/mask work |
 
 Not usable for arithmetic: `vpclmulqdq` is carry-*less*, so packed products are
 GF(2) not integer; `gfni` is bit permutation.
 
-## Pipe overlap — which instruction pairs co-issue
+## Pipe overlap - which instruction pairs co-issue
 
 | pair | alone | mixed | verdict |
 |---|---|---|---|
@@ -45,7 +45,7 @@ GF(2) not integer; `gfni` is bit permutation.
 | `vpmaddwd` \| `vpaddw` | 2.05 / 3.07 | 2.89 | shared |
 
 **The rule that falls out:** integer *multiply* competes with FP *multiply* for the
-same pipes, but integer *add* does not — it co-issues with anything FP at +26–33%.
+same pipes, but integer *add* does not - it co-issues with anything FP at +26-33%.
 FP add and FP multiply are also on separate pipes (+70%), which is why keeping
 `vaddps` and `vmulps` balanced matters more than minimising either.
 
@@ -65,20 +65,20 @@ absorbs one bit of block-float growth per stage for free.
 
 Precision: `vpmulhrsw` costs ~2^-15 relative per multiply; over 20 stages that is
 sqrt(20)*2^-15 ~ 1.4e-4. Fine for *screening* (needs ~1e-2), nowhere near enough for
-reported values — those still need exact refinement. int8 would give ~1.8e-2, which
+reported values - those still need exact refinement. int8 would give ~1.8e-2, which
 is marginal for screening, so int8 is only viable for early stages.
 
 ## Memory system (varies enormously with machine load)
 
 | | idle | 28 synthetic hogs | real heavy load (observed) |
 |---|---|---|---|
-| L1 copy | 266 GB/s | — | — |
+| L1 copy | 266 GB/s | - | - |
 | L2 copy | 191 | 22.7 | ~31 |
 | L3 copy (8 MiB) | 151 | 3.4 | 2.7 |
 | DRAM copy | 40 | 3.3 | 2.6 |
 | AVX-512 FMA peak | 324 GF/s | 320 (hogs are memory-bound) | 129 |
 
-L3 is shared and collapses to DRAM speed under load — design for L1/L2 residency.
+L3 is shared and collapses to DRAM speed under load - design for L1/L2 residency.
 
 ## Phase 0 result: int16 Q15 transform
 
@@ -92,7 +92,7 @@ for growth.
 | **int16 `ffti16_32` [8,4]** | **1.609** | 8.5e-04 |
 
 **1.36x on compute, 2x on memory.** Less than the ~2x the raw instruction rates
-suggested, because the codelet is not purely arithmetic-bound — the loads, stores and
+suggested, because the codelet is not purely arithmetic-bound - the loads, stores and
 dependency chains are unchanged in count, only narrower.
 
 Things that turned out not to matter, each measured rather than assumed:
@@ -107,7 +107,7 @@ untouched.
 
 Two bugs worth remembering from building this:
 - The Stockham index mapping is **DIF** (butterfly first, twiddle the difference).
-  Writing a DIT butterfly under it produced a relative error of 1.57 — completely
+  Writing a DIT butterfly under it produced a relative error of 1.57 - completely
   wrong, but the impulse test still passed, because an impulse never exercises the
   twiddles. Test with a tone, not an impulse.
 - `Re(w*b)` computed as a difference of two rounded products is bounded by
@@ -125,10 +125,10 @@ Extracted from `libfftw3f.a` and counted:
   `vpermilps` (2109) and `vmovsldup`/`vmovshdup`. Costed: AoS is 3 instructions per 8
   complex = 0.375/complex; split SoA is 4 per 16 = 0.25/complex. Our SoA layout is
   already the better one and avoids their permute traffic.
-- `vaddps` and `vsubps` at 5601 each vs `vmulps` 3043 — **adds are ~55% of their
+- `vaddps` and `vsubps` at 5601 each vs `vmulps` 3043 - **adds are ~55% of their
   arithmetic**, which is exactly where int16's 3x add advantage applies.
 
-## Phase 1a: batch-interleaved layout — rejected on measurement
+## Phase 1a: batch-interleaved layout - rejected on measurement
 
 Tried `x[n*B + b]` so SIMD lanes are the batch index. This removes the four-step corner
 turn entirely (no `V_TRANSPOSE` anywhere) and makes the outer twiddle a scalar broadcast
@@ -147,7 +147,7 @@ purely a memory-system result. Two causes:
 1. **Working set multiplies by W.** The inter-stage buffer goes from N complex to N*W
    complex: 32 KiB -> 512 KiB at 2^12. The single-transform intermediate is L1-resident;
    the batched one is not. Every byte that was L1 traffic becomes L3 traffic.
-2. **Stride becomes pathological.** Stage A walks n2 with stride `N1*B*8` bytes — 64 KiB
+2. **Stride becomes pathological.** Stage A walks n2 with stride `N1*B*8` bytes - 64 KiB
    at 2^18, so N2=512 reads span 32 MiB with a TLB miss each. The single-transform path
    tiles this into W x W blocks; with lanes already spent on the batch there is no tile
    left to hide the stride in.
@@ -213,12 +213,12 @@ Three attempts on that, all measured, none kept:
    stage B reads it back should skip the read-for-ownership. Wash: 2^18 405 vs 407,
    2^20 2200 vs 2184. Code kept behind `APOGEE_NT`, default off.
 2. **Huge pages for the big buffers** (`MADV_HUGEPAGE`). No change. The strided walk
-   is over the *caller's* input buffer, which we do not allocate. Kept anyway - it
+   is over the *caller's* input buffer, which the library does not allocate. Kept - it
    costs nothing and the TLB argument still holds for the intermediate.
-3. **Blocking stage A over G groups per input pass** (`APOGEE_GBLK`). Recorded here
-   originally as "gains nothing". **That was wrong** - see the correction below. The
-   sequential runs it was judged on had 405-455 us of spread at 2^18, larger than the
-   effect, so no conclusion was available either way.
+3. **Blocking stage A over G groups per input pass** (`APOGEE_GBLK`). This does
+   help; see the paired measurement below. Sequential runs cannot resolve it -- the
+   spread at 2^18 is 405-455 us, larger than the effect itself -- so it has to be
+   measured A/B with the two builds interleaved.
 
 So A=6's 1022 us is 8 MiB of strided DRAM read *plus* 8 MiB of L2 buffer write, and
 the two are balanced - which is why trading one for the other does nothing. Getting
@@ -228,20 +228,18 @@ past this needs the input read itself to become sequential, not merely wider.
 
 Two things were slowing every experiment down: the full test suite is 40 s, and
 run-to-run spread at 2^18 is ~12%, which is larger than most changes worth making.
-Comparing two sequential runs cannot see a 5% effect, and several conclusions
-earlier in this work were drawn from exactly that kind of comparison.
+Comparing two sequential runs cannot see a 5% effect. Any change smaller than
+the spread has to be measured A/B with the two builds interleaved.
 
-- `make quick` - 1.75 s correctness gate (unit tests plus a trimmed batch matrix
-  that keeps every *mode*: threshold, window, both directions). Run between edits;
-  `make test` still runs the full 283k checks before committing.
-- `bench/ab A.so B.so` - paired A/B of two library builds, dlopen'd into one
-  process and alternated round by round so machine drift hits both equally. It
-  checks the two builds return identical peaks before timing anything, reports the
-  median per-round ratio and the observed spread, and decides significance itself
-  with a two-sided sign test.
+- **Paired A/B.** Build both versions as shared objects, dlopen both into one
+  process, and alternate them round by round so machine drift hits each equally.
+  Check the two builds return identical peaks before timing anything, then report
+  the median per-round ratio, the observed spread, and a two-sided sign test.
+  The C harness this describes is no longer in the tree; the method is what
+  matters, and it is the only way to resolve an effect smaller than the spread.
 
-Two calibration details that mattered, both found by running the harness against
-an identical pair of libraries and demanding it say "noise":
+Two calibration details matter, both found by running such a harness against an
+identical pair of libraries and demanding it say "noise":
 
 - **R must be even.** The order alternates each round, so an odd R hands one side
   the disadvantageous first slot once more than the other. At R=25 that produced a
@@ -251,22 +249,22 @@ an identical pair of libraries and demanding it say "noise":
 
 Usage:
 
-    make libapogee.so && cp libapogee.so /tmp/base.so
+    cp libapogee.so base.so       # build the baseline first
     ...edit...
-    make ab BASE=/tmp/base.so ABFLAGS="-t 10 12 14 16"
+    ./ab base.so ./libapogee.so -t 10 12 14 16
 
 
-## Correction: group blocking was real, and the first heuristic had it backwards
+## Group blocking, measured paired
 
 The three items above were judged on sequential before/after runs whose spread
-exceeded the effect. Re-measured with `bench/ab` (paired, drift-cancelled, sign
+exceeded the effect, so their verdicts do not stand. Re-measured paired (drift-cancelled, sign
 test, 4 plan-layout trials), holding everything but G fixed inside one build:
 
 | N | old G | best G | effect |
 |---|---|---|---|
 | 2^12 | 4 | 1 | G=1 **3.8% faster** (38/48) |
 | 2^14 | 8 | 1 | G=1 **4.3-5.6% faster** (0/48 for every larger G) |
-| 2^15 | 8 | — | within the 3% resolution floor either way |
+| 2^15 | 8 | - | within the 3% resolution floor either way |
 | 2^16 | 4 | 4 | G=4 3.1% faster than G=1 (32/32); G=16 3.2% *slower* |
 | 2^17 | 4 | 4-16 | ~12.5% faster than G=1 (32/32) |
 | 2^18 | 2 | 32 | **10.8% faster** (16/16) |
@@ -514,11 +512,11 @@ Both were latent: nothing reachable through the public API triggered either.
 They mattered because the *measurement* triggered them - the split sweep showed a
 "1.48x win" at 2^18 that was entirely wrong code doing less work.
 
-What remains on AVX2 is not a knob.  Our 8-lane path costs 1.2-1.7x our 16-lane
+What remains on AVX2 is not a knob.  The 8-lane path costs 1.2-1.7x the 16-lane
 path, which is close to the 2x the halved vector width implies, while amd-fftw
 barely gains from AVX-512 at all (2^14: 14.1 us AVX2 against 13.8 AVX-512).  So
-the AVX-512 lead was substantially "we use the wider vectors better than they
-do", and that advantage is simply absent at 8 lanes.
+the AVX-512 lead came substantially from using the wider vectors better, and
+that advantage is simply absent at 8 lanes.
 
 ## Fusing the product into the codelet: neutral, and why
 
@@ -674,7 +672,7 @@ filter.  The coarse stage is a 2x-oversampled narrow band with a short kernel.
 ### Implementation form (from a working Cython kernel for a related problem)
 
 Worth keeping even though the long-kernel route lost, because the *form* is the
-right one for whatever kernel we end up with:
+right one for whatever kernel is ultimately selected:
 
 - Keep the LUT weights **real**.  Fold the analytic modulation in as (-1)^index
   on the samples plus one complex rotation e^{i pi x} per evaluation.  The tap

@@ -1,7 +1,7 @@
 /* apogee: batched matched filter.
  *
  * D data segments x T templates, reporting the binned maximum of each pair's
- * correlation.  See docs/matched-filter-plan.md for where the time goes and which
+ * correlation.  See docs/design.md for where the time goes and which
  * reuse opportunities are real.
  *
  * Segments arrive already transformed.  Ingest only rearranges - conjugate the

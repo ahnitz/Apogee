@@ -9,7 +9,7 @@ output and throw the rest away, and once you say so up front the filter can
 skip work that could not have produced a peak anyway.
 
 > **Status: work in progress.** The API still moves, and there is a known
-> calibration weakness in the hierarchical filter — see
+> calibration weakness in the hierarchical filter. See
 > [Caveats](#caveats).
 
 ```python
@@ -33,7 +33,7 @@ Needs numpy and a C compiler. x86-64 with AVX2; AVX-512 is used when present.
 
 ## How it works
 
-Inputs are **frequency domain** — the unnormalised forward transform of each
+Inputs are **frequency domain**: the unnormalised forward transform of each
 segment, in natural order. Produce them with whatever you already use (numpy,
 MKL, FFTW); apogee does not need to own that step.
 
@@ -49,16 +49,16 @@ Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 
 ### Performance
 
-Per (data, template) pair, 8×32 batch, one core of a Zen 5 desktop:
+Per (data, template) pair, 8x32 batch, one core of a Zen 5 desktop:
 
 | n | apogee | numpy | |
 |---:|---:|---:|---:|
-| 1024 | 0.61 µs | 18.98 µs | 31× |
-| 4096 | 2.08 µs | 37.81 µs | 18× |
-| 16384 | 9.98 µs | 127.04 µs | 13× |
-| 65536 | 48.87 µs | 568.56 µs | 12× |
+| 1024 | 0.61 µs | 18.98 µs | 31x |
+| 4096 | 2.08 µs | 37.81 µs | 18x |
+| 16384 | 9.98 µs | 127.04 µs | 13x |
+| 65536 | 48.87 µs | 568.56 µs | 12x |
 
-numpy is a floor, not a rival — it is there so the comparison runs anywhere.
+numpy is a floor, not a rival. It is there so the comparison runs anywhere.
 Against MKL or FFTW the margin is much smaller, and part of what is left comes
 from computing peaks instead of a full correlation. Measure on your own box:
 
@@ -72,7 +72,7 @@ python -m apogee.benchmark
 slice of the template, and only run the full-length filter where that slice
 leaves a peak plausible.
 
-**This helps only under an assumption about your templates** — that enough of
+**This helps only under an assumption about your templates**: that enough of
 the matched-filter output power sits in the low band that a narrow slice gives
 a usable bound on the full result. For chirp-like templates whose power is
 concentrated at low frequency that tends to hold. For templates whose power is
@@ -100,15 +100,15 @@ The gate is one-sided by construction: peaks it reports are bit-identical to
 the flat filter's. It can only omit, never invent. `fd` is the budget for how
 often it is allowed to omit one.
 
-On pure noise at n=4096 the gate runs about **7× faster** than the flat filter.
+On pure noise at n=4096 the gate runs about **7x faster** than the flat filter.
 The saving scales with how little survives, so it grows with your threshold and
-falls toward 1× on data where most pairs trigger.
+falls toward 1x on data where most pairs trigger.
 
 ## Caveats
 
 - **The false-dismissal budget is not currently met at low thresholds.**
-  `fd` is honoured well at snr ≳ 6, but at snr 5.0–5.5 with a coarse band the
-  gate omits more than it should — measured at 1.4% against a 0.1% budget in a
+  `fd` is honoured well at snr 6 and above. At snr 5.0 to 5.5 with a coarse
+  band the gate omits more than it should: 1.4% against a 0.1% budget in a
   418-template search. The cause is that the gate's recovery factors are
   measured from a mean spectrum, which is not a bound on any individual
   realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
@@ -124,8 +124,8 @@ pytest              # includes a C test that builds itself from source
 python -m apogee.benchmark
 ```
 
-Design notes and measured dead ends live in [docs/](docs/) — including the
-things that did *not* work, which is most of them.
+[docs/](docs/) holds the design notes: how the hierarchical gate is
+calibrated, and measurements of the approaches that were tried and rejected.
 
 ## License
 
