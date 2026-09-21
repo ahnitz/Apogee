@@ -210,8 +210,11 @@ def build(runs):
                      html.escape(h.get("version", "")), html.escape(h.get("python", ""))])
     o.append(table(["runner", "os", "arch", "back end", "MF_ISA", "version", "python"], rows))
     o.append('<div class="note">The back end is chosen at run time from the CPU. '
-             'The three <code>linux-x86_64*</code> rows are the same machine forced '
-             'down different kernels, so they isolate the back end from the hardware.</div>')
+             'Rows sharing a prefix (<code>linux-x86_64</code>, '
+             '<code>linux-x86_64-avx2</code>, <code>linux-x86_64-portable</code>) ran '
+             'in one job on one host, so those compare kernels. Rows with different '
+             'prefixes ran on different runners and compare machines at least as much '
+             'as kernels &mdash; do not read a back-end conclusion across them.</div>')
 
     # ---- hierarchical: the point of the package ----
     o.append("<h2>Hierarchical gate</h2>")
@@ -262,6 +265,8 @@ def build(runs):
     o.append(line_chart(series, "Time per pair", "transform length n",
                         "microseconds per pair"))
 
+    # Normalise within a host, never across: a ratio between two runners is a
+    # statement about two machines, not about two kernels.
     ref = next((r for r in runs if r["host"]["label"] == "linux-x86_64"), None)
     if ref:
         base = {f["n"]: f["us_per_pair"] for f in ref["flat"]}

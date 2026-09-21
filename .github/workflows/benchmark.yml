@@ -21,15 +21,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-latest,   label: "linux-x86_64",       isa: ""}
-          # Same host, forced down a narrower back end, so the three x86
-          # kernels are compared on identical hardware rather than across
-          # different runners.
-          - {os: ubuntu-latest,   label: "linux-x86_64-avx2",  isa: "avx2"}
-          - {os: ubuntu-latest,   label: "linux-x86_64-port",  isa: "portable"}
-          - {os: ubuntu-24.04-arm, label: "linux-arm64",       isa: ""}
-          - {os: macos-14,        label: "macos-arm64",        isa: ""}
-          - {os: macos-13,        label: "macos-x86_64",       isa: ""}
+          # `isas` is a list because each matrix entry is a SEPARATE runner
+          # VM, with its own CPU model and its own neighbours.  Comparing back
+          # ends across entries compares machines as much as kernels; to
+          # compare kernels they have to run in one job, on one host.
+          - {os: ubuntu-latest,    label: "linux-x86_64",  isas: "auto avx2 portable"}
+          - {os: ubuntu-24.04-arm, label: "linux-arm64",   isas: "auto"}
+          - {os: macos-14,         label: "macos-arm64",   isas: "auto"}
+          - {os: macos-13,         label: "macos-x86_64",  isas: "auto"}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,37 +51,38 @@ jobs:
       - name: Install
         run: python -m pip install --upgrade pip && python -m pip install .[test]
 
-      - name: Test
-        # A benchmark of a wrong answer is worthless, so the suite gates it.
-        env:
-          MF_ISA: ${{ matrix.isa }}
+      - name: Test and benchmark every back end on this host
+        # The suite gates the benchmark: a timing of a wrong answer is
+        # worthless, and the portable back end has produced wrong answers.
         run: |
           mkdir -p /tmp/run && cd /tmp/run
-          python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
-
-      - name: Benchmark
-        env:
-          MF_ISA: ${{ matrix.isa }}
-        run: |
-          cd /tmp/run
-          python -m matchedfilter.benchmark \
-            --n 1024 4096 16384 65536 262144 \
-            --data 8 --templates 32 --reps 7 --fd 1e-3 \
-            --label "${{ matrix.label }}" \
-            --json "$GITHUB_WORKSPACE/bench-${{ matrix.label }}.json" \
-            | tee "$GITHUB_WORKSPACE/bench-${{ matrix.label }}.txt"
+          for isa in ${{ matrix.isas }}; do
+            if [ "$isa" = auto ]; then unset MF_ISA; name="${{ matrix.label }}"
+            else export MF_ISA="$isa"; name="${{ matrix.label }}-$isa"; fi
+            echo "::group::$name"
+            python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
+            python -m matchedfilter.benchmark \
+              --n 1024 4096 16384 65536 262144 \
+              --data 8 --templates 32 --reps 7 --fd 1e-3 \
+              --label "$name" \
+              --json "$GITHUB_WORKSPACE/bench-$name.json" \
+              | tee "$GITHUB_WORKSPACE/bench-$name.txt"
+            echo "::endgroup::"
+          done
 
       - name: Publish to the run summary
         if: always()
         run: |
-          { echo "## ${{ matrix.label }}"; echo; echo '```'
-            cat "bench-${{ matrix.label }}.txt" 2>/dev/null || echo "(no output)"
-            echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          for f in bench-${{ matrix.label }}*.txt; do
+            [ -e "$f" ] || continue
+            { echo "## $(basename "$f" .txt | sed 's/^bench-//')"; echo
+              echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
           name: bench-${{ matrix.label }}
-          path: bench-${{ matrix.label }}.json
+          path: bench-${{ matrix.label }}*.json
           if-no-files-found: error
 
   page:
