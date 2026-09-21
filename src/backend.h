@@ -38,9 +38,11 @@ extern const ap_backend ap_be_bal16;   /* same source at 16 lanes, for cross-che
    that must run anywhere; level 2 adds AVX2 and FMA.  Only level 0 exists off
    x86, where there is nothing to fall back from. */
 #ifdef AP_WITH_HIGHWAY
-/* Same width-generic kernel again, this time on Google Highway.  Built only
-   when Highway is available; AP_HWY_W is the lane count its target uses. */
-extern const ap_backend AP_HWY_BACKEND;
+/* The same width-generic kernel on Google Highway, one per lane count.
+   Highway's FixedTag cannot exceed the target's native vector, so the width
+   and the target go together: 16 needs AVX-512, 8 needs AVX2. */
+extern const ap_backend ap_be_hwy8;
+extern const ap_backend ap_be_hwy16;
 #endif
 extern const ap_backend ap_be_port80;
 #if defined(__x86_64__) || defined(__i386__)

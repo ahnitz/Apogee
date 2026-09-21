@@ -94,14 +94,16 @@ def highway_available():
 # silently falls back to SSE4 and gives 4 lanes where 8 were asked for.
 HWY_AVX2 = ["-mavx2", "-mfma", "-mbmi", "-mbmi2", "-mf16c", "-mlzcnt",
             "-std=c++17"]
+HWY_AVX3 = ["-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl",
+            "-mavx2", "-mfma", "-mbmi", "-mbmi2", "-mf16c", "-mlzcnt",
+            "-std=c++17"]
 
 # Compiled into every slice, so an arm64 slice of a universal2 build never
 # references kernels that were not built.
 X86_KERNELS = ("AP_WITH_X86_KERNELS", "1" if IS_X86 else "0")
 
 # Tell dispatch.c whether the Highway back end exists, and at what width.
-HWY_DEFS = ([("AP_WITH_HIGHWAY", "1"), ("AP_HWY_BACKEND", "ap_be_hwy8"),
-             ("AP_HWY_W", "8")] if highway_available() else [])
+HWY_DEFS = ([("AP_WITH_HIGHWAY", "1")] if highway_available() else [])
 
 # (source, extra flags, extra defines)
 if IS_X86:
@@ -136,11 +138,18 @@ if IS_X86:
         ("python/matchedfilter/_core.c", [], []),
     ]
     if highway_available():
+        # One object per lane count.  Highway's FixedTag will not exceed the
+        # target's native vector, so the width and the target go together.
         GROUPS.append(
             ("src/balanced_hwy.cc", HWY_AVX2,
              [("AP_W", "8"), ("AP_HIGHWAY", "1"),
               ("HWY_COMPILE_ONLY_STATIC", "1"),
               ("HWY_BASELINE_TARGETS", "HWY_AVX2")]))
+        GROUPS.append(
+            ("src/balanced_hwy.cc", HWY_AVX3,
+             [("AP_W", "16"), ("AP_HIGHWAY", "1"),
+              ("HWY_COMPILE_ONLY_STATIC", "1"),
+              ("HWY_BASELINE_TARGETS", "HWY_AVX3")]))
 else:
     # No -m flags: the vector extensions lower to whatever the target has
     # (NEON on arm64), and naming an ISA here would only restrict it.

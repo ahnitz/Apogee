@@ -57,7 +57,9 @@ static const ap_backend *pick(void){
   const char *e = getenv("MF_ISA");
   if(e && *e){
 #ifdef AP_WITH_HIGHWAY
-    if(!strcmp(e,"highway"))     return &AP_HWY_BACKEND;
+    if(!strcmp(e,"highway"))     return have_avx512() ? &ap_be_hwy16 : &ap_be_hwy8;
+    if(!strcmp(e,"highway8"))    return &ap_be_hwy8;
+    if(!strcmp(e,"highway16"))   return have_avx512() ? &ap_be_hwy16 : NULL;
 #endif
     if(!strcmp(e,"portable0"))   return &ap_be_port80;
 #if AP_HAVE_X86
@@ -208,7 +210,8 @@ int ap_lane_width(void){
   const ap_backend *b=pick();
   if(!b) return 0;
 #ifdef AP_WITH_HIGHWAY
-  if(b==&AP_HWY_BACKEND) return AP_HWY_W;
+  if(b==&ap_be_hwy16) return 16;
+  if(b==&ap_be_hwy8)  return 8;
 #endif
   if(b==&ap_be_bal8 || b==&ap_be_port80
 #if AP_HAVE_X86
