@@ -114,6 +114,12 @@ size_t ap_hmf_nbins(const ap_hmf_plan *p, size_t binsize, size_t start, size_t e
  *
  * Pass NULL to return to measuring each template.  Set before the templates. */
 int    ap_hmf_set_reference(ap_hmf_plan *p, const float *power);
+/* Calibrate the first stage against this SNR instead of the search threshold.
+   Final triggers are still cut at the threshold passed to ap_hmf_run; this
+   only sets where the cheap first pass decides a full reconstruction is
+   needed.  Pass <=0 to go back to deriving it.  Band, oversample and taps are
+   fixed at plan creation and are unaffected. */
+int    ap_hmf_set_first_stage(ap_hmf_plan *p, float snr);
 
 int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
 int    ap_hmf_set_template(ap_hmf_plan *p, int t, const float *spec);

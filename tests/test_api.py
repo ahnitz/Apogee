@@ -521,3 +521,43 @@ def test_python_overhead_stays_off_the_hot_path():
     assert one < 40 * per_pair, (
         "one pair costs %.1f us against %.1f us amortised; Python overhead is "
         "back on the per-pair path" % (one * 1e6, per_pair * 1e6))
+
+
+def test_first_stage_threshold_is_independent_of_configuration():
+    """set_first_stage moves the first-stage level, nothing else.
+
+    The value derived from (snr, fd) comes from an offline sweep whose
+    recovery factors are measured against a mean spectrum, and it is wrong in
+    at least one cell -- see docs/hierarchical.md.  So a caller has to be able
+    to override it.  Two properties matter: lowering it must make the first
+    stage strictly more willing to reconstruct (never less, which is what a
+    table lookup keyed on snr does, because that selects a whole new
+    configuration), and it must not disturb band/oversample/taps.
+    """
+    n, nd, nt = 4096, 16, 4
+    rng = np.random.default_rng(23)
+    power = inspiral_power(n)
+    h = np.repeat(template_with_power(n, power)[None, :], nt, axis=0)
+
+    rates = {}
+    cfgs = {}
+    for fs in (None, 5.5, 5.0, 4.5):
+        hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt,
+                                   snr=5.5, fd=1e-3, band=512,
+                                   oversample=2, taps=8)
+        hf.set_reference(power)
+        hf.set_templates(h)
+        hf.set_data(noise((nd, n), np.random.default_rng(23)))
+        hf.set_first_stage(fs)
+        hf.run(binsize=n, threshold=5.5)
+        rates[fs] = hf.trigger_rate
+        cfgs[fs] = hf.config
+
+    # the configuration is chosen at construction and must not move
+    assert len(set(cfgs.values())) == 1, f"configuration changed: {cfgs}"
+
+    # lowering the first-stage SNR can only make it reconstruct more often
+    ordered = [rates[5.5], rates[5.0], rates[4.5]]
+    assert ordered == sorted(ordered), (
+        "first-stage rate must be monotonic in the first-stage SNR, got "
+        + repr(rates))

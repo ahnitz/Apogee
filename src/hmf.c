@@ -91,6 +91,7 @@ struct ap_hmf_plan {
   unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
   long npre, ninterp, nskip;   /* diagnostics: pre-gate passes, interpolations run */
   float lastgate;
+  float fs_snr;        /* explicit first-stage SNR; <=0 means derive it */
 };
 
 /* Kaiser I0, series form; only ever called at plan construction. */
@@ -254,6 +255,12 @@ void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *oversample,int *taps){
 
 static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a1,
                              float *gout,float *grawout,float *graw1out);
+
+int ap_hmf_set_first_stage(ap_hmf_plan *p,float snr){
+  if(!p) return -1;
+  p->fs_snr = snr > 0.0f ? snr : 0.0f;   /* <=0 restores the derived level */
+  return 0;
+}
 
 int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
   if(!p) return -1;
@@ -553,7 +560,14 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
      that anything one-sided belongs outside the product. */
   float *tcs=p->tcbuf, *rawg=p->rawbuf, *eveng=p->evenbuf;
   {
-    float T = threshold>p->snr ? threshold : p->snr;
+    /* The SNR the first stage is calibrated against.  By default the search
+       threshold (or the plan's, whichever is higher), but a caller may set it
+       directly: the first stage then tests at that SNR while final triggers
+       are still cut at `threshold`.  This only moves the level -- band,
+       oversample and taps are chosen when the plan is created and are not
+       disturbed, so it is a threshold and not a different configuration. */
+    float T = p->fs_snr > 0.0f ? p->fs_snr
+                               : (threshold>p->snr ? threshold : p->snr);
     for(int t=0;t<nt;t++){
       float gt=p->tg[t0+t];
       tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd);

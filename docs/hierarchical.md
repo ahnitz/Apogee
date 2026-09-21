@@ -255,6 +255,21 @@ a re-calibration.  It should not be attempted in a context too small to finish
 and re-validate it, because a half-finished gate that is slightly wrong looks
 *faster*, and the correctness suite cannot see it.
 
+## The first-stage threshold can be set directly
+
+`(snr, fd)` select a configuration -- band, oversample, taps -- and a level for
+the first stage, from the offline sweep in `tools/hmf_design.py`.  That level
+is a suggestion.  `ap_hmf_set_first_stage` (Python: `set_first_stage`) replaces
+it with an SNR the caller chooses, leaving the configuration alone.
+
+The distinction matters because changing `snr` at construction is *not* a way
+to move the threshold: it selects a different row of the table, so band and
+taps move with it.  Measured on a pycbc ratio search at a 5.5 SNR threshold,
+constructing with snr=5.25 recovered every trigger while snr=4.5 -- nominally
+more conservative -- lost four times as many as the default.  A lower
+threshold cannot lose more triggers; a different configuration can.  The
+override is monotonic by construction, which `tests/test_api.py` checks.
+
 ## Recovery factors from a mean frequency series are not a bound at coarse grids
 
 graw1 is measured over noise realisations at a low quantile, because the

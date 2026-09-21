@@ -237,6 +237,25 @@ class HierarchicalFilter(MatchedFilter):
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd,
                                  int(band), int(oversample or 2), int(taps or 8))
 
+    def set_first_stage(self, snr):
+        """Calibrate the first stage against `snr` rather than the threshold.
+
+        Final triggers are still cut at the threshold passed to :meth:`run`;
+        this sets only where the cheap first pass decides a full
+        reconstruction is needed.  Lower it to run the first stage more
+        conservatively, at the cost of reconstructing more often.
+
+        The value chosen from ``snr`` and ``fd`` at construction is a
+        suggestion, not a constraint -- it comes from an offline sweep whose
+        recovery factors are measured against a mean spectrum, so it is not
+        reliable everywhere (see docs/hierarchical.md).  Callers who know
+        better should say so here.  Band, oversample and taps are fixed when
+        the plan is built and are not affected.
+
+        Pass ``None`` or a non-positive value to go back to deriving it.
+        """
+        self._mf.set_first_stage(0.0 if snr is None else float(snr))
+
     def set_reference(self, power):
         """Set the reference SNR distribution.
 

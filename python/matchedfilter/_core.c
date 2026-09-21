@@ -236,10 +236,19 @@ static PyObject *HMF_config(HMFObject *self,PyObject *a){
   size_t band=0; int u=0,k=0; (void)a; ap_hmf_config(self->p,&band,&u,&k);
   return Py_BuildValue("(nii)",(Py_ssize_t)band,u,k);
 }
+static PyObject *HMF_set_first_stage(HMFObject *self,PyObject *args){
+  float snr;
+  if(!PyArg_ParseTuple(args,"f",&snr)) return NULL;
+  if(ap_hmf_set_first_stage(self->p,snr)<0){
+    PyErr_SetString(PyExc_RuntimeError,"set_first_stage failed"); return NULL; }
+  Py_RETURN_NONE;
+}
+
 static PyMethodDef HMF_methods[]={
   {"set_data",(PyCFunction)HMF_set_data,METH_VARARGS,"set_data(i, buffer)"},
   {"set_template",(PyCFunction)HMF_set_template,METH_VARARGS,"set_template(i, buffer)"},
   {"set_reference",(PyCFunction)HMF_set_reference,METH_VARARGS,"set_reference(buffer|None)"},
+  {"set_first_stage",(PyCFunction)HMF_set_first_stage,METH_VARARGS,"set_first_stage(snr)"},
   {"run",(PyCFunction)HMF_run,METH_VARARGS,"run(...) -> total crossings"},
   {"nbins",(PyCFunction)HMF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},
   {"run_series",(PyCFunction)HMF_run_series,METH_VARARGS,"run_series(...)"},
