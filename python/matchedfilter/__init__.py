@@ -252,6 +252,11 @@ class HierarchicalFilter(MatchedFilter):
         better should say so here.  Band, oversample and taps are fixed when
         the plan is built and are not affected.
 
+        The design table's SNR grid starts at 4.5, and the level is
+        interpolated on it, so anything lower **clamps to 4.5** rather than
+        going further.  The call succeeds either way; if you need the first
+        stage looser than that, widen the band instead.
+
         Pass ``None`` or a non-positive value to go back to deriving it.
         """
         self._mf.set_first_stage(0.0 if snr is None else float(snr))

@@ -529,35 +529,76 @@ def test_first_stage_threshold_is_independent_of_configuration():
     The value derived from (snr, fd) comes from an offline sweep whose
     recovery factors are measured against a mean spectrum, and it is wrong in
     at least one cell -- see docs/hierarchical.md.  So a caller has to be able
-    to override it.  Two properties matter: lowering it must make the first
-    stage strictly more willing to reconstruct (never less, which is what a
-    table lookup keyed on snr does, because that selects a whole new
-    configuration), and it must not disturb band/oversample/taps.
+    to override it, and two properties have to hold: lowering it makes the
+    first stage strictly more willing to reconstruct (unlike passing a
+    different snr at construction, which selects a whole new configuration),
+    and it leaves band/oversample/taps alone.
+
+    Signals are injected deliberately.  On pure noise at this threshold the
+    first stage never fires at any level, every rate is zero, and a
+    monotonicity assertion over constants passes whatever the code does --
+    which is exactly what an earlier version of this test did.
     """
-    n, nd, nt = 4096, 16, 4
-    rng = np.random.default_rng(23)
+    n, nd, nt = 4096, 64, 8
+    rng = np.random.default_rng(3)
     power = inspiral_power(n)
     h = np.repeat(template_with_power(n, power)[None, :], nt, axis=0)
+    d = noise((nd, n), rng)
+    for i in range(0, nd, 4):
+        d[i] += (6.0 * np.fft.fft(np.roll(np.fft.ifft(h[i % nt]), i * 37))
+                 ).astype(np.complex64)
 
-    rates = {}
-    cfgs = {}
-    for fs in (None, 5.5, 5.0, 4.5):
-        hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt,
-                                   snr=5.5, fd=1e-3, band=512,
-                                   oversample=2, taps=8)
+    rates, cfgs = {}, {}
+    for fs in (None, 6.0, 5.5, 5.0):
+        hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5,
+                                   fd=1e-3, band=512, oversample=2, taps=8)
         hf.set_reference(power)
         hf.set_templates(h)
-        hf.set_data(noise((nd, n), np.random.default_rng(23)))
+        hf.set_data(d)
         hf.set_first_stage(fs)
         hf.run(binsize=n, threshold=5.5)
-        rates[fs] = hf.trigger_rate
-        cfgs[fs] = hf.config
+        rates[fs], cfgs[fs] = hf.trigger_rate, hf.config
 
-    # the configuration is chosen at construction and must not move
-    assert len(set(cfgs.values())) == 1, f"configuration changed: {cfgs}"
+    # the workload must actually exercise the first stage, or the rest is vacuous
+    assert rates[5.5] > 0.01, (
+        "first stage never fires, so this test proves nothing: " + repr(rates))
 
-    # lowering the first-stage SNR can only make it reconstruct more often
-    ordered = [rates[5.5], rates[5.0], rates[4.5]]
+    assert len(set(cfgs.values())) == 1, "configuration moved: %r" % (cfgs,)
+
+    # explicitly setting the derived value must reproduce it
+    assert rates[5.5] == pytest.approx(rates[None], rel=1e-6)
+
+    # and lowering it can only reconstruct more often
+    ordered = [rates[6.0], rates[5.5], rates[5.0]]
     assert ordered == sorted(ordered), (
-        "first-stage rate must be monotonic in the first-stage SNR, got "
-        + repr(rates))
+        "rate must rise as the first-stage SNR falls, got " + repr(rates))
+
+
+def test_first_stage_below_the_design_grid_is_clamped():
+    """Values under the design table's lowest SNR saturate rather than scale.
+
+    hmf_threshold clamps its snr argument to the table's grid, whose floor is
+    4.5, so asking for less is silently the same as asking for 4.5.  Worth a
+    test because the call succeeds and looks like it did something.
+    """
+    n, nd, nt = 4096, 64, 8
+    rng = np.random.default_rng(3)
+    power = inspiral_power(n)
+    h = np.repeat(template_with_power(n, power)[None, :], nt, axis=0)
+    d = noise((nd, n), rng)
+    for i in range(0, nd, 4):
+        d[i] += (6.0 * np.fft.fft(np.roll(np.fft.ifft(h[i % nt]), i * 37))
+                 ).astype(np.complex64)
+
+    got = {}
+    for fs in (4.5, 3.0, 0.01):
+        hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5,
+                                   fd=1e-3, band=512, oversample=2, taps=8)
+        hf.set_reference(power)
+        hf.set_templates(h)
+        hf.set_data(d)
+        hf.set_first_stage(fs)
+        hf.run(binsize=n, threshold=5.5)
+        got[fs] = hf.trigger_rate
+    assert got[3.0] == pytest.approx(got[4.5], rel=1e-6)
+    assert got[0.01] == pytest.approx(got[4.5], rel=1e-6)
