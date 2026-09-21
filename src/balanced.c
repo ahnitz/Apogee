@@ -337,7 +337,12 @@ void FN(destroy)(void *vp){
    the intermediate store.  Split out so the fused-product path can run its own
    transform - which loads the product instead of reading a staging buffer - and
    then share this tail. */
-static inline void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict TI,
+/* always_inline, not just inline.  The four stage-A variants each call this
+   once, and in the C build the compiler duplicates it into all of them.  The
+   C++/Highway build declined to, leaving a real call in the hot path: the
+   stage functions fell from ~1000 instructions to ~250 with a shared 914
+   instruction tail, and cost several percent.  `inline` is only a hint. */
+static AP_ALWAYS_INLINE void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict TI,
                                vf*restrict OR,vf*restrict OI,
                                vf*restrict bR,vf*restrict bI){
   const int N2=PN2; const int N1=PN1; (void)N1;

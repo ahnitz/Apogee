@@ -182,6 +182,72 @@ def _inspiral_power(n, frac=0.85, fmax_frac=0.125):
     return out
 
 
+def compare_backends(isas, reps, n=4096, ntmpl=64, ntaps=1024,
+                     series_len=1 << 20, threshold=5.5):
+    """Compare SIMD back ends on a ratio-filter-shaped hierarchical workload.
+
+    This is the shape pycbc's ratio filter drives: a long reference SNR series
+    cut into overlap-save blocks, filtered against a batch of FIR templates
+    through run_series.  It is the benchmark to judge a back end on.  The flat
+    filter exercises only large transforms; this also pays the coarse pass,
+    the interpolation, and the per-call cost of many small blocks -- and back
+    ends differ more here than they do on the flat path.
+
+    Outputs are compared before anything is timed.
+    """
+    rng = np.random.default_rng(11)
+    k = np.arange(n)
+    power = np.zeros(n, np.float32)
+    power[1:n // 2] = (k[1:n // 2] ** (-7.0 / 3.0)).astype(np.float32)
+    power /= power.sum()
+    h = (np.sqrt(power) * np.exp(1j * rng.uniform(0, 2 * np.pi, (ntmpl, n)))
+         ).astype(np.complex64)
+    h /= np.sqrt((np.abs(h) ** 2).sum(axis=1, keepdims=True))
+    series = ((rng.standard_normal(series_len)
+               + 1j * rng.standard_normal(series_len))
+              / np.sqrt(2)).astype(np.complex64)
+
+    valid, bad = n - ntaps + 1, ntaps // 2
+    starts, ws, we, t = [], [], [], 0
+    while t + n <= series_len:
+        starts.append(t); ws.append(bad); we.append(bad + valid); t += valid
+    starts = np.array(starts, np.uintp)
+    ws = np.array(ws, np.uintp); we = np.array(we, np.uintp)
+
+    plans, ref, agree = {}, None, {}
+    for isa in isas:
+        os.environ["MF_ISA"] = isa
+        try:
+            p = mf.HierarchicalFilter(n, ndata=1, ntemplates=ntmpl,
+                                      snr=threshold, fd=1e-3, band=512,
+                                      oversample=2, taps=8)
+        except Exception:
+            continue                    # not built into this extension
+        p.set_reference(power); p.set_templates(h)
+        out = p.run_series(series, starts, ws, we, binsize=n,
+                           threshold=threshold, raw=True)
+        plans[isa] = p
+        if ref is None:
+            ref, agree[isa] = out, True
+        else:
+            agree[isa] = all(np.array_equal(a, b) for a, b in zip(ref, out))
+    if not plans:
+        return None
+
+    names = list(plans)
+    tot = {i: 0.0 for i in names}
+    for r in range(reps):
+        order = names[r % len(names):] + names[:r % len(names)]
+        for isa in order:
+            t0 = time.perf_counter()
+            plans[isa].run_series(series, starts, ws, we, binsize=n,
+                                  threshold=threshold, raw=True)
+            tot[isa] += time.perf_counter() - t0
+    base = tot[names[0]]
+    return [(i, tot[i] / reps * 1e3, tot[i] / base, agree[i],
+             plans[i].trigger_rate) for i in names]
+
+
 def _bench_hier(n, nd, nt, snr, fd, reps):
     """Gate vs flat filter on the same pure-noise data.
 
@@ -257,6 +323,11 @@ def main(argv=None):
                     help="skip the numpy cross-check (much faster for large n)")
     ap.add_argument("--no-hier", action="store_true",
                     help="skip the hierarchical-gate table")
+    ap.add_argument("--backends", nargs="*", metavar="ISA",
+                    help="compare SIMD back ends on a ratio-filter-shaped "
+                         "hierarchical workload and exit, e.g. --backends "
+                         "avx2 portable highway. Back ends that this build "
+                         "does not contain are skipped.")
     ap.add_argument("--fd", type=float, default=1e-3,
                     help="false-dismissal budget for the gate")
     ap.add_argument("--json", metavar="PATH",
@@ -275,6 +346,26 @@ def main(argv=None):
     print(f"python {sys.version.split()[0]}   numpy {np.__version__}")
     print(f"{a.data} data x {a.templates} templates = {a.data * a.templates} pairs, "
           f"{a.window:.0%} window\n")
+
+    if a.backends is not None:
+        isas = a.backends or ["avx2", "portable", "highway"]
+        rows = compare_backends(isas, max(3, a.reps))
+        print("SIMD back ends on a ratio-filter-shaped hierarchical run")
+        print("  (n=4096, 64 templates, 2^20 series in overlap-save blocks)\n")
+        if not rows:
+            print("  none of %s are available in this build" % isas)
+            return 0
+        print("  %-10s %12s %10s %10s  %s"
+              % ("back end", "ms/segment", "relative", "triggered", "output"))
+        bad = 0
+        for isa, ms, rel, same, rate in rows:
+            if not same:
+                bad += 1
+            print("  %-10s %9.2f ms %9.3fx %9.2f%%  %s"
+                  % (isa, ms, rel, rate * 100, "matches" if same else "DIFFERS"))
+        print("\nOutputs are compared against the first back end before anything\n"
+              "is timed: one that disagrees is not a faster back end.")
+        return 1 if bad else 0
     engines = available_engines()
     print("  " + f"{'n':>8}" + f"{'matchedfilter':>14}"
           + "".join(f"{e:>11}" for e in engines)

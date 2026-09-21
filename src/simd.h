@@ -10,6 +10,12 @@
 #define restrict __restrict
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define AP_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define AP_ALWAYS_INLINE inline
+#endif
+
 #ifndef AP_W
 #error "define AP_W to 16 (AVX-512) or 8 (AVX2)"
 #endif
