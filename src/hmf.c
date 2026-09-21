@@ -33,6 +33,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <x86intrin.h>
+#include "alloc.h"
 #include "matchedfilter.h"
 #include "transform.h"
 #include "hmf_table.h"
@@ -170,23 +171,23 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->coarse=ap_mf_create(band,ndata,2*ntmpl);
   p->cf      =ap_create(band);
   p->full_fft=ap_create(n);
-  p->fwd =aligned_alloc(64,2*n*sizeof(float));
-  p->spec=aligned_alloc(64,2*n*sizeof(float));
-  p->cd  =aligned_alloc(64,(size_t)ndata*2*band*sizeof(float));
+  p->fwd =ap_alloc64(2*n*sizeof(float));
+  p->spec=ap_alloc64(2*n*sizeof(float));
+  p->cd  =ap_alloc64((size_t)ndata*2*band*sizeof(float));
   p->dspec=calloc((size_t)ndata,sizeof(*p->dspec));
   p->dready=calloc((size_t)ndata,1);
-  p->ct0 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
-  p->ct1 =aligned_alloc(64,(size_t)ntmpl*2*band*sizeof(float));
+  p->ct0 =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
+  p->ct1 =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
   p->fpow=calloc((size_t)ntmpl,sizeof(float));
   p->tg=calloc((size_t)ntmpl,sizeof(float));
   p->tgraw=calloc((size_t)ntmpl,sizeof(float));
   p->tgraw1=calloc((size_t)ntmpl,sizeof(float));
-  p->shift=aligned_alloc(64,2*band*sizeof(float));
-  p->shift2=aligned_alloc(64,4*band*sizeof(float));
-  p->prod=aligned_alloc(64,2*band*sizeof(float));
-  p->cev =aligned_alloc(64,2*band*sizeof(float));
-  p->cod =aligned_alloc(64,2*band*sizeof(float));
-  p->taps=aligned_alloc(64,(size_t)2*HMF_NSUB*taps*sizeof(float));
+  p->shift=ap_alloc64(2*band*sizeof(float));
+  p->shift2=ap_alloc64(4*band*sizeof(float));
+  p->prod=ap_alloc64(2*band*sizeof(float));
+  p->cev =ap_alloc64(2*band*sizeof(float));
+  p->cod =ap_alloc64(2*band*sizeof(float));
+  p->taps=ap_alloc64((size_t)2*HMF_NSUB*taps*sizeof(float));
   p->tcbuf=calloc((size_t)ntmpl,sizeof(float));
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->evenbuf=calloc((size_t)ntmpl,sizeof(float));

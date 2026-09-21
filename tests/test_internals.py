@@ -9,6 +9,7 @@ It compiles from source, so it only runs in a repository checkout -- an
 installed wheel has no src/ to build against, and the test skips.
 """
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,8 @@ def _have_avx512():
 @pytest.mark.skipif(not os.path.isdir(SRC), reason="not a source checkout")
 @pytest.mark.skipif(shutil.which("cc") is None, reason="no C compiler")
 @pytest.mark.skipif(sys.platform != "linux", reason="x86 Linux only")
+@pytest.mark.skipif(platform.machine().lower() not in ("x86_64", "amd64"),
+                    reason="the C unit test covers x86 kernels")
 @pytest.mark.skipif(not _have_avx512(), reason="test_units.c is AVX-512 only")
 def test_c_internals(tmp_path):
     common = ["-O2", "-I", SRC, "-I", os.path.join(ROOT, "python", "matchedfilter")]

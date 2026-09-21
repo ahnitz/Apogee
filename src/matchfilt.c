@@ -11,7 +11,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
+#define AP_HAVE_X86 1
+#else
+#define AP_HAVE_X86 0
+#endif
+#include "alloc.h"
 #include "matchedfilter.h"
 #include "transform.h"
 
@@ -20,6 +26,7 @@
  * transform wants conj(product) - which costs nothing, being the same two FMAs
  * with the signs swapped.  Both sides split means no permutes at all.  The interleaved version this
  * replaced needed four permutes per 16 complex on top of the arithmetic. */
+#if AP_HAVE_X86
 __attribute__((target("avx512f")))
 static void mulspec_avx512(const float *ar,const float *ai,
                            const float *br,const float *bi,
@@ -44,10 +51,18 @@ static void mulspec_avx2(const float *ar,const float *ai,
     _mm256_storeu_ps(oi+k, _mm256_fnmsub_ps(x,v,_mm256_mul_ps(y,u)));
   }
 }
+#endif /* AP_HAVE_X86 */
+
+/* The scalar loop below is not a slow path in practice: the fused product
+   inside stage A is what the matched filter actually uses, and this runs only
+   when the back end has no fused variant.  On non-x86 it is also the only
+   version, and the compiler vectorises it. */
 static void mulspec(const float *ar,const float *ai,const float *br,const float *bi,
                     float *or_,float *oi,size_t n){
+#if AP_HAVE_X86
   if(__builtin_cpu_supports("avx512f") && !(n&15)){ mulspec_avx512(ar,ai,br,bi,or_,oi,n); return; }
   if(__builtin_cpu_supports("avx2")   && !(n&7)) { mulspec_avx2  (ar,ai,br,bi,or_,oi,n); return; }
+#endif
   for(size_t k=0;k<n;k++){
     float x=ar[k],y=ai[k],u=br[k],v=bi[k];
     or_[k]=x*u-y*v; oi[k]=-(x*v+y*u);
@@ -98,13 +113,13 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
      per-batch getenv into a per-pair one. */
   p->tile = 8;
   { const char *e=getenv("MF_MFTILE"); if(e){ int v=atoi(e); if(v>0) p->tile=v; } }
-  p->dre=aligned_alloc(64,(size_t)ndata*n*sizeof(float));
-  p->dim=aligned_alloc(64,(size_t)ndata*n*sizeof(float));
-  p->tre=aligned_alloc(64,(size_t)ntmpl*n*sizeof(float));
-  p->tim=aligned_alloc(64,(size_t)ntmpl*n*sizeof(float));
-  p->pr =aligned_alloc(64,n*sizeof(float));
-  p->pi =aligned_alloc(64,n*sizeof(float));
-  p->scratch=aligned_alloc(64,2*n*sizeof(float));
+  p->dre=ap_alloc64((size_t)ndata*n*sizeof(float));
+  p->dim=ap_alloc64((size_t)ndata*n*sizeof(float));
+  p->tre=ap_alloc64((size_t)ntmpl*n*sizeof(float));
+  p->tim=ap_alloc64((size_t)ntmpl*n*sizeof(float));
+  p->pr =ap_alloc64(n*sizeof(float));
+  p->pi =ap_alloc64(n*sizeof(float));
+  p->scratch=ap_alloc64(2*n*sizeof(float));
   if(!p->dre||!p->dim||!p->tre||!p->tim||!p->pr||!p->pi||!p->scratch){
     ap_mf_destroy(p); return NULL; }
   return p;

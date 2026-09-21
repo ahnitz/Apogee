@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include <immintrin.h>
+#include "alloc.h"
 #include "matchedfilter.h"
 #include "internal.h"
 #include "backend.h"
@@ -58,7 +59,7 @@ static int a512_supported(size_t N){
 
 static void *a512_create(size_t N){
   if(!a512_supported(N)) return NULL;
-  AP *p = aligned_alloc(64, sizeof(*p));
+  AP *p = ap_alloc64(sizeof(*p));
   if(!p) return NULL;
   memset(p,0,sizeof(*p));
   p->N=N;
@@ -69,8 +70,8 @@ static void *a512_create(size_t N){
     p->t4r[c][k2]=_mm512_loadu_ps(tr); p->t4i[c][k2]=_mm512_loadu_ps(ti);
   }
   if(N==1024){
-    p->re=aligned_alloc(64,1024*sizeof(float));
-    p->im=aligned_alloc(64,1024*sizeof(float));
+    p->re=ap_alloc64(1024*sizeof(float));
+    p->im=ap_alloc64(1024*sizeof(float));
   } else {
     p->bal = ap_be_bal16.create(N);
     if(!p->bal){ free(p); return NULL; }

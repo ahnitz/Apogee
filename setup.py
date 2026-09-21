@@ -15,17 +15,11 @@ import sys
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
-# The kernels are x86 SIMD intrinsics.  There is no portable fallback, so fail
-# here with something a reader can act on rather than 200 lines of "unknown
-# type name '__m512'" from the compiler.  pip only reaches this if it fell back
-# to the sdist, which means no wheel matched the platform.
-_MACHINE = platform.machine().lower()
-if _MACHINE not in ("x86_64", "amd64"):
-    sys.exit(
-        "matchedfilter only builds on x86-64 (found %r).\n"
-        "The kernels are AVX2/AVX-512 intrinsics with no portable fallback.\n"
-        "Support for other architectures is not implemented." % platform.machine()
-    )
+# x86 gets the hand-written AVX-512 and AVX2 kernels; everywhere else builds
+# only the portable back end, which is the same source compiled against
+# compiler vector extensions.  Selecting sources by architecture rather than
+# refusing to build is what lets this run on arm64 and macOS.
+IS_X86 = platform.machine().lower() in ("x86_64", "amd64", "i386", "i686")
 
 BASE = ["-O3", "-fno-math-errno", "-std=gnu11"]
 
@@ -61,20 +55,30 @@ AVX512 = ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 AVX2 = ["-mavx2", "-mfma"]
 
 # (source, extra flags, extra defines)
-GROUPS = [
-    ("src/kernel1024.c", AVX512, []),
-    ("src/be_avx512.c",  AVX512, []),
-    ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
-    ("src/balanced.c",   AVX2,   [("AP_W", "8")]),      # generic source, 8 lanes
-    # Same source a third time, compiler-vectorised.  Built on x86 too so the
-    # two can be compared in one process; on other architectures it is the
-    # only back end there is.
-    ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1")]),  # tuned below
-    ("src/matchfilt.c",  BASE,   []),
-    ("src/hmf.c",        BASE,   []),
-    ("src/dispatch.c",   [],     []),                 # baseline only
-    ("python/matchedfilter/_core.c", [], []),
-]
+if IS_X86:
+    GROUPS = [
+        ("src/kernel1024.c", AVX512, []),
+        ("src/be_avx512.c",  AVX512, []),
+        ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
+        ("src/balanced.c",   AVX2,   [("AP_W", "8")]),      # generic source, 8 lanes
+        # Same source a third time, compiler-vectorised.  Built on x86 too so
+        # the two can be compared inside one process.
+        ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1")]),
+        ("src/matchfilt.c",  BASE,   []),
+        ("src/hmf.c",        BASE,   []),
+        ("src/dispatch.c",   [],     []),                 # baseline only
+        ("python/matchedfilter/_core.c", [], []),
+    ]
+else:
+    # No -m flags: the vector extensions lower to whatever the target has
+    # (NEON on arm64), and naming an ISA here would only restrict it.
+    GROUPS = [
+        ("src/balanced.c",   [], [("AP_W", "8"), ("AP_PORTABLE", "1")]),
+        ("src/matchfilt.c",  BASE, []),
+        ("src/hmf.c",        BASE, []),
+        ("src/dispatch.c",   [],   []),
+        ("python/matchedfilter/_core.c", [], []),
+    ]
 
 
 class BuildExt(build_ext):

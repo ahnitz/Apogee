@@ -50,6 +50,7 @@
 #define AP_PF 0
 #endif
 #include "simd.h"
+#include "alloc.h"
 #include "matchedfilter.h"
 #include "backend.h"
 #ifdef AP_PROF
@@ -159,7 +160,7 @@ void *FN(create)(size_t N){
      cannot compute used to be accepted and produce silently wrong answers - an
      impulse came back with error 1.0 - so refuse it instead. */
   if(!esupported(n1) || !esupported(n2)) return NULL;
-  BP *p=aligned_alloc(64,sizeof(BP)); if(!p) return NULL;
+  BP *p=ap_alloc64(sizeof(BP)); if(!p) return NULL;
   memset(p,0,sizeof(BP));
   p->N=N; p->N1=n1; p->N2=n2; p->nmask=(unsigned)(N/AP_W-1);
   efactor(n1,&p->a1,&p->a2); efactor(n2,&p->b1,&p->b2);
@@ -191,8 +192,8 @@ void *FN(create)(size_t N){
     { size_t sz=(size_t)n1*p->istr;
       size_t alt=(size_t)(n2/AP_W)*n1*AP_W;        /* [k2 block][n1][lane] */
       if(alt>sz) sz=alt;
-      p->ire=aligned_alloc(64,sz*sizeof(float));
-      p->iim=aligned_alloc(64,sz*sizeof(float)); }
+      p->ire=ap_alloc64(sz*sizeof(float));
+      p->iim=ap_alloc64(sz*sizeof(float)); }
   }
   /* Stage A walks the input with stride N1*8 bytes and, one group at a time, uses
      only 2*AP_W floats of each row.  Measured on this machine, touching 128 bytes
@@ -244,18 +245,18 @@ void *FN(create)(size_t N){
   }
   { const char *e=getenv("MF_GMAJOR"); p->gmajor = e?atoi(e):1; }
   { size_t nbuf = (size_t)p->gblk > (size_t)p->bblk ? (size_t)p->gblk : (size_t)p->bblk;
-    p->bR=aligned_alloc(64,me*nbuf*sizeof(vf));
-    p->bI=aligned_alloc(64,me*nbuf*sizeof(vf)); }
-  p->sR=aligned_alloc(64,me*sizeof(vf)); p->sI=aligned_alloc(64,me*sizeof(vf));
-  p->TLr=aligned_alloc(64,(size_t)n2*sizeof(vf)); p->TLi=aligned_alloc(64,(size_t)n2*sizeof(vf));
+    p->bR=ap_alloc64(me*nbuf*sizeof(vf));
+    p->bI=ap_alloc64(me*nbuf*sizeof(vf)); }
+  p->sR=ap_alloc64(me*sizeof(vf)); p->sI=ap_alloc64(me*sizeof(vf));
+  p->TLr=ap_alloc64((size_t)n2*sizeof(vf)); p->TLi=ap_alloc64((size_t)n2*sizeof(vf));
   for(int k2=0;k2<n2;k2++){
     float tr[AP_W],ti[AP_W];
     for(int l=0;l<AP_W;l++){ double a=-2.0*M_PI*(double)l*k2/(double)N;
       tr[l]=(float)cos(a); ti[l]=(float)sin(a); }
     p->TLr[k2]=V_LOADU(tr); p->TLi[k2]=V_LOADU(ti);
   }
-  p->w1r=aligned_alloc(64,(size_t)n1*4); p->w1i=aligned_alloc(64,(size_t)n1*4);
-  p->w2r=aligned_alloc(64,(size_t)n2*4); p->w2i=aligned_alloc(64,(size_t)n2*4);
+  p->w1r=ap_alloc64((size_t)n1*4); p->w1i=ap_alloc64((size_t)n1*4);
+  p->w2r=ap_alloc64((size_t)n2*4); p->w2i=ap_alloc64((size_t)n2*4);
   { int a1,a2; efactor(n1,&a1,&a2);
     for(int k=0;k<(a2==1?1:a2);k++) for(int e=0;e<a1;e++){
       double a=-2.0*M_PI*(double)e*k/n1;
@@ -270,7 +271,7 @@ void *FN(create)(size_t N){
      8N bytes, which is worth it while it stays small; above that keep just the
      scalar part (8N/W bytes) so the large sizes do not pay extra traffic. */
   { size_t g_n=(size_t)n1/AP_W;
-    p->scg=aligned_alloc(64,g_n*(size_t)n2*2*sizeof(float)+64);
+    p->scg=ap_alloc64(g_n*(size_t)n2*2*sizeof(float)+64);
     /* Precomputing the twiddle as full vectors (8N bytes) instead of keeping just
        the scalar part (8N/W) was a win when it was measured, and is not any more:
        2^12 7.7% slower (1/48 rounds), 2^16 2.5% (0/32), 2^14 and 2^18 neutral.
@@ -280,13 +281,13 @@ void *FN(create)(size_t N){
     p->fuse = eprod_ok(p->N2);
     { const char *e=getenv("MF_FUSE"); if(e) p->fuse = atoi(e) ? eprod_ok(p->N2) : 0; }
     if(p->fulltw){
-      p->twr=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
-      p->twi=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
+      p->twr=ap_alloc64(g_n*(size_t)n2*sizeof(vf));
+      p->twi=ap_alloc64(g_n*(size_t)n2*sizeof(vf));
     }
   }
   { size_t nhi=(N/AP_W)/256; if(nhi<1) nhi=1; double Nq=(double)(N/AP_W);
-    p->hr=aligned_alloc(64,nhi*4+64); p->hi=aligned_alloc(64,nhi*4+64);
-    p->lr=aligned_alloc(64,256*4);    p->li=aligned_alloc(64,256*4);
+    p->hr=ap_alloc64(nhi*4+64); p->hi=ap_alloc64(nhi*4+64);
+    p->lr=ap_alloc64(256*4);    p->li=ap_alloc64(256*4);
     for(size_t j=0;j<nhi;j++){ double a=-2.0*M_PI*(double)(j*256)/Nq;
       p->hr[j]=(float)cos(a); p->hi[j]=(float)sin(a); }
     for(int j=0;j<256;j++){ double b=-2.0*M_PI*(double)j/Nq;
@@ -599,8 +600,8 @@ void FN(fft)(void *vp,const float*in,float*out,int conj){
 static int FN(bins_reserve)(BP*p,size_t nb){
   if(nb<=p->nbcap) return 0;
   free(p->bmx);free(p->bre);free(p->bim);free(p->bix);
-  p->bmx=aligned_alloc(64,nb*sizeof(vf)); p->bre=aligned_alloc(64,nb*sizeof(vf));
-  p->bim=aligned_alloc(64,nb*sizeof(vf)); p->bix=aligned_alloc(64,nb*sizeof(vi));
+  p->bmx=ap_alloc64(nb*sizeof(vf)); p->bre=ap_alloc64(nb*sizeof(vf));
+  p->bim=ap_alloc64(nb*sizeof(vf)); p->bix=ap_alloc64(nb*sizeof(vi));
   if(!p->bmx||!p->bre||!p->bim||!p->bix){ p->nbcap=0; return -1; }
   p->nbcap=nb; return 0;
 }
