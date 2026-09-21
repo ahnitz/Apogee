@@ -9,11 +9,12 @@ It is built on x86 as well, so both back ends live in one binary and can be
 compared inside a single process. `MF_ISA=portable` selects it; on non-x86 it
 is the only one there is.
 
-## Two builds, chosen at run time
+## Three builds, chosen at run time
 
-On x86 the portable source is compiled twice: at **baseline** with no `-m`
-flags, and again with `-mavx2 -mfma`. The dispatcher picks the best one the
-CPU supports, and `MF_ISA=portable0` forces the baseline build.
+On x86 the portable source is compiled three times: at **baseline** with no
+`-m` flags, for **AVX** (`-mavx`), and for **AVX2 + FMA**. The dispatcher picks
+the best the CPU supports; `MF_ISA=portable0` and `portable1` force a lower
+one.
 
 This exists because of a bug worth recording. The portable back end is what
 the dispatcher falls through to when a CPU has neither AVX-512 nor AVX2+FMA --
@@ -26,14 +27,21 @@ CI and every development machine here has AVX2.
 The two builds differ by more than the flags suggest, which is why keeping
 both matters rather than just shipping the safe one:
 
-| build | instructions | FMA | ymm | cost vs AVX2 kernels |
-|---|---:|---:|---:|---:|
-| level 2 (`-mavx2 -mfma`) | 22214 | 1340 | 12719 | 1.18x |
-| level 0 (baseline) | 52192 | 0 | 0 | 6.08x |
+| build | earliest CPU | instructions | FMA | ymm | vs AVX2 kernels |
+|---|---|---:|---:|---:|---:|
+| level 2 (`-mavx2 -mfma`) | Haswell, 2013 | 22214 | 1340 | 12719 | 1.18x |
+| level 1 (`-mavx`) | Sandy Bridge, 2011 | 23628 | 0 | 13698 | **1.16x** |
+| level 0 (baseline) | any x86-64 | 52192 | 0 | 0 | 5.63x |
 
-The baseline build is 2.4x the instruction count and about 6x the runtime. It
-is a genuine fallback, not a second choice -- but it runs where nothing else
-would.
+The AVX build is the useful one to notice. It has no FMA at all and 6% more
+instructions than the AVX2 build, and measures the same within noise: the
+transform is dominated by 256-bit float add/sub/mul, which AVX already does,
+and losing FMA costs far less than losing vector width. Dropping to baseline
+SSE2 doubles the instruction count and costs about 5.6x.
+
+So the range a pre-Haswell machine falls into is not the 6x the first fallback
+implied -- an Ivy Bridge Xeon lands on level 1, within about 16% of what the
+AVX2 kernels would give it.
 
 **Status: close, not yet at parity.** The bar is no measurable loss against the
 AVX2 intrinsics at the same width. The remaining gap is 7-16% and is diffuse:

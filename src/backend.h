@@ -39,6 +39,7 @@ extern const ap_backend ap_be_bal16;   /* same source at 16 lanes, for cross-che
    x86, where there is nothing to fall back from. */
 extern const ap_backend ap_be_port80;
 #if defined(__x86_64__) || defined(__i386__)
-extern const ap_backend ap_be_port82;
+extern const ap_backend ap_be_port81;   /* AVX: 256-bit float, no FMA  */
+extern const ap_backend ap_be_port82;   /* AVX2 + FMA                  */
 #endif
 #endif

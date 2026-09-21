@@ -30,6 +30,7 @@ UNITS = [
     # Both compiler-vectorised builds; dispatch.c references each by name.
     # Level 0 is baseline so it runs on a CPU without AVX2, level 2 uses it.
     ("balanced.c",   ["-DAP_W=8", "-DAP_PORTABLE", "-DAP_PORT_LEVEL=0"]),
+    ("balanced.c",   ["-DAP_W=8", "-DAP_PORTABLE", "-DAP_PORT_LEVEL=1", "-mavx"]),
     ("balanced.c",   ["-DAP_W=8", "-DAP_PORTABLE", "-DAP_PORT_LEVEL=2",
                       "-mavx2", "-mfma"]),
     ("dispatch.c",   []),

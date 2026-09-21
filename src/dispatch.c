@@ -9,8 +9,8 @@
  *   balanced512  the same generic source at 16 lanes (cross-check)
  *   portable     the same source again, compiler-vectorised rather than
  *                hand-written; the best build the CPU supports
- *   portable0    that source at baseline, with no AVX2 -- the fallback for a
- *                CPU with neither AVX-512 nor AVX2+FMA
+ *   portable1    that source built for AVX only (Sandy/Ivy Bridge)
+ *   portable0    that source at baseline, the fallback for an x86 without AVX
  */
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +44,10 @@ static int have_avx512(void){
 static int have_avx2(void){
   return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 }
+/* AVX without AVX2 or FMA: Sandy Bridge and Ivy Bridge.  256-bit float
+   arithmetic, which is most of what the transform does, so this recovers the
+   bulk of the gap between the baseline build and the AVX2 one. */
+static int have_avx(void){ return __builtin_cpu_supports("avx"); }
 #else
 #define AP_HAVE_X86 0
 #endif
@@ -52,11 +56,15 @@ static const ap_backend *pick(void){
   const char *e = getenv("MF_ISA");
   if(e && *e){
     if(!strcmp(e,"portable0"))   return &ap_be_port80;
+#if AP_HAVE_X86
+    if(!strcmp(e,"portable1"))   return have_avx() ? &ap_be_port81 : NULL;
+#endif
     if(!strcmp(e,"portable")){
 #if AP_HAVE_X86
       /* Pick the best portable build, so forcing "portable" to compare it
          against the intrinsics compares like with like. */
       if(have_avx2()) return &ap_be_port82;
+      if(have_avx())  return &ap_be_port81;
 #endif
       return &ap_be_port80;
     }
@@ -72,9 +80,13 @@ static const ap_backend *pick(void){
   if(have_avx512()) return &ap_be_avx512;
   if(have_avx2())   return &ap_be_bal8;
 #endif
-  /* Everywhere else: arm64, where the baseline build is the only one, or an
-     x86 with neither AVX-512 nor AVX2+FMA -- a pre-Haswell Xeon, say -- where
-     it is the only build that can legally execute. */
+#if AP_HAVE_X86
+  /* Sandy/Ivy Bridge: no AVX2, but 256-bit float arithmetic is available and
+     is most of what the transform does. */
+  if(have_avx()) return &ap_be_port81;
+#endif
+  /* arm64, where the baseline build is the only one, or an x86 old enough to
+     lack even AVX, where it is the only build that can legally execute. */
   return &ap_be_port80;
 }
 
@@ -193,7 +205,7 @@ int ap_lane_width(void){
   if(!b) return 0;
   if(b==&ap_be_bal8 || b==&ap_be_port80
 #if AP_HAVE_X86
-     || b==&ap_be_port82
+     || b==&ap_be_port81 || b==&ap_be_port82
 #endif
     ) return 8;
   return 16;

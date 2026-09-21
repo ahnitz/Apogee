@@ -96,8 +96,13 @@ if IS_X86:
         # Nothing caught it because every machine in CI has AVX2.
         ("src/balanced.c",   [],     [("AP_W", "8"), ("AP_PORTABLE", "1"),
                                       ("AP_PORT_LEVEL", "0")]),
-        # ...and again with AVX2, so a capable CPU is not stuck on the
-        # fallback build.  The dispatcher chooses between them at run time.
+        # ...again for AVX only.  Sandy and Ivy Bridge have 256-bit float
+        # arithmetic but no AVX2 and no FMA, and the transform is almost all
+        # float add/sub/mul, so this recovers most of the gap.
+        ("src/balanced.c",   ["-mavx"], [("AP_W", "8"), ("AP_PORTABLE", "1"),
+                                         ("AP_PORT_LEVEL", "1")]),
+        # ...and again with AVX2, so a capable CPU is not stuck on either
+        # fallback.  The dispatcher chooses between them at run time.
         ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1"),
                                       ("AP_PORT_LEVEL", "2")]),
         ("src/matchfilt.c",  BASE,   [X86_KERNELS]),
