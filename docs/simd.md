@@ -40,12 +40,13 @@ templates at n=4096.
 
 | target | lanes | ms/segment | relative |
 |---|---:|---:|---:|
-| AVX3 | 16 | 10.0 | 1.00 |
-| AVX2 | 8 | 11.0 | 1.10 |
-| SSE4 | 4 | 20.5 | 2.05 |
+| AVX3 | 16 | 10.2 | 1.00 |
+| AVX2 | 8 | 10.6 | 1.04 |
+| SSE4 | 4 | 20.1 | 1.97 |
 
 Against the hand-written AVX2 intrinsics this replaced, at the same width and
-paired over 15 interleaved rounds: **0.999x**, output identical. On AVX-512 Highway
+paired over 15 interleaved rounds: **0.96x**, output identical, reproduced
+twice. On AVX-512 Highway
 is about 23% behind the intrinsic kernel that was removed, which is a
 deliberate trade -- that path was roughly 500 lines serving hardware most runs
 will not have.
@@ -53,6 +54,11 @@ will not have.
 Peaks agree across targets to 2.7e-7 relative, and about one bin in 3000 picks
 the other side of a tie. That is fp32 summation order, not disagreement: the
 four-step transform sums in a different order at each width.
+
+A branch in the stage-A tail selecting between two twiddle representations was
+worth about 4% on AVX2 on its own, and closed most of the AVX2-to-AVX3 gap.
+The representation it selected had been measured slower and was never enabled;
+what cost the time was the branch being there at all.
 
 ## Two things that were not obvious
 

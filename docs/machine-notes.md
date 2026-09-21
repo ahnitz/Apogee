@@ -855,7 +855,9 @@ gain from above, since a deletion is strictly better than a fusion:
       3 no stage tw    0.173 (-0.6%)  3.324 (-0.8%)
 
 This reproduces at 256 what was already recorded at 2^14: the loop is throughput
-limited with its parts overlapping, so only total work matters.
+limited with its parts overlapping, so only total work matters.  The `AP_ABLATE`
+compile-time switch these came from has since been removed; the measurements are
+kept because they bound what any fusion could gain.
 
 **Corrected utilisation.**  The earlier "48% of ceiling" used 5N log2 N, which
 omits the four-step's own stage twiddle.  The real count is

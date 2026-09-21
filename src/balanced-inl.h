@@ -15,35 +15,6 @@
  * store, where a W x W register transpose turns what would be a W-way scatter into
  * one contiguous run.
  */
-/* AP_ABLATE removes one piece of the pipeline so its cost can be priced.  Results
-   are WRONG when it is non-zero; it exists because estimating where the time goes
-   has been wrong here more often than it has been right.
-     1 no corner turn   2 no element transform   3 no four-step twiddle
-     4 contiguous load  5 no padded index remap  6 stage-A body removed
-     7 no intermediate store   8 no twiddle and no corner turn
-   What it showed at 2^14: removing any single piece saves nothing, removing all of
-   them saves half.  The loop is throughput-limited with its parts overlapping, so
-   only total work matters - and the element transform is NOT the cost. */
-#ifndef AP_ABLATE
-#define AP_ABLATE 0
-#endif
-/* Compile-time specialisation probe: with AP_FIXED_N1/N2 set, the hot loops see
-   constants where they normally read plan fields.  kernel1024.c is fully unrolled
-   with compile-time sizes and spends 47% of its time outside the codelets; this
-   generic path spends 67% at the same codelet cost, so the question is how much
-   of that is runtime indirection. */
-#ifdef AP_FIXED_N1
-#define PN1 AP_FIXED_N1
-#define PN2 AP_FIXED_N2
-#else
-#define PN1 (p->N1)
-#define PN2 (p->N2)
-#endif
-/* Prefetching the strided loads was measured at every distance from 4 to 32 and
-   gained nothing: the hardware prefetcher already handles a constant stride. */
-#ifndef AP_PF
-#define AP_PF 0
-#endif
 #include <time.h>
 #include "elemfft-inl.h"
 
@@ -93,8 +64,6 @@ typedef struct {
   float *w1r,*w1i,*w2r,*w2i;
   float *hr,*hi,*lr,*li;
   float *scg;          /* [g][k2] scalar part of the stage-A twiddle, precomputed */
-  vf *twr,*twi;        /* full twiddle vectors, when they are small enough to hold */
-  int fulltw;
   int fuse;     /* fused product in stage A; resolved once at plan build,
                    never per transform -- getenv in stageA_prod_gm cost a
                    library call on every pair. */
@@ -256,23 +225,14 @@ void *create(size_t N){
       p->w2r[(size_t)k*b1+e]=(float)cos(a); p->w2i[(size_t)k*b1+e]=(float)sin(a); } }
   /* The stage-A twiddle used to be rebuilt per element from a two-level table:
      four scalar multiplies and a broadcast, all on the critical path, for ~22% of
-     all instructions at small N.  Precompute instead.  The full vector form is
-     8N bytes, which is worth it while it stays small; above that keep just the
-     scalar part (8N/W bytes) so the large sizes do not pay extra traffic. */
+     all instructions at small N.  Precompute the scalar part instead, 8N/W bytes.
+     Holding it as full vectors (8N bytes) was a win when it was first measured
+     and is not any more -- 2^12 7.7% slower, 2^16 2.5%, 2^14 and 2^18 neutral --
+     because the loop is no longer short of ALU and the table is extra traffic. */
   { size_t g_n=(size_t)n1/AP_W;
     p->scg=ap_alloc64(g_n*(size_t)n2*2*sizeof(float)+64);
-    /* Precomputing the twiddle as full vectors (8N bytes) instead of keeping just
-       the scalar part (8N/W) was a win when it was measured, and is not any more:
-       2^12 7.7% slower (1/48 rounds), 2^16 2.5% (0/32), 2^14 and 2^18 neutral.
-       The table is extra traffic in a loop that is no longer short of ALU. */
-    p->fulltw = 0;
-    { const char *e=getenv("MF_FULLTW"); if(e) p->fulltw=atoi(e)?1:0; }
     p->fuse = eprod_ok(p->N2);
     { const char *e=getenv("MF_FUSE"); if(e) p->fuse = atoi(e) ? eprod_ok(p->N2) : 0; }
-    if(p->fulltw){
-      p->twr=ap_alloc64(g_n*(size_t)n2*sizeof(vf));
-      p->twi=ap_alloc64(g_n*(size_t)n2*sizeof(vf));
-    }
   }
   { size_t nhi=(N/AP_W)/256; if(nhi<1) nhi=1; double Nq=(double)(N/AP_W);
     p->hr=ap_alloc64(nhi*4+64); p->hi=ap_alloc64(nhi*4+64);
@@ -290,11 +250,6 @@ void *create(size_t N){
       float si=p->hr[m1]*p->li[m0]+p->hi[m1]*p->lr[m0];
       size_t idx=(size_t)g*n2+k2;
       p->scg[2*idx]=sr; p->scg[2*idx+1]=si;
-      if(p->fulltw){
-        vf SR=V_SET1(sr),SI=V_SET1(si);
-        p->twr[idx]=V_FMSUB(SR,p->TLr[k2],V_MUL(SI,p->TLi[k2]));
-        p->twi[idx]=V_FMADD(SR,p->TLi[k2],V_MUL(SI,p->TLr[k2]));
-      }
     }
   }
   return p;
@@ -306,7 +261,7 @@ void destroy(void *vp){
   free(p->ire);free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
   free(p->TLr);free(p->TLi);free(p->w1r);free(p->w1i);free(p->w2r);free(p->w2i);
   free(p->hr);free(p->hi);free(p->lr);free(p->li);
-  free(p->scg);free(p->twr);free(p->twi);free(p);
+  free(p->scg);free(p);
 }
 
 
@@ -325,18 +280,10 @@ void destroy(void *vp){
 static AP_ALWAYS_INLINE void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict TI,
                                vf*restrict OR,vf*restrict OI,
                                vf*restrict bR,vf*restrict bI){
-  const int N2=PN2; const int N1=PN1; (void)N1;
+  const int N2=p->N2; const int N1=p->N1; (void)N1;
   vf *restrict RR=bR,*restrict RI=bI;
   for(int b=0;b<N2/AP_W;b++){
-    if(p->fulltw){
-      const vf *twr=p->twr+(size_t)g*N2+AP_W*b, *twi=p->twi+(size_t)g*N2+AP_W*b;
-      for(int t=0;t<AP_W;t++){
-        int eb=eidx(&p->eb,AP_W*b+t);
-        vf xr=RR[eb],xi=RI[eb];
-        TR[t]=V_FMSUB(xr,twr[t],V_MUL(xi,twi[t]));
-        TI[t]=V_FMADD(xr,twi[t],V_MUL(xi,twr[t]));
-      }
-    } else {
+    {
       const float *sc=p->scg+2*((size_t)g*N2+AP_W*b);
       for(int t=0;t<AP_W;t++){
         int k2=AP_W*b+t;
@@ -349,16 +296,11 @@ static AP_ALWAYS_INLINE void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict T
         TI[t]=V_FMADD(xr,ti,V_MUL(xi,tr));
       }
     }
-  #if AP_ABLATE==1            /* no corner turn */
-  for(int i=0;i<AP_W;i++){OR[i]=TR[i];OI[i]=TI[i];}
-#else
   V_TRANSPOSE(TR,OR); V_TRANSPOSE(TI,OI);
-#endif
       /* Streaming these past the cache looked right on paper - the line is dead
          until stage B reads it back, so the read-for-ownership is wasted DRAM
          traffic.  Measured, it is 1.22x to 1.62x SLOWER (0/32 rounds); stage B
          wants the line and the store buffer is not the constraint. */
-#if AP_ABLATE!=7
       if(p->ilay){
         float *er=p->ire+(size_t)b*N1*AP_W+(size_t)AP_W*g*AP_W;
         float *ei=p->iim+(size_t)b*N1*AP_W+(size_t)AP_W*g*AP_W;
@@ -371,7 +313,6 @@ static AP_ALWAYS_INLINE void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict T
           V_STOREU(p->ire+off,OR[i]); V_STOREU(p->iim+off,OI[i]);
         }
       }
-#endif
 
   }
 }
@@ -379,7 +320,7 @@ static AP_ALWAYS_INLINE void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict T
 static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
                                vf*restrict OR,vf*restrict OI,
                                vf*restrict bR,vf*restrict bI){
-  efft(PN2,bR,bI,p->sR,p->sI,p->w2r,p->w2i);
+  efft(p->N2,bR,bI,p->sR,p->sI,p->w2r,p->w2i);
   stageA_tail(p,g,TR,TI,OR,OI,bR,bI);
 }
 
@@ -387,7 +328,7 @@ static inline void stageA_body(BP*p,int g,vf*restrict TR,vf*restrict TI,
 /* Stage A from split input.  Identical structure to stageA; only the load
    differs - no v_deint, because the caller already has re and im apart. */
 static void stageA_split(BP*p,const float*inr,const float*ini,int conj){
-  const int N1=PN1,N2=PN2,NG=N1/AP_W,G=p->gblk;
+  const int N1=p->N1,N2=p->N2,NG=N1/AP_W,G=p->gblk;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   vf TR[AP_W],TI[AP_W],OR[AP_W],OI[AP_W];
   const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
@@ -424,7 +365,7 @@ static void stageA_split(BP*p,const float*inr,const float*ini,int conj){
  * Layout: spec[g*N2*AP_W + n2*AP_W + l], n1 = g*AP_W + l. */
 static void stageA_prod_gm(BP*p,const float*dr,const float*di,
                            const float*tr,const float*ti){
-  const int N1=PN1,N2=PN2,NG=N1/AP_W;
+  const int N1=p->N1,N2=p->N2,NG=N1/AP_W;
   const int fuse=p->fuse;
   vf TR[AP_W],TI[AP_W],OR[AP_W],OI[AP_W];
   for(int g=0;g<NG;g++){
@@ -462,7 +403,7 @@ static void stageA_prod_gm(BP*p,const float*dr,const float*di,
  * Output is conj(D*T), which is what the backward transform wants. */
 static void stageA_prod(BP*p,const float*dr,const float*di,
                         const float*tr,const float*ti){
-  const int N1=PN1,N2=PN2,NG=N1/AP_W,G=p->gblk;
+  const int N1=p->N1,N2=p->N2,NG=N1/AP_W,G=p->gblk;
   vf TR[AP_W],TI[AP_W],OR[AP_W],OI[AP_W];
   const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
   for(int g0=0;g0<NG;g0+=G){
@@ -491,7 +432,7 @@ static void stageA_prod(BP*p,const float*dr,const float*di,
 }
 
 static void stageA(BP*p,const float*in,int conj){
-  const int N1=PN1,N2=PN2,NG=N1/AP_W,G=p->gblk;
+  const int N1=p->N1,N2=p->N2,NG=N1/AP_W,G=p->gblk;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   vf TR[AP_W],TI[AP_W],OR[AP_W],OI[AP_W];
   const int M1=p->eb.single?N2:p->b1, M2=p->eb.single?1:p->b2, st=p->eb.st;
@@ -511,11 +452,9 @@ static void stageA(BP*p,const float*in,int conj){
         sp+=2*N1;
       }
     }
-#if AP_ABLATE!=6        /* 6 = stage A does nothing past the load */
     for(int gg=0;gg<GG;gg++)
       stageA_body(p,g0+gg,TR,TI,OR,OI,
                   p->bR+(size_t)gg*p->bstride,p->bI+(size_t)gg*p->bstride);
-#endif
   }
 }
 
@@ -523,7 +462,7 @@ static void stageA(BP*p,const float*in,int conj){
    each row contributes BB*AP_W contiguous floats instead of AP_W.  Only the fp32
    intermediate is blocked; the quantised path is off by default. */
 static void stageB_load_many(BP*p,int b0,int bb){
-  const int N1=PN1;
+  const int N1=p->N1;
   const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
   for(int e2=0;e2<M2;e2++){
     const float *sr=p->ire+(size_t)e2*M1*p->istr+AP_W*b0;
@@ -540,14 +479,14 @@ static void stageB_load_many(BP*p,int b0,int bb){
 }
 /* transform the j-th buffer that stageB_load_many filled */
 static void stageB_run(BP*p,int j,vf**RR,vf**RI){
-  const int N1=PN1;
+  const int N1=p->N1;
   vf *bR=p->bR+(size_t)j*p->bstride, *bI=p->bI+(size_t)j*p->bstride;
   efft(N1,bR,bI,p->sR,p->sI,p->w1r,p->w1i);
   *RR=bR; *RI=bI;
 }
 
 static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
-  const int N1=PN1; (void)PN2; (void)exact;
+  const int N1=p->N1; (void)p->N2; (void)exact;
   const int M1=p->ea.single?N1:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
   const size_t step = p->ilay ? (size_t)AP_W : p->istr;
   const size_t base = p->ilay ? (size_t)b*N1*AP_W : (size_t)AP_W*b;
@@ -566,7 +505,7 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
 }
 
 void fft(void *vp,const float*in,float*out,int conj){
-  BP *p=(BP*)vp; const int N1=PN1,N2=PN2;
+  BP *p=(BP*)vp; const int N1=p->N1,N2=p->N2;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   stageA(p,in,conj);
   for(int b=0;b<N2/AP_W;b++){
@@ -602,7 +541,7 @@ static int bins_reserve(BP*p,size_t nb){
 
 static void binmax_core(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
                             size_t ws,size_t we){
-  const int N1=PN1,N2=PN2;
+  const int N1=p->N1,N2=p->N2;
   const size_t nb=(we-ws+binsize-1)/binsize;
   const float t2 = thr>0.f ? thr*thr : -1.f;
   const vf NEG=V_SET1(-1.f);
