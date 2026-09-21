@@ -14,6 +14,8 @@ machine*, since the numbers in the README come from one developer box.
     python -m matchedfilter.benchmark --data 8 --templates 32 --reps 5
 """
 import argparse
+import json
+import os
 import platform
 import sys
 import time
@@ -149,6 +151,27 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     return tf, th, hf.trigger_rate
 
 
+def host_info(label):
+    """What a reader needs to interpret the numbers at all.
+
+    A timing without the back end is meaningless -- the dispatcher picks by
+    CPU, so the same source runs different kernels on different hosts.
+    """
+    return {
+        "label": label or platform.node(),
+        "backend": mf.backend(),
+        "machine": platform.machine(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "processor": platform.processor() or platform.machine(),
+        "python": sys.version.split()[0],
+        "numpy": np.__version__,
+        "version": mf.__version__,
+        "compiler": platform.python_compiler(),
+        "isa_forced": os.environ.get("MF_ISA", ""),
+    }
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -167,6 +190,11 @@ def main(argv=None):
                     help="skip the hierarchical-gate table")
     ap.add_argument("--fd", type=float, default=1e-3,
                     help="false-dismissal budget for the gate")
+    ap.add_argument("--json", metavar="PATH",
+                    help="also write the results as JSON, for combining runs "
+                         "from different machines")
+    ap.add_argument("--label", default="",
+                    help="name for this machine in a combined report")
     a = ap.parse_args(argv)
 
     print(f"matchedfilter {mf.__version__}   "
@@ -178,6 +206,7 @@ def main(argv=None):
     print(f"  {'n':>8} {'matchedfilter':>12} {'numpy':>12} {'speedup':>9}   check")
 
     fails = 0
+    flat_rows = []
     for n in a.n:
         if not mf.MatchedFilter:
             break
@@ -198,11 +227,15 @@ def main(argv=None):
         sp = f"{npy / mine:.1f}x" if npy else "-"
         npys = f"{npy:.2f}" if npy else "-"
         print(f"  {n:>8} {mine:>11.3f}µs {npys:>11}µs {sp:>9}   {ok}")
+        flat_rows.append({"n": n, "data": a.data, "templates": a.templates,
+                          "us_per_pair": mine, "numpy_us_per_pair": npy,
+                          "checked": not a.no_check, "ok": "FAILED" not in ok})
 
     print("\nTimes are microseconds per (data, template) pair, best of "
           f"{a.reps}.\nnumpy is a floor, not a rival - it is here so the "
           "comparison runs anywhere.")
 
+    hier_rows = []
     if not a.no_hier:
         print(f"\n\nHierarchical gate vs the flat filter, pure noise, "
               f"false dismissal {a.fd:g}")
@@ -218,9 +251,19 @@ def main(argv=None):
                     continue
                 print(f"  {n:>8} {snr:>5.1f} {tf * 1e3:>10.2f}ms "
                       f"{th * 1e3:>10.2f}ms {tf / th:>8.2f}x {rate:>9.1%}")
+                hier_rows.append({"n": n, "snr": snr, "fd": a.fd,
+                                  "data": a.data, "templates": a.templates,
+                                  "flat_ms": tf * 1e3, "gated_ms": th * 1e3,
+                                  "speedup": tf / th, "trigger_rate": rate})
         print("\nThe gate skips a pair when a cheap low-band estimate rules out\n"
               "any sample reaching the threshold, so the speedup grows with the\n"
               "threshold and falls to ~1 on data where everything triggers.")
+
+    if a.json:
+        with open(a.json, "w") as fh:
+            json.dump({"host": host_info(a.label),
+                       "flat": flat_rows, "hierarchical": hier_rows}, fh, indent=1)
+        print(f"\nwrote {a.json}")
 
     return 1 if fails else 0
 

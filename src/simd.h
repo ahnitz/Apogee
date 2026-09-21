@@ -2,21 +2,24 @@
    Only the operations matchedfilter's width-generic back end actually needs. */
 #ifndef AP_SIMD_H
 #define AP_SIMD_H
-#include <immintrin.h>
 #include <stdint.h>
 
 #ifndef AP_W
 #error "define AP_W to 16 (AVX-512) or 8 (AVX2)"
 #endif
 
+/* AP_PORTABLE swaps the x86 intrinsics below for GCC/Clang vector extensions,
+   which compile anywhere those compilers do.  See src/simd_portable.h. */
+#ifdef AP_PORTABLE
+#include "simd_portable.h"
+#else
+#include <immintrin.h>
+
 #if AP_W == 16
 typedef __m512 vf;
 typedef __m512i vi;          /* integer view, for the peak scan's index vector */
 #define VI_SET1(x)      _mm512_set1_epi32(x)
 #define V_ZERO()        _mm512_setzero_ps()
-/* select by mask: lane set -> take b, clear -> keep a */
-#define V_BLENDM(m,a,b)  _mm512_mask_blend_ps((__mmask16)(m),a,b)
-#define VI_BLENDM(m,a,b) _mm512_mask_blend_epi32((__mmask16)(m),a,b)
 #define VI_STOREU(p,v)   _mm512_storeu_si512((void*)(p),v)
 #define V_SET1(x)       _mm512_set1_ps(x)
 #define V_LOADU(p)      _mm512_loadu_ps(p)
@@ -30,8 +33,15 @@ typedef __m512i vi;          /* integer view, for the peak scan's index vector *
 #define V_FNMSUB(a,b,c) _mm512_fnmsub_ps(a,b,c)   /* -(a*b)-c */
 #define V_XOR(a,b)      _mm512_xor_ps(a,b)
 #define V_SIGNMASK()    _mm512_castsi512_ps(_mm512_set1_epi32((int)0x80000000))
-/* greater-than as a plain bitmask, one bit per lane */
-#define V_GT_MASK(a,b)  ((unsigned)_mm512_cmp_ps_mask(a,b,_CMP_GT_OQ))
+/* Opaque lane mask.  The peak scan compares and then selects, and going
+   through a bitmask in between is free here but not everywhere, so the type
+   stays abstract and only becomes bits where bits are actually wanted. */
+typedef __mmask16 vm;
+#define V_CMP_GT(a,b)        _mm512_cmp_ps_mask(a,b,_CMP_GT_OQ)
+#define V_MASK_ANY(m)        ((m)!=0)
+#define V_MASK_FROM_BITS(u)  ((__mmask16)(u))
+#define V_SEL(m,a,b)         _mm512_mask_blend_ps(m,a,b)
+#define VI_SEL(m,a,b)        _mm512_mask_blend_epi32(m,a,b)
 
 #elif AP_W == 8
 typedef __m256 vf;
@@ -46,9 +56,6 @@ static inline __m256 v_maskof(unsigned m){
   __m256i v=_mm256_and_si256(_mm256_set1_epi32((int)m),bit);
   return _mm256_castsi256_ps(_mm256_cmpeq_epi32(v,bit));
 }
-#define V_BLENDM(m,a,b)  _mm256_blendv_ps(a,b,v_maskof(m))
-#define VI_BLENDM(m,a,b) _mm256_castps_si256(_mm256_blendv_ps( \
-                           _mm256_castsi256_ps(a),_mm256_castsi256_ps(b),v_maskof(m)))
 #define VI_STOREU(p,v)   _mm256_storeu_si256((__m256i*)(p),v)
 #define V_SET1(x)       _mm256_set1_ps(x)
 #define V_LOADU(p)      _mm256_loadu_ps(p)
@@ -62,7 +69,13 @@ static inline __m256 v_maskof(unsigned m){
 #define V_FNMSUB(a,b,c) _mm256_fnmsub_ps(a,b,c)
 #define V_XOR(a,b)      _mm256_xor_ps(a,b)
 #define V_SIGNMASK()    _mm256_castsi256_ps(_mm256_set1_epi32((int)0x80000000))
-#define V_GT_MASK(a,b)  ((unsigned)_mm256_movemask_ps(_mm256_cmp_ps(a,b,_CMP_GT_OQ)))
+typedef __m256 vm;
+#define V_CMP_GT(a,b)        _mm256_cmp_ps(a,b,_CMP_GT_OQ)
+#define V_MASK_ANY(m)        (_mm256_movemask_ps(m)!=0)
+#define V_MASK_FROM_BITS(u)  v_maskof(u)
+#define V_SEL(m,a,b)         _mm256_blendv_ps(a,b,m)
+#define VI_SEL(m,a,b)        _mm256_castps_si256(_mm256_blendv_ps( \
+                               _mm256_castsi256_ps(a),_mm256_castsi256_ps(b),m))
 #else
 #error "AP_W must be 16 or 8"
 #endif
@@ -124,4 +137,5 @@ static inline float v_reduce_max(vf v){
   for(int i=1;i<AP_W;i++) if(t[i]>m) m=t[i];
   return m;
 }
+#endif /* AP_PORTABLE */
 #endif

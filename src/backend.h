@@ -33,4 +33,5 @@ typedef struct {
 extern const ap_backend ap_be_avx512;   /* specialised: 1024 kernel + tuned 2^17..2^20 */
 extern const ap_backend ap_be_bal8;    /* width-generic balanced split, 8 lanes (AVX2)  */
 extern const ap_backend ap_be_bal16;   /* same source at 16 lanes, for cross-checking  */
+extern const ap_backend ap_be_port8;   /* same source again, compiler-vectorised       */
 #endif

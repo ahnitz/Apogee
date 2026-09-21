@@ -7,6 +7,8 @@
  *   avx512       specialised AVX-512 paths (default when supported)
  *   avx2         width-generic balanced split at 8 lanes
  *   balanced512  the same generic source at 16 lanes (cross-check)
+ *   portable     the same source again, compiler-vectorised rather than
+ *                hand-written; the only back end on non-x86
  */
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,20 @@
 
 struct ap_plan { const ap_backend *be; void *h; size_t n; };
 
+/* Whether the x86 kernels are available is a property of the BUILD, not of
+   the slice being compiled.  A macOS universal2 build compiles this file once
+   per architecture from one source set: the arm64 slice must not reference
+   back ends that were never compiled, and neither must the x86_64 slice of a
+   build that chose the portable set.  setup.py decides and says so. */
+#ifndef AP_WITH_X86_KERNELS
+#  if defined(__x86_64__) || defined(__i386__)
+#    define AP_WITH_X86_KERNELS 1
+#  else
+#    define AP_WITH_X86_KERNELS 0
+#  endif
+#endif
+#if AP_WITH_X86_KERNELS && (defined(__x86_64__) || defined(__i386__))
+#define AP_HAVE_X86 1
 static int have_avx512(void){
   return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq")
       && __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512vl");
@@ -26,19 +42,29 @@ static int have_avx512(void){
 static int have_avx2(void){
   return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 }
+#else
+#define AP_HAVE_X86 0
+#endif
 
 static const ap_backend *pick(void){
   const char *e = getenv("MF_ISA");
   if(e && *e){
+    if(!strcmp(e,"portable"))    return &ap_be_port8;
+#if AP_HAVE_X86
     if(!strcmp(e,"avx512"))      return have_avx512() ? &ap_be_avx512 : NULL;
     if(!strcmp(e,"avx2"))        return have_avx2()   ? &ap_be_bal8   : NULL;
     if(!strcmp(e,"balanced512")) return have_avx512() ? &ap_be_bal16  : NULL;
-    fprintf(stderr,"matchedfilter: unknown MF_ISA=\"%s\" (avx512|avx2|balanced512)\n",e);
+#endif
+    fprintf(stderr,"matchedfilter: unknown or unavailable MF_ISA=\"%s\"\n",e);
     return NULL;
   }
+#if AP_HAVE_X86
   if(have_avx512()) return &ap_be_avx512;
   if(have_avx2())   return &ap_be_bal8;
-  return NULL;
+#endif
+  /* Everywhere else -- arm64, or x86 without AVX2 -- the portable back end is
+     the only one built, and it needs no feature test. */
+  return &ap_be_port8;
 }
 
 const char *ap_isa(void){ const ap_backend *b=pick(); return b?b->name:"unsupported"; }
@@ -145,9 +171,15 @@ int ap_binmax(ap_plan *p,const float *in,size_t dist,int B,
 
 
 /* SIMD lane width of the active back end, so callers that want to store data in
-   the layout stage A walks can compute it.  0 if unsupported. */
+   the layout stage A walks can compute it.  0 if unsupported.
+
+   This has to name every 8-lane back end explicitly.  Written as "bal8 ? 8 : 16"
+   it silently told the portable back end it had 16 lanes, and the matched
+   filter then stored every spectrum group-major for the wrong width -- the
+   transforms still agreed, and only the correlation came out wrong. */
 int ap_lane_width(void){
   const ap_backend *b=pick();
   if(!b) return 0;
-  return (b==&ap_be_bal8) ? 8 : 16;
+  if(b==&ap_be_bal8 || b==&ap_be_port8) return 8;
+  return 16;
 }
