@@ -3,11 +3,11 @@
 Correlate D data segments against T templates and report, for each pair, the
 loudest sample in each bin of a search window:
 
-    >>> from matchedfilter import MatchedFilter
-    >>> mf = MatchedFilter(1 << 14, ndata=16, ntemplates=16)
-    >>> mf.set_data(data_spectra)         # (16, 16384) complex64, ALREADY FFT'd
-    >>> mf.set_templates(template_spectra)
-    >>> peaks = mf.run(binsize=1024, threshold=t, window=(a, b))
+    >>> import matchedfilter as mf
+    >>> filt = mf.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
+    >>> filt.set_data(data_spectra)       # (16, 16384) complex64, ALREADY FFT'd
+    >>> filt.set_templates(template_spectra)
+    >>> peaks = filt.run(binsize=1024, threshold=t, window=(a, b))
     >>> peaks["index"], peaks["value"], peaks["magnitude"]
 
 Produce the spectra with whatever you already use - numpy, MKL, FFTW.  matchedfilter
@@ -221,7 +221,11 @@ class HierarchicalFilter(MatchedFilter):
                                  int(band), int(oversample or 2), int(taps or 8))
 
     def set_reference(self, power):
-        """Set the reference SNR distribution: expected output power per bin.
+        """Set the reference SNR distribution.
+
+        ``power`` is a real frequency series of length ``n``: the expected
+        power of the filter *output* in each bin.  Only its shape matters, as
+        the total is divided out.
 
         By default each template's band fraction and recovery factors are
         measured from the template itself, which assumes its own power

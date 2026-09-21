@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-import matchedfilter
+import matchedfilter as mf
 
 
 def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we):
@@ -56,11 +56,11 @@ def _one(n, nd, nt, binsize, window, reps, check):
     tspec = np.fft.fft(t, axis=-1).astype(np.complex64)
 
     ws, we = window
-    mf = matchedfilter.MatchedFilter(n, nd, nt)
-    mf.set_data(dspec)
-    mf.set_templates(tspec)
+    filt = mf.MatchedFilter(n, nd, nt)
+    filt.set_data(dspec)
+    filt.set_templates(tspec)
 
-    peaks = mf.run(binsize=binsize, window=(ws, we))
+    peaks = filt.run(binsize=binsize, window=(ws, we))
     thr = float(np.median(peaks["magnitude"])) * 4.0
 
     ok = "not checked"
@@ -68,7 +68,7 @@ def _one(n, nd, nt, binsize, window, reps, check):
         ridx, rmag = _numpy_matched_filter(dspec.astype(np.complex128),
                                            tspec.astype(np.complex128),
                                            binsize, thr, ws, we)
-        got = mf.run(binsize=binsize, threshold=thr, window=(ws, we))
+        got = filt.run(binsize=binsize, threshold=thr, window=(ws, we))
         same = np.array_equal(got["index"], ridx)
         scale = float(rmag.max())
         live = ridx >= 0
@@ -80,7 +80,7 @@ def _one(n, nd, nt, binsize, window, reps, check):
     best = float("inf")
     for _ in range(reps):
         t0 = time.perf_counter()
-        mf.run(binsize=binsize, threshold=thr, window=(ws, we))
+        filt.run(binsize=binsize, threshold=thr, window=(ws, we))
         best = min(best, time.perf_counter() - t0)
 
     npy = None
@@ -125,11 +125,11 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     h /= np.sqrt((np.abs(h) ** 2).sum(axis=1, keepdims=True))
     d = (rng.standard_normal((nd, n)) + 1j * rng.standard_normal((nd, n))).astype(np.complex64)
 
-    flat = matchedfilter.MatchedFilter(n, nd, nt)
+    flat = mf.MatchedFilter(n, nd, nt)
     flat.set_data(d)
     flat.set_templates(h)
 
-    hf = matchedfilter.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd,
+    hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd,
                                    band=max(256, n // 8), oversample=2, taps=8)
     hf.set_reference(power)
     hf.set_data(d)
@@ -177,7 +177,7 @@ def main(argv=None):
 
     fails = 0
     for n in a.n:
-        if not matchedfilter.MatchedFilter:
+        if not mf.MatchedFilter:
             break
         bs = a.binsize or min(n, 1024)
         if a.window >= 1.0:

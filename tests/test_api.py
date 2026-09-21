@@ -17,7 +17,7 @@ import time
 import numpy as np
 import pytest
 
-import matchedfilter
+import matchedfilter as mf
 
 
 # ---------------------------------------------------------------- helpers
@@ -31,7 +31,7 @@ def inspiral_power(n, exponent=-7 / 3.0):
 
 
 def template_with_power(n, power):
-    """Unit-norm template whose power spectrum is `power` (zero phase)."""
+    """Unit-norm template whose per-bin power follows `power` (zero phase)."""
     h = np.zeros(n, dtype=np.complex64)
     h[:] = np.sqrt(power).astype(np.complex64)
     return h / np.linalg.norm(h)
@@ -57,10 +57,10 @@ def test_matches_numpy(n):
     """The filter is IFFT(data * conj(template)), unnormalised."""
     rng = np.random.default_rng(0)
     D, H = noise((3, n), rng), noise((2, n), rng)
-    mf = matchedfilter.MatchedFilter(n, ndata=3, ntemplates=2)
-    mf.set_data(D)
-    mf.set_templates(H)
-    peaks = mf.run(binsize=n, threshold=0.0)
+    filt = mf.MatchedFilter(n, ndata=3, ntemplates=2)
+    filt.set_data(D)
+    filt.set_templates(H)
+    peaks = filt.run(binsize=n, threshold=0.0)
     for d in range(3):
         for t in range(2):
             idx, val = brute_peak(D[d], H[t], 0, n)
@@ -80,10 +80,10 @@ def test_known_lag():
     x = noise(n, rng)
     for lag in (0, 1, 37, n // 2, n - 1):
         shifted = x * np.exp(2j * np.pi * np.arange(n) * lag / n)
-        mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
-        mf.set_data(x[None, :])
-        mf.set_templates(shifted[None, :])
-        peaks = mf.run(binsize=n, threshold=0.0)
+        filt = mf.MatchedFilter(n, ndata=1, ntemplates=1)
+        filt.set_data(x[None, :])
+        filt.set_templates(shifted[None, :])
+        peaks = filt.run(binsize=n, threshold=0.0)
         assert peaks["index"][0, 0, 0] == lag
 
 
@@ -92,12 +92,12 @@ def test_bins_and_threshold():
     n = 4096
     rng = np.random.default_rng(2)
     D, H = noise((1, n), rng), noise((1, n), rng)
-    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
-    mf.set_data(D)
-    mf.set_templates(H)
+    filt = mf.MatchedFilter(n, ndata=1, ntemplates=1)
+    filt.set_data(D)
+    filt.set_templates(H)
     rho = np.abs(np.fft.ifft(D[0] * np.conj(H[0])) * n)
     thr = float(np.quantile(rho, 0.999))
-    peaks = mf.run(binsize=512, threshold=thr)
+    peaks = filt.run(binsize=512, threshold=thr)
     assert peaks.shape == (1, 1, n // 512)
     for b in range(n // 512):
         seg = rho[b * 512:(b + 1) * 512]
@@ -112,13 +112,13 @@ def test_window_and_subrange():
     n, nd, nt = 4096, 4, 3
     rng = np.random.default_rng(3)
     D, H = noise((nd, n), rng), noise((nt, n), rng)
-    mf = matchedfilter.MatchedFilter(n, ndata=nd, ntemplates=nt)
-    mf.set_data(D)
-    mf.set_templates(H)
-    full = mf.run(binsize=1024, threshold=0.0, window=(500, 3500))
+    filt = mf.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    filt.set_data(D)
+    filt.set_templates(H)
+    full = filt.run(binsize=1024, threshold=0.0, window=(500, 3500))
     idx = full["index"]
     assert ((idx >= 500) & (idx < 3500)).all()
-    sub = mf.run(binsize=1024, threshold=0.0, window=(500, 3500),
+    sub = filt.run(binsize=1024, threshold=0.0, window=(500, 3500),
                  data=(1, 2), templates=(0, 2))
     np.testing.assert_array_equal(sub["index"], idx[1:3, 0:2])
     np.testing.assert_array_equal(sub["value"], full["value"][1:3, 0:2])
@@ -128,11 +128,11 @@ def test_raw_output_matches_structured():
     """raw=True must return exactly the structured array's contents."""
     n, nd, nt = 4096, 2, 3
     rng = np.random.default_rng(7)
-    mf = matchedfilter.MatchedFilter(n, ndata=nd, ntemplates=nt)
-    mf.set_data(noise((nd, n), rng))
-    mf.set_templates(noise((nt, n), rng))
-    peaks = mf.run(binsize=1024, threshold=0.0).copy()
-    idx, val, mag = mf.run(binsize=1024, threshold=0.0, raw=True)
+    filt = mf.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    filt.set_data(noise((nd, n), rng))
+    filt.set_templates(noise((nt, n), rng))
+    peaks = filt.run(binsize=1024, threshold=0.0).copy()
+    idx, val, mag = filt.run(binsize=1024, threshold=0.0, raw=True)
     np.testing.assert_array_equal(peaks["index"], idx)
     np.testing.assert_array_equal(peaks["value"], val)
     np.testing.assert_array_equal(peaks["magnitude"], mag)
@@ -140,10 +140,10 @@ def test_raw_output_matches_structured():
 
 def test_shape_errors():
     with pytest.raises(ValueError):
-        matchedfilter.MatchedFilter(1000, 1, 1)          # not a supported length
-    mf = matchedfilter.MatchedFilter(4096, ndata=1, ntemplates=1)
+        mf.MatchedFilter(1000, 1, 1)          # not a supported length
+    filt = mf.MatchedFilter(4096, ndata=1, ntemplates=1)
     with pytest.raises(ValueError):
-        mf.set_data(np.zeros((1, 100), np.complex64))
+        filt.set_data(np.zeros((1, 100), np.complex64))
 
 
 # ------------------------------------------------- hierarchical filter
@@ -160,13 +160,13 @@ def test_hierarchical_is_identical_or_absent():
         D[d] += (12.0 * H[0] * np.exp(2j * np.pi * np.arange(n) * lag / n)
                  ).astype(np.complex64)
 
-    mf = matchedfilter.MatchedFilter(n, ndata=nd, ntemplates=nt)
-    hf = matchedfilter.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5, fd=1e-2)
+    filt = mf.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5, fd=1e-2)
     hf.set_reference(power)
-    for o in (mf, hf):
+    for o in (filt, hf):
         o.set_data(D)
         o.set_templates(H)
-    a = mf.run(binsize=1024, threshold=5.5)
+    a = filt.run(binsize=1024, threshold=5.5)
     b = hf.run(binsize=1024, threshold=5.5)
 
     fired = b["index"] >= 0
@@ -181,7 +181,7 @@ def test_gate_stays_shut_on_noise():
     n, nd = 4096, 64
     rng = np.random.default_rng(12)
     power = inspiral_power(n)
-    hf = matchedfilter.HierarchicalFilter(n, ndata=nd, ntemplates=1, snr=5.5, fd=1e-2)
+    hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=1, snr=5.5, fd=1e-2)
     hf.set_reference(power)
     hf.set_data(noise((nd, n), rng))
     hf.set_templates(template_with_power(n, power)[None, :])
@@ -200,10 +200,10 @@ def test_omission_rate_meets_the_budget():
     rng = np.random.default_rng(13)
     power = inspiral_power(n)
     H = template_with_power(n, power)
-    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
-    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=fd)
+    filt = mf.MatchedFilter(n, ndata=1, ntemplates=1)
+    hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=fd)
     hf.set_reference(power)
-    mf.set_templates(H[None, :])
+    filt.set_templates(H[None, :])
     hf.set_templates(H[None, :])
 
     detected = omitted = 0
@@ -212,9 +212,9 @@ def test_omission_rate_meets_the_budget():
         lag = (37 * i) % n
         D = noise((1, n), rng)
         D[0] += (snr * H * ph ** lag).astype(np.complex64)
-        mf.set_data(D)
+        filt.set_data(D)
         hf.set_data(D)
-        a = mf.run(binsize=n, threshold=snr)
+        a = filt.run(binsize=n, threshold=snr)
         b = hf.run(binsize=n, threshold=snr)
         if a["index"][0, 0, 0] >= 0:
             detected += 1
@@ -244,7 +244,7 @@ def test_gate_reads_the_signal_not_the_template():
     assert (np.abs(H[:band]) ** 2).sum() < 0.2          # template: high band
     assert out_power[:band].sum() / out_power.sum() > 0.9   # output: low band
 
-    hf = matchedfilter.HierarchicalFilter(n, ndata=32, ntemplates=1, snr=5.5, fd=1e-2,
+    hf = mf.HierarchicalFilter(n, ndata=32, ntemplates=1, snr=5.5, fd=1e-2,
                                    band=band, oversample=2, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
@@ -273,7 +273,7 @@ def test_coarse_scaling_follows_the_reference():
     falling[1:n // 2] = (k.astype(np.float64) ** -3.0).astype(np.float32)
     out_power = (np.abs(H) ** 2 * falling).astype(np.float32)
 
-    hf = matchedfilter.HierarchicalFilter(n, ndata=64, ntemplates=1, snr=5.5, fd=1e-2,
+    hf = mf.HierarchicalFilter(n, ndata=64, ntemplates=1, snr=5.5, fd=1e-2,
                                    band=band, oversample=2, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
@@ -294,11 +294,11 @@ def test_peaks_on_odd_lags_survive():
     rng = np.random.default_rng(15)
     power = inspiral_power(n)
     H = template_with_power(n, power)
-    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
-    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=1e-2,
+    filt = mf.MatchedFilter(n, ndata=1, ntemplates=1)
+    hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=1e-2,
                                    band=band, oversample=2, taps=8)
     hf.set_reference(power)
-    mf.set_templates(H[None, :])
+    filt.set_templates(H[None, :])
     hf.set_templates(H[None, :])
     ph = np.exp(2j * np.pi * np.arange(n) / n)
     detected = omitted = 0
@@ -306,9 +306,9 @@ def test_peaks_on_odd_lags_survive():
         lag = 2 * ((37 * i) % (n // 4)) + 1            # always ODD
         D = noise((1, n), rng)
         D[0] += ((snr + 0.6) * H * ph ** lag).astype(np.complex64)
-        mf.set_data(D)
+        filt.set_data(D)
         hf.set_data(D)
-        if mf.run(binsize=n, threshold=snr)["index"][0, 0, 0] >= 0:
+        if filt.run(binsize=n, threshold=snr)["index"][0, 0, 0] >= 0:
             detected += 1
             omitted += hf.run(binsize=n, threshold=snr)["index"][0, 0, 0] < 0
     rate = omitted / max(detected, 1)
@@ -357,7 +357,7 @@ def test_run_series_matches_block_by_block():
     ser = coloured_series(nseries, -7 / 3.0, rng)
     starts, ws, we = overlap_save_layout(nseries, n, ntaps)
 
-    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-2)
+    hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-2)
     hf.set_reference(power)
     hf.set_templates(H)
     got = hf.run_series(ser, starts, ws, we, binsize=n, threshold=0.0)
@@ -374,7 +374,8 @@ def test_run_series_matches_block_by_block():
 
 
 @pytest.mark.xfail(
-    reason="known: g and graw are measured from the reference's mean spectrum, "
+    reason="known: g and graw are measured from the reference's mean frequency "
+           "series, "
            "which is not a bound on an individual realisation. Real peaks are "
            "sharper than the mean, so the gate sits too high and omits more "
            "than the budget allows -- ~5% here against 1%. graw1 was fixed this "
@@ -458,18 +459,18 @@ def test_ratio_filter_shaped_workload():
             inj = unit * amp * ph ** lag
             scale = (snr + 2.0) / max(np.abs(np.fft.ifft(inj * np.conj(H[t])) * n).max(), 1e-30)
             ser[starts[b]:starts[b] + n] += (np.fft.ifft(inj) * n * scale).astype(np.complex64)
-    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
+    hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
                                    band=512, oversample=2, taps=8)
     hf.set_reference(ref)
     hf.set_templates(H)
     got = hf.run_series(ser, starts, ws, we, binsize=n, threshold=snr)
 
-    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=nt)
-    mf.set_templates(H)
+    filt = mf.MatchedFilter(n, ndata=1, ntemplates=nt)
+    filt.set_templates(H)
     detected = omitted = invented = differ = 0
     for b, s in enumerate(starts):
-        mf.set_data(block_spectrum(s)[None, :])
-        want = mf.run(binsize=n, threshold=snr,
+        filt.set_data(block_spectrum(s)[None, :])
+        want = filt.run(binsize=n, threshold=snr,
                       window=(int(ws[b]), int(we[b])))[0, :, 0]
         have = got[b, :, 0]
         for t in range(nt):
@@ -503,17 +504,17 @@ def test_python_overhead_stays_off_the_hot_path():
     n, nd, nt = 4096, 8, 8
     rng = np.random.default_rng(13)
     h = template_with_power(n, inspiral_power(n))
-    mf = matchedfilter.MatchedFilter(n, nd, nt)
-    mf.set_data(noise((nd, n), rng))
-    mf.set_templates(np.repeat(h[None, :], nt, axis=0))
+    filt = mf.MatchedFilter(n, nd, nt)
+    filt.set_data(noise((nd, n), rng))
+    filt.set_templates(np.repeat(h[None, :], nt, axis=0))
 
     one = all_pairs = float("inf")
     for _ in range(5):
         t0 = time.perf_counter()
-        mf.run(binsize=1024, data=(0, 1), templates=(0, 1))
+        filt.run(binsize=1024, data=(0, 1), templates=(0, 1))
         one = min(one, time.perf_counter() - t0)
         t0 = time.perf_counter()
-        mf.run(binsize=1024)
+        filt.run(binsize=1024)
         all_pairs = min(all_pairs, time.perf_counter() - t0)
 
     per_pair = all_pairs / (nd * nt)

@@ -13,15 +13,17 @@ skip work that could not have produced a peak anyway.
 > [Caveats](#caveats).
 
 ```python
-from matchedfilter import MatchedFilter
+import matchedfilter as mf
 
-mf = MatchedFilter(16384, ndata=16, ntemplates=64)
-mf.set_data(data_spectra)          # (16, 16384) complex64, already FFT'd
-mf.set_templates(template_spectra) # (64, 16384) complex64
+filt = mf.MatchedFilter(16384, ndata=16, ntemplates=64)
+filt.set_data(data_spectra)          # (16, 16384) complex64, already FFT'd
+filt.set_templates(template_spectra) # (64, 16384) complex64
 
-peaks = mf.run(binsize=1024, threshold=5.5)
+peaks = filt.run(binsize=1024, threshold=5.5)
 peaks["index"], peaks["value"], peaks["magnitude"]
 ```
+
+`import matchedfilter as mf` is the convention used throughout these docs.
 
 ## Install
 
@@ -81,22 +83,25 @@ useful, and the pre-pass is pure added cost. It is worth checking against your
 own templates before relying on it.
 
 ```python
-from matchedfilter import HierarchicalFilter
+hf = mf.HierarchicalFilter(16384, ndata=16, ntemplates=64,
+                           snr=6.0,   # threshold you intend to use
+                           fd=1e-3,   # false-dismissal budget
+                           band=2048) # width of the cheap slice
 
-hf = HierarchicalFilter(16384, ndata=16, ntemplates=64,
-                        snr=6.0,      # threshold you intend to use
-                        fd=1e-3,      # false-dismissal budget
-                        band=2048)    # width of the cheap slice
-
-hf.set_reference(expected_output_power)      # power spectrum of the OUTPUT
+hf.set_reference(expected_output_power)      # real frequency series, the OUTPUT
 hf.set_templates(template_spectra)
 hf.set_data(data_spectra)
 peaks = hf.run(binsize=16384, threshold=6.0)
 ```
 
-`set_reference` takes the power spectrum of the filter **output**, not of the
-template. Those differ whenever the data is coloured, and passing the template's
-spectrum will mis-set the gate.
+`set_reference` takes a real frequency series of length `n` holding the expected
+power of the filter **output** in each bin. Only its shape is used; the overall
+normalisation is divided out.
+
+This is the output, not the template. The two differ whenever the data is
+coloured, and passing the template's own power will mis-set the gate: a
+broadband template reconstructing a narrowband signal is the case where it goes
+wrong by the largest factor.
 
 The gate is one-sided by construction: peaks it reports are bit-identical to
 the flat filter's. It can only omit, never invent. `fd` is the budget for how
@@ -112,8 +117,8 @@ falls toward 1x on data where most pairs trigger.
   `fd` is honoured well at snr 6 and above. At snr 5.0 to 5.5 with a coarse
   band the gate omits more than it should: 1.4% against a 0.1% budget in a
   418-template search. The cause is that the gate's recovery factors are
-  measured from a mean spectrum, which is not a bound on any individual
-  realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
+  measured from a mean frequency series, which is not a bound on any
+  individual realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
   in [docs/hierarchical.md](docs/hierarchical.md).
 - Single-threaded by design. Parallelism is the caller's to arrange.
 - x86-64 only.

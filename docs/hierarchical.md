@@ -255,7 +255,7 @@ a re-calibration.  It should not be attempted in a context too small to finish
 and re-validate it, because a half-finished gate that is slightly wrong looks
 *faster*, and the correctness suite cannot see it.
 
-## Recovery factors from a mean spectrum are not a bound at coarse grids
+## Recovery factors from a mean frequency series are not a bound at coarse grids
 
 graw1 is measured over noise realisations at a low quantile, because the
 reference's autocorrelation is a MEAN shape and an individual peak can be
