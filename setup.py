@@ -10,7 +10,10 @@ target Highway supports on the build machine, each with its own target
 attributes, and picks between them at run time.  Nothing below names a target.
 """
 import os
+import platform
+import re
 import sys
+import sysconfig
 
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
@@ -18,33 +21,59 @@ from setuptools.command.build_ext import build_ext
 BASE = ["-O3", "-fno-math-errno"]
 CXX = BASE + ["-std=c++17"]
 
+# Which architectures this compiler invocation is targeting.  On macOS that
+# need not be the host: a universal2 build carries "-arch arm64 -arch x86_64"
+# and compiles every source twice, so a flag valid for one slice must be valid
+# for the other.
+_X86 = ("x86_64", "amd64", "i386", "i686")
+
+
+def target_arches():
+    flags = os.environ.get("ARCHFLAGS", "")
+    if not flags and sys.platform == "darwin":
+        flags = sysconfig.get_config_var("CFLAGS") or ""
+    found = re.findall(r"-arch\s+(\S+)", flags)
+    return [a.lower() for a in found] or [platform.machine().lower()]
+
+
+X86_ONLY = all(a in _X86 for a in target_arches())
+
 # Targets Highway must not generate:
 #   SVE and RVV have sizeless vectors, which cannot be members of the
 #     vf TR[AP_W] arrays the transpose and both stages are built from;
 #   SCALAR is one lane, below the four the kernel's layout assumes;
-#   the AVX-512 variants beyond AVX3, and the pre-SSE4 targets, are code paths
-#     nothing has measured a reason for.
-DISABLED = "(HWY_SCALAR|HWY_SVE|HWY_SVE2|HWY_SVE_256|HWY_SVE2_128|HWY_RVV" \
-           "|HWY_SSE2|HWY_SSSE3|HWY_AVX3_DL|HWY_AVX3_ZEN4|HWY_AVX3_SPR" \
-           "|HWY_AVX10_2)"
+#   the AVX-512 variants beyond AVX3 are code paths nothing has measured a
+#     reason for.
+DISABLED = ["HWY_SCALAR", "HWY_SVE", "HWY_SVE2", "HWY_SVE_256", "HWY_SVE2_128",
+            "HWY_RVV", "HWY_AVX3_DL", "HWY_AVX3_ZEN4", "HWY_AVX3_SPR",
+            "HWY_AVX10_2"]
 
-# SSE4.2 as the floor on x86 rather than SSE2: it is the oldest target left
-# enabled, and Highway needs the baseline to be one it will generate.  Every
-# wider target is reached by runtime dispatch, so this does not restrict what
-# the build can run on beyond hardware from 2008.
-if any(s in (os.environ.get("ARCHFLAGS", "") or "") for s in ("arm64", "aarch64")):
-    ARCH = []
-elif os.uname().machine.lower() in ("x86_64", "amd64", "i386", "i686"):
+# SSE4.2 as the floor on x86 rather than SSE2: every wider target is reached
+# by runtime dispatch, so this restricts nothing beyond hardware from 2008,
+# and it removes two more copies of the kernel from the build.  Only when the
+# build is x86 alone -- a universal2 arm64 slice cannot be given -msse4.2, so
+# there SSE2 has to stay enabled to remain a valid baseline.
+if X86_ONLY and platform.machine().lower() in _X86:
     ARCH = ["-msse4.2", "-maes", "-mpclmul"]
+    DISABLED += ["HWY_SSE2", "HWY_SSSE3"]
 else:
     ARCH = []
 
 HIGHWAY_ROOT = os.environ.get("HIGHWAY_ROOT", "")
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
 def highway():
-    """(include dir, support sources, libraries to link) for Highway."""
-    roots = [HIGHWAY_ROOT] if HIGHWAY_ROOT else []
+    """(include dir, support sources, libraries to link) for Highway.
+
+    The vendored submodule first, so a clone builds without anything
+    installed; then HIGHWAY_ROOT, then the usual system places.
+    """
+    roots = [os.path.join(HERE, "third_party", "highway")]
+    if HIGHWAY_ROOT:
+        roots.insert(0, HIGHWAY_ROOT)
     roots += ["/usr/include", "/usr/local/include", sys.prefix + "/include"]
     for d in roots:
         if not os.path.isfile(os.path.join(d, "hwy", "highway.h")):
@@ -58,15 +87,16 @@ def highway():
             return d, srcs, []
         return d, [], ["hwy"]
     sys.exit(
-        "matchedfilter needs Google Highway to build.\n"
-        "Install it, or set HIGHWAY_ROOT to a checkout of\n"
-        "https://github.com/google/highway"
+        "matchedfilter needs Google Highway to build, and the vendored copy\n"
+        "is missing.  From a git clone:\n"
+        "    git submodule update --init third_party/highway\n"
+        "or install Highway and set HIGHWAY_ROOT to its include directory."
     )
 
 
 HWY_INC, HWY_SRC, HWY_LIBS = highway()
 
-DEFS = [("HWY_DISABLED_TARGETS", DISABLED)]
+DEFS = [("HWY_DISABLED_TARGETS", "(%s)" % "|".join(DISABLED))]
 SOURCES = (
     [("src/kernel.cc", CXX + ARCH, DEFS)]
     + [(s, CXX + ARCH, DEFS) for s in HWY_SRC]   # same baseline, or the

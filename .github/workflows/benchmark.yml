@@ -24,19 +24,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `isas` is a list because each matrix entry is a SEPARATE runner
-          # VM, with its own CPU model and its own neighbours.  Comparing back
-          # ends across entries compares machines as much as kernels; to
-          # compare kernels they have to run in one job, on one host.
-          - {os: ubuntu-latest,    label: "linux-x86_64",  isas: "auto avx2 portable"}
-          - {os: ubuntu-24.04-arm, label: "linux-arm64",   isas: "auto"}
-          - {os: macos-14,         label: "macos-arm64",   isas: "auto"}
+          # Every target this build holds is benchmarked within ONE job.
+          # Each matrix entry is a separate runner VM with its own CPU model
+          # and its own neighbours, so comparing targets across entries would
+          # compare machines as much as kernels.
+          - {os: ubuntu-latest,    label: "linux-x86_64"}
+          - {os: ubuntu-24.04-arm, label: "linux-arm64"}
+          - {os: macos-14,         label: "macos-arm64"}
           # Intel macOS is deliberately absent: the hosted fleet is retiring
           # those runners, and a platform that cannot be tested should not be
           # claimed.  It may well work -- it is the x86 kernels plus Clang --
           # but nothing here measures that.
     steps:
       - uses: actions/checkout@v4
+        with: { submodules: true }   # third_party/highway
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
@@ -64,12 +65,18 @@ jobs:
           python -m pip install pyfftw scipy || \
             echo "::notice::pyfftw/scipy unavailable; comparing against numpy only"
 
-      - name: Test and benchmark every back end on this host
+      - name: Test and benchmark every target on this host
         # The suite gates the benchmark: a timing of a wrong answer is
-        # worthless, and the portable back end has produced wrong answers.
+        # worthless, and a kernel has produced wrong answers before.
+        #
+        # The target list comes from the build, not from this file: which
+        # ones a wheel contains is the compiler's decision, and which of
+        # those will run is the runner's.
         run: |
           mkdir -p /tmp/run && cd /tmp/run
-          for isa in ${{ matrix.isas }}; do
+          targets=$(python -c "import matchedfilter;print(' '.join(matchedfilter.targets()))")
+          echo "targets on this host: $targets"
+          for isa in auto $targets; do
             if [ "$isa" = auto ]; then unset MF_ISA; name="${{ matrix.label }}"
             else export MF_ISA="$isa"; name="${{ matrix.label }}-$isa"; fi
             echo "::group::$name"
@@ -105,6 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { submodules: true }   # third_party/highway
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - uses: actions/download-artifact@v4

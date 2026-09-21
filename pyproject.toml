@@ -1,6 +1,6 @@
-# `pip install .` is the whole build.  There is no Makefile: the one C test
-# that survives compiles itself from tests/test_internals.py, so `pytest` is
-# the single entry point for the suite.
+# `pip install .` is the whole build.  There is no Makefile, and `pytest` is
+# the single entry point for the suite.  The one non-Python dependency is
+# Google Highway, vendored at third_party/highway.
 [build-system]
 # >=77 for PEP 639: the SPDX `license` expression and `license-files`
 # produce Metadata 2.4.  An older setuptools reads the same lines as the
@@ -58,19 +58,19 @@ skip = "*-musllinux_i686 *_i686 pp*"
 build-frontend = "build"
 test-requires = "pytest"
 # Run from {package} so the tests import the installed wheel rather than the
-# source tree, and so test_internals.py can still find src/ to compile against.
+# source tree next to them.
 test-command = "python -m pytest {package}/tests -q -rs"
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64"]
-# manylinux2014's default toolchain is too old for the AVX-512 intrinsics the
-# kernels use; the _2_28 image ships a compiler that has them.
+# manylinux2014's default toolchain is too old for Highway's AVX-512 targets;
+# the _2_28 image ships a compiler that has them.
 manylinux-x86_64-image = "manylinux_2_28"
 
 [tool.cibuildwheel.macos]
 # Apple Silicon only.  Intel Macs are untested -- the hosted runners for them
 # are being retired -- and shipping a wheel is a stronger claim than "it
 # probably compiles".  cibuildwheel sets ARCHFLAGS per wheel, which is what
-# setup.py reads to decide whether the x86 kernels are in the build, so this
-# produces a single-arch arm64 wheel rather than a universal2 one.
+# setup.py reads to decide which baseline flags are valid, so this produces
+# a single-arch arm64 wheel rather than a universal2 one.
 archs = ["arm64"]

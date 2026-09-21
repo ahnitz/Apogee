@@ -2,10 +2,14 @@
 # has to be named here.  Without this the sdist builds fine and then fails to
 # install: the extension sources are simply absent.
 include README.md LICENSE
-recursive-include src *.c *.h *.py
+recursive-include src *.c *.cc *.h *.py
 recursive-include python *.c *.h
 recursive-include tests *.c *.h *.py
 recursive-include tools *.py
 recursive-include docs *.md
+# Highway is vendored as a submodule, and the build needs it: an sdist without
+# it installs only where Highway is already present.
+recursive-include third_party/highway/hwy *.h *.cc *.h.in
+include third_party/highway/LICENSE
 prune build
 global-exclude *.pyc *.so *.o __pycache__

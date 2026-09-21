@@ -489,7 +489,7 @@ SECTIONS = [
 ]
 
 NOTE_FILES = [("docs/hierarchical.md", "The hierarchical filter"),
-              ("docs/portable.md", "The portable back end"),
+              ("docs/simd.md", "The SIMD layer"),
               ("docs/design.md", "Batched matched filter design")]
 
 

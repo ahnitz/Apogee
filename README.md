@@ -42,21 +42,21 @@ where it builds and passes but no wheel is published yet.
 
 ### Platforms
 
-x86-64 has hand-written AVX-512 and AVX2 kernels, chosen at run time from the
-CPU. Everywhere else builds a portable back end from the same source, using
-compiler vector extensions, which currently costs roughly 10% against the AVX2
-kernels on the same machine.
+One kernel source is compiled once per SIMD target the compiler can generate,
+and the target is chosen at run time from what the CPU reports. On x86-64
+that is AVX3, AVX2 and SSE4; on arm64 it is NEON.
 
-| platform | back end | tested |
-|---|---|---|
-| Linux x86-64 | AVX-512 / AVX2 | every push |
-| Linux arm64 | portable (NEON) | every push |
-| macOS arm64 | portable (NEON) | every push |
-| macOS x86-64 | AVX-512 / AVX2 | no |
+| platform | tested |
+|---|---|
+| Linux x86-64 | every push |
+| Linux arm64 | every push |
+| macOS arm64 | every push |
+| macOS x86-64 | no |
 
 macOS on Intel is untested rather than known-broken: hosted runners for it are
-being retired, so nothing measures it. `matchedfilter.backend()` reports which
-kernel was selected, and `MF_ISA` forces one.
+being retired, so nothing measures it. `matchedfilter.targets()` lists what a
+build holds that the CPU can run, `matchedfilter.backend()` reports which one
+was selected, and `set_target()` or `MF_ISA` forces one.
 
 ## How it works
 
@@ -146,16 +146,18 @@ falls toward 1x on data where most pairs trigger.
   individual realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
   in [docs/hierarchical.md](docs/hierarchical.md).
 - Single-threaded by design. Parallelism is the caller's to arrange.
-- Off x86-64 the portable back end is the only one, and it currently costs
-  about 10% against the AVX2 kernels measured on the same machine. See
-  [docs/portable.md](docs/portable.md).
+- Narrower targets cost what their width implies: on one machine SSE4 runs
+  the same workload at 2.05x AVX3 and AVX2 at 1.10x. See
+  [docs/simd.md](docs/simd.md).
 
 ## Development
 
 ```bash
+git submodule update --init third_party/highway   # the SIMD layer
 pip install -e .[test]
-pytest              # includes a C test that builds itself from source
+pytest
 python -m matchedfilter.benchmark
+python -m matchedfilter.benchmark --backends      # every target, one process
 ```
 
 [docs/](docs/) holds the design notes: how the hierarchical gate is
