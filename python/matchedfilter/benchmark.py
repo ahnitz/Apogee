@@ -25,7 +25,29 @@ import numpy as np
 import matchedfilter as mf
 
 
-def reference_engines(n):
+def available_engines():
+    """Which references are installed, without planning anything.
+
+    Listing the columns must not build an FFTW plan: doing so leaves wisdom
+    behind, and the plan the benchmark then reports for that size measures
+    a cache hit rather than the planning it actually did.
+    """
+    names = ["numpy"]
+    for mod, name in (("pyfftw", "fftw"), ("scipy", "scipy")):
+        try:
+            __import__(mod)
+            names.append(name)
+        except Exception:
+            pass
+    return names
+
+
+FFTW_PLAN = {"estimate": "FFTW_ESTIMATE", "measure": "FFTW_MEASURE",
+             "patient": "FFTW_PATIENT", "exhaustive": "FFTW_EXHAUSTIVE"}
+_plan_seconds = {}
+
+
+def reference_engines(n, fftw_plan="measure"):
     """FFT implementations to compare against, whichever are installed.
 
     numpy is always present and is a floor rather than a rival.  FFTW is the
@@ -36,17 +58,23 @@ def reference_engines(n):
     FFTW is driven through a planned pyfftw.FFTW object over pre-allocated
     aligned buffers, not through pyfftw.interfaces.  The interfaces layer adds
     per-call Python work that, at these sizes, made FFTW measure slower than
-    numpy -- an unfair comparison, and one that flattered this library.  The
-    plan is built with FFTW_MEASURE, which is what anyone timing FFTW would
-    do, and is built before anything is timed.
+    numpy -- an unfair comparison, and one that flattered this library.
+
+    The plan is built here, before the caller starts its clock, so planning is
+    never inside a reported time.  How long it took is recorded in
+    _plan_seconds and printed, so that claim can be checked rather than taken
+    on trust.  FFTW_MEASURE is the default because it is what anyone timing
+    FFTW would use; --fftw-plan raises or lowers it.
     """
     engines = [("numpy", np.fft.ifft)]
     try:
         import pyfftw
         src = pyfftw.empty_aligned(n, dtype="complex128")
         dst = pyfftw.empty_aligned(n, dtype="complex128")
+        _t0 = time.perf_counter()
         plan = pyfftw.FFTW(src, dst, direction="FFTW_BACKWARD",
-                           flags=("FFTW_MEASURE",))
+                           flags=(FFTW_PLAN[fftw_plan],))
+        _plan_seconds[n] = time.perf_counter() - _t0
 
         def fftw_ifft(x, _p=plan, _s=src, _d=dst, _n=float(n)):
             _s[:] = x
@@ -87,7 +115,7 @@ def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we, ifft=None):
     return idx, mag
 
 
-def _one(n, nd, nt, binsize, window, reps, check):
+def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
     rng = np.random.default_rng(1234)
     d = rng.standard_normal((nd, n)) + 1j * rng.standard_normal((nd, n))
     t = rng.standard_normal((nt, n)) + 1j * rng.standard_normal((nt, n))
@@ -127,7 +155,7 @@ def _one(n, nd, nt, binsize, window, reps, check):
     refs = {}
     if check:
         dd, td = dspec.astype(np.complex128), tspec.astype(np.complex128)
-        for name, fn in reference_engines(dspec.shape[1]):
+        for name, fn in reference_engines(dspec.shape[1], fftw_plan):
             fn(dd[0])                     # warm, after planning
             t0 = time.perf_counter()
             _numpy_matched_filter(dd, td, binsize, thr, ws, we, ifft=fn)
@@ -234,6 +262,9 @@ def main(argv=None):
     ap.add_argument("--json", metavar="PATH",
                     help="also write the results as JSON, for combining runs "
                          "from different machines")
+    ap.add_argument("--fftw-plan", default="measure", choices=sorted(FFTW_PLAN),
+                    help="FFTW planning effort (default: measure). Planning is "
+                         "done before timing starts and is never counted.")
     ap.add_argument("--label", default="",
                     help="name for this machine in a combined report")
     a = ap.parse_args(argv)
@@ -244,7 +275,7 @@ def main(argv=None):
     print(f"python {sys.version.split()[0]}   numpy {np.__version__}")
     print(f"{a.data} data x {a.templates} templates = {a.data * a.templates} pairs, "
           f"{a.window:.0%} window\n")
-    engines = [e for e, _ in reference_engines(max(a.n))]
+    engines = available_engines()
     print("  " + f"{'n':>8}" + f"{'matchedfilter':>14}"
           + "".join(f"{e:>11}" for e in engines)
           + "".join(f"{'vs ' + e:>9}" for e in engines) + "   check")
@@ -264,7 +295,7 @@ def main(argv=None):
             we = ws + (int(a.window * n) & ~15)
         try:
             mine, refs, ok = _one(n, a.data, a.templates, bs, (ws, we),
-                                  a.reps, not a.no_check)
+                                  a.reps, not a.no_check, a.fftw_plan)
         except ValueError as e:
             print(f"  {n:>8}   unsupported: {e}")
             continue
@@ -281,6 +312,12 @@ def main(argv=None):
                           "reference_us_per_pair": refs,
                           "checked": not a.no_check, "ok": "FAILED" not in ok})
 
+    if _plan_seconds:
+        tot = sum(_plan_seconds.values())
+        print("\nFFTW planning (%s): %s -- excluded from every time above."
+              % (FFTW_PLAN[a.fftw_plan],
+                 ", ".join("n=%d %.2fs" % (n, t) for n, t in sorted(_plan_seconds.items()))
+                 + (" | total %.2fs" % tot)))
     print("\nTimes are microseconds per (data, template) pair, best of "
           f"{a.reps}.\nnumpy is a floor rather than a rival; FFTW is the "
           "comparison that means something.\nEvery reference computes the "
