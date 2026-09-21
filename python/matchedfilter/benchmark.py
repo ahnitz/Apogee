@@ -251,18 +251,24 @@ def compare_backends(isas, reps, n=4096, ntmpl=64, ntaps=1024,
             mf.set_target(isa)
         except ValueError:
             continue                    # not in this build, or not runnable here
-        p = mf.HierarchicalFilter(n, ndata=1, ntemplates=ntmpl,
-                                  snr=threshold, fd=1e-3, band=512,
-                                  oversample=2, taps=8)
-        p.set_reference(power); p.set_templates(h)
-        p.set_first_stage(0.01)
+        def build():
+            q = mf.HierarchicalFilter(n, ndata=1, ntemplates=ntmpl,
+                                      snr=threshold, fd=1e-3, band=512,
+                                      oversample=2, taps=8)
+            q.set_reference(power); q.set_templates(h)
+            return q
+
+        # Separate plans for the two passes.  trigger_rate counts over a
+        # plan's whole lifetime, so running the injected comparison on the
+        # plan that is about to be timed reports a blend of the two.
+        c = build()
+        c.set_first_stage(0.01)
         # run_series returns the plan's own buffers, so copy before the next
-        # plan -- or the next call -- overwrites them.
+        # call overwrites them.
         out = [np.array(a) for a in
-               p.run_series(loud, starts, ws, we, binsize=n,
+               c.run_series(loud, starts, ws, we, binsize=n,
                             threshold=0.0, raw=True)]
-        p.set_first_stage(None)
-        plans[mf.backend()] = p
+        plans[mf.backend()] = build()
         if ref is None:
             ref, agree[mf.backend()] = out, True
         else:

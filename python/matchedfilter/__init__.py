@@ -381,6 +381,9 @@ class HierarchicalFilter(MatchedFilter):
         the filter is slower than expected: a data set noisier than the design
         assumed opens the gate more often, and at a high enough trigger rate the
         coarse pass is pure overhead.
+
+        Counted over the plan's whole lifetime, not per run.  To measure one
+        workload, filter it with a plan that has seen nothing else.
         """
         pairs, trig = self._mf.stats()
         return trig / pairs if pairs else 0.0
