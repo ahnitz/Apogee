@@ -4,13 +4,23 @@
 #define AP_SIMD_H
 #include <stdint.h>
 
+/* `restrict` is C99 and not a C++ keyword.  The generated codelets use it
+   heavily, so map it rather than regenerate them differently per language. */
+#ifdef __cplusplus
+#define restrict __restrict
+#endif
+
 #ifndef AP_W
 #error "define AP_W to 16 (AVX-512) or 8 (AVX2)"
 #endif
 
-/* AP_PORTABLE swaps the x86 intrinsics below for GCC/Clang vector extensions,
-   which compile anywhere those compilers do.  See src/simd_portable.h. */
-#ifdef AP_PORTABLE
+/* Three SIMD layers behind one macro surface.  AP_HIGHWAY uses Google
+   Highway (C++), AP_PORTABLE uses GCC/Clang vector extensions, and the
+   default is the hand-written x86 intrinsics.  codelets.h and balanced.c
+   see only the V_* macros and are identical across all three. */
+#if defined(AP_HIGHWAY)
+#include "simd_hwy.h"
+#elif defined(AP_PORTABLE)
 #include "simd_portable.h"
 #else
 #include <immintrin.h>
@@ -137,5 +147,5 @@ static inline float v_reduce_max(vf v){
   for(int i=1;i<AP_W;i++) if(t[i]>m) m=t[i];
   return m;
 }
-#endif /* AP_PORTABLE */
+#endif /* SIMD layer */
 #endif

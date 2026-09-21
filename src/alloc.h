@@ -12,11 +12,12 @@
 
 #define AP_ALIGN 64
 
-static inline void *ap_alloc64(size_t bytes) {
+static inline void *ap_alloc64_raw(size_t bytes) {
   if (!bytes) bytes = AP_ALIGN;
   size_t r = bytes % AP_ALIGN;
   if (r) bytes += AP_ALIGN - r;
-#if defined(_ISOC11_SOURCE) || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
+#if defined(__cplusplus) || defined(_ISOC11_SOURCE) \
+    || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
   return aligned_alloc(AP_ALIGN, bytes);
 #else
   void *p = NULL;
@@ -24,4 +25,20 @@ static inline void *ap_alloc64(size_t bytes) {
   return p;
 #endif
 }
+
+#ifdef __cplusplus
+/* C++ has no implicit void* conversion, and the kernels assign the result to
+   a dozen different pointer types.  Returning a proxy that converts on demand
+   keeps every call site identical between the C and C++ builds, rather than
+   sprinkling casts that only one of the two needs. */
+struct ap_alloc_proxy {
+  void *p;
+  template <typename T> operator T *() const { return static_cast<T *>(p); }
+};
+static inline ap_alloc_proxy ap_alloc64(size_t bytes) {
+  return ap_alloc_proxy{ap_alloc64_raw(bytes)};
+}
+#else
+#define ap_alloc64(bytes) ap_alloc64_raw(bytes)
+#endif
 #endif

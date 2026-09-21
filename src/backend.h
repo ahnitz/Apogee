@@ -37,6 +37,11 @@ extern const ap_backend ap_be_bal16;   /* same source at 16 lanes, for cross-che
    baseline x86-64 (or whatever the target's default is) and is the fallback
    that must run anywhere; level 2 adds AVX2 and FMA.  Only level 0 exists off
    x86, where there is nothing to fall back from. */
+#ifdef AP_WITH_HIGHWAY
+/* Same width-generic kernel again, this time on Google Highway.  Built only
+   when Highway is available; AP_HWY_W is the lane count its target uses. */
+extern const ap_backend AP_HWY_BACKEND;
+#endif
 extern const ap_backend ap_be_port80;
 #if defined(__x86_64__) || defined(__i386__)
 extern const ap_backend ap_be_port81;   /* AVX: 256-bit float, no FMA  */

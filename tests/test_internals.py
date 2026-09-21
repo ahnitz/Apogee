@@ -69,7 +69,13 @@ def test_c_internals(tmp_path):
                       "-I", os.path.join(ROOT, "tests")]
                    + objs + ["-lm"], check=True)
 
-    done = subprocess.run([exe], capture_output=True, text=True)
+    # This binary links its own back ends, which are not the same set the
+    # installed extension has -- it has no Highway or AVX-512-specific build.
+    # Inheriting MF_ISA would ask it for a back end it did not compile, and
+    # the dispatcher rightly returns nothing.
+    env = dict(os.environ)
+    env.pop("MF_ISA", None)
+    done = subprocess.run([exe], capture_output=True, text=True, env=env)
     # The C harness prints one line per check and exits non-zero on failure;
     # surface its output so a CI failure says which check broke.
     assert done.returncode == 0, done.stdout + done.stderr

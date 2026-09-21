@@ -9,6 +9,7 @@
  *   balanced512  the same generic source at 16 lanes (cross-check)
  *   portable     the same source again, compiler-vectorised rather than
  *                hand-written; the best build the CPU supports
+ *   highway      the same source on Google Highway, if built with it
  *   portable1    that source built for AVX only (Sandy/Ivy Bridge)
  *   portable0    that source at baseline, the fallback for an x86 without AVX
  */
@@ -55,6 +56,9 @@ static int have_avx(void){ return __builtin_cpu_supports("avx"); }
 static const ap_backend *pick(void){
   const char *e = getenv("MF_ISA");
   if(e && *e){
+#ifdef AP_WITH_HIGHWAY
+    if(!strcmp(e,"highway"))     return &AP_HWY_BACKEND;
+#endif
     if(!strcmp(e,"portable0"))   return &ap_be_port80;
 #if AP_HAVE_X86
     if(!strcmp(e,"portable1"))   return have_avx() ? &ap_be_port81 : NULL;
@@ -203,6 +207,9 @@ int ap_binmax(ap_plan *p,const float *in,size_t dist,int B,
 int ap_lane_width(void){
   const ap_backend *b=pick();
   if(!b) return 0;
+#ifdef AP_WITH_HIGHWAY
+  if(b==&AP_HWY_BACKEND) return AP_HWY_W;
+#endif
   if(b==&ap_be_bal8 || b==&ap_be_port80
 #if AP_HAVE_X86
      || b==&ap_be_port81 || b==&ap_be_port82

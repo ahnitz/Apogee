@@ -72,7 +72,9 @@ static inline double pnow(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,
 #define STR(x) STR2(x)
 /* Static helpers need distinct names too, for the same reason as the back-end
    struct: several copies of this file end up in one object set. */
-#ifdef AP_PORTABLE
+#if defined(AP_HIGHWAY)
+#define FN(name) CAT(CAT(pfh,AP_W),_##name)
+#elif defined(AP_PORTABLE)
 /* The portable source is compiled more than once on x86: at baseline, which
    runs on any x86-64, and again with -mavx2 -mfma.  AP_PORT_LEVEL keeps the
    two sets of symbols apart so both can live in one binary and be chosen at
@@ -319,7 +321,7 @@ void *FN(create)(size_t N){
 }
 
 void FN(destroy)(void *vp){
-  BP *p=vp; if(!p) return;
+  BP *p=(BP*)vp; if(!p) return;
   free(p->bmx);free(p->bre);free(p->bim);free(p->bix);
   free(p->ire);free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
   free(p->TLr);free(p->TLi);free(p->w1r);free(p->w1i);free(p->w2r);free(p->w2i);
@@ -579,7 +581,7 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
 }
 
 void FN(fft)(void *vp,const float*in,float*out,int conj){
-  BP *p=vp; const int N1=PN1,N2=PN2;
+  BP *p=(BP*)vp; const int N1=PN1,N2=PN2;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   stageA(p,in,conj);
   for(int b=0;b<N2/AP_W;b++){
@@ -619,7 +621,7 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
   const size_t nb=(we-ws+binsize-1)/binsize;
   const float t2 = thr>0.f ? thr*thr : -1.f;
   const vf NEG=V_SET1(-1.f);
-  const unsigned allm=(AP_W==16)?0xFFFFu:0xFFu;
+  const unsigned allm=(unsigned)((1ull<<AP_W)-1ull);  /* all lanes in window */
   /* Bin index is (k - ws)/binsize, and a runtime divide is ~20 cycles in a loop
      whose whole body is three instructions.  Bin sizes are powers of two in every
      realistic use, so shift instead and keep the divide only as a fallback. */
@@ -748,7 +750,7 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
 
 int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,ap_peak*out,
                int conj,size_t ws,size_t we){
-  BP *p=vp;
+  BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
   if(FN(bins_reserve)(p,nb)) return -1;
   stageA(p,in,conj);
@@ -759,13 +761,13 @@ int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,ap_peak*out,
 int FN(has_prod)(void *vp){ (void)vp; return 1; }   /* every length here is fused */
 
 int FN(split)(void *vp,int *n1,int *n2){
-  BP *p=vp; *n1=p->N1; *n2=p->N2; return 1;
+  BP *p=(BP*)vp; *n1=p->N1; *n2=p->N2; return 1;
 }
 
 int FN(binmax_prod)(void *vp,const float*dr,const float*di,
                     const float*tr,const float*ti,size_t binsize,
                     float thr,ap_peak*out,int conj,size_t ws,size_t we){
-  BP *p=vp;
+  BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
   if(FN(bins_reserve)(p,nb)) return -1;
   if(p->gmajor) stageA_prod_gm(p,dr,di,tr,ti);
@@ -776,7 +778,7 @@ int FN(binmax_prod)(void *vp,const float*dr,const float*di,
 
 int FN(binmax_split)(void *vp,const float*inr,const float*ini,size_t binsize,
                      float thr,ap_peak*out,int conj,size_t ws,size_t we){
-  BP *p=vp;
+  BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
   if(FN(bins_reserve)(p,nb)) return -1;
   stageA_split(p,inr,ini,0);     /* caller already folded any input conjugation */
@@ -791,7 +793,11 @@ int FN(binmax_split)(void *vp,const float*inr,const float*ini,size_t binsize,
    symbol name has to carry which one this is, or the copies collide at link
    time.  Building the portable variant alongside the intrinsic one is what
    lets them be compared inside a single process. */
-#ifdef AP_PORTABLE
+#if defined(AP_HIGHWAY)
+extern "C" const ap_backend CAT(ap_be_hwy,AP_W);
+extern "C" const ap_backend CAT(ap_be_hwy,AP_W) = {
+  "highway" STR(AP_W),
+#elif defined(AP_PORTABLE)
 const ap_backend CAT(CAT(ap_be_port,AP_W),AP_PORT_LEVEL) = {
   "portable" STR(AP_W) "-" STR(AP_PORT_LEVEL),
 #else

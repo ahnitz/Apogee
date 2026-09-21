@@ -74,9 +74,34 @@ def _accepted(compiler, flags):
 AVX512 = ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 AVX2 = ["-mavx2", "-mfma"]
 
+# Google Highway, if the headers are there.  Optional: the library builds and
+# runs without it, and this back end exists to be compared against the
+# hand-written one rather than to replace it yet.  Point HIGHWAY_ROOT at a
+# checkout, or install the headers somewhere the compiler finds them.
+HIGHWAY_ROOT = os.environ.get("HIGHWAY_ROOT", "")
+
+
+def highway_available():
+    if HIGHWAY_ROOT:
+        return os.path.isfile(os.path.join(HIGHWAY_ROOT, "hwy", "highway.h"))
+    for d in ("/usr/include", "/usr/local/include"):
+        if os.path.isfile(os.path.join(d, "hwy", "highway.h")):
+            return True
+    return False
+
+
+# Highway's AVX2 target needs more than -mavx2 -mfma; without the rest it
+# silently falls back to SSE4 and gives 4 lanes where 8 were asked for.
+HWY_AVX2 = ["-mavx2", "-mfma", "-mbmi", "-mbmi2", "-mf16c", "-mlzcnt",
+            "-std=c++17"]
+
 # Compiled into every slice, so an arm64 slice of a universal2 build never
 # references kernels that were not built.
 X86_KERNELS = ("AP_WITH_X86_KERNELS", "1" if IS_X86 else "0")
+
+# Tell dispatch.c whether the Highway back end exists, and at what width.
+HWY_DEFS = ([("AP_WITH_HIGHWAY", "1"), ("AP_HWY_BACKEND", "ap_be_hwy8"),
+             ("AP_HWY_W", "8")] if highway_available() else [])
 
 # (source, extra flags, extra defines)
 if IS_X86:
@@ -107,9 +132,15 @@ if IS_X86:
                                       ("AP_PORT_LEVEL", "2")]),
         ("src/matchfilt.c",  BASE,   [X86_KERNELS]),
         ("src/hmf.c",        BASE,   []),
-        ("src/dispatch.c",   [],     [X86_KERNELS]),      # baseline only
+        ("src/dispatch.c",   [],     [X86_KERNELS] + HWY_DEFS),   # baseline only
         ("python/matchedfilter/_core.c", [], []),
     ]
+    if highway_available():
+        GROUPS.append(
+            ("src/balanced_hwy.cc", HWY_AVX2,
+             [("AP_W", "8"), ("AP_HIGHWAY", "1"),
+              ("HWY_COMPILE_ONLY_STATIC", "1"),
+              ("HWY_BASELINE_TARGETS", "HWY_AVX2")]))
 else:
     # No -m flags: the vector extensions lower to whatever the target has
     # (NEON on arm64), and naming an ISA here would only restrict it.
@@ -151,6 +182,9 @@ class BuildExt(build_ext):
 
 
 setup(
-    ext_modules=[Extension("matchedfilter._core", sources=[], include_dirs=["python/matchedfilter", "src"])],
+    ext_modules=[Extension(
+        "matchedfilter._core", sources=[],
+        include_dirs=(["python/matchedfilter", "src"]
+                      + ([HIGHWAY_ROOT] if HIGHWAY_ROOT else [])))],
     cmdclass={"build_ext": BuildExt},
 )
