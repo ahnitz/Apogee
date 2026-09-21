@@ -646,13 +646,16 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
           if(!inw) continue;
         }
         vf m2=V_FMADD(RR[e],RR[e],V_MUL(RI[e],RI[e]));
-        if(inw!=allm) m2=V_BLENDM(inw,NEG,m2);
-        unsigned g=V_GT_MASK(m2,am);
-        if(__builtin_expect(g!=0,0)){
-          am =V_BLENDM(g,am,m2);
-          arr=V_BLENDM(g,arr,RR[e]);
-          aii=V_BLENDM(g,aii,RI[e]);
-          axx=VI_BLENDM(g,axx,VI_SET1((int)k0));
+        if(inw!=allm) m2=V_SEL(V_MASK_FROM_BITS(inw),NEG,m2);
+        /* Compare once, select four times, never materialising a bitmask.
+           On AVX-512 the mask register was already free; portably the round
+           trip through bits and back was the whole cost of this loop. */
+        vm g=V_CMP_GT(m2,am);
+        if(__builtin_expect(V_MASK_ANY(g),0)){
+          am =V_SEL(g,am,m2);
+          arr=V_SEL(g,arr,RR[e]);
+          aii=V_SEL(g,aii,RI[e]);
+          axx=VI_SEL(g,axx,VI_SET1((int)k0));
         }
       }
      }
@@ -703,9 +706,9 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
       }
       long j0=BINOF(k0), j1=BINOF(k0+AP_W-1);
       vf m2=V_FMADD(RR[e],RR[e],V_MUL(RI[e],RI[e]));
-      if(inw!=allm) m2=V_BLENDM(inw,NEG,m2);
+      if(inw!=allm) m2=V_SEL(V_MASK_FROM_BITS(inw),NEG,m2);
       if(j0==j1){
-        if(__builtin_expect(V_GT_MASK(m2,V_SET1(bmax[j0]))!=0,0)){
+        if(__builtin_expect(V_MASK_ANY(V_CMP_GT(m2,V_SET1(bmax[j0]))),0)){
           float mv[AP_W],rv[AP_W],iv[AP_W];
           V_STOREU(mv,m2); V_STOREU(rv,RR[e]); V_STOREU(iv,RI[e]);
           for(int l=0;l<AP_W;l++) if(mv[l]>bmax[j0]){

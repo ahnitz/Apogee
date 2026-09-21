@@ -9,8 +9,9 @@ It is built on x86 as well, so both back ends live in one binary and can be
 compared inside a single process. `MF_ISA=portable` selects it; on non-x86 it
 is the only one there is.
 
-**Status: not yet at parity.** The bar is no measurable loss against the AVX2
-intrinsics at the same width. The transform meets that; the peak scan does not.
+**Status: close, not yet at parity.** The bar is no measurable loss against the
+AVX2 intrinsics at the same width. The remaining gap is 7-16% and is diffuse:
+both phases now sit near 1.1x rather than one of them carrying it.
 
 ## Where it stands
 
@@ -19,20 +20,23 @@ AVX-512 cannot enter either side. Ratio is portable/AVX2, lower is better.
 
 | n | shape | AVX2 | portable | ratio |
 |---:|---|---:|---:|---:|
-| 1024 | 4x16 | 0.060 ms | 0.087 ms | 1.54x |
-| 4096 | 4x16 | 0.219 ms | 0.301 ms | 1.39x |
-| 16384 | 4x16 | 1.013 ms | 1.357 ms | 1.34x |
-| 65536 | 2x8 | 1.142 ms | 1.511 ms | 1.32x |
-| 262144 | 1x4 | 1.516 ms | 1.850 ms | 1.20x |
+| 1024 | 4x16 | 0.056 ms | 0.064 ms | 1.16x |
+| 4096 | 4x16 | 0.215 ms | 0.250 ms | 1.16x |
+| 16384 | 4x16 | 1.013 ms | 1.151 ms | 1.13x |
+| 65536 | 2x8 | 1.157 ms | 1.320 ms | 1.16x |
+| 262144 | 1x4 | 1.542 ms | 1.664 ms | 1.07x |
 
-Split by phase at n=16384, timed through the back-end struct directly:
+Split by phase, timed through the back-end struct directly:
 
-| phase | ratio |
-|---|---:|
-| forward transform | 1.02x |
-| product + binned max | 1.36x |
+| n | transform | product + binned max |
+|---:|---:|---:|
+| 4096 | 1.12x | 1.10x |
+| 16384 | 1.11x | 1.17x |
+| 65536 | 1.05x | 1.11x |
 
-The transform is at parity. Everything left is in the peak scan.
+Two changes got it here, in order of size: disabling GCC's SLP pass (2.3x ->
+1.1x on the transform) and removing the bitmask round trip from the peak scan
+(1.36x -> 1.10x).
 
 ## GCC's SLP vectoriser costs 2.3x
 
@@ -59,26 +63,35 @@ compiler accepts them -- dropping them silently would restore the 2.3x.
 Not reproduced on Clang, which is the compiler that matters for macOS. That
 needs measuring on a Mac rather than assuming.
 
-## What is left: the peak scan
+## The bitmask round trip, and its removal
 
-The scan's inner loop compares a magnitude vector against the running maximum
-and, when some lane improves, blends four vectors:
+The scan's inner loop compared a magnitude vector against the running maximum
+and, when some lane improved, blended four vectors through a *bitmask*:
 
 ```c
-unsigned g = V_GT_MASK(m2, am);
-if (g) { am = V_BLENDM(g, am, m2); ... }
+unsigned g = V_GT_MASK(m2, am);          /* lanes -> bits  */
+if (g) { am = V_BLENDM(g, am, m2); ... } /* bits -> lanes, four times */
 ```
 
-`V_GT_MASK` returns a *bitmask*. On AVX-512 that is a native `__mmask16` and
-free; on AVX2 it is one `vmovmskps`. Portably there is no movemask, so the
-current implementation extracts each lane to a bit, and `V_BLENDM` then expands
-those bits back into a lane mask -- the round trip is paid twice per iteration
-and is the whole remaining 1.36x.
+On AVX-512 the bitmask is a native `__mmask16` and free; on AVX2 it is one
+`vmovmskps`. Portably there is no movemask at all, so the bits were extracted
+lane by lane and then expanded back for every blend -- paid twice per
+iteration, and worth 1.36x on its own.
 
-The fix is to stop round-tripping through a bitmask: carry an opaque vector
-mask type (`__mmask16` on AVX-512, `__m256` on AVX2, an integer vector
-portably) with `V_CMP_GT` / `V_SEL`, and only materialise bits where a bitmask
-is genuinely wanted. That removes work from the AVX-512 path too.
+The mask type is now opaque: `vm` is `__mmask16` on AVX-512, `__m256` on AVX2
+and an integer vector portably, with `V_CMP_GT`, `V_SEL` and `V_MASK_ANY`.
+Bits are materialised only where bits are genuinely wanted (the window mask).
+`V_GT_MASK`, `V_BLENDM` and `VI_BLENDM` had no remaining users and are gone.
+
+The AVX-512 and AVX2 paths are unchanged in measurement and still agree with
+numpy exactly.
+
+## What is left
+
+7-16%, spread evenly across both phases rather than concentrated anywhere.
+Nothing in the profile points at a single construct now, so closing it means
+either finding another pessimising pass or accepting the gap and saying so.
+Clang has not been measured at all yet, and macOS is a Clang target.
 
 ## Things that were not the problem
 

@@ -79,7 +79,6 @@ static inline unsigned v_gt_mask(vf a, vf b) {
   for (int i = 0; i < AP_W; i++) r |= (unsigned)(m[i] & 1) << i;
   return r;
 }
-#define V_GT_MASK(a,b)  v_gt_mask(a,b)
 
 /* Expand the bitmask back to a lane mask by testing each lane's bit, then
    select by bit arithmetic.  The obvious per-lane ternary compiles to a
@@ -88,16 +87,6 @@ static inline vi v_maskof(unsigned m) {
   vi bits = v_lanebits();
   return (vi)((vi_set1((int32_t)m) & bits) == bits);
 }
-static inline vf v_blendm(unsigned m, vf a, vf b) {
-  vi k = v_maskof(m);
-  return (vf)((k & (vi)b) | (~k & (vi)a));
-}
-static inline vi vi_blendm(unsigned m, vi a, vi b) {
-  vi k = v_maskof(m);
-  return (k & b) | (~k & a);
-}
-#define V_BLENDM(m,a,b)  v_blendm((unsigned)(m),a,b)
-#define VI_BLENDM(m,a,b) vi_blendm((unsigned)(m),a,b)
 
 /* Shuffles.  Element-by-element vector writes compile to a chain of
    vinsertps (one scalar insert per lane), which is what made the first
@@ -157,6 +146,34 @@ static inline void v_inter(float *p, vf re, vf im) {
 }
 #endif
 #define V_TRANSPOSE(in,out) v_transpose((in),(out))
+
+/* Opaque lane mask: an integer vector of 0 / -1, which is what a vector
+   comparison already produces.  Comparing and selecting never touches a
+   bitmask, which is what the bitmask round trip cost. */
+typedef vi vm;
+#define V_CMP_GT(a,b)        ((vi)((a) > (b)))
+#define V_MASK_FROM_BITS(u)  v_maskof(u)
+#define V_SEL(m,a,b)         ((vf)(((m) & (vi)(b)) | (~(m) & (vi)(a))))
+#define VI_SEL(m,a,b)        (((m) & (b)) | (~(m) & (a)))
+
+/* "Did any lane compare true".  There is no portable movemask; fold the
+   vector in halves instead, which is log2(W) shuffles rather than W scalar
+   extracts. */
+static inline int v_mask_any(vi m) {
+#if defined(__clang__)
+  return __builtin_reduce_or(m) != 0;
+#elif AP_W == 8
+  vi t = m | AP_SHUF2(m, m, 4, 5, 6, 7, 0, 1, 2, 3);
+  t = t | AP_SHUF2(t, t, 2, 3, 0, 1, 6, 7, 4, 5);
+  t = t | AP_SHUF2(t, t, 1, 0, 3, 2, 5, 4, 7, 6);
+  return t[0] != 0;
+#else
+  int r = 0;
+  for (int i = 0; i < AP_W; i++) r |= m[i];
+  return r != 0;
+#endif
+}
+#define V_MASK_ANY(m) v_mask_any(m)
 
 static inline float v_reduce_max(vf v) {
   float m = v[0];
