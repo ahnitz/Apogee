@@ -135,31 +135,38 @@ int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
   return 0;
 }
 
-int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
-              size_t binsize, float threshold,
-              ap_peak *peaks, int *counts, size_t start, size_t end){
-  if(!p||nd<1||nt<1||!binsize) return 0;
-  if(d0<0||d0+nd>p->nd||t0<0||t0+nt>p->nt) return -1;
-  if(end>p->n) end=p->n;
-  if(start>=end) return 0;
+/* The pair loop.  `tsel` selects which templates to run: NULL means the
+   contiguous range [0,nt), and otherwise tsel[0..nsel) holds local indices into
+   that range.  A scattered selection is what the hierarchical filter's second
+   stage has - the templates that fired are wherever they fell - and running
+   them one call at a time costs 4.65 us/pair against 2.76 us in a batch,
+   because every call re-reads the data spectrum for a single template.
+
+   Output rows are indexed by the LOCAL template index either way, so a
+   selected run writes into the same layout a full run would, leaving the rows
+   it skipped untouched. */
+static int run_pairs(ap_mf_plan *p, int d0, int nd, int t0, int nt,
+                     const int *tsel, int nsel,
+                     size_t binsize, float threshold,
+                     ap_peak *peaks, int *counts, size_t start, size_t end){
   const size_t n=p->n, nb=(end-start+binsize-1)/binsize;
   /* Tile the pair loop.  Running d outer already keeps one data spectrum resident
      across the t loop, but every template then streams once per d: D*(1+T)
      spectrum reads.  A tile of nd x nt reads nd+nt spectra and does nd*nt pairs,
      so the count falls to (D/nd)(T/nt)(nd+nt).  Tile size is bounded by how many
      spectra fit - each is 2n floats - and there is no point tiling at all once
-     two of them fill the cache. */
-  size_t spec=2*n*sizeof(float);
-  /* Measured at 16x16: 2^12 3.40 -> 2.98 (tile 8), 2^14 12.96 -> 12.34, 2^16
+     two of them fill the cache.
+
+     Measured at 16x16: 2^12 3.40 -> 2.98 (tile 8), 2^14 12.96 -> 12.34, 2^16
      within noise once two spectra fill L2.  8 is never worse, so take it. */
-  (void)spec;
   const int tile = p->tile;
   int total=0;
-  for(int dt=0;dt<nd;dt+=tile) for(int tt=0;tt<nt;tt+=tile){
-   const int dend=(nd-dt<tile)?nd:dt+tile, tend=(nt-tt<tile)?nt:tt+tile;
+  for(int dt=0;dt<nd;dt+=tile) for(int tt=0;tt<nsel;tt+=tile){
+   const int dend=(nd-dt<tile)?nd:dt+tile, tend=(nsel-tt<tile)?nsel:tt+tile;
    for(int d=dt;d<dend;d++){
     const float *Dr=p->dre+(size_t)(d0+d)*n, *Di=p->dim+(size_t)(d0+d)*n;
-    for(int t=tt;t<tend;t++){
+    for(int j=tt;j<tend;j++){
+      const int t = tsel ? tsel[j] : j;
       const float *Hr=p->tre+(size_t)(t0+t)*n, *Hi=p->tim+(size_t)(t0+t)*n;
       size_t row=(size_t)d*nt+t;
       int c=0;
@@ -181,4 +188,28 @@ int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
    }
   }
   return total;
+}
+
+int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
+              size_t binsize, float threshold,
+              ap_peak *peaks, int *counts, size_t start, size_t end){
+  if(!p||nd<1||nt<1||!binsize) return 0;
+  if(d0<0||d0+nd>p->nd||t0<0||t0+nt>p->nt) return -1;
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  return run_pairs(p,d0,nd,t0,nt,NULL,nt,binsize,threshold,
+                   peaks,counts,start,end);
+}
+
+int ap_mf_run_sel(ap_mf_plan *p, int d0, int nd, int t0, int nt,
+                  const int *tsel, int nsel,
+                  size_t binsize, float threshold,
+                  ap_peak *peaks, int *counts, size_t start, size_t end){
+  if(!p||nd<1||nsel<1||!binsize) return 0;
+  if(d0<0||d0+nd>p->nd||t0<0||t0+nt>p->nt) return -1;
+  for(int j=0;j<nsel;j++) if(tsel[j]<0||tsel[j]>=nt) return -1;
+  if(end>p->n) end=p->n;
+  if(start>=end) return 0;
+  return run_pairs(p,d0,nd,t0,nt,tsel,nsel,binsize,threshold,
+                   peaks,counts,start,end);
 }

@@ -69,6 +69,16 @@ int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
               size_t binsize, float threshold,
               ap_peak *peaks, int *counts, size_t start, size_t end);
 
+/* Same, but for a scattered set of templates: tsel[0..nsel) are local indices
+   into [0,nt).  Rows are still addressed by the local index, so the skipped
+   ones are left as the caller set them.  This exists because the hierarchical
+   filter's second stage runs whichever templates fired, and one call per
+   template re-reads the data spectrum every time. */
+int ap_mf_run_sel(ap_mf_plan *p, int d0, int nd, int t0, int nt,
+                  const int *tsel, int nsel,
+                  size_t binsize, float threshold,
+                  ap_peak *peaks, int *counts, size_t start, size_t end);
+
 /* Is this length supported?  1024, and the powers of two from 4096 to 2^20. */
 /* ---------------------------------------------------------------------------
  * Hierarchical matched filter.

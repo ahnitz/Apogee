@@ -79,6 +79,7 @@ struct ap_hmf_plan {
   float *taps;                /* [HMF_NSUB][K] complex interpolation bank       */
   float *tcbuf,*rawbuf,*evenbuf; /* [nt] per-template gates, derived once a run */
   ap_peak *cebuf;             /* [nt] even coarse maxima for one data segment */
+  int *firebuf;               /* [nt] which templates fired, for one segment */
   long pairs, trig;
   /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
@@ -184,8 +185,9 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
   p->cebuf=calloc((size_t)ntmpl,sizeof(ap_peak));
+  p->firebuf=calloc((size_t)ntmpl,sizeof(int));
   if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->cd||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
-     !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf){ ap_hmf_destroy(p); return NULL; }
+     !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf||!p->firebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   p->even_margin=0.999f;
   { const char *e=getenv("MF_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
@@ -208,7 +210,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   free(p->fwd);free(p->spec);
   free(p->dspec);free(p->dready);free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
   free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);free(p->shift2);
-  free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);
+  free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);free(p->firebuf);
   free(p);
 }
 
@@ -590,6 +592,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     if(ap_mf_run(p->coarse,d0+d,1,t0,nt,cspan,minev,p->cebuf,NULL,
                  cstart,cend)<0) return -1;
     if(p->prof) p->c_even += ap_ticks()-_eb;   /* batched: charged to the segment */
+    int nfire=0;
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
@@ -657,18 +660,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       verdict:
       if(fire){
         p->trig++;
-        if(!p->dready[d0+d]){          /* first refinement on this segment */
-          if(ap_mf_set_data(p->full,d0+d,p->dspec[d0+d])) return -1;
-          p->dready[d0+d]=1;
-        }
-        int c=0;
-        unsigned long long r0 = p->prof ? ap_ticks() : 0;
-        int r=ap_mf_run(p->full,d0+d,1,t0+t,1,binsize,threshold,
-                        peaks+row*nb,&c,start,end);
-        if(p->prof) p->c_ref += ap_ticks()-r0;
-        if(r<0) return -1;
-        if(counts) counts[row]=c;
-        total+=c;
+        p->firebuf[nfire++]=t;   /* reconstructed together, after this loop */
       }else{
         unsigned long long f0 = p->prof ? ap_ticks() : 0;
         for(size_t b=0;b<nb;b++){
@@ -678,6 +670,25 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
         if(counts) counts[row]=0;
         if(p->prof) p->c_fill += ap_ticks()-f0;
       }
+    }
+    /* Second stage, for every template of this segment that fired, in one
+       call.  Run one at a time it re-read the data spectrum per template and
+       cost 4.65 us/pair against 2.76 us batched; the gate makes the fired set
+       sparse and scattered, which is why ap_mf_run_sel takes an index list
+       rather than a range. */
+    if(nfire){
+      if(!p->dready[d0+d]){
+        if(ap_mf_set_data(p->full,d0+d,p->dspec[d0+d])) return -1;
+        p->dready[d0+d]=1;
+      }
+      unsigned long long r0 = p->prof ? ap_ticks() : 0;
+      int r=ap_mf_run_sel(p->full,d0+d,1,t0,nt,p->firebuf,nfire,
+                          binsize,threshold,
+                          peaks+(size_t)d*nt*nb,counts?counts+(size_t)d*nt:NULL,
+                          start,end);
+      if(p->prof) p->c_ref += ap_ticks()-r0;
+      if(r<0) return -1;
+      total+=r;
     }
   }
   return total;
