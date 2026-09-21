@@ -39,13 +39,18 @@ jobs:
           mkdir -p /tmp/run && cd /tmp/run
           python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
 
-      - name: Test again on the AVX2 back end
-        # The dispatcher picks the widest ISA the host supports, so on an
-        # AVX-512 runner the AVX2 kernels would otherwise never run.
+      - name: Test again on every other target in the build
+        # Highway's dispatch picks the widest target the host supports, so on
+        # an AVX-512 runner the AVX2 and SSE4 kernels would otherwise never
+        # run.  The list comes from the build rather than from here.
         if: always()
         run: |
           mkdir -p /tmp/run && cd /tmp/run
-          MF_ISA=avx2 python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
+          for isa in $(python -c "import matchedfilter; print(' '.join(matchedfilter.targets()))"); do
+            echo "::group::MF_ISA=$isa"
+            MF_ISA=$isa python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
+            echo "::endgroup::"
+          done
 
   generated-files:
     # Both of these are committed, and both have been stale in a way that
@@ -57,12 +62,12 @@ jobs:
         with: { python-version: "3.12" }
       - run: python -m pip install --quiet numpy scipy
 
-      - name: src/codelets.h must match src/gen.py
+      - name: src/codelets-inl.h must match src/gen.py
         run: |
-          cp src/codelets.h /tmp/committed.h
+          cp src/codelets-inl.h /tmp/committed.h
           (cd src && python3 gen.py)
-          diff -u /tmp/committed.h src/codelets.h \
-            || { echo "::error::src/codelets.h is stale; re-run 'python3 src/gen.py'"; exit 1; }
+          diff -u /tmp/committed.h src/codelets-inl.h \
+            || { echo "::error::src/codelets-inl.h is stale; re-run 'python3 src/gen.py'"; exit 1; }
 
       - name: src/hmf_table.h must match tools/hmf_design.py
         run: |

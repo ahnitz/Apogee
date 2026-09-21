@@ -1,126 +1,100 @@
 """Build hook for the matchedfilter extension.
 
 Project metadata lives in pyproject.toml; this file exists only because the
-build needs per-source compiler flags, which declarative config cannot express.
+build needs a few compiler flags and Highway's support sources, which
+declarative config cannot express.
 
-The AVX-512 sources, the AVX2 sources and the dispatcher must be compiled with
-different -m flags so the module can be *loaded* on a machine without AVX-512
-and still select a working back end at runtime.  setuptools has no notion of
-per-file flags, so the groups are compiled here and linked together.
+There are no per-ISA compilation groups any more.  src/kernel.cc includes
+hwy/foreach_target.h, so the compiler emits one copy of the kernel per SIMD
+target Highway supports on the build machine, each with its own target
+attributes, and picks between them at run time.  Nothing below names a target.
 """
 import os
-import platform
-import re
 import sys
-import sysconfig
 
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
 
-# x86 gets the hand-written AVX-512 and AVX2 kernels; everywhere else builds
-# only the portable back end, which is the same source compiled against
-# compiler vector extensions.  Selecting sources by architecture rather than
-# refusing to build is what lets this run on arm64 and macOS.
-#
-# The decision is about the TARGET architectures, which on macOS need not be
-# the host: Python there is commonly configured to build universal2, so one
-# compiler invocation carries -arch arm64 -arch x86_64 and every source is
-# compiled twice.  A mixed target cannot use x86-only kernels, because the
-# arm64 slice would have to compile them too.
-_X86 = ("x86_64", "amd64", "i386", "i686")
-
-
-def target_arches():
-    flags = os.environ.get("ARCHFLAGS", "")
-    if not flags and sys.platform == "darwin":
-        flags = sysconfig.get_config_var("CFLAGS") or ""
-    found = re.findall(r"-arch\s+(\S+)", flags)
-    return [a.lower() for a in found] or [platform.machine().lower()]
-
-
-ARCHES = target_arches()
-IS_X86 = all(a in _X86 for a in ARCHES)
-
 BASE = ["-O3", "-fno-math-errno"]
 CXX = BASE + ["-std=c++17"]
 
-# Highway's AVX2 and AVX-512 targets need more than -mavx2/-mavx512f; without
-# the rest its baseline detection silently falls back to SSE4 and FixedTag
-# hands back 4 lanes where 8 or 16 were asked for.
-HWY_AVX2 = CXX + ["-mavx2", "-mfma", "-mbmi", "-mbmi2", "-mf16c", "-mlzcnt"]
-HWY_AVX3 = HWY_AVX2 + ["-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
-HWY_BASE = CXX + (["-msse4.2"] if platform.machine().lower()
-                  in ("x86_64", "amd64") else [])
+# Targets Highway must not generate:
+#   SVE and RVV have sizeless vectors, which cannot be members of the
+#     vf TR[AP_W] arrays the transpose and both stages are built from;
+#   SCALAR is one lane, below the four the kernel's layout assumes;
+#   the AVX-512 variants beyond AVX3, and the pre-SSE4 targets, are code paths
+#     nothing has measured a reason for.
+DISABLED = "(HWY_SCALAR|HWY_SVE|HWY_SVE2|HWY_SVE_256|HWY_SVE2_128|HWY_RVV" \
+           "|HWY_SSE2|HWY_SSSE3|HWY_AVX3_DL|HWY_AVX3_ZEN4|HWY_AVX3_SPR" \
+           "|HWY_AVX10_2)"
+
+# SSE4.2 as the floor on x86 rather than SSE2: it is the oldest target left
+# enabled, and Highway needs the baseline to be one it will generate.  Every
+# wider target is reached by runtime dispatch, so this does not restrict what
+# the build can run on beyond hardware from 2008.
+if any(s in (os.environ.get("ARCHFLAGS", "") or "") for s in ("arm64", "aarch64")):
+    ARCH = []
+elif os.uname().machine.lower() in ("x86_64", "amd64", "i386", "i686"):
+    ARCH = ["-msse4.2", "-maes", "-mpclmul"]
+else:
+    ARCH = []
 
 HIGHWAY_ROOT = os.environ.get("HIGHWAY_ROOT", "")
 
 
-def highway_include():
-    """Where Highway's headers are, or None."""
-    if HIGHWAY_ROOT and os.path.isfile(
-            os.path.join(HIGHWAY_ROOT, "hwy", "highway.h")):
-        return HIGHWAY_ROOT
-    for d in ("/usr/include", "/usr/local/include"):
-        if os.path.isfile(os.path.join(d, "hwy", "highway.h")):
-            return d
-    return None
-
-
-HWY_INC = highway_include()
-if HWY_INC is None:
+def highway():
+    """(include dir, support sources, libraries to link) for Highway."""
+    roots = [HIGHWAY_ROOT] if HIGHWAY_ROOT else []
+    roots += ["/usr/include", "/usr/local/include", sys.prefix + "/include"]
+    for d in roots:
+        if not os.path.isfile(os.path.join(d, "hwy", "highway.h")):
+            continue
+        # Runtime dispatch needs Highway's CPU detection, which is the one
+        # part that is not header-only.  Build it from a source checkout when
+        # there is one, and otherwise link the installed library.
+        srcs = [os.path.join(d, "hwy", f)
+                for f in ("targets.cc", "abort.cc", "per_target.cc")]
+        if all(os.path.isfile(s) for s in srcs):
+            return d, srcs, []
+        return d, [], ["hwy"]
     sys.exit(
-        "matchedfilter needs Google Highway headers to build.\n"
-        "Install them, or set HIGHWAY_ROOT to a checkout of\n"
+        "matchedfilter needs Google Highway to build.\n"
+        "Install it, or set HIGHWAY_ROOT to a checkout of\n"
         "https://github.com/google/highway"
     )
 
-IS_X86 = platform.machine().lower() in ("x86_64", "amd64", "i386", "i686")
 
-# One kernel, compiled once per lane count.  Highway's FixedTag cannot exceed
-# the target's native vector, so width and target flags go together.  Off x86
-# only the 4-lane build applies, which is what NEON gives.
-GROUPS = [
-    ("src/balanced_hwy.cc", HWY_BASE,
-     [("AP_W", "4"), ("AP_HIGHWAY", "1"), ("HWY_COMPILE_ONLY_STATIC", "1")]),
-]
-X86_ONLY = [] if IS_X86 else [("AP_NO_WIDE_KERNELS", "1")]
-if IS_X86:
-    GROUPS += [
-        ("src/balanced_hwy.cc", HWY_AVX2,
-         [("AP_W", "8"), ("AP_HIGHWAY", "1"), ("HWY_COMPILE_ONLY_STATIC", "1"),
-          ("HWY_BASELINE_TARGETS", "HWY_AVX2")]),
-        ("src/balanced_hwy.cc", HWY_AVX3,
-         [("AP_W", "16"), ("AP_HIGHWAY", "1"), ("HWY_COMPILE_ONLY_STATIC", "1"),
-          ("HWY_BASELINE_TARGETS", "HWY_AVX3")]),
-    ]
-GROUPS += [
-    ("src/matchfilt.c",  BASE, []),
-    ("src/hmf.c",        BASE, []),
-    ("src/dispatch.c",   [],   X86_ONLY),      # baseline only: runs first
-    ("python/matchedfilter/_core.c", [], []),
-]
+HWY_INC, HWY_SRC, HWY_LIBS = highway()
+
+DEFS = [("HWY_DISABLED_TARGETS", DISABLED)]
+SOURCES = (
+    [("src/kernel.cc", CXX + ARCH, DEFS)]
+    + [(s, CXX + ARCH, DEFS) for s in HWY_SRC]   # same baseline, or the
+                                                 # dispatch tables disagree
+    + [(s, BASE, []) for s in ("src/matchfilt.c", "src/hmf.c", "src/dispatch.c",
+                               "python/matchedfilter/_core.c")]
+)
+
 
 class BuildExt(build_ext):
     def build_extension(self, ext):
         objects = []
-        tmp = self.build_temp
-        os.makedirs(tmp, exist_ok=True)
-        for i, (src, flags, defines) in enumerate(GROUPS):
-            outdir = os.path.join(tmp, "g%d" % i)
-            objs = self.compiler.compile(
+        os.makedirs(self.build_temp, exist_ok=True)
+        for i, (src, flags, defines) in enumerate(SOURCES):
+            objects += self.compiler.compile(
                 [src],
-                output_dir=outdir,
+                output_dir=os.path.join(self.build_temp, "g%d" % i),
                 macros=defines,
                 include_dirs=ext.include_dirs,
-                extra_postargs=BASE + flags,
+                extra_postargs=flags,
                 debug=self.debug,
             )
-            objects.extend(objs)
         self.compiler.link_shared_object(
             objects,
             self.get_ext_fullpath(ext.name),
-            libraries=["m"],
+            libraries=["m"] + HWY_LIBS,
             debug=self.debug,
+            target_lang="c++",     # kernel.cc and Highway's own sources
         )
 
 

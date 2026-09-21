@@ -34,17 +34,36 @@ except (ImportError, PackageNotFoundError):  # running from a source tree
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
 
 __all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "backend",
-           "__version__"]
+           "targets", "set_target", "__version__"]
 
 
 def backend():
-    """Name of the kernel the dispatcher selected for this CPU.
+    """Name of the SIMD target selected for this CPU, e.g. ``"AVX2"``.
 
     Which one runs depends on the host, so a benchmark number is not
-    interpretable without it.  Override with the ``MF_ISA`` environment
-    variable to force a narrower one (``avx2``) and compare.
+    interpretable without it.  ``MF_ISA`` forces one from the environment and
+    :func:`set_target` does the same inside a running process.
     """
     return _core.backend()
+
+
+def targets():
+    """SIMD targets this build contains that this CPU can run, widest first.
+
+    What a build contains is decided by the compiler, not by matchedfilter, so
+    this is the only reliable list -- a machine without AVX-512 will not
+    report ``AVX3`` however the wheel was built.
+    """
+    return _core.targets()
+
+
+def set_target(name):
+    """Narrow the choice to one target, or restore the default with ``None``.
+
+    For comparing targets in one process.  Plans already created keep the
+    kernel they were built with, so create the plan after setting this.
+    """
+    _core.set_target(name)
 
 
 def _as_c64(a, n, what):
@@ -305,6 +324,9 @@ class HierarchicalFilter(MatchedFilter):
         arrays ``(index, value, magnitude)`` of that shape -- which skips
         assembling the structured array, a real cost here because a whole
         segment's blocks come back at once.
+
+        The returned arrays are the plan's own buffers and the next call
+        overwrites them.  Copy anything that has to outlive the call.
         """
         ser = np.ascontiguousarray(series, dtype=np.complex64)
         st = np.ascontiguousarray(starts, dtype=np.uintp)

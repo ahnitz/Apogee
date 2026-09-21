@@ -1,9 +1,17 @@
-/* Element-space transform shared by both back ends.
-   Width-generic (AP_W), so it serves the AVX-512 and AVX2 paths from one source. */
-#ifndef AP_ELEMFFT_H
-#define AP_ELEMFFT_H
-#include "simd.h"
-#include "codelets.h"
+/* Element-space transform: the codelet dispatch and the two-factor split.
+   Width-generic in AP_W, which the current target fixes. */
+#include "codelets-inl.h"
+
+#if defined(AP_ELEMFFT_INL_H_) == defined(HWY_TARGET_TOGGLE)
+#ifdef AP_ELEMFFT_INL_H_
+#undef AP_ELEMFFT_INL_H_
+#else
+#define AP_ELEMFFT_INL_H_
+#endif
+
+HWY_BEFORE_NAMESPACE();
+namespace ap {
+namespace HWY_NAMESPACE {
 
 /* factor M into two codelet-sized halves; M1 == M means "single codelet" */
 /* Element-transform sizes efactor can decompose.  Anything else must be
@@ -70,11 +78,11 @@ static inline int codelet(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,vf*
     case  8: return fft8_42 (ar,ai,br,bi,S);
     case 16: return fftsr16 (ar,ai,br,bi,S);
     case 32: return fftsr32 (ar,ai,br,bi,S);
-#if AP_W >= 16
-    default: return fftsr64 (ar,ai,br,bi,S);
-#else
-    default: return fft64_88(ar,ai,br,bi,S);
-#endif
+    default:
+      /* At 64 it depends on the register file: AVX-512 has 32 zmm and the
+         whole split-radix DAG stays live, AVX2 has 16 ymm and it spills. */
+      if constexpr (AP_W >= 16) return fftsr64 (ar,ai,br,bi,S);
+      else                      return fft64_88(ar,ai,br,bi,S);
   }
 }
 /* Same, but the four-step twiddle is applied to the inputs as they are read.
@@ -86,11 +94,9 @@ static inline int codelet_tw(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,
     case  8: return fft8_tw (ar,ai,br,bi,S,twr,twi);
     case 16: return fftsr16_tw(ar,ai,br,bi,S,twr,twi);
     case 32: return fftsr32_tw(ar,ai,br,bi,S,twr,twi);
-#if AP_W >= 16
-    default: return fftsr64_tw(ar,ai,br,bi,S,twr,twi);
-#else
-    default: return fft64_tw(ar,ai,br,bi,S,twr,twi);
-#endif
+    default:
+      if constexpr (AP_W >= 16) return fftsr64_tw(ar,ai,br,bi,S,twr,twi);
+      else                      return fft64_tw  (ar,ai,br,bi,S,twr,twi);
   }
 }
 /* itwr/itwi hold W_M[e1*k2p] laid out [k2p][e1], so the second half can consume
@@ -152,5 +158,9 @@ static void efft(int M,vf*restrict X,vf*restrict Xi,vf*restrict S,vf*restrict Si
     codelet_tw(M1,X+st*k2p,Xi+st*k2p,S+st*k2p,Si+st*k2p,1,
                itwr+(size_t)k2p*M1, itwi+(size_t)k2p*M1);
 }
+
+}  // namespace HWY_NAMESPACE
+}  // namespace ap
+HWY_AFTER_NAMESPACE();
 
 #endif

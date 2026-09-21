@@ -1,9 +1,7 @@
 /* matchedfilter: width-generic balanced-split back end.
  *
- * Compiled twice - once at AP_W=16 (AVX-512) and once at AP_W=8 (AVX2) - from the
- * same source, via the operation macros in simd.h.  This is the whole AVX2
- * implementation, and on AVX-512 it doubles as a cross-check of the specialised
- * paths.
+ * Compiled once per target by foreach_target.h, through the operation macros
+ * in simd-inl.h.  AP_W is the target's lane count.
  *
  *   N = N1 * N2 with both ~ sqrt(N) and both a multiple of the vector width.
  *   n = n2*N1 + n1                      (n1 contiguous)
@@ -17,9 +15,6 @@
  * store, where a W x W register transpose turns what would be a W-way scatter into
  * one contiguous run.
  */
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
 /* AP_ABLATE removes one piece of the pipeline so its cost can be priced.  Results
    are WRONG when it is non-zero; it exists because estimating where the time goes
    has been wrong here more often than it has been right.
@@ -49,12 +44,20 @@
 #ifndef AP_PF
 #define AP_PF 0
 #endif
-#include "simd.h"
-#include "alloc.h"
-#include "matchedfilter.h"
-#include "backend.h"
-#ifdef AP_PROF
 #include <time.h>
+#include "elemfft-inl.h"
+
+#if defined(AP_BALANCED_INL_H_) == defined(HWY_TARGET_TOGGLE)
+#ifdef AP_BALANCED_INL_H_
+#undef AP_BALANCED_INL_H_
+#else
+#define AP_BALANCED_INL_H_
+#endif
+
+HWY_BEFORE_NAMESPACE();
+namespace ap {
+namespace HWY_NAMESPACE {
+#ifdef AP_PROF
 double ap_pA=0,ap_pB=0,ap_pAfft=0,ap_pAtw=0,ap_pAq=0,ap_pBload=0,ap_pBfft=0,ap_pBscan=0;
 static inline double pnow(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 #define PT(x) double x=pnow()
@@ -63,18 +66,6 @@ static inline double pnow(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,
 #define PT(x)
 #define PACC(v,x)
 #endif
-#include "codelets.h"
-#include "elemfft.h"
-
-#define CAT2(a,b) a##b
-#define CAT(a,b) CAT2(a,b)
-#define STR2(x) #x
-#define STR(x) STR2(x)
-/* Static helpers need distinct names too, for the same reason as the back-end
-   struct: several copies of this file end up in one object set. */
-/* The same source is compiled once per lane count, so the statics need
-   names that carry the width or the copies collide at link time. */
-#define FN(name) CAT(CAT(pfh,AP_W),_##name)
 
 
 typedef struct {
@@ -112,7 +103,7 @@ typedef struct {
   emap ea,eb;           /* index maps for those factorisations */
 } BP;
 
-int FN(supported)(size_t N){
+int supported(size_t N){
   /* Powers of two from 256 to 2^20.  The lower bound used to be 4096, which was
      arbitrary - what actually constrains it is that both halves of the split must
      be at least one vector wide.  The hierarchical filter needs the small sizes:
@@ -136,8 +127,8 @@ int FN(supported)(size_t N){
   return n1>=AP_W && n2>=AP_W;
 }
 
-void *FN(create)(size_t N){
-  if(!FN(supported)(N)) return NULL;
+void *create(size_t N){
+  if(!supported(N)) return NULL;
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
   /* The balanced split is not always best: what matters is which element sizes
@@ -309,7 +300,7 @@ void *FN(create)(size_t N){
   return p;
 }
 
-void FN(destroy)(void *vp){
+void destroy(void *vp){
   BP *p=(BP*)vp; if(!p) return;
   free(p->bmx);free(p->bre);free(p->bim);free(p->bix);
   free(p->ire);free(p->iim);free(p->bR);free(p->bI);free(p->sR);free(p->sI);
@@ -574,7 +565,7 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
 
 }
 
-void FN(fft)(void *vp,const float*in,float*out,int conj){
+void fft(void *vp,const float*in,float*out,int conj){
   BP *p=(BP*)vp; const int N1=PN1,N2=PN2;
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   stageA(p,in,conj);
@@ -600,7 +591,7 @@ void FN(fft)(void *vp,const float*in,float*out,int conj){
  */
 /* The bin accumulators depend on binsize, which is a call argument, so they are
    grown on demand and kept for later calls rather than sized at plan time. */
-static int FN(bins_reserve)(BP*p,size_t nb){
+static int bins_reserve(BP*p,size_t nb){
   if(nb<=p->nbcap) return 0;
   free(p->bmx);free(p->bre);free(p->bim);free(p->bix);
   p->bmx=ap_alloc64(nb*sizeof(vf)); p->bre=ap_alloc64(nb*sizeof(vf));
@@ -609,7 +600,7 @@ static int FN(bins_reserve)(BP*p,size_t nb){
   p->nbcap=nb; return 0;
 }
 
-static void FN(binmax_core)(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
+static void binmax_core(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
                             size_t ws,size_t we){
   const int N1=PN1,N2=PN2;
   const size_t nb=(we-ws+binsize-1)/binsize;
@@ -742,53 +733,60 @@ static void FN(binmax_core)(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
 #undef BINOF
 }
 
-int FN(binmax)(void *vp,const float*in,size_t binsize,float thr,ap_peak*out,
+int binmax(void *vp,const float*in,size_t binsize,float thr,ap_peak*out,
                int conj,size_t ws,size_t we){
   BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
-  if(FN(bins_reserve)(p,nb)) return -1;
+  if(bins_reserve(p,nb)) return -1;
   stageA(p,in,conj);
-  FN(binmax_core)(p,binsize,thr,out,conj,ws,we);
+  binmax_core(p,binsize,thr,out,conj,ws,we);
   return 0;
 }
 
-int FN(has_prod)(void *vp){ (void)vp; return 1; }   /* every length here is fused */
+int has_prod(void *vp){ (void)vp; return 1; }   /* every length here is fused */
 
-int FN(split)(void *vp,int *n1,int *n2){
+int split(void *vp,int *n1,int *n2){
   BP *p=(BP*)vp; *n1=p->N1; *n2=p->N2; return 1;
 }
 
-int FN(binmax_prod)(void *vp,const float*dr,const float*di,
+int binmax_prod(void *vp,const float*dr,const float*di,
                     const float*tr,const float*ti,size_t binsize,
                     float thr,ap_peak*out,int conj,size_t ws,size_t we){
   BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
-  if(FN(bins_reserve)(p,nb)) return -1;
+  if(bins_reserve(p,nb)) return -1;
   if(p->gmajor) stageA_prod_gm(p,dr,di,tr,ti);
   else          stageA_prod(p,dr,di,tr,ti);
-  FN(binmax_core)(p,binsize,thr,out,conj,ws,we);
+  binmax_core(p,binsize,thr,out,conj,ws,we);
   return 0;
 }
 
-int FN(binmax_split)(void *vp,const float*inr,const float*ini,size_t binsize,
+int binmax_split(void *vp,const float*inr,const float*ini,size_t binsize,
                      float thr,ap_peak*out,int conj,size_t ws,size_t we){
   BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
-  if(FN(bins_reserve)(p,nb)) return -1;
+  if(bins_reserve(p,nb)) return -1;
   stageA_split(p,inr,ini,0);     /* caller already folded any input conjugation */
-  FN(binmax_core)(p,binsize,thr,out,conj,ws,we);
+  binmax_core(p,binsize,thr,out,conj,ws,we);
   return 0;
 }
 
 
 
-/* The back end this translation unit provides.  The same source is compiled
-   several times -- at two widths, and with or without AP_PORTABLE -- so the
-   symbol name has to carry which one this is, or the copies collide at link
-   time.  Building the portable variant alongside the intrinsic one is what
-   lets them be compared inside a single process. */
-const ap_backend CAT(ap_be_hwy,AP_W) = {
-  "highway" STR(AP_W),
-  FN(create), FN(destroy), FN(fft), FN(supported),
-  FN(binmax), FN(binmax_split), FN(has_prod), FN(split), FN(binmax_prod)
-};
+/* The back end for this target.  foreach_target.h compiles this file once per
+   ISA and HWY_EXPORT/HWY_DYNAMIC_DISPATCH in kernel.cc picks one at run time,
+   so nothing here needs a name that says which width it was built at. */
+const ap_backend *Backend(void){
+  static const ap_backend be = {
+    hwy::TargetName(HWY_TARGET), AP_W,
+    create, destroy, fft, supported,
+    binmax, binmax_split, has_prod, split, binmax_prod
+  };
+  return &be;
+}
+
+}  // namespace HWY_NAMESPACE
+}  // namespace ap
+HWY_AFTER_NAMESPACE();
+
+#endif

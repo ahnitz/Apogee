@@ -5,6 +5,7 @@
 /* One implementation of the transform, selected at runtime by CPU support. */
 typedef struct {
   const char *name;
+  int lanes;                 /* floats per vector, which the caller's layout needs */
   void *(*create)(size_t N);
   void  (*destroy)(void *);
   void  (*fft)(void *, const float *in, float *out, int conj);
@@ -31,15 +32,12 @@ typedef struct {
                        float thr, ap_peak *out, int conj, size_t start, size_t end);
 } ap_backend;
 
-/* The one kernel, built once per lane count.  Highway's FixedTag cannot
-   exceed the target's native vector, so the width and the target go
-   together: 16 needs AVX-512, 8 needs AVX2 and FMA, 4 runs anywhere. */
+/* The kernel for the target Highway's runtime dispatch selected, or NULL if
+   MF_ISA named something this build does not contain. */
 #ifdef __cplusplus
 extern "C" {
 #endif
-extern const ap_backend ap_be_hwy4;
-extern const ap_backend ap_be_hwy8;
-extern const ap_backend ap_be_hwy16;
+const ap_backend *ap_backend_active(void);
 #ifdef __cplusplus
 }
 #endif

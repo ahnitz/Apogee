@@ -182,6 +182,28 @@ def _inspiral_power(n, frac=0.85, fmax_frac=0.125):
     return out
 
 
+def _same_peaks(a, b, tol=1e-5):
+    """Do two back ends report the same peaks?
+
+    Not bit-equality: the targets have different lane counts, so the four-step
+    transform sums in a different order and fp32 magnitudes differ in the last
+    bit or two.  Measured across AVX3, AVX2 and SSE4 the relative difference
+    tops out at 2.7e-7, and about one bin in 3000 picks the other side of a
+    tie.  What has to hold is that the same bins reported a peak and the
+    magnitudes agree to well inside single precision; an index that moved is
+    only acceptable where the magnitude did not.
+    """
+    ai, am = a[0], a[2]
+    bi, bm = b[0], b[2]
+    if not np.array_equal(ai >= 0, bi >= 0):
+        return False
+    m = ai >= 0
+    if not m.any():
+        return True
+    rel = np.abs(am[m] - bm[m]) / np.maximum(np.abs(am[m]), 1e-30)
+    return bool(rel.max() <= tol)
+
+
 def compare_backends(isas, reps, n=4096, ntmpl=64, ntaps=1024,
                      series_len=1 << 20, threshold=5.5):
     """Compare SIMD back ends on a ratio-filter-shaped hierarchical workload.
@@ -214,25 +236,43 @@ def compare_backends(isas, reps, n=4096, ntmpl=64, ntaps=1024,
     starts = np.array(starts, np.uintp)
     ws = np.array(ws, np.uintp); we = np.array(we, np.uintp)
 
+    # Injected copy for the comparison only.  Timing runs on the noise series,
+    # whose trigger rate is the realistic one; agreeing that a noise series
+    # produced no peaks would say nothing about the reconstruction.
+    loud = series.copy()
+    for j, pos in enumerate(np.linspace(0.05, 0.95, 24)):
+        t0 = int(pos * (series_len - n))
+        w = np.fft.ifft(np.conj(h[j % ntmpl]))
+        loud[t0:t0 + n] += (2000.0 * w / np.linalg.norm(w)).astype(np.complex64)
+
     plans, ref, agree = {}, None, {}
     for isa in isas:
-        os.environ["MF_ISA"] = isa
         try:
-            p = mf.HierarchicalFilter(n, ndata=1, ntemplates=ntmpl,
-                                      snr=threshold, fd=1e-3, band=512,
-                                      oversample=2, taps=8)
-        except Exception:
-            continue                    # not built into this extension
+            mf.set_target(isa)
+        except ValueError:
+            continue                    # not in this build, or not runnable here
+        p = mf.HierarchicalFilter(n, ndata=1, ntemplates=ntmpl,
+                                  snr=threshold, fd=1e-3, band=512,
+                                  oversample=2, taps=8)
         p.set_reference(power); p.set_templates(h)
-        out = p.run_series(series, starts, ws, we, binsize=n,
-                           threshold=threshold, raw=True)
-        plans[isa] = p
+        p.set_first_stage(0.01)
+        # run_series returns the plan's own buffers, so copy before the next
+        # plan -- or the next call -- overwrites them.
+        out = [np.array(a) for a in
+               p.run_series(loud, starts, ws, we, binsize=n,
+                            threshold=0.0, raw=True)]
+        p.set_first_stage(None)
+        plans[mf.backend()] = p
         if ref is None:
-            ref, agree[isa] = out, True
+            ref, agree[mf.backend()] = out, True
         else:
-            agree[isa] = all(np.array_equal(a, b) for a, b in zip(ref, out))
+            agree[mf.backend()] = _same_peaks(ref, out)
+    mf.set_target(None)
     if not plans:
         return None
+    if not (ref[0] >= 0).any():
+        raise SystemExit("the comparison pass found no peaks; it would "
+                         "report agreement over two empty results")
 
     names = list(plans)
     tot = {i: 0.0 for i in names}
@@ -326,7 +366,7 @@ def main(argv=None):
     ap.add_argument("--backends", nargs="*", metavar="ISA",
                     help="compare SIMD back ends on a ratio-filter-shaped "
                          "hierarchical workload and exit, e.g. --backends "
-                         "avx2 portable highway. Back ends that this build "
+                         "AVX3 AVX2 SSE4. Targets that this build "
                          "does not contain are skipped.")
     ap.add_argument("--fd", type=float, default=1e-3,
                     help="false-dismissal budget for the gate")
@@ -348,7 +388,7 @@ def main(argv=None):
           f"{a.window:.0%} window\n")
 
     if a.backends is not None:
-        isas = a.backends or ["avx2", "portable", "highway"]
+        isas = a.backends or ["AVX3", "AVX2", "SSE4"]
         rows = compare_backends(isas, max(3, a.reps))
         print("SIMD back ends on a ratio-filter-shaped hierarchical run")
         print("  (n=4096, 64 templates, 2^20 series in overlap-save blocks)\n")

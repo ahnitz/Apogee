@@ -1,42 +1,50 @@
 /* SIMD layer on Google Highway.
  *
- * Same V_* surface as the intrinsic and vector-extension layers, so
- * codelets.h and balanced.c are unchanged -- they only ever spoke through
- * these macros.  Highway lowers each op to the target's intrinsics, which
- * matters for more than portability: the GCC SLP pass re-vectorised the plain
- * vector-extension arithmetic and cost 2.3x, and intrinsics are opaque to it.
+ * codelets-inl.h and balanced-inl.h speak only through the V_* macros below,
+ * and Highway lowers each one to the target's intrinsics.  That matters for
+ * more than portability: the GCC SLP pass re-vectorised plain vector-extension
+ * arithmetic and cost 2.3x, and intrinsics are opaque to it.
  *
- * AP_W must be the target's native lane count.  Highway's FixedTag rejects a
- * width wider than the target vector, so the build picks AP_W per target:
- * 16 for AVX-512, 8 for AVX2, 4 for NEON and SSE4.  codelets.h is
- * width-neutral, so only this file and a handful of masks care.
- *
- * Every function using these must carry HWY_ATTR, and the translation unit
- * must sit between HWY_BEFORE_NAMESPACE and HWY_AFTER_NAMESPACE: Highway's
- * ops are always_inline with target attributes, and a caller without them
- * fails to inline rather than falling back.
+ * This header is included once per target by foreach_target.h, so it uses
+ * Highway's toggle guard rather than a plain include guard, and everything in
+ * it lives in ap::HWY_NAMESPACE.  AP_W is whatever the current target's vector
+ * holds, capped at 16 lanes -- the kernel keeps AP_W vectors live in a
+ * transpose, and 32 of them would spill on every machine that exists.
  */
-#ifndef AP_SIMD_HWY_H
-#define AP_SIMD_HWY_H
+#include <stdint.h>
 #include <string.h>
 #include "hwy/highway.h"
 
+/* Not target-dependent, so outside the toggle guard. */
+#ifndef AP_SIMD_ONCE
+#define AP_SIMD_ONCE
+/* `restrict` is C99 and not a C++ keyword.  The generated codelets use it
+   heavily, so map it rather than generate different code per language. */
+#define restrict __restrict
+#if defined(__GNUC__) || defined(__clang__)
+#define AP_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define AP_ALWAYS_INLINE inline
+#endif
+#endif
+
+#if defined(AP_SIMD_INL_H_) == defined(HWY_TARGET_TOGGLE)
+#ifdef AP_SIMD_INL_H_
+#undef AP_SIMD_INL_H_
+#else
+#define AP_SIMD_INL_H_
+#endif
+
+HWY_BEFORE_NAMESPACE();
+namespace ap {
+namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-using ap_tag  = hn::FixedTag<float, AP_W>;
-using ap_itag = hn::FixedTag<int32_t, AP_W>;
-static constexpr ap_tag  AP_D{};
-static constexpr ap_itag AP_DI{};
-
-#if AP_W == 4
-#define AP_LOG2W 2
-#elif AP_W == 8
-#define AP_LOG2W 3
-#elif AP_W == 16
-#define AP_LOG2W 4
-#else
-#error "AP_W must be 4, 8 or 16"
-#endif
+using ap_tag  = hn::CappedTag<float, 16>;
+using ap_itag = hn::RebindToSigned<ap_tag>;
+constexpr ap_tag  AP_D{};
+constexpr ap_itag AP_DI{};
+constexpr int AP_W = (int)HWY_MAX_LANES_D(ap_tag);
 
 typedef hn::Vec<ap_tag>  vf;
 typedef hn::Vec<ap_itag> vi;
@@ -107,7 +115,7 @@ static HWY_ATTR HWY_INLINE void v_inter(float *p, vf re, vf im) {
  * already holds TR/TI/OR/OI, which is 64 vectors at W=16, and a local copy
  * here spilled.
  */
-#if AP_W == 8
+#if HWY_TARGET == HWY_AVX2
 /* AVX2 is the primary target, so it gets the one specialisation: block-wise
    interleaves plus a lane swap.  The generic network below is correct here
    too and costs 12% -- on AVX2 a whole-vector interleave crosses 128-bit
@@ -151,4 +159,8 @@ static HWY_ATTR HWY_INLINE void v_transpose(const vf *in, vf *out) {
 #endif
 #define V_TRANSPOSE(in, out) v_transpose((in), (out))
 
-#endif
+}  // namespace HWY_NAMESPACE
+}  // namespace ap
+HWY_AFTER_NAMESPACE();
+
+#endif  // toggle guard

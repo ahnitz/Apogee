@@ -16,6 +16,13 @@ void     ap_destroy(ap_plan *p);
 const char *ap_plan_backend(const ap_plan *p);
 int      ap_lane_width(void);
 
+/* The SIMD targets this build holds that this CPU can run, widest first, and
+   a way to narrow the choice to one of them for a comparison.  NULL restores
+   the default. */
+int         ap_target_count(void);
+const char *ap_target_name(int i);
+int         ap_set_target(const char *name);
+
 /* The plan's actual N1 x N2 split.  The matched filter stores spectra in the
    layout stage A walks, which depends on this - recomputing it independently
    would silently diverge the moment the split heuristic changed.  Returns 0 if

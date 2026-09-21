@@ -268,8 +268,32 @@ static PyObject *M_backend(PyObject *self,PyObject *args){
   (void)self;(void)args;
   return PyUnicode_FromString(ap_isa());
 }
+static PyObject *M_targets(PyObject *self,PyObject *args){
+  (void)self;(void)args;
+  int n=ap_target_count();
+  PyObject *t=PyTuple_New(n);
+  if(!t) return NULL;
+  for(int i=0;i<n;i++){
+    PyObject *s=PyUnicode_FromString(ap_target_name(i));
+    if(!s){ Py_DECREF(t); return NULL; }
+    PyTuple_SET_ITEM(t,i,s);
+  }
+  return t;
+}
+static PyObject *M_set_target(PyObject *self,PyObject *args){
+  (void)self;
+  const char *name=NULL;
+  if(!PyArg_ParseTuple(args,"z",&name)) return NULL;
+  if(ap_set_target(name)){
+    PyErr_Format(PyExc_ValueError,"no such target in this build: %s",name);
+    return NULL;
+  }
+  Py_RETURN_NONE;
+}
 static PyMethodDef methods[]={
   {"backend",M_backend,METH_NOARGS,"backend() -> name of the selected kernel"},
+  {"targets",M_targets,METH_NOARGS,"targets() -> names this build can run here"},
+  {"set_target",M_set_target,METH_VARARGS,"set_target(name|None) -> narrow the choice"},
   {NULL,NULL,0,NULL}};
 static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"matchedfilter._core",NULL,-1,methods};
 PyMODINIT_FUNC PyInit__core(void){
