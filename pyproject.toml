@@ -48,13 +48,13 @@ matchedfilter = ["*.h"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 
-# The extension is x86-specific: some objects are compiled with AVX-512 flags
-# and the dispatcher picks a back end at runtime, so there is nothing to build
-# for arm64 or i686.
+# Wheels are built only for the platforms CI actually exercises.  Linux
+# aarch64 is deliberately absent: it builds and passes there, but producing
+# those wheels needs QEMU and is slow enough to want its own decision.  Users
+# on it get the sdist, which compiles.
 [tool.cibuildwheel]
 build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
 skip = "*-musllinux_i686 *_i686 pp*"
-archs = ["x86_64"]
 build-frontend = "build"
 test-requires = "pytest"
 # Run from {package} so the tests import the installed wheel rather than the
@@ -62,6 +62,15 @@ test-requires = "pytest"
 test-command = "python -m pytest {package}/tests -q -rs"
 
 [tool.cibuildwheel.linux]
+archs = ["x86_64"]
 # manylinux2014's default toolchain is too old for the AVX-512 intrinsics the
 # kernels use; the _2_28 image ships a compiler that has them.
 manylinux-x86_64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.macos]
+# Apple Silicon only.  Intel Macs are untested -- the hosted runners for them
+# are being retired -- and shipping a wheel is a stronger claim than "it
+# probably compiles".  cibuildwheel sets ARCHFLAGS per wheel, which is what
+# setup.py reads to decide whether the x86 kernels are in the build, so this
+# produces a single-arch arm64 wheel rather than a universal2 one.
+archs = ["arm64"]
