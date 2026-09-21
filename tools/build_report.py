@@ -201,6 +201,8 @@ def build(runs):
 
     # ---- what was tested ----
     o.append("<h2>What was tested</h2>")
+    o.append("<p>Only platforms that actually reported appear below. A missing "
+             "platform means its runner did not complete, not that it passed.</p>")
     rows = []
     for r in runs:
         h = r["host"]

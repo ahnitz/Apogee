@@ -17,6 +17,10 @@ jobs:
   bench:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # A job that never gets a runner would otherwise sit for hours and block
+    # the page build behind it.
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +32,11 @@ jobs:
           - {os: ubuntu-latest,    label: "linux-x86_64",  isas: "auto avx2 portable"}
           - {os: ubuntu-24.04-arm, label: "linux-arm64",   isas: "auto"}
           - {os: macos-14,         label: "macos-arm64",   isas: "auto"}
-          - {os: macos-13,         label: "macos-x86_64",  isas: "auto"}
+          # Intel Macs are being retired from the hosted fleet, so this one
+          # may sit queued or never schedule at all.  Marked optional so it
+          # cannot hold up the report, and worth revisiting: if it stops
+          # running entirely, x86 macOS is untested rather than passing.
+          - {os: macos-13,         label: "macos-x86_64",  isas: "auto", optional: true}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
