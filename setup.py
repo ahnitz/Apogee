@@ -28,6 +28,35 @@ if _MACHINE not in ("x86_64", "amd64"):
     )
 
 BASE = ["-O3", "-fno-math-errno", "-std=gnu11"]
+
+# The portable back end is already explicitly vectorised, and GCC's SLP pass
+# tries to vectorise it again: it re-splits and recombines vectors that were
+# fine, and the result runs 2.3x slower than the AVX2 intrinsics at -O3 while
+# executing the same number of instructions.  Disabling that one pass takes
+# the transform from 2.30x to 1.02x.  -O2 also avoids it, at the cost of
+# everything else -O3 does.
+#
+# Clang does not show the same regression, so the flags are GCC-only and are
+# probed rather than assumed -- an unknown flag is a hard error on some
+# toolchains, and silently dropping it would put the 2.3x back.
+PORTABLE_TUNING = ["-fno-tree-slp-vectorize", "-fno-unswitch-loops"]
+
+
+def _accepted(compiler, flags):
+    """Keep only flags this compiler actually accepts."""
+    import tempfile
+    ok = []
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "probe.c")
+        with open(src, "w") as fh:
+            fh.write("int main(void){return 0;}\n")
+        for f in flags:
+            try:
+                compiler.compile([src], output_dir=d, extra_postargs=[f, "-Werror"])
+                ok.append(f)
+            except Exception:
+                pass
+    return ok
 AVX512 = ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 AVX2 = ["-mavx2", "-mfma"]
 
@@ -37,6 +66,10 @@ GROUPS = [
     ("src/be_avx512.c",  AVX512, []),
     ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
     ("src/balanced.c",   AVX2,   [("AP_W", "8")]),      # generic source, 8 lanes
+    # Same source a third time, compiler-vectorised.  Built on x86 too so the
+    # two can be compared in one process; on other architectures it is the
+    # only back end there is.
+    ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1")]),  # tuned below
     ("src/matchfilt.c",  BASE,   []),
     ("src/hmf.c",        BASE,   []),
     ("src/dispatch.c",   [],     []),                 # baseline only
@@ -49,7 +82,10 @@ class BuildExt(build_ext):
         objects = []
         tmp = self.build_temp
         os.makedirs(tmp, exist_ok=True)
+        tuning = _accepted(self.compiler, PORTABLE_TUNING)
         for i, (src, flags, defines) in enumerate(GROUPS):
+            if ("AP_PORTABLE", "1") in defines:
+                flags = flags + tuning
             outdir = os.path.join(tmp, "g%d" % i)
             objs = self.compiler.compile(
                 [src],

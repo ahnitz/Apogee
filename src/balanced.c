@@ -67,7 +67,15 @@ static inline double pnow(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,
 
 #define CAT2(a,b) a##b
 #define CAT(a,b) CAT2(a,b)
+#define STR2(x) #x
+#define STR(x) STR2(x)
+/* Static helpers need distinct names too, for the same reason as the back-end
+   struct: several copies of this file end up in one object set. */
+#ifdef AP_PORTABLE
+#define FN(name) CAT(CAT(pfp,AP_W),_##name)
+#else
 #define FN(name) CAT(CAT(pfb,AP_W),_##name)
+#endif
 
 
 typedef struct {
@@ -767,14 +775,21 @@ int FN(binmax_split)(void *vp,const float*inr,const float*ini,size_t binsize,
 
 
 
-/* fp32 -> 24-bit block floating point, blocks of AP_W complex, in the layout
-   stageA_q expects.  Not on any timed path: in real use the producer writes this
-   directly and the fp32 array never exists. */
+/* The back end this translation unit provides.  The same source is compiled
+   several times -- at two widths, and with or without AP_PORTABLE -- so the
+   symbol name has to carry which one this is, or the copies collide at link
+   time.  Building the portable variant alongside the intrinsic one is what
+   lets them be compared inside a single process. */
+#ifdef AP_PORTABLE
+const ap_backend CAT(ap_be_port,AP_W) = {
+  "portable" STR(AP_W),
+#else
 const ap_backend CAT(ap_be_bal,AP_W) = {
 #if AP_W==16
   "balanced-avx512",
 #else
   "avx2",
+#endif
 #endif
   FN(create), FN(destroy), FN(fft), FN(supported),
   FN(binmax), FN(binmax_split), FN(has_prod), FN(split), FN(binmax_prod)

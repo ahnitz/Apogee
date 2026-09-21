@@ -2,12 +2,18 @@
    Only the operations matchedfilter's width-generic back end actually needs. */
 #ifndef AP_SIMD_H
 #define AP_SIMD_H
-#include <immintrin.h>
 #include <stdint.h>
 
 #ifndef AP_W
 #error "define AP_W to 16 (AVX-512) or 8 (AVX2)"
 #endif
+
+/* AP_PORTABLE swaps the x86 intrinsics below for GCC/Clang vector extensions,
+   which compile anywhere those compilers do.  See src/simd_portable.h. */
+#ifdef AP_PORTABLE
+#include "simd_portable.h"
+#else
+#include <immintrin.h>
 
 #if AP_W == 16
 typedef __m512 vf;
@@ -124,4 +130,5 @@ static inline float v_reduce_max(vf v){
   for(int i=1;i<AP_W;i++) if(t[i]>m) m=t[i];
   return m;
 }
+#endif /* AP_PORTABLE */
 #endif
