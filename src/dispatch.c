@@ -21,8 +21,19 @@
 
 struct ap_plan { const ap_backend *be; void *h; size_t n; };
 
-/* __builtin_cpu_supports is x86-only, and so are the back ends it guards. */
-#if defined(__x86_64__) || defined(__i386__)
+/* Whether the x86 kernels are available is a property of the BUILD, not of
+   the slice being compiled.  A macOS universal2 build compiles this file once
+   per architecture from one source set: the arm64 slice must not reference
+   back ends that were never compiled, and neither must the x86_64 slice of a
+   build that chose the portable set.  setup.py decides and says so. */
+#ifndef AP_WITH_X86_KERNELS
+#  if defined(__x86_64__) || defined(__i386__)
+#    define AP_WITH_X86_KERNELS 1
+#  else
+#    define AP_WITH_X86_KERNELS 0
+#  endif
+#endif
+#if AP_WITH_X86_KERNELS && (defined(__x86_64__) || defined(__i386__))
 #define AP_HAVE_X86 1
 static int have_avx512(void){
   return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq")

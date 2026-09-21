@@ -10,7 +10,9 @@ per-file flags, so the groups are compiled here and linked together.
 """
 import os
 import platform
+import re
 import sys
+import sysconfig
 
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
@@ -19,7 +21,25 @@ from setuptools.command.build_ext import build_ext
 # only the portable back end, which is the same source compiled against
 # compiler vector extensions.  Selecting sources by architecture rather than
 # refusing to build is what lets this run on arm64 and macOS.
-IS_X86 = platform.machine().lower() in ("x86_64", "amd64", "i386", "i686")
+#
+# The decision is about the TARGET architectures, which on macOS need not be
+# the host: Python there is commonly configured to build universal2, so one
+# compiler invocation carries -arch arm64 -arch x86_64 and every source is
+# compiled twice.  A mixed target cannot use x86-only kernels, because the
+# arm64 slice would have to compile them too.
+_X86 = ("x86_64", "amd64", "i386", "i686")
+
+
+def target_arches():
+    flags = os.environ.get("ARCHFLAGS", "")
+    if not flags and sys.platform == "darwin":
+        flags = sysconfig.get_config_var("CFLAGS") or ""
+    found = re.findall(r"-arch\s+(\S+)", flags)
+    return [a.lower() for a in found] or [platform.machine().lower()]
+
+
+ARCHES = target_arches()
+IS_X86 = all(a in _X86 for a in ARCHES)
 
 BASE = ["-O3", "-fno-math-errno", "-std=gnu11"]
 
@@ -54,6 +74,10 @@ def _accepted(compiler, flags):
 AVX512 = ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 AVX2 = ["-mavx2", "-mfma"]
 
+# Compiled into every slice, so an arm64 slice of a universal2 build never
+# references kernels that were not built.
+X86_KERNELS = ("AP_WITH_X86_KERNELS", "1" if IS_X86 else "0")
+
 # (source, extra flags, extra defines)
 if IS_X86:
     GROUPS = [
@@ -64,9 +88,9 @@ if IS_X86:
         # Same source a third time, compiler-vectorised.  Built on x86 too so
         # the two can be compared inside one process.
         ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1")]),
-        ("src/matchfilt.c",  BASE,   []),
+        ("src/matchfilt.c",  BASE,   [X86_KERNELS]),
         ("src/hmf.c",        BASE,   []),
-        ("src/dispatch.c",   [],     []),                 # baseline only
+        ("src/dispatch.c",   [],     [X86_KERNELS]),      # baseline only
         ("python/matchedfilter/_core.c", [], []),
     ]
 else:
@@ -74,9 +98,9 @@ else:
     # (NEON on arm64), and naming an ISA here would only restrict it.
     GROUPS = [
         ("src/balanced.c",   [], [("AP_W", "8"), ("AP_PORTABLE", "1")]),
-        ("src/matchfilt.c",  BASE, []),
+        ("src/matchfilt.c",  BASE, [X86_KERNELS]),
         ("src/hmf.c",        BASE, []),
-        ("src/dispatch.c",   [],   []),
+        ("src/dispatch.c",   [],   [X86_KERNELS]),
         ("python/matchedfilter/_core.c", [], []),
     ]
 

@@ -32,7 +32,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
-#include <x86intrin.h>
+#include "ticks.h"
 #include "alloc.h"
 #include "matchedfilter.h"
 #include "transform.h"
@@ -581,10 +581,10 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   int total=0;
   for(int d=0;d<nd;d++){
     const float *Dc=p->cd+(size_t)(d0+d)*2*m;
-    unsigned long long _eb = p->prof ? __rdtsc() : 0;
+    unsigned long long _eb = p->prof ? ap_ticks() : 0;
     if(ap_mf_run(p->coarse,d0+d,1,t0,nt,cspan,minev,p->cebuf,NULL,
                  cstart,cend)<0) return -1;
-    if(p->prof) p->c_even += __rdtsc()-_eb;   /* batched: charged to the segment */
+    if(p->prof) p->c_even += ap_ticks()-_eb;   /* batched: charged to the segment */
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
@@ -608,7 +608,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * U=2 grid, which recovers more, so using it here would cut off peaks the
        * odd half would have found. */
       const float even_gate = eveng[t];
-      unsigned long long _t0 = p->prof ? __rdtsc() : 0;
+      unsigned long long _t0 = p->prof ? ap_ticks() : 0;
       ce = p->cebuf[t];
       if(ce.index>=0 && ce.magnitude<even_gate) ce.index=-1;   /* per-template gate */
       if(ce.index<0){
@@ -621,7 +621,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       }
       if(U>1 && ap_mf_run(p->coarse,d0+d,1,p->nt+t0+t,1,cspan,raw_gate,&co,&cc,
                           cstart,cend)<0) return -1;
-      if(p->prof){ unsigned long long t1=__rdtsc(); p->c_odd+=t1-_t0; _t0=t1; }
+      if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
       if(getenv("MF_HMF_TRACE") && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
@@ -657,21 +657,21 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
           p->dready[d0+d]=1;
         }
         int c=0;
-        unsigned long long r0 = p->prof ? __rdtsc() : 0;
+        unsigned long long r0 = p->prof ? ap_ticks() : 0;
         int r=ap_mf_run(p->full,d0+d,1,t0+t,1,binsize,threshold,
                         peaks+row*nb,&c,start,end);
-        if(p->prof) p->c_ref += __rdtsc()-r0;
+        if(p->prof) p->c_ref += ap_ticks()-r0;
         if(r<0) return -1;
         if(counts) counts[row]=c;
         total+=c;
       }else{
-        unsigned long long f0 = p->prof ? __rdtsc() : 0;
+        unsigned long long f0 = p->prof ? ap_ticks() : 0;
         for(size_t b=0;b<nb;b++){
           peaks[row*nb+b].index=-1;
           peaks[row*nb+b].re=peaks[row*nb+b].im=peaks[row*nb+b].magnitude=0.f;
         }
         if(counts) counts[row]=0;
-        if(p->prof) p->c_fill += __rdtsc()-f0;
+        if(p->prof) p->c_fill += ap_ticks()-f0;
       }
     }
   }
