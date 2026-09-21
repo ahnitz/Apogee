@@ -70,7 +70,7 @@ struct ap_hmf_plan {
      template, so one reference serves a whole bank -- and skips the
      per-template ingest measurement. */
   int    ref_on;
-  float  even_margin;
+  float  even_margin, gate_margin;
   float  ref_f, ref_g, ref_graw, ref_graw1;
   float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
   float *shift;               /* [2m]       scratch for the measurement         */
@@ -197,6 +197,15 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      the model says 0.897.  Swept against those captures over 811 triggers:
      0.92 and below lose nothing, 0.95 loses one (1.2e-3, already past the
      1e-3 budget) and 1.00 loses sixteen. */
+  /* Scale on the gate the design table derives.  1.0 is that table's own
+     answer, and on 12 captured pycbc segments it misses 31 of 842 real
+     triggers -- 3.7%, and 13% for triggers within 0.5% of the threshold,
+     against a 1e-3 budget.  0.94 recovers all of them, at 2.51x against the
+     flat filter where 1.0 gives 3.32x.  The table's recovery factors are
+     measured from a mean spectrum and are not a bound on a realisation; see
+     docs/hierarchical.md.  Until that is fixed this is the honest control. */
+  p->gate_margin=1.0f;
+  { const char *e=getenv("MF_GATE_MARGIN"); if(e) p->gate_margin=(float)atof(e); }
   p->even_margin=0.92f;
   { const char *e=getenv("MF_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
   p->prof = getenv("MF_HMF_PROF") ? 1 : 0;
@@ -595,7 +604,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                                : (threshold>p->snr ? threshold : p->snr);
     for(int t=0;t<nt;t++){
       float gt=p->tg[t0+t];
-      tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd);
+      tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->gate_margin;
       rawg[t] =tcs[t]*p->tgraw [t0+t]*0.999f;
       eveng[t]=tcs[t]*p->tgraw1[t0+t]*p->even_margin;
     }
