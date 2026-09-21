@@ -333,27 +333,7 @@ static int hmf_choose(size_t n, float snr, float fd, size_t *band, int *u, int *
   return 1;
 }
 
-/* raw=0 gives the interpolated recovery (calibrates the gate); raw=1 gives the
-   raw-sample recovery (bounds the cheap pre-scan).  They differ by ~6% at U=2
-   and ~18% at U=1, and confusing them costs detections. */
-/* raw=0: interpolated recovery, which calibrates the gate.
-   raw=1: raw-sample recovery of the full coarse grid, which bounds the pre-scan.
-   raw=2: raw recovery of the EVEN half alone, which bounds the early-out that
-          skips the odd transform.  All three differ, and swapping any pair of
-          them costs detections rather than time. */
-static float hmf_recovery(size_t n, size_t band, int u, int k, int raw)
-{
-  for (int i = 0; i < HMF_NPICK; i++)
-    if (hmf_picks[i].n == (unsigned)n && hmf_picks[i].band == (unsigned)band
-        && hmf_picks[i].u == u && hmf_picks[i].k == k)
-      return raw == 2 ? hmf_picks[i].graw1
-           : raw == 1 ? hmf_picks[i].graw : hmf_picks[i].g;
-  /* Unknown combination (a pinned band, say).  For the interpolated figure
-     assume no loss; for the raw figure assume the worst plausible loss.  Both
-     choices err toward triggering more often, which costs time but cannot cost
-     a detection. */
-  return raw ? 0.70f : 1.0f;   /* conservative: widens the gates, never narrows */
-}
+
 
 static float hmf_threshold(float f_eff, float snr, float fd)
 {
@@ -438,15 +418,17 @@ def emit_table(path):
     w("};")
     w("")
     w("/* Per size and design point: band, oversampling, taps, recovery factor. */")
-    w("typedef struct { unsigned n; float snr, fd; unsigned band; int u, k;\n                 float g, graw, graw1; } hmf_pick;")
+    w("typedef struct { unsigned n; float snr, fd; unsigned band; int u, k;\n               } hmf_pick;   /* hmf_choose reads all of it */")
     w("static const hmf_pick hmf_picks[] = {")
     for n in TABLE_N:
         for T in TABLE_SNR:
             for a in TABLE_FD:
                 b = chosen.get((n, T, a))
                 if b is None: continue
-                w(f"  {{ {n}u, {T:.2f}f, {a:.1e}f, {b['m']}u, {b['U']}, {b['K']}, "
-                  f"{b['g']:.5f}f, {b['graw']:.5f}f, {b['graw1']:.5f}f }},")
+                # g/graw/graw1 inform the choice above but are not emitted:
+                # the library measures recovery per plan in measure_recovery(),
+                # and the table's copies were read by nothing.
+                w(f"  {{ {n}u, {T:.2f}f, {a:.1e}f, {b['m']}u, {b['U']}, {b['K']} }},")
     w("};")
     w("#define HMF_NPICK ((int)(sizeof hmf_picks / sizeof hmf_picks[0]))")
     w(CHOOSE_C)

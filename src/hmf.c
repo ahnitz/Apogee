@@ -46,12 +46,6 @@ struct ap_hmf_plan {
   int U, K;                   /* coarse oversampling; interpolator taps         */
   int nd, nt;
   float snr, fd;              /* design point                                   */
-  float g, graw, graw1;       /* recovery: interpolated, raw-sample, and raw for
-                                 the EVEN half alone.  The
-                                 gate is calibrated against g; the cheap
-                                 pre-scan is bounded by graw.  Using g for the
-                                 pre-scan would discard exactly the samples
-                                 interpolation exists to rescue.               */
   ap_mf_plan *full;           /* refinement is the ordinary filter, unchanged   */
   /* The coarse pass IS a matched filter on an m-point plan.  Using ap_mf_plan
      rather than a hand-rolled product + transform + scan buys the fused product
@@ -165,9 +159,6 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   if(!p) return NULL;
   p->n=n; p->m=band; p->U=oversample; p->K=taps;
   p->nd=ndata; p->nt=ntmpl; p->snr=snr; p->fd=fd;
-  p->g   =hmf_recovery(n,band,oversample,taps,0);
-  p->graw =hmf_recovery(n,band,oversample,taps,1);
-  p->graw1=hmf_recovery(n,band,oversample,taps,2);
   p->full  =ap_mf_create(n,ndata,ntmpl);
   p->coarse=ap_mf_create(band,ndata,2*ntmpl);
   p->cf      =ap_create(band);
