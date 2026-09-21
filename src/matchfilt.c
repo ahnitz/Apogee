@@ -11,70 +11,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-/* Whether the x86 kernels are available is a property of the BUILD, not of
-   the slice being compiled.  A macOS universal2 build compiles this file once
-   per architecture from one source set: the arm64 slice must not reference
-   back ends that were never compiled, and neither must the x86_64 slice of a
-   build that chose the portable set.  setup.py decides and says so. */
-#ifndef AP_WITH_X86_KERNELS
-#  if defined(__x86_64__) || defined(__i386__)
-#    define AP_WITH_X86_KERNELS 1
-#  else
-#    define AP_WITH_X86_KERNELS 0
-#  endif
-#endif
-#if AP_WITH_X86_KERNELS && (defined(__x86_64__) || defined(__i386__))
-#include <immintrin.h>
-#define AP_HAVE_X86 1
-#else
-#define AP_HAVE_X86 0
-#endif
 #include "alloc.h"
 #include "matchedfilter.h"
 #include "transform.h"
 
-/* Split-layout spectrum product.  Templates are stored already conjugated, so
- * this is a plain complex multiply, conjugated on output because the backward
- * transform wants conj(product) - which costs nothing, being the same two FMAs
- * with the signs swapped.  Both sides split means no permutes at all.  The interleaved version this
- * replaced needed four permutes per 16 complex on top of the arithmetic. */
-#if AP_HAVE_X86
-__attribute__((target("avx512f")))
-static void mulspec_avx512(const float *ar,const float *ai,
-                           const float *br,const float *bi,
-                           float *or_,float *oi,size_t n){
-  for(size_t k=0;k<n;k+=16){
-    __m512 x=_mm512_loadu_ps(ar+k), y=_mm512_loadu_ps(ai+k);
-    __m512 u=_mm512_loadu_ps(br+k), v=_mm512_loadu_ps(bi+k);
-    _mm512_storeu_ps(or_+k,_mm512_fmsub_ps(x,u,_mm512_mul_ps(y,v)));
-    /* negated: the backward transform wants conj(product), and conj(D*T) costs
-       nothing here - it is the same two FMAs with the signs swapped */
-    _mm512_storeu_ps(oi+k, _mm512_fnmsub_ps(x,v,_mm512_mul_ps(y,u)));
-  }
-}
-__attribute__((target("avx2,fma")))
-static void mulspec_avx2(const float *ar,const float *ai,
-                         const float *br,const float *bi,
-                         float *or_,float *oi,size_t n){
-  for(size_t k=0;k<n;k+=8){
-    __m256 x=_mm256_loadu_ps(ar+k), y=_mm256_loadu_ps(ai+k);
-    __m256 u=_mm256_loadu_ps(br+k), v=_mm256_loadu_ps(bi+k);
-    _mm256_storeu_ps(or_+k,_mm256_fmsub_ps(x,u,_mm256_mul_ps(y,v)));
-    _mm256_storeu_ps(oi+k, _mm256_fnmsub_ps(x,v,_mm256_mul_ps(y,u)));
-  }
-}
-#endif /* AP_HAVE_X86 */
-
-/* The scalar loop below is not a slow path in practice: the fused product
-   inside stage A is what the matched filter actually uses, and this runs only
-   when the back end has no fused variant.  On non-x86 it is also the only
-   version, and the compiler vectorises it. */
+/* Unfused product, for a back end with no fused stage-A loader.  Every
+   Highway build has one, so this runs only when MF_GMAJOR=0 disables the
+   fused path for a cross-check.  It had hand-written AVX-512 and AVX2
+   variants; the compiler vectorises this loop, and keeping two intrinsic
+   kernels alive for a diagnostic path was not worth it. */
 static void mulspec(const float *ar,const float *ai,const float *br,const float *bi,
                     float *or_,float *oi,size_t n){
-#if AP_HAVE_X86
-  if(__builtin_cpu_supports("avx512f") && !(n&15)){ mulspec_avx512(ar,ai,br,bi,or_,oi,n); return; }
-  if(__builtin_cpu_supports("avx2")   && !(n&7)) { mulspec_avx2  (ar,ai,br,bi,or_,oi,n); return; }
-#endif
   for(size_t k=0;k<n;k++){
     float x=ar[k],y=ai[k],u=br[k],v=bi[k];
     or_[k]=x*u-y*v; oi[k]=-(x*v+y*u);
