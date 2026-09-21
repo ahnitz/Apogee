@@ -39,10 +39,23 @@ Wheels are built for CPython 3.9 to 3.13, manylinux and musllinux, x86-64.
 Anywhere else pip falls back to the source distribution, which needs numpy and
 a C compiler.
 
-**x86-64 only for now.** The kernels are AVX2 and AVX-512 intrinsics with no
-portable fallback, so a build on any other architecture stops with an error
-rather than producing a slow one. AVX-512 is used when the CPU has it and AVX2
-otherwise, decided at runtime.
+### Platforms
+
+x86-64 has hand-written AVX-512 and AVX2 kernels, chosen at run time from the
+CPU. Everywhere else builds a portable back end from the same source, using
+compiler vector extensions, which currently costs roughly 10% against the AVX2
+kernels on the same machine.
+
+| platform | back end | tested |
+|---|---|---|
+| Linux x86-64 | AVX-512 / AVX2 | every push |
+| Linux arm64 | portable (NEON) | every push |
+| macOS arm64 | portable (NEON) | every push |
+| macOS x86-64 | AVX-512 / AVX2 | no |
+
+macOS on Intel is untested rather than known-broken: hosted runners for it are
+being retired, so nothing measures it. `matchedfilter.backend()` reports which
+kernel was selected, and `MF_ISA` forces one.
 
 ## How it works
 
@@ -132,8 +145,9 @@ falls toward 1x on data where most pairs trigger.
   individual realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
   in [docs/hierarchical.md](docs/hierarchical.md).
 - Single-threaded by design. Parallelism is the caller's to arrange.
-- x86-64 Linux only, as above. Other architectures are not implemented rather
-  than merely untested.
+- Off x86-64 the portable back end is the only one, and it currently costs
+  about 10% against the AVX2 kernels measured on the same machine. See
+  [docs/portable.md](docs/portable.md).
 
 ## Development
 
