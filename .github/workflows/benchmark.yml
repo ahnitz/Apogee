@@ -1,0 +1,128 @@
+name: Benchmark
+
+# Runs the benchmark on every platform the library claims to support and
+# combines the results into one page.  The point is not the absolute numbers --
+# shared runners are noisy -- but the comparison across back ends: AVX-512,
+# AVX2, and the compiler-vectorised portable path on x86, arm64 and macOS.
+
+on:
+  push:
+    branches: [ main, portable ]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"     # Monday, so drift in the runner fleet is visible
+
+jobs:
+  bench:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest,   label: "linux-x86_64",       isa: ""}
+          # Same host, forced down a narrower back end, so the three x86
+          # kernels are compared on identical hardware rather than across
+          # different runners.
+          - {os: ubuntu-latest,   label: "linux-x86_64-avx2",  isa: "avx2"}
+          - {os: ubuntu-latest,   label: "linux-x86_64-port",  isa: "portable"}
+          - {os: ubuntu-24.04-arm, label: "linux-arm64",       isa: ""}
+          - {os: macos-14,        label: "macos-arm64",        isa: ""}
+          - {os: macos-13,        label: "macos-x86_64",       isa: ""}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: Record what this runner actually is
+        run: |
+          python -c "import platform;print(platform.platform(), platform.machine())"
+          if [ -r /proc/cpuinfo ]; then
+            grep -m1 'model name' /proc/cpuinfo || true
+            for f in avx2 avx512f avx512vl neon asimd; do
+              echo "$f: $(grep -qm1 $f /proc/cpuinfo && echo yes || echo no)"
+            done
+          else
+            sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+            sysctl -n hw.optional.avx2_0 2>/dev/null || true
+          fi
+          cc --version | head -1
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install .[test]
+
+      - name: Test
+        # A benchmark of a wrong answer is worthless, so the suite gates it.
+        env:
+          MF_ISA: ${{ matrix.isa }}
+        run: |
+          mkdir -p /tmp/run && cd /tmp/run
+          python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
+
+      - name: Benchmark
+        env:
+          MF_ISA: ${{ matrix.isa }}
+        run: |
+          cd /tmp/run
+          python -m matchedfilter.benchmark \
+            --n 1024 4096 16384 65536 262144 \
+            --data 8 --templates 32 --reps 7 --fd 1e-3 \
+            --label "${{ matrix.label }}" \
+            --json "$GITHUB_WORKSPACE/bench-${{ matrix.label }}.json" \
+            | tee "$GITHUB_WORKSPACE/bench-${{ matrix.label }}.txt"
+
+      - name: Publish to the run summary
+        if: always()
+        run: |
+          { echo "## ${{ matrix.label }}"; echo; echo '```'
+            cat "bench-${{ matrix.label }}.txt" 2>/dev/null || echo "(no output)"
+            echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.label }}
+          path: bench-${{ matrix.label }}.json
+          if-no-files-found: error
+
+  page:
+    name: Build the results page
+    needs: bench
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: bench-*, path: results, merge-multiple: true }
+      - run: |
+          ls -l results
+          python tools/build_report.py results --out site/index.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-page
+          path: site/
+
+      # Published only from the default branch: a page rebuilt from a PR's
+      # numbers would overwrite the reference results with one-off ones.
+      - uses: actions/configure-pages@v5
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with: { path: site/ }
+
+  deploy:
+    name: Publish
+    needs: page
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
