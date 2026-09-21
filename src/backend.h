@@ -1,7 +1,7 @@
 #ifndef AP_BACKEND_H
 #define AP_BACKEND_H
 #include <stddef.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 /* One implementation of the transform, selected at runtime by CPU support. */
 typedef struct {
   const char *name;

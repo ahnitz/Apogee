@@ -2,7 +2,7 @@
 #define AP_INTERNAL_H
 #include <immintrin.h>
 #include <stddef.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 
 /* 1024-point FFT, in place on 64-byte-aligned SoA arrays re[1024], im[1024].
    Input index n = n2*32 + n1 (n1 fast); output in natural order k = k1*32 + k2. */

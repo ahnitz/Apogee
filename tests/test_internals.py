@@ -45,7 +45,7 @@ def _have_avx512():
 @pytest.mark.skipif(sys.platform != "linux", reason="x86 Linux only")
 @pytest.mark.skipif(not _have_avx512(), reason="test_units.c is AVX-512 only")
 def test_c_internals(tmp_path):
-    common = ["-O2", "-I", SRC, "-I", os.path.join(ROOT, "python", "apogee")]
+    common = ["-O2", "-I", SRC, "-I", os.path.join(ROOT, "python", "matchedfilter")]
     objs = []
     for i, (name, flags) in enumerate(UNITS):
         obj = str(tmp_path / ("u%d.o" % i))

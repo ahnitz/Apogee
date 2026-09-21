@@ -1,4 +1,4 @@
-/* apogee - single-threaded batched matched filter with peak-only output.
+/* matchedfilter - single-threaded batched matched filter with peak-only output.
  *
  * Correlate D data segments against T templates and get back, for each pair, the
  * loudest sample in each bin of a search window.  The full correlation output is
@@ -14,8 +14,8 @@
  * There is no plan object to manage beyond the filter itself: ap_mf_plan holds
  * everything, is built once, and is reused for every pair.
  */
-#ifndef APOGEE_H
-#define APOGEE_H
+#ifndef MATCHEDFILTER_H
+#define MATCHEDFILTER_H
 #include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
@@ -86,7 +86,7 @@ int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
  * snr is the |rho| of the weakest signal that must be kept (5 is typical); fd is
  * the tolerated false-dismissal probability for such a signal (1e-2 .. 1e-4).
  * Band, oversampling and tap count come from a compiled-in measured table -
- * apogee does not autotune - and can be overridden for testing with
+ * matchedfilter does not autotune - and can be overridden for testing with
  * ap_hmf_create_ex.
  */
 typedef struct ap_hmf_plan ap_hmf_plan;
@@ -126,7 +126,7 @@ int ap_hmf_run(ap_hmf_plan *p, int d0, int nd, int t0, int nt,
 /* Filter a time series directly, over a caller-supplied block layout.
  *
  * The caller still owns the overlap-save arithmetic: it decides where each
- * block starts and which span of each block's output is valid.  apogee only
+ * block starts and which span of each block's output is valid.  matchedfilter only
  * executes that plan -- forward transform per block, gate, refine where needed
  * -- which removes the per-block round trip through the caller entirely: no
  * separately-planned forward FFT, no spectrum handed back and forth, and one

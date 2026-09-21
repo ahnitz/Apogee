@@ -1,4 +1,4 @@
-/* apogee: width-generic balanced-split back end.
+/* matchedfilter: width-generic balanced-split back end.
  *
  * Compiled twice - once at AP_W=16 (AVX-512) and once at AP_W=8 (AVX2) - from the
  * same source, via the operation macros in simd.h.  This is the whole AVX2
@@ -50,7 +50,7 @@
 #define AP_PF 0
 #endif
 #include "simd.h"
-#include "apogee.h"
+#include "matchedfilter.h"
 #include "backend.h"
 #ifdef AP_PROF
 #include <time.h>
@@ -142,7 +142,7 @@ void *FN(create)(size_t N){
      Compiled in rather than searched: the same two win on both ISAs. */
   if(m==12){ n1=128;  n2=32;  }
   if(m==18){ n1=1024; n2=256; }
-  { const char *e=getenv("APOGEE_N1");
+  { const char *e=getenv("MF_N1");
     if(e){ int v=atoi(e);
       if(v>=AP_W && v<=(int)(N/AP_W) && !(v&(v-1)) && esupported(v) && esupported((int)(N/v))){
         n1=v; n2=(int)(N/v);
@@ -171,7 +171,7 @@ void *FN(create)(size_t N){
                                                  0/48 and 0/16 rounds)
 
      The pack/unpack arithmetic costs more than the 25% of intermediate bytes it
-     saves.  Kept behind APOGEE_USEQ because the balance moves with the access
+     saves.  Kept behind MF_USEQ because the balance moves with the access
      pattern and this is the second time it has flipped. */
   /* Intermediate row stride.  Padding it off the power of two was tried - the
      element buffers needed exactly that, and ablating the store shows it costing
@@ -215,7 +215,7 @@ void *FN(create)(size_t N){
     else                       g = 32;   /* beyond L2: the stream shape is what matters */
     if(g>g_max) g=g_max;
     if(g<1) g=1;
-    { const char *e=getenv("APOGEE_GBLK"); if(e){ long v=atol(e); if(v>0){ g=(size_t)v; if(g>g_max)g=g_max; } } }
+    { const char *e=getenv("MF_GBLK"); if(e){ long v=atol(e); if(v>0){ g=(size_t)v; if(g>g_max)g=g_max; } } }
     p->gblk=(int)g; p->bstride=me;
   }
   /* Stage B reads the intermediate at [n1][k2], walking n1 with stride istr while
@@ -227,14 +227,14 @@ void *FN(create)(size_t N){
     /* Measured: no gain, 1.02-1.05x worse at 2^18 and 2^20.  Stage B's walk is a
        constant 4 KiB stride, which the hardware prefetcher already handles - the
        stage-A input walk it was modelled on is not equivalent.  Default off; the
-       mechanism stays behind APOGEE_BBLK. */
+       mechanism stays behind MF_BBLK. */
     size_t bb = 1;
     if(bb>bmaxn) bb=bmaxn;
     if(bb<1) bb=1;
-    { const char *e=getenv("APOGEE_BBLK"); if(e){ long v=atol(e); if(v>0){ bb=(size_t)v; if(bb>bmaxn)bb=bmaxn; } } }
+    { const char *e=getenv("MF_BBLK"); if(e){ long v=atol(e); if(v>0){ bb=(size_t)v; if(bb>bmaxn)bb=bmaxn; } } }
     p->bblk=(int)bb;
   }
-  { const char *e=getenv("APOGEE_GMAJOR"); p->gmajor = e?atoi(e):1; }
+  { const char *e=getenv("MF_GMAJOR"); p->gmajor = e?atoi(e):1; }
   { size_t nbuf = (size_t)p->gblk > (size_t)p->bblk ? (size_t)p->gblk : (size_t)p->bblk;
     p->bR=aligned_alloc(64,me*nbuf*sizeof(vf));
     p->bI=aligned_alloc(64,me*nbuf*sizeof(vf)); }
@@ -268,9 +268,9 @@ void *FN(create)(size_t N){
        2^12 7.7% slower (1/48 rounds), 2^16 2.5% (0/32), 2^14 and 2^18 neutral.
        The table is extra traffic in a loop that is no longer short of ALU. */
     p->fulltw = 0;
-    { const char *e=getenv("APOGEE_FULLTW"); if(e) p->fulltw=atoi(e)?1:0; }
+    { const char *e=getenv("MF_FULLTW"); if(e) p->fulltw=atoi(e)?1:0; }
     p->fuse = eprod_ok(p->N2);
-    { const char *e=getenv("APOGEE_FUSE"); if(e) p->fuse = atoi(e) ? eprod_ok(p->N2) : 0; }
+    { const char *e=getenv("MF_FUSE"); if(e) p->fuse = atoi(e) ? eprod_ok(p->N2) : 0; }
     if(p->fulltw){
       p->twr=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));
       p->twi=aligned_alloc(64,g_n*(size_t)n2*sizeof(vf));

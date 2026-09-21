@@ -112,7 +112,7 @@ top of the calibrated rate without any test noticing unless it counts omissions.
 
 ## Known limits
 
-- **The coarse transform cannot go below 256 points**, because that is apogee's
+- **The coarse transform cannot go below 256 points**, because that is matchedfilter's
   smallest supported size.  The unconstrained design often wants 64 or 128, so
   supporting smaller transforms would unlock more speedup, particularly at
   N=2^11 and high SNR.
@@ -224,7 +224,7 @@ Until this is resolved, treat 2^10..2^16 as measured and 2^18..2^20 as unverifie
 The phase profile puts the even coarse transform at 71% of the time below ~5%
 trigger, running at 18.3 flops/cycle -- 57% of the AVX2 FMA peak.  It is not
 overhead-bound, so the only way through is less arithmetic, and the coarse stage
-is the one place in apogee that can afford it: refinement is a separate exact
+is the one place in matchedfilter that can afford it: refinement is a separate exact
 transform, so a ~1e-3 relative error in the coarse values cannot change a
 reported peak, only the gate decision.
 

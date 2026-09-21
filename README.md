@@ -1,4 +1,4 @@
-# apogee
+# matchedfilter
 
 A fast single-threaded matched filter for x86. You give it a batch of data
 segments and a batch of templates; it correlates every pair and hands back only
@@ -13,9 +13,9 @@ skip work that could not have produced a peak anyway.
 > [Caveats](#caveats).
 
 ```python
-import numpy as np, apogee
+from matchedfilter import MatchedFilter
 
-mf = apogee.MatchedFilter(16384, ndata=16, ntemplates=64)
+mf = MatchedFilter(16384, ndata=16, ntemplates=64)
 mf.set_data(data_spectra)          # (16, 16384) complex64, already FFT'd
 mf.set_templates(template_spectra) # (64, 16384) complex64
 
@@ -26,7 +26,7 @@ peaks["index"], peaks["value"], peaks["magnitude"]
 ## Install
 
 ```bash
-pip install git+https://github.com/ahnitz/peak-fft
+pip install git+https://github.com/ahnitz/matchedfilter
 ```
 
 Needs numpy and a C compiler. x86-64 with AVX2; AVX-512 is used when present.
@@ -35,7 +35,7 @@ Needs numpy and a C compiler. x86-64 with AVX2; AVX-512 is used when present.
 
 Inputs are **frequency domain**: the unnormalised forward transform of each
 segment, in natural order. Produce them with whatever you already use (numpy,
-MKL, FFTW); apogee does not need to own that step.
+MKL, FFTW); matchedfilter does not need to own that step.
 
 The filter is built once and reused. Ingest conjugates the templates and
 stores both sides in the layout the correlation loop walks, which costs a few
@@ -51,7 +51,7 @@ Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 
 Per (data, template) pair, 8x32 batch, one core of a Zen 5 desktop:
 
-| n | apogee | numpy | |
+| n | matchedfilter | numpy | |
 |---:|---:|---:|---:|
 | 1024 | 0.61 µs | 18.98 µs | 31x |
 | 4096 | 2.08 µs | 37.81 µs | 18x |
@@ -63,7 +63,7 @@ Against MKL or FFTW the margin is much smaller, and part of what is left comes
 from computing peaks instead of a full correlation. Measure on your own box:
 
 ```bash
-python -m apogee.benchmark
+python -m matchedfilter.benchmark
 ```
 
 ## Hierarchical filtering
@@ -81,10 +81,12 @@ useful, and the pre-pass is pure added cost. It is worth checking against your
 own templates before relying on it.
 
 ```python
-hf = apogee.HierarchicalFilter(16384, ndata=16, ntemplates=64,
-                               snr=6.0,      # threshold you intend to use
-                               fd=1e-3,      # false-dismissal budget
-                               band=2048)    # width of the cheap slice
+from matchedfilter import HierarchicalFilter
+
+hf = HierarchicalFilter(16384, ndata=16, ntemplates=64,
+                        snr=6.0,      # threshold you intend to use
+                        fd=1e-3,      # false-dismissal budget
+                        band=2048)    # width of the cheap slice
 
 hf.set_reference(expected_output_power)      # power spectrum of the OUTPUT
 hf.set_templates(template_spectra)
@@ -121,7 +123,7 @@ falls toward 1x on data where most pairs trigger.
 ```bash
 pip install -e .[test]
 pytest              # includes a C test that builds itself from source
-python -m apogee.benchmark
+python -m matchedfilter.benchmark
 ```
 
 [docs/](docs/) holds the design notes: how the hierarchical gate is

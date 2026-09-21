@@ -1,7 +1,7 @@
 """Offline design sweep for the hierarchical matched filter.
 
 Emits the compiled-in table (R, U, K, t_c) that src/hmf.c uses.  Nothing here
-runs at run time -- apogee does no autotuning; this produces measured constants.
+runs at run time -- matchedfilter does no autotuning; this produces measured constants.
 
 Model
 -----
@@ -223,7 +223,7 @@ def design(n, want_f=POWER_FRAC, taps=(4, 8, 12),
     cand = []
     for R in Rs:
         m = n // R
-        # The coarse pass is an m-point transform, so m must be a size apogee
+        # The coarse pass is an m-point transform, so m must be a size matchedfilter
         # supports.  256 is the floor: below it one half of the balanced split
         # falls under the AVX-512 lane count.  This is a real constraint, not a
         # tuning choice -- the unconstrained optimum often wants 64 or 128, so
@@ -388,7 +388,7 @@ TABLE_N   = (1024, 2048, 4096, 8192, 16384, 32768, 65536,
 
 
 def emit_table(path):
-    """Generate src/hmf_table.h.  Measured offline, compiled in; apogee does no
+    """Generate src/hmf_table.h.  Measured offline, compiled in; matchedfilter does no
     run-time search."""
     chosen = {}
     for n in TABLE_N:
@@ -401,7 +401,7 @@ def emit_table(path):
     w(" *")
     w(" * Measured design constants for the hierarchical filter: which band,")
     w(" * oversampling and tap count to use, and the gate threshold that meets a")
-    w(" * given false-dismissal target.  apogee does not autotune; this table is")
+    w(" * given false-dismissal target.  matchedfilter does not autotune; this table is")
     w(" * what makes that possible.")
     w(" *")
     w(" * t_c is tabulated against the EFFECTIVE band fraction f*g^2 rather than")

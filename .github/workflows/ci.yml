@@ -45,7 +45,7 @@ jobs:
         if: always()
         run: |
           mkdir -p /tmp/run && cd /tmp/run
-          APOGEE_ISA=avx2 python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
+          MF_ISA=avx2 python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
 
   generated-files:
     # Both of these are committed, and both have been stale in a way that
@@ -85,7 +85,7 @@ jobs:
       - name: Benchmark
         run: |
           cd /tmp
-          python -m apogee.benchmark --n 4096 16384 --data 4 --templates 16 --reps 3 \
+          python -m matchedfilter.benchmark --n 4096 16384 --data 4 --templates 16 --reps 3 \
             | tee /tmp/bench.txt
 
       - name: Publish to the run summary
@@ -105,8 +105,8 @@ jobs:
       - name: The shipped header must compile on its own
         run: |
           python -m pip install dist/*.whl
-          printf '#include "apogee.h"\nint main(void){ return ap_supported(1024) ? 0 : 1; }\n' > /tmp/hdr.c
-          cc -I"$(python -c 'import apogee; print(apogee.include_dir())')" -fsyntax-only /tmp/hdr.c
+          printf '#include "matchedfilter.h"\nint main(void){ return ap_supported(1024) ? 0 : 1; }\n' > /tmp/hdr.c
+          cc -I"$(python -c 'import matchedfilter; print(matchedfilter.include_dir())')" -fsyntax-only /tmp/hdr.c
 
       - uses: actions/upload-artifact@v4
         with:

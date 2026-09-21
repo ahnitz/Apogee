@@ -1,4 +1,4 @@
-"""Build hook for the apogee extension.
+"""Build hook for the matchedfilter extension.
 
 Project metadata lives in pyproject.toml; this file exists only because the
 build needs per-source compiler flags, which declarative config cannot express.
@@ -25,7 +25,7 @@ GROUPS = [
     ("src/matchfilt.c",  BASE,   []),
     ("src/hmf.c",        BASE,   []),
     ("src/dispatch.c",   [],     []),                 # baseline only
-    ("python/apogee/_core.c", [], []),
+    ("python/matchedfilter/_core.c", [], []),
 ]
 
 
@@ -54,6 +54,6 @@ class BuildExt(build_ext):
 
 
 setup(
-    ext_modules=[Extension("apogee._core", sources=[], include_dirs=["python/apogee", "src"])],
+    ext_modules=[Extension("matchedfilter._core", sources=[], include_dirs=["python/matchedfilter", "src"])],
     cmdclass={"build_ext": BuildExt},
 )

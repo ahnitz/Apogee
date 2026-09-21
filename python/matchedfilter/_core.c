@@ -1,4 +1,4 @@
-/* apogee Python extension: the matched filter.
+/* matchedfilter Python extension: the matched filter.
  *
  * The whole D x T pair loop happens in one call into C, so no per-pair Python
  * overhead reaches the measurement.  Only the matched filter is exposed: there is
@@ -6,7 +6,7 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 #include <stdlib.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 #include "transform.h"
 
 /* nbins for an hmf plan; the public one takes the plan type directly */
@@ -77,7 +77,7 @@ static PyObject *MF_run(MFObject *self,PyObject *args){
   }
   PyMem_Free(pk);
   PyBuffer_Release(&bidx);PyBuffer_Release(&bval);PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt);
-  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"apogee: matched filter failed"); return NULL; }
+  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"matchedfilter: matched filter failed"); return NULL; }
   return PyLong_FromLong(tot);
 }
 static PyObject *MF_nbins(MFObject *self,PyObject *args){
@@ -94,10 +94,10 @@ static PyMethodDef MF_methods[]={
 };
 static PyTypeObject MFType={
   PyVarObject_HEAD_INIT(NULL,0)
-  .tp_name="apogee._core.MF", .tp_basicsize=sizeof(MFObject),
+  .tp_name="matchedfilter._core.MF", .tp_basicsize=sizeof(MFObject),
   .tp_flags=Py_TPFLAGS_DEFAULT, .tp_new=PyType_GenericNew,
   .tp_init=(initproc)MF_init, .tp_dealloc=(destructor)MF_dealloc,
-  .tp_methods=MF_methods, .tp_doc="apogee matched filter (opaque)",
+  .tp_methods=MF_methods, .tp_doc="matchedfilter matched filter (opaque)",
 };
 
 /* ---------------- hierarchical matched filter ---------------- */
@@ -151,7 +151,7 @@ static PyObject *HMF_set_reference(HMFObject *self,PyObject *args){
     r=ap_hmf_set_reference(self->p,(const float*)b.buf);
   }
   PyBuffer_Release(&b);
-  if(r<0){ PyErr_SetString(PyExc_ValueError,"apogee: bad reference"); return NULL; }
+  if(r<0){ PyErr_SetString(PyExc_ValueError,"matchedfilter: bad reference"); return NULL; }
   Py_RETURN_NONE;
 }
 static PyObject *HMF_set_data(HMFObject *s,PyObject *a){ return HMF_set(s,a,1); }
@@ -184,7 +184,7 @@ static PyObject *HMF_run(HMFObject *self,PyObject *args){
   }
   PyMem_Free(pk);
   PyBuffer_Release(&bidx);PyBuffer_Release(&bval);PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt);
-  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"apogee: hierarchical filter failed"); return NULL; }
+  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"matchedfilter: hierarchical filter failed"); return NULL; }
   return PyLong_FromLong(tot);
 }
 /* run_series(series, starts, wstart, wend, t0, nt, binsize, thr, idx,val,mag,cnt) */
@@ -220,7 +220,7 @@ static PyObject *HMF_run_series(HMFObject *self,PyObject *args){
   PyBuffer_Release(&bs);PyBuffer_Release(&bst);PyBuffer_Release(&bws);
   PyBuffer_Release(&bwe);PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
   PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt);
-  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"apogee: run_series failed"); return NULL; }
+  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"matchedfilter: run_series failed"); return NULL; }
   return PyLong_FromLong(tot);
 }
 static PyObject *HMF_nbins(HMFObject *self,PyObject *args){
@@ -249,14 +249,14 @@ static PyMethodDef HMF_methods[]={
 };
 static PyTypeObject HMFType={
   PyVarObject_HEAD_INIT(NULL,0)
-  .tp_name="apogee._core.HMF", .tp_basicsize=sizeof(HMFObject),
+  .tp_name="matchedfilter._core.HMF", .tp_basicsize=sizeof(HMFObject),
   .tp_flags=Py_TPFLAGS_DEFAULT, .tp_new=PyType_GenericNew,
   .tp_init=(initproc)HMF_init, .tp_dealloc=(destructor)HMF_dealloc,
-  .tp_methods=HMF_methods, .tp_doc="apogee hierarchical matched filter (opaque)",
+  .tp_methods=HMF_methods, .tp_doc="matchedfilter hierarchical matched filter (opaque)",
 };
 
 static PyMethodDef methods[]={{NULL,NULL,0,NULL}};
-static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"apogee._core",NULL,-1,methods};
+static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"matchedfilter._core",NULL,-1,methods};
 PyMODINIT_FUNC PyInit__core(void){
   if(PyType_Ready(&MFType)<0) return NULL;
   if(PyType_Ready(&HMFType)<0) return NULL;

@@ -1,4 +1,4 @@
-/* apogee: hierarchical matched filter.
+/* matchedfilter: hierarchical matched filter.
  *
  * Most of a template's SNR lives in the low part of the band.  Correlate only
  * that part, on a coarse lag grid, and pay for the full correlation only where
@@ -33,7 +33,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <x86intrin.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 #include "transform.h"
 #include "hmf_table.h"
 
@@ -195,8 +195,8 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   p->even_margin=0.999f;
-  { const char *e=getenv("APOGEE_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
-  p->prof = getenv("APOGEE_HMF_PROF") ? 1 : 0;
+  { const char *e=getenv("MF_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
+  p->prof = getenv("MF_HMF_PROF") ? 1 : 0;
   return p;
 }
 
@@ -237,7 +237,7 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
             (double)p->c_ref /p->pairs,100*p->c_ref /tot,
             (double)p->c_fill/p->pairs,100*p->c_fill/tot);
   }
-  if(getenv("APOGEE_HMF_DIAG"))
+  if(getenv("MF_HMF_DIAG"))
     fprintf(stderr,"    [diag] pairs=%ld pre-gate passes=%ld (%.1f/pair) "
             "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% gate=%.3f\n",
             p->pairs,p->npre,(double)p->npre/(p->pairs?p->pairs:1),
@@ -474,7 +474,7 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
 }
 
 /* |interpolated value| at sub-position i around coarse sample j.  The series is
-   circular - apogee's correlation is - so wrapped taps are exact, not an edge
+   circular - matchedfilter's correlation is - so wrapped taps are exact, not an edge
    approximation. */
 static float interp_abs(const float *ev,const float *od,size_t m,int U,
                         const float *w,int K,int i,long j){
@@ -511,7 +511,7 @@ int ap_hmf_run_series(ap_hmf_plan *p,
     if(have) memcpy(p->fwd,series+2*s0,2*have*sizeof(float));
     if(have<n) memset(p->fwd+2*have,0,2*(n-have)*sizeof(float));
     ap_fft(p->full_fft,p->fwd,p->spec,AP_FORWARD);
-    /* pycbc's inverse is unnormalised and so is apogee's, so the caller's
+    /* pycbc's inverse is unnormalised and so is matchedfilter's, so the caller's
        convention of pre-dividing the block spectrum by n is preserved here. */
     { const float inv=1.0f/(float)n;
       for(size_t k=0;k<2*n;k++) p->spec[k]*=inv; }
@@ -611,7 +611,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       ce = p->cebuf[t];
       if(ce.index>=0 && ce.magnitude<even_gate) ce.index=-1;   /* per-template gate */
       if(ce.index<0){
-        if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
+        if(getenv("MF_HMF_TRACE") && p->pairs<6)
           fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
                   "even max BELOW even_gate\n",p->pairs,gate,even_gate);
                                             /* cannot reach the gate: done */
@@ -622,7 +622,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                           cstart,cend)<0) return -1;
       if(p->prof){ unsigned long long t1=__rdtsc(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
-      if(getenv("APOGEE_HMF_TRACE") && p->pairs<6)
+      if(getenv("MF_HMF_TRACE") && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
                 "coarse max=%.3f (even %.3f odd %.3f)\n",
                 p->pairs,gate,even_gate,bestmag,ce.magnitude,co.magnitude);

@@ -1,16 +1,16 @@
-"""apogee - single-threaded batched matched filter with peak-only output.
+"""matchedfilter - single-threaded batched matched filter with peak-only output.
 
 Correlate D data segments against T templates and report, for each pair, the
 loudest sample in each bin of a search window:
 
-    >>> import numpy as np, apogee
-    >>> mf = apogee.MatchedFilter(1 << 14, ndata=16, ntemplates=16)
+    >>> from matchedfilter import MatchedFilter
+    >>> mf = MatchedFilter(1 << 14, ndata=16, ntemplates=16)
     >>> mf.set_data(data_spectra)         # (16, 16384) complex64, ALREADY FFT'd
     >>> mf.set_templates(template_spectra)
     >>> peaks = mf.run(binsize=1024, threshold=t, window=(a, b))
     >>> peaks["index"], peaks["value"], peaks["magnitude"]
 
-Produce the spectra with whatever you already use - numpy, MKL, FFTW.  apogee
+Produce the spectra with whatever you already use - numpy, MKL, FFTW.  matchedfilter
 does not need to own that step, and there is no plan object to manage: the
 MatchedFilter is built once and reused for every pair.
 
@@ -165,14 +165,14 @@ class MatchedFilter:
 
 
 def include_dir():
-    """Directory holding apogee.h, for building C code against this package.
+    """Directory holding matchedfilter.h, for building C code against this package.
 
     Direct C use is not the main path - the Python class is - but linking is
     cheap to support::
 
-        cc myprog.c $(python -c "import apogee; print('-I'+apogee.include_dir())") ...
+        cc myprog.c $(python -c "import matchedfilter; print('-I'+matchedfilter.include_dir())") ...
 
-    The C interface is the same ten functions the class wraps; see apogee.h.
+    The C interface is the same ten functions the class wraps; see matchedfilter.h.
     """
     import os
     return os.path.dirname(os.path.abspath(__file__))
@@ -185,7 +185,7 @@ class HierarchicalFilter(MatchedFilter):
     only that part, on a coarse lag grid, and pays for the full correlation only
     where the coarse result could still become a detection.
 
-        >>> hf = apogee.HierarchicalFilter(1 << 12, ndata=16, ntemplates=16,
+        >>> hf = matchedfilter.HierarchicalFilter(1 << 12, ndata=16, ntemplates=16,
         ...                                snr=5.5, fd=1e-2)
         >>> hf.set_data(data_spectra)
         >>> hf.set_templates(template_spectra)
@@ -201,7 +201,7 @@ class HierarchicalFilter(MatchedFilter):
     ``snr`` is the |rho| of the weakest signal that must be kept; ``fd`` is the
     tolerated false-dismissal probability for such a signal.  Lowering either
     costs speed, because the gate has to open wider.  Band, oversampling and tap
-    count come from a compiled-in measured table - apogee does not autotune -
+    count come from a compiled-in measured table - matchedfilter does not autotune -
     and can be pinned with ``band`` / ``oversample`` / ``taps`` for testing.
     """
 
@@ -249,7 +249,7 @@ class HierarchicalFilter(MatchedFilter):
         """Filter a time series over a caller-supplied block layout.
 
         The caller keeps the overlap-save arithmetic -- where each block starts
-        and which span of its output is valid.  apogee only executes that plan,
+        and which span of its output is valid.  matchedfilter only executes that plan,
         which removes the per-block round trip: no separately-planned forward
         FFT, no spectrum passed back and forth, and one call per segment rather
         than one per block.

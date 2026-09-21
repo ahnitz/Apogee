@@ -1,4 +1,4 @@
-/* apogee: L1-resident 1024-point AVX-512 kernel.
+/* matchedfilter: L1-resident 1024-point AVX-512 kernel.
  *
  * Four-step 32x32 on split (SoA) complex data.  Both 32-point stages are
  * generated radix-8 x radix-4 Stockham codelets (2 passes, not radix-2's 5),

@@ -2,7 +2,7 @@
  *
  * Measured design constants for the hierarchical filter: which band,
  * oversampling and tap count to use, and the gate threshold that meets a
- * given false-dismissal target.  apogee does not autotune; this table is
+ * given false-dismissal target.  matchedfilter does not autotune; this table is
  * what makes that possible.
  *
  * t_c is tabulated against the EFFECTIVE band fraction f*g^2 rather than

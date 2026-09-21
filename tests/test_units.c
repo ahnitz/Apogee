@@ -1,9 +1,9 @@
-/* apogee unit tests: building blocks + exact transform correctness.
+/* matchedfilter unit tests: building blocks + exact transform correctness.
    Requires no external FFT library - references are a double-precision O(N^2) DFT
    and closed-form analytic transforms. */
 #include <string.h>
 #include <immintrin.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 #include "transform.h"
 #include "internal.h"
 #include "transpose16.h"
@@ -306,7 +306,7 @@ static void test_i16_noshift(void){
 
 int main(void){
   test_i16_noshift();
-  printf("apogee unit tests\n");
+  printf("matchedfilter unit tests\n");
   test_transpose16();
   test_codelet("fft32_84 ",32,fft32_84);
   test_codelet("fft32_442",32,fft32_442);

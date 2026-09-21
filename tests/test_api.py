@@ -1,4 +1,4 @@
-"""Tests for apogee's public API.
+"""Tests for matchedfilter's public API.
 
 Everything reachable from Python lives here.  The one exception is
 tests/test_units.c, which checks the generated codelets, the transpose and the
@@ -17,7 +17,7 @@ import time
 import numpy as np
 import pytest
 
-import apogee
+import matchedfilter
 
 
 # ---------------------------------------------------------------- helpers
@@ -57,7 +57,7 @@ def test_matches_numpy(n):
     """The filter is IFFT(data * conj(template)), unnormalised."""
     rng = np.random.default_rng(0)
     D, H = noise((3, n), rng), noise((2, n), rng)
-    mf = apogee.MatchedFilter(n, ndata=3, ntemplates=2)
+    mf = matchedfilter.MatchedFilter(n, ndata=3, ntemplates=2)
     mf.set_data(D)
     mf.set_templates(H)
     peaks = mf.run(binsize=n, threshold=0.0)
@@ -80,7 +80,7 @@ def test_known_lag():
     x = noise(n, rng)
     for lag in (0, 1, 37, n // 2, n - 1):
         shifted = x * np.exp(2j * np.pi * np.arange(n) * lag / n)
-        mf = apogee.MatchedFilter(n, ndata=1, ntemplates=1)
+        mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
         mf.set_data(x[None, :])
         mf.set_templates(shifted[None, :])
         peaks = mf.run(binsize=n, threshold=0.0)
@@ -92,7 +92,7 @@ def test_bins_and_threshold():
     n = 4096
     rng = np.random.default_rng(2)
     D, H = noise((1, n), rng), noise((1, n), rng)
-    mf = apogee.MatchedFilter(n, ndata=1, ntemplates=1)
+    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
     mf.set_data(D)
     mf.set_templates(H)
     rho = np.abs(np.fft.ifft(D[0] * np.conj(H[0])) * n)
@@ -112,7 +112,7 @@ def test_window_and_subrange():
     n, nd, nt = 4096, 4, 3
     rng = np.random.default_rng(3)
     D, H = noise((nd, n), rng), noise((nt, n), rng)
-    mf = apogee.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    mf = matchedfilter.MatchedFilter(n, ndata=nd, ntemplates=nt)
     mf.set_data(D)
     mf.set_templates(H)
     full = mf.run(binsize=1024, threshold=0.0, window=(500, 3500))
@@ -128,7 +128,7 @@ def test_raw_output_matches_structured():
     """raw=True must return exactly the structured array's contents."""
     n, nd, nt = 4096, 2, 3
     rng = np.random.default_rng(7)
-    mf = apogee.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    mf = matchedfilter.MatchedFilter(n, ndata=nd, ntemplates=nt)
     mf.set_data(noise((nd, n), rng))
     mf.set_templates(noise((nt, n), rng))
     peaks = mf.run(binsize=1024, threshold=0.0).copy()
@@ -140,8 +140,8 @@ def test_raw_output_matches_structured():
 
 def test_shape_errors():
     with pytest.raises(ValueError):
-        apogee.MatchedFilter(1000, 1, 1)          # not a supported length
-    mf = apogee.MatchedFilter(4096, ndata=1, ntemplates=1)
+        matchedfilter.MatchedFilter(1000, 1, 1)          # not a supported length
+    mf = matchedfilter.MatchedFilter(4096, ndata=1, ntemplates=1)
     with pytest.raises(ValueError):
         mf.set_data(np.zeros((1, 100), np.complex64))
 
@@ -160,8 +160,8 @@ def test_hierarchical_is_identical_or_absent():
         D[d] += (12.0 * H[0] * np.exp(2j * np.pi * np.arange(n) * lag / n)
                  ).astype(np.complex64)
 
-    mf = apogee.MatchedFilter(n, ndata=nd, ntemplates=nt)
-    hf = apogee.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5, fd=1e-2)
+    mf = matchedfilter.MatchedFilter(n, ndata=nd, ntemplates=nt)
+    hf = matchedfilter.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5, fd=1e-2)
     hf.set_reference(power)
     for o in (mf, hf):
         o.set_data(D)
@@ -181,7 +181,7 @@ def test_gate_stays_shut_on_noise():
     n, nd = 4096, 64
     rng = np.random.default_rng(12)
     power = inspiral_power(n)
-    hf = apogee.HierarchicalFilter(n, ndata=nd, ntemplates=1, snr=5.5, fd=1e-2)
+    hf = matchedfilter.HierarchicalFilter(n, ndata=nd, ntemplates=1, snr=5.5, fd=1e-2)
     hf.set_reference(power)
     hf.set_data(noise((nd, n), rng))
     hf.set_templates(template_with_power(n, power)[None, :])
@@ -200,8 +200,8 @@ def test_omission_rate_meets_the_budget():
     rng = np.random.default_rng(13)
     power = inspiral_power(n)
     H = template_with_power(n, power)
-    mf = apogee.MatchedFilter(n, ndata=1, ntemplates=1)
-    hf = apogee.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=fd)
+    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
+    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=fd)
     hf.set_reference(power)
     mf.set_templates(H[None, :])
     hf.set_templates(H[None, :])
@@ -244,7 +244,7 @@ def test_gate_reads_the_signal_not_the_template():
     assert (np.abs(H[:band]) ** 2).sum() < 0.2          # template: high band
     assert out_power[:band].sum() / out_power.sum() > 0.9   # output: low band
 
-    hf = apogee.HierarchicalFilter(n, ndata=32, ntemplates=1, snr=5.5, fd=1e-2,
+    hf = matchedfilter.HierarchicalFilter(n, ndata=32, ntemplates=1, snr=5.5, fd=1e-2,
                                    band=band, oversample=2, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
@@ -273,7 +273,7 @@ def test_coarse_scaling_follows_the_reference():
     falling[1:n // 2] = (k.astype(np.float64) ** -3.0).astype(np.float32)
     out_power = (np.abs(H) ** 2 * falling).astype(np.float32)
 
-    hf = apogee.HierarchicalFilter(n, ndata=64, ntemplates=1, snr=5.5, fd=1e-2,
+    hf = matchedfilter.HierarchicalFilter(n, ndata=64, ntemplates=1, snr=5.5, fd=1e-2,
                                    band=band, oversample=2, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
@@ -294,8 +294,8 @@ def test_peaks_on_odd_lags_survive():
     rng = np.random.default_rng(15)
     power = inspiral_power(n)
     H = template_with_power(n, power)
-    mf = apogee.MatchedFilter(n, ndata=1, ntemplates=1)
-    hf = apogee.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=1e-2,
+    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=1)
+    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=1e-2,
                                    band=band, oversample=2, taps=8)
     hf.set_reference(power)
     mf.set_templates(H[None, :])
@@ -357,7 +357,7 @@ def test_run_series_matches_block_by_block():
     ser = coloured_series(nseries, -7 / 3.0, rng)
     starts, ws, we = overlap_save_layout(nseries, n, ntaps)
 
-    hf = apogee.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-2)
+    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-2)
     hf.set_reference(power)
     hf.set_templates(H)
     got = hf.run_series(ser, starts, ws, we, binsize=n, threshold=0.0)
@@ -394,7 +394,7 @@ def test_ratio_filter_shaped_workload():
 
     The truth is the ungated filter on the same blocks.  Note this comparison
     is to a tolerance rather than bit-identical, unlike the other hierarchical
-    tests: run_series does each block's forward transform inside apogee while
+    tests: run_series does each block's forward transform inside matchedfilter while
     the reference path uses numpy's, and the two agree only to float32
     rounding.  Within a single path the guarantee is still exact.
     """
@@ -458,13 +458,13 @@ def test_ratio_filter_shaped_workload():
             inj = unit * amp * ph ** lag
             scale = (snr + 2.0) / max(np.abs(np.fft.ifft(inj * np.conj(H[t])) * n).max(), 1e-30)
             ser[starts[b]:starts[b] + n] += (np.fft.ifft(inj) * n * scale).astype(np.complex64)
-    hf = apogee.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
+    hf = matchedfilter.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
                                    band=512, oversample=2, taps=8)
     hf.set_reference(ref)
     hf.set_templates(H)
     got = hf.run_series(ser, starts, ws, we, binsize=n, threshold=snr)
 
-    mf = apogee.MatchedFilter(n, ndata=1, ntemplates=nt)
+    mf = matchedfilter.MatchedFilter(n, ndata=1, ntemplates=nt)
     mf.set_templates(H)
     detected = omitted = invented = differ = 0
     for b, s in enumerate(starts):
@@ -503,7 +503,7 @@ def test_python_overhead_stays_off_the_hot_path():
     n, nd, nt = 4096, 8, 8
     rng = np.random.default_rng(13)
     h = template_with_power(n, inspiral_power(n))
-    mf = apogee.MatchedFilter(n, nd, nt)
+    mf = matchedfilter.MatchedFilter(n, nd, nt)
     mf.set_data(noise((nd, n), rng))
     mf.set_templates(np.repeat(h[None, :], nt, axis=0))
 

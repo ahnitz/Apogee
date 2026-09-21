@@ -211,11 +211,11 @@ Three attempts on that, all measured, none kept:
 
 1. **Non-temporal intermediate stores.** Full-line stores whose line is dead until
    stage B reads it back should skip the read-for-ownership. Wash: 2^18 405 vs 407,
-   2^20 2200 vs 2184. Code kept behind `APOGEE_NT`, default off.
+   2^20 2200 vs 2184. Code kept behind `MF_NT`, default off.
 2. **Huge pages for the big buffers** (`MADV_HUGEPAGE`). No change. The strided walk
    is over the *caller's* input buffer, which the library does not allocate. Kept - it
    costs nothing and the TLB argument still holds for the intermediate.
-3. **Blocking stage A over G groups per input pass** (`APOGEE_GBLK`). This does
+3. **Blocking stage A over G groups per input pass** (`MF_GBLK`). This does
    help; see the paired measurement below. Sequential runs cannot resolve it -- the
    spread at 2^18 is 405-455 us, larger than the effect itself -- so it has to be
    measured A/B with the two builds interleaved.
@@ -249,9 +249,9 @@ identical pair of libraries and demanding it say "noise":
 
 Usage:
 
-    cp libapogee.so base.so       # build the baseline first
+    cp libmatchedfilter.so base.so       # build the baseline first
     ...edit...
-    ./ab base.so ./libapogee.so -t 10 12 14 16
+    ./ab base.so ./libmatchedfilter.so -t 10 12 14 16
 
 
 ## Group blocking, measured paired
@@ -470,7 +470,7 @@ It is not: blocking 4, 8 or 16 column blocks per pass measures 1.02-1.05x *worse
 at 2^18 and 2^20, and neutral at 2^16 (paired A/B, same build, only the knob
 varying). The difference from stage A is that stage B's stride is constant and
 short enough for the hardware prefetcher, and the wider buffers cost L2 for
-nothing. Default 1; mechanism kept behind `APOGEE_BBLK`.
+nothing. Default 1; mechanism kept behind `MF_BBLK`.
 
 Ablation of the large sizes with the current build, windowed binmax, B=16:
 
@@ -500,7 +500,7 @@ measured at 16 lanes and inherited by the 8-lane build untested.  Sweeping them:
 The sweep was worth running anyway, because it exposed two real bugs:
 
 1. **The matched filter recomputed the split** instead of asking the plan.  The
-   two agreed by luck.  Forcing a different split through `APOGEE_N1` made
+   two agreed by luck.  Forcing a different split through `MF_N1` made
    group-major storage disagree with what stage A walked, and `test_mf` went from
    0 to 6098 failures.  The plan now reports its split via `ap_plan_split`.
 2. **`ap_create` accepted splits the element transform cannot compute.**

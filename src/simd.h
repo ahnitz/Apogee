@@ -1,5 +1,5 @@
 /* Width abstraction so one source compiles to both AVX-512 (W=16) and AVX2 (W=8).
-   Only the operations apogee's width-generic back end actually needs. */
+   Only the operations matchedfilter's width-generic back end actually needs. */
 #ifndef AP_SIMD_H
 #define AP_SIMD_H
 #include <immintrin.h>

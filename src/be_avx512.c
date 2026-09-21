@@ -1,11 +1,11 @@
-/* apogee: the specialised AVX-512 back end.
+/* matchedfilter: the specialised AVX-512 back end.
    N=1024 uses the L1-resident four-step kernel; 2^12..2^16 the balanced split;
    2^17..2^20 the traffic-minimising path with a 24-bit quantised intermediate. */
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <immintrin.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 #include "internal.h"
 #include "backend.h"
 

@@ -2,12 +2,12 @@
 #define AP_TRANSFORM_H
 /* Internal transform API.
  *
- * apogee's interface is the matched filter; this is the machinery under it.  It
- * is a separate header rather than part of apogee.h because a caller has no
+ * matchedfilter's interface is the matched filter; this is the machinery under it.  It
+ * is a separate header rather than part of matchedfilter.h because a caller has no
  * reason to hold a transform plan - the MatchedFilter is the plan - and every
  * symbol here is used only by src/matchfilt.c, the tests and the benchmarks. */
 #include <stddef.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 
 typedef struct ap_plan ap_plan;
 

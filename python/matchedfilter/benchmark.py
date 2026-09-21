@@ -1,4 +1,4 @@
-"""Self-contained benchmark: `python -m apogee.benchmark`
+"""Self-contained benchmark: `python -m matchedfilter.benchmark`
 
 Needs nothing but numpy, so it runs anywhere the wheel installs.  It compares
 against numpy doing the same matched filter - product, inverse transform, then a
@@ -6,12 +6,12 @@ per-bin peak scan - which is the work any implementation has to do, and checks
 the answers agree before reporting any timing.
 
 numpy's FFT is not a fair proxy for MKL or FFTW; it is a floor, not a rival.
-What this is for is telling you whether apogee works and is fast *on your
+What this is for is telling you whether matchedfilter works and is fast *on your
 machine*, since the numbers in the README come from one developer box.
 
-    python -m apogee.benchmark                 # default sweep
-    python -m apogee.benchmark --n 4096 16384  # specific lengths
-    python -m apogee.benchmark --data 8 --templates 32 --reps 5
+    python -m matchedfilter.benchmark                 # default sweep
+    python -m matchedfilter.benchmark --n 4096 16384  # specific lengths
+    python -m matchedfilter.benchmark --data 8 --templates 32 --reps 5
 """
 import argparse
 import platform
@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-import apogee
+import matchedfilter
 
 
 def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we):
@@ -56,7 +56,7 @@ def _one(n, nd, nt, binsize, window, reps, check):
     tspec = np.fft.fft(t, axis=-1).astype(np.complex64)
 
     ws, we = window
-    mf = apogee.MatchedFilter(n, nd, nt)
+    mf = matchedfilter.MatchedFilter(n, nd, nt)
     mf.set_data(dspec)
     mf.set_templates(tspec)
 
@@ -125,11 +125,11 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     h /= np.sqrt((np.abs(h) ** 2).sum(axis=1, keepdims=True))
     d = (rng.standard_normal((nd, n)) + 1j * rng.standard_normal((nd, n))).astype(np.complex64)
 
-    flat = apogee.MatchedFilter(n, nd, nt)
+    flat = matchedfilter.MatchedFilter(n, nd, nt)
     flat.set_data(d)
     flat.set_templates(h)
 
-    hf = apogee.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd,
+    hf = matchedfilter.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd,
                                    band=max(256, n // 8), oversample=2, taps=8)
     hf.set_reference(power)
     hf.set_data(d)
@@ -169,15 +169,15 @@ def main(argv=None):
                     help="false-dismissal budget for the gate")
     a = ap.parse_args(argv)
 
-    print(f"apogee benchmark   {platform.processor() or platform.machine()}")
+    print(f"matchedfilter benchmark   {platform.processor() or platform.machine()}")
     print(f"python {sys.version.split()[0]}   numpy {np.__version__}")
     print(f"{a.data} data x {a.templates} templates = {a.data * a.templates} pairs, "
           f"{a.window:.0%} window\n")
-    print(f"  {'n':>8} {'apogee':>12} {'numpy':>12} {'speedup':>9}   check")
+    print(f"  {'n':>8} {'matchedfilter':>12} {'numpy':>12} {'speedup':>9}   check")
 
     fails = 0
     for n in a.n:
-        if not apogee.MatchedFilter:
+        if not matchedfilter.MatchedFilter:
             break
         bs = a.binsize or min(n, 1024)
         if a.window >= 1.0:

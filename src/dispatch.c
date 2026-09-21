@@ -1,9 +1,9 @@
-/* apogee: public API and runtime ISA selection.
+/* matchedfilter: public API and runtime ISA selection.
  *
  * Compiled for the baseline ISA only - it must be safe to execute before we know
  * what the CPU supports, so nothing here may use AVX intrinsics.
  *
- * Set APOGEE_ISA to force a back end for testing:
+ * Set MF_ISA to force a back end for testing:
  *   avx512       specialised AVX-512 paths (default when supported)
  *   avx2         width-generic balanced split at 8 lanes
  *   balanced512  the same generic source at 16 lanes (cross-check)
@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <math.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 #include "transform.h"
 #include "backend.h"
 
@@ -28,12 +28,12 @@ static int have_avx2(void){
 }
 
 static const ap_backend *pick(void){
-  const char *e = getenv("APOGEE_ISA");
+  const char *e = getenv("MF_ISA");
   if(e && *e){
     if(!strcmp(e,"avx512"))      return have_avx512() ? &ap_be_avx512 : NULL;
     if(!strcmp(e,"avx2"))        return have_avx2()   ? &ap_be_bal8   : NULL;
     if(!strcmp(e,"balanced512")) return have_avx512() ? &ap_be_bal16  : NULL;
-    fprintf(stderr,"apogee: unknown APOGEE_ISA=\"%s\" (avx512|avx2|balanced512)\n",e);
+    fprintf(stderr,"matchedfilter: unknown MF_ISA=\"%s\" (avx512|avx2|balanced512)\n",e);
     return NULL;
   }
   if(have_avx512()) return &ap_be_avx512;

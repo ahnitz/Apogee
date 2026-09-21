@@ -1,4 +1,4 @@
-/* apogee: batched matched filter.
+/* matchedfilter: batched matched filter.
  *
  * D data segments x T templates, reporting the binned maximum of each pair's
  * correlation.  See docs/design.md for where the time goes and which
@@ -12,7 +12,7 @@
 #include <string.h>
 #include <math.h>
 #include <immintrin.h>
-#include "apogee.h"
+#include "matchedfilter.h"
 #include "transform.h"
 
 /* Split-layout spectrum product.  Templates are stored already conjugated, so
@@ -81,7 +81,7 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
   /* Ask the plan for its split rather than recomputing it.  Deriving it
      independently means the two disagree the moment the heuristic changes, and
      group-major storage is only correct if they agree - forcing a different
-     split through APOGEE_N1 used to produce silently wrong answers. */
+     split through MF_N1 used to produce silently wrong answers. */
   { p->n1=p->n2=0;
     if(!ap_plan_split(p->fft,&p->n1,&p->n2)){ p->n1=p->n2=0; }
     p->w = ap_lane_width();
@@ -91,13 +91,13 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
        hard-coding n!=1024 silently cost the AVX2 path its fused product. */
     p->gmajor = (p->w>0 && p->n1>0 && p->n1%p->w==0
                  && (size_t)p->n1*p->n2==n && ap_has_fused_prod(p->fft)) ? 1 : 0;
-    const char *e=getenv("APOGEE_GMAJOR"); if(e && !atoi(e)) p->gmajor=0;
+    const char *e=getenv("MF_GMAJOR"); if(e && !atoi(e)) p->gmajor=0;
   }
   /* Read once here, not inside ap_mf_run.  The hierarchical filter calls
      ap_mf_run once per pair rather than once per batch, which turned a
      per-batch getenv into a per-pair one. */
   p->tile = 8;
-  { const char *e=getenv("APOGEE_MFTILE"); if(e){ int v=atoi(e); if(v>0) p->tile=v; } }
+  { const char *e=getenv("MF_MFTILE"); if(e){ int v=atoi(e); if(v>0) p->tile=v; } }
   p->dre=aligned_alloc(64,(size_t)ndata*n*sizeof(float));
   p->dim=aligned_alloc(64,(size_t)ndata*n*sizeof(float));
   p->tre=aligned_alloc(64,(size_t)ntmpl*n*sizeof(float));

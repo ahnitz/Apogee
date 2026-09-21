@@ -6,7 +6,7 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "apogee"
+name = "matchedfilter"
 version = "0.1.0"
 description = "Single-threaded batched matched filter with peak-only output"
 readme = "README.md"
@@ -27,16 +27,16 @@ test = ["pytest"]
 bench = ["numpy>=1.20"]
 
 [project.urls]
-Homepage = "https://github.com/ahnitz/peak-fft"
+Homepage = "https://github.com/ahnitz/matchedfilter"
 
 [tool.setuptools]
 package-dir = {"" = "python"}
-packages = ["apogee"]
+packages = ["matchedfilter"]
 
 # The C header ships inside the package.  Direct C use is not the priority, but
-# allowing it costs nothing, so apogee.include_dir() points a compiler at it.
+# allowing it costs nothing, so matchedfilter.include_dir() points a compiler at it.
 [tool.setuptools.package-data]
-apogee = ["*.h"]
+matchedfilter = ["*.h"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
