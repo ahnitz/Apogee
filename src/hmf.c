@@ -84,6 +84,7 @@ struct ap_hmf_plan {
   /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
   unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
+  FILE *dump;          /* MF_HMF_DUMP: per-pair (even, combined, gate) */
   long npre, ninterp, nskip;   /* diagnostics: pre-gate passes, interpolations run */
   float lastgate;
   float fs_snr;        /* explicit first-stage SNR; <=0 means derive it */
@@ -189,9 +190,17 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->cd||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf||!p->firebuf){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
-  p->even_margin=0.999f;
+  /* Safety factor on the even gate, over and above the measured graw1.
+     The realisation model is a power-law reference filtered by a matched
+     template; the ratio filter's product is shaped differently, and on 12
+     captured pycbc segments the real even/combined ratio reached 0.809 where
+     the model says 0.897.  Swept against those captures over 811 triggers:
+     0.92 and below lose nothing, 0.95 loses one (1.2e-3, already past the
+     1e-3 budget) and 1.00 loses sixteen. */
+  p->even_margin=0.92f;
   { const char *e=getenv("MF_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
   p->prof = getenv("MF_HMF_PROF") ? 1 : 0;
+  { const char *e=getenv("MF_HMF_DUMP"); p->dump = e ? fopen(e,"wb") : NULL; }
   return p;
 }
 
@@ -209,6 +218,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->full_fft) ap_destroy(p->full_fft);
   free(p->fwd);free(p->spec);
   free(p->dspec);free(p->dready);free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
+  if(p->dump) fclose(p->dump);
   free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);free(p->shift2);
   free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);free(p->firebuf);
   free(p);
@@ -290,8 +300,19 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
    * once per reference, not per template.
    */
   {
+    /* Sample size and quantile.  The original took the second smallest of 128,
+       which is one unlucky draw away from anything: on a real captured search
+       it returned 0.74 where no pair in 27000 went below 0.81, and the even
+       gate then opened on 70% of pairs.  A quantile needs enough samples to be
+       a quantile. */
     const int K=128;
-    float *rat=malloc(K*sizeof(float));
+    /* Noise levels to sweep.  The pairs this gate decides are the marginal
+       ones, where the combined maximum is barely at the gate and may be a
+       noise peak rather than the signal.  Simulating at one high SNR only
+       ever reproduces the noiseless scallop, which is what the even gate is
+       NOT allowed to assume. */
+    static const double nzlev[4]={0.35,0.8,1.6,3.2};
+    float *rat=malloc((size_t)K*sizeof(float));
     unsigned long long rs=0x9E3779B97F4A7C15ULL;
     for(int r=0;r<K;r++){
       for(size_t k=0;k<m;k++){
@@ -302,14 +323,22 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
         double u2=(rs>>11)*(1.0/9007199254740992.0);
         double g1=sqrt(-2*log(u1))*cos(2*M_PI*u2);
         double g2=sqrt(-2*log(u1))*sin(2*M_PI*u2);
-        double amp=sqrt(power[k]>0?power[k]:0);
+        /* The product spectrum, not the data spectrum.  D ~ amp*(signal +
+           noise) and T ~ amp, so D*conj(T) carries amp^2 = power[k].  Shaping
+           these realisations by amp instead made the spectrum flatter than the
+           real one, which narrows the correlation peak and deepens the scallop
+           between even samples: it returned 0.74 where the same reference's
+           noiseless scallop is 0.90 and no pair in a 27000-pair captured
+           search went below 0.81. */
+        double amp=power[k]>0?power[k]:0;
         /* Fractional lag: coarse index j is full lag j*R, so an integer index
            only ever lands on the even grid -- exactly the blind spot being
            measured.  Step in quarters so odd and inter-sample lags are covered. */
         double L=0.25*(double)(r%32);
         double ph=2.0*M_PI*(double)k*L/(double)m;
-        p->prod[2*k]  =(float)(amp*(cos(ph)+0.35*g1));
-        p->prod[2*k+1]=(float)(amp*(sin(ph)+0.35*g2));
+        const double nz=nzlev[(r/32)&3];
+        p->prod[2*k]  =(float)(amp*(cos(ph)+nz*g1));
+        p->prod[2*k+1]=(float)(amp*(sin(ph)+nz*g2));
       }
       ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
       for(size_t k=0;k<m;k++){
@@ -334,6 +363,9 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
       for(int j=i+1;j<K;j++)
         if(rat[j]<rat[i]){ float t=rat[i]; rat[i]=rat[j]; rat[j]=t; }
     float q=rat[1];
+    if(getenv("MF_HMF_DIAG"))
+      fprintf(stderr,"    [diag] graw1: scallop %.4f  realisations %.4f -> %.4f\n",
+              p->ref_graw1, q, q<p->ref_graw1?q:p->ref_graw1);
     if(q<p->ref_graw1) p->ref_graw1=q;
     free(rat);
   }
@@ -631,6 +663,8 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                           cstart,cend)<0) return -1;
       if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
+      if(p->dump){ float rec[3]={ce.magnitude,bestmag,gate};
+                   fwrite(rec,sizeof rec,1,p->dump); }
       if(getenv("MF_HMF_TRACE") && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
                 "coarse max=%.3f (even %.3f odd %.3f)\n",
