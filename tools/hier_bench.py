@@ -20,9 +20,16 @@ It reports three things together, because none of them means much alone:
             one-sided guarantee and is the thing to watch.
   profile   where the time went, with MF_HMF_PROF
 
-    python tools/hier_bench.py                     # snr 5.0, the hard case
-    python tools/hier_bench.py --threshold 5.5 --band 256
-    python tools/hier_bench.py --quick             # smaller, for a fast loop
+    python tools/hier_bench.py --fixture hier-00.npz     # a real captured call
+    python tools/hier_bench.py                          # synthetic, snr 5.0
+    python tools/hier_bench.py --quick                  # smaller, fast loop
+
+A fixture is the better test by a wide margin: it is the exact input
+pycbc_inspiral_fir handed the library, together with the output it got back,
+so nothing about the data, the bank or the normalisation has to be guessed --
+and every one of those guesses has been wrong here at least once.  Capture one
+with MF_CAPTURE=<dir> on a pycbc_inspiral_fir run using
+--ratio-filter-engine matchedfilter-hierarchical.
 """
 import argparse
 import os
@@ -153,6 +160,97 @@ def flat_reference(mf, n, h, series, st, ws, we, threshold):
     return idx, mag, (time.perf_counter() - t0) * 1e3
 
 
+def replay(mf, path, reps, a):
+    """Re-run a captured pycbc call and check it against the captured output.
+
+    band / oversample / first stage can be overridden, which is the point: the
+    capture fixes the data, the bank and the thresholds, so a sweep over the
+    gate's configuration is a clean experiment with a pass/fail attached.
+    """
+    z = np.load(path)
+    n = int(z["n_fft"])
+    thr = float(z["threshold"])
+    band = a.band or int(z["band"])
+    fs = a.first_stage or float(z["first_stage"])
+    nb = int(z["nbatch"])
+    series = z["series"]
+    st, ws, we = (z["starts"].astype(np.uintp), z["win_start"].astype(np.uintp),
+                  z["win_end"].astype(np.uintp))
+
+    p = mf.HierarchicalFilter(n, ndata=1, ntemplates=nb, snr=thr,
+                              fd=float(z["fd"]),
+                              band=band or None,
+                              oversample=a.oversample if band else None,
+                              taps=a.filter_taps if band else None)
+    if len(z["reference"]):
+        p.set_reference(z["reference"])
+    p.set_templates(z["templates"])
+    if fs > 0:
+        p.set_first_stage(fs)
+
+    best = float("inf")
+    for _ in range(reps + 1):
+        t0 = time.perf_counter()
+        gi, gv, _ = p.run_series(series, st, ws, we, binsize=n,
+                                 threshold=thr, raw=True)
+        best = min(best, time.perf_counter() - t0)
+    gi = np.array(gi[:, :, 0])
+    gv = np.array(gv[:, :, 0])
+
+    # What the flat filter costs on the same blocks, for the speedup.
+    f = mf.MatchedFilter(n, 1, nb)
+    f.set_templates(z["templates"])
+    buf = np.zeros(n, np.complex64)
+    t0 = time.perf_counter()
+    for b, s0 in enumerate(z["starts"]):
+        have = min(n, max(0, len(series) - int(s0)))
+        buf[:have] = series[int(s0):int(s0) + have]
+        buf[have:] = 0
+        f.set_data((np.fft.fft(buf) / n).astype(np.complex64)[None, :])
+        f.run(binsize=n, threshold=thr,
+              window=(int(ws[b]), int(we[b])), raw=True)
+    flat_ms = (time.perf_counter() - t0) * 1e3
+
+    ci, cv = z["index"], z["value"]
+    same = (gi >= 0) == (ci >= 0)
+    both = (gi >= 0) & (ci >= 0)
+    moved = both & (gi != ci)
+    dv = (np.abs(gv[both] - cv[both]) / np.maximum(np.abs(cv[both]), 1e-30)
+          if both.any() else np.zeros(1))
+
+    print("matchedfilter %s  target=%s" % (mf.__version__, mf.backend()))
+    print("captured from pycbc_inspiral_fir: %s" % os.path.basename(path))
+    print("n=%d  threshold=%.2f  band=%d bins (%.0f Hz)  first stage %s  fd=%g"
+          % (n, thr, band, float(z["band_hz"]),
+             ("%.2f" % fs) if fs > 0 else "derived", float(z["fd"])))
+    print("%d blocks x %d templates = %d pairs, band/oversample/taps %s\n"
+          % (len(st), nb, len(st) * nb, p.config))
+    print("  %-24s %10s" % ("flat filter", "%.2f ms" % flat_ms))
+    print("  %-24s %10s   %.2fx" % ("hierarchical", "%.2f ms" % (best * 1e3),
+                                    flat_ms / (best * 1e3)))
+    print("  %-24s %10s" % ("triggered", "%.2f%%" % (100 * p.trigger_rate)))
+    print("  %-24s %10d" % ("triggers pycbc got", int((ci >= 0).sum())))
+
+    bad = []
+    if not same.all():
+        bad.append("%d pairs disagree on whether there is a trigger"
+                   % int((~same).sum()))
+    if moved.any():
+        bad.append("%d triggers at a different lag" % int(moved.sum()))
+    if dv.max() > 1e-5:
+        bad.append("SNR differs by %.2e, beyond fp32" % dv.max())
+    if (ci >= 0).sum() == 0:
+        bad.append("the capture holds no triggers, so nothing is proved")
+    if bad:
+        print("\n  proof: *** FAILED ***")
+        for b in bad:
+            print("     " + b)
+        return 1
+    print("\n  proof: all %d triggers reproduced, same lags, SNR within %.1e"
+          % (int((ci >= 0).sum()), dv.max()))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -179,6 +277,8 @@ def main(argv=None):
     ap.add_argument("--quick", action="store_true",
                     help="a quarter the series, for a fast edit loop")
     ap.add_argument("--isa", default="", help="force one SIMD target")
+    ap.add_argument("--fixture", default="",
+                    help="replay a call captured from pycbc_inspiral_fir")
     ap.add_argument("--no-profile", action="store_true")
     a = ap.parse_args(argv)
     if a.quick:
@@ -190,6 +290,12 @@ def main(argv=None):
     import matchedfilter as mf
     if a.isa:
         mf.set_target(a.isa)
+
+    if a.fixture:
+        rc = replay(mf, a.fixture, a.reps, a)
+        if not a.no_profile:
+            sys.stdout.flush()
+        return rc
 
     rng = np.random.default_rng(11)
     power, h, series = dataset(mf, a.n, a.templates, a.series, a.inject,
