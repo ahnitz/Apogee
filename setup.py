@@ -9,8 +9,23 @@ and still select a working back end at runtime.  setuptools has no notion of
 per-file flags, so the groups are compiled here and linked together.
 """
 import os
+import platform
+import sys
+
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
+
+# The kernels are x86 SIMD intrinsics.  There is no portable fallback, so fail
+# here with something a reader can act on rather than 200 lines of "unknown
+# type name '__m512'" from the compiler.  pip only reaches this if it fell back
+# to the sdist, which means no wheel matched the platform.
+_MACHINE = platform.machine().lower()
+if _MACHINE not in ("x86_64", "amd64"):
+    sys.exit(
+        "matchedfilter only builds on x86-64 (found %r).\n"
+        "The kernels are AVX2/AVX-512 intrinsics with no portable fallback.\n"
+        "Support for other architectures is not implemented." % platform.machine()
+    )
 
 BASE = ["-O3", "-fno-math-errno", "-std=gnu11"]
 AVX512 = ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]

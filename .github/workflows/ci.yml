@@ -95,21 +95,24 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
   wheel:
+    # The same cibuildwheel path release.yml uses, on one interpreter so it
+    # stays a few minutes rather than twenty.  A wheel that only builds on
+    # release day is a wheel nobody has tested.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: python -m pip install --upgrade pip build && python -m build --wheel
+      - uses: pypa/cibuildwheel@v2.21.3
+        env:
+          CIBW_BUILD: cp312-manylinux_x86_64
 
       - name: The shipped header must compile on its own
         run: |
-          python -m pip install dist/*.whl
+          python -m pip install wheelhouse/*.whl
           printf '#include "matchedfilter.h"\nint main(void){ return ap_supported(1024) ? 0 : 1; }\n' > /tmp/hdr.c
           cc -I"$(python -c 'import matchedfilter; print(matchedfilter.include_dir())')" -fsyntax-only /tmp/hdr.c
 
       - uses: actions/upload-artifact@v4
         with:
           name: wheel
-          path: dist/*.whl
+          path: wheelhouse/*.whl
           if-no-files-found: error

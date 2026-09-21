@@ -28,10 +28,17 @@ peaks["index"], peaks["value"], peaks["magnitude"]
 ## Install
 
 ```bash
-pip install git+https://github.com/ahnitz/matchedfilter
+pip install --pre matchedfilter
 ```
 
-Needs numpy and a C compiler. x86-64 with AVX2; AVX-512 is used when present.
+`--pre` because this is an alpha release. Wheels are built for CPython 3.9 to
+3.13 on manylinux x86-64; anywhere else pip falls back to the source
+distribution, which needs numpy and a C compiler.
+
+**x86-64 only for now.** The kernels are AVX2 and AVX-512 intrinsics with no
+portable fallback, so a build on any other architecture stops with an error
+rather than producing a slow one. AVX-512 is used when the CPU has it and AVX2
+otherwise, decided at runtime.
 
 ## How it works
 
@@ -121,7 +128,8 @@ falls toward 1x on data where most pairs trigger.
   individual realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
   in [docs/hierarchical.md](docs/hierarchical.md).
 - Single-threaded by design. Parallelism is the caller's to arrange.
-- x86-64 only.
+- x86-64 Linux only, as above. Other architectures are not implemented rather
+  than merely untested.
 
 ## Development
 

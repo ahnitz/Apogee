@@ -1,0 +1,11 @@
+# setuptools only guesses at Python files, so every C source the build needs
+# has to be named here.  Without this the sdist builds fine and then fails to
+# install: the extension sources are simply absent.
+include README.md LICENSE
+recursive-include src *.c *.h *.py
+recursive-include python *.c *.h
+recursive-include tests *.c *.h *.py
+recursive-include tools *.py
+recursive-include docs *.md
+prune build
+global-exclude *.pyc *.so *.o __pycache__

@@ -24,10 +24,16 @@ Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 import numpy as np
 from . import _core
 
+try:
+    from importlib.metadata import version as _version, PackageNotFoundError
+    __version__ = _version("matchedfilter")
+except (ImportError, PackageNotFoundError):  # running from a source tree
+    __version__ = "0.0.0.dev0"
+
 #: dtype of the arrays returned by :meth:`MatchedFilter.run`.
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
 
-__all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE"]
+__all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "__version__"]
 
 
 def _as_c64(a, n, what):

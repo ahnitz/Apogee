@@ -169,7 +169,8 @@ def main(argv=None):
                     help="false-dismissal budget for the gate")
     a = ap.parse_args(argv)
 
-    print(f"matchedfilter benchmark   {platform.processor() or platform.machine()}")
+    print(f"matchedfilter {mf.__version__}   "
+          f"{platform.processor() or platform.machine()}")
     print(f"python {sys.version.split()[0]}   numpy {np.__version__}")
     print(f"{a.data} data x {a.templates} templates = {a.data * a.templates} pairs, "
           f"{a.window:.0%} window\n")

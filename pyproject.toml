@@ -7,15 +7,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matchedfilter"
-version = "0.1.0"
-description = "Single-threaded batched matched filter with peak-only output"
+version = "0.1.0a1"
+description = "Fast single-threaded batched matched filter with peak-only output (x86-64)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
+license-files = ["LICENSE"]
 dependencies = ["numpy>=1.20"]
 keywords = ["matched-filter", "correlation", "fft", "avx512", "signal-processing"]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Operating System :: POSIX :: Linux",
+  "Environment :: Console",
   "Intended Audience :: Science/Research",
   "Programming Language :: C",
   "Programming Language :: Python :: 3",
@@ -41,3 +44,21 @@ matchedfilter = ["*.h"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+
+# The extension is x86-specific: some objects are compiled with AVX-512 flags
+# and the dispatcher picks a back end at runtime, so there is nothing to build
+# for arm64 or i686.
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_i686 *_i686 pp*"
+archs = ["x86_64"]
+build-frontend = "build"
+test-requires = "pytest"
+# Run from {package} so the tests import the installed wheel rather than the
+# source tree, and so test_internals.py can still find src/ to compile against.
+test-command = "python -m pytest {package}/tests -q -rs"
+
+[tool.cibuildwheel.linux]
+# manylinux2014's default toolchain is too old for the AVX-512 intrinsics the
+# kernels use; the _2_28 image ships a compiler that has them.
+manylinux-x86_64-image = "manylinux_2_28"

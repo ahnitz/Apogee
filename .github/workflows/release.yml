@@ -1,0 +1,89 @@
+name: Release
+
+# Publishes to PyPI when a GitHub release is published, and can be run by hand
+# against TestPyPI to rehearse without burning a version number.
+#
+# Authentication is PyPI Trusted Publishing (OIDC): GitHub mints a short-lived
+# token asserting this repo/workflow/environment, PyPI checks it against the
+# publisher registered at
+#   https://pypi.org/manage/account/publishing
+# and returns a scoped upload token.  No API token is stored in this repo.
+# The registration must name workflow "release.yml" and environment "pypi";
+# changing either here means changing it there too.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to upload"
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi, none]
+
+jobs:
+  wheels:
+    name: Wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v2.21.3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-wheels
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pipx run build --sdist
+
+      - name: The sdist must build and pass its own tests
+        # An sdist missing a source file still installs on a machine that has a
+        # stale build directory, so check it in a clean one.
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pip install dist/*.tar.gz
+          mkdir -p /tmp/sdist-check && cd /tmp/sdist-check
+          tar xf "$GITHUB_WORKSPACE"/dist/*.tar.gz --strip-components=1
+          python -m pytest tests -q -rs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [wheels, sdist]
+    if: github.event_name == 'release' || inputs.target != 'none'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ (github.event_name == 'release' || inputs.target == 'pypi') && 'pypi' || 'testpypi' }}
+    permissions:
+      id-token: write      # required to mint the OIDC token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: github.event_name == 'release' || inputs.target == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
