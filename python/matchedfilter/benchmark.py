@@ -25,8 +25,47 @@ import numpy as np
 import matchedfilter as mf
 
 
-def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we):
-    """Same algorithm, in numpy: product, inverse, per-bin argmax."""
+def reference_engines(n):
+    """FFT implementations to compare against, whichever are installed.
+
+    numpy is always present and is a floor rather than a rival.  FFTW is the
+    one worth beating, since it is what someone would otherwise reach for; it
+    is optional because pyfftw has no wheel everywhere, and a benchmark that
+    refuses to run is worse than one that reports less.
+
+    FFTW is driven through a planned pyfftw.FFTW object over pre-allocated
+    aligned buffers, not through pyfftw.interfaces.  The interfaces layer adds
+    per-call Python work that, at these sizes, made FFTW measure slower than
+    numpy -- an unfair comparison, and one that flattered this library.  The
+    plan is built with FFTW_MEASURE, which is what anyone timing FFTW would
+    do, and is built before anything is timed.
+    """
+    engines = [("numpy", np.fft.ifft)]
+    try:
+        import pyfftw
+        src = pyfftw.empty_aligned(n, dtype="complex128")
+        dst = pyfftw.empty_aligned(n, dtype="complex128")
+        plan = pyfftw.FFTW(src, dst, direction="FFTW_BACKWARD",
+                           flags=("FFTW_MEASURE",))
+
+        def fftw_ifft(x, _p=plan, _s=src, _d=dst, _n=float(n)):
+            _s[:] = x
+            _p()
+            return _d / _n          # FFTW's backward transform is unnormalised
+        engines.append(("fftw", fftw_ifft))
+    except Exception:
+        pass
+    try:
+        from scipy import fft as _sfft
+        engines.append(("scipy", _sfft.ifft))
+    except Exception:
+        pass
+    return engines
+
+
+def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we, ifft=None):
+    """Same algorithm, via `ifft`: product, inverse, per-bin argmax."""
+    ifft = ifft or np.fft.ifft
     nd, n = dspec.shape
     nt = tspec.shape[0]
     nb = -(-(we - ws) // binsize)
@@ -34,7 +73,7 @@ def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we):
     mag = np.empty((nd, nt, nb), dtype=np.float64)
     for d in range(nd):
         for t in range(nt):
-            z = np.fft.ifft(dspec[d] * np.conj(tspec[t])) * n
+            z = ifft(dspec[d] * np.conj(tspec[t])) * n
             m = np.abs(z[ws:we])
             pad = nb * binsize - m.size
             if pad:
@@ -85,15 +124,17 @@ def _one(n, nd, nt, binsize, window, reps, check):
         filt.run(binsize=binsize, threshold=thr, window=(ws, we))
         best = min(best, time.perf_counter() - t0)
 
-    npy = None
+    refs = {}
     if check:
-        t0 = time.perf_counter()
-        _numpy_matched_filter(dspec.astype(np.complex128), tspec.astype(np.complex128),
-                              binsize, thr, ws, we)
-        npy = time.perf_counter() - t0
+        dd, td = dspec.astype(np.complex128), tspec.astype(np.complex128)
+        for name, fn in reference_engines(dspec.shape[1]):
+            fn(dd[0])                     # warm, after planning
+            t0 = time.perf_counter()
+            _numpy_matched_filter(dd, td, binsize, thr, ws, we, ifft=fn)
+            refs[name] = (time.perf_counter() - t0) / (nd * nt) * 1e6
 
     pairs = nd * nt
-    return best / pairs * 1e6, (npy / pairs * 1e6 if npy else None), ok
+    return best / pairs * 1e6, refs, ok
 
 
 def _inspiral_power(n, frac=0.85, fmax_frac=0.125):
@@ -203,7 +244,12 @@ def main(argv=None):
     print(f"python {sys.version.split()[0]}   numpy {np.__version__}")
     print(f"{a.data} data x {a.templates} templates = {a.data * a.templates} pairs, "
           f"{a.window:.0%} window\n")
-    print(f"  {'n':>8} {'matchedfilter':>12} {'numpy':>12} {'speedup':>9}   check")
+    engines = [e for e, _ in reference_engines(max(a.n))]
+    print("  " + f"{'n':>8}" + f"{'matchedfilter':>14}"
+          + "".join(f"{e:>11}" for e in engines)
+          + "".join(f"{'vs ' + e:>9}" for e in engines) + "   check")
+    if "fftw" not in engines:
+        print("  (pyfftw not installed; install it for the comparison that matters)")
 
     fails = 0
     flat_rows = []
@@ -217,23 +263,30 @@ def main(argv=None):
             ws = int((1.0 - a.window) * 0.5 * n) & ~15
             we = ws + (int(a.window * n) & ~15)
         try:
-            mine, npy, ok = _one(n, a.data, a.templates, bs, (ws, we),
-                                 a.reps, not a.no_check)
+            mine, refs, ok = _one(n, a.data, a.templates, bs, (ws, we),
+                                  a.reps, not a.no_check)
         except ValueError as e:
             print(f"  {n:>8}   unsupported: {e}")
             continue
         if "FAILED" in ok:
             fails += 1
-        sp = f"{npy / mine:.1f}x" if npy else "-"
-        npys = f"{npy:.2f}" if npy else "-"
-        print(f"  {n:>8} {mine:>11.3f}µs {npys:>11}µs {sp:>9}   {ok}")
+        print("  " + f"{n:>8}" + f"{mine:>12.3f}µs"
+              + "".join(f"{refs[e]:>11.2f}" if e in refs else f"{'-':>11}"
+                        for e in engines)
+              + "".join(f"{refs[e] / mine:>8.1f}x" if e in refs else f"{'-':>9}"
+                        for e in engines) + f"   {ok}")
         flat_rows.append({"n": n, "data": a.data, "templates": a.templates,
-                          "us_per_pair": mine, "numpy_us_per_pair": npy,
+                          "us_per_pair": mine,
+                          "numpy_us_per_pair": refs.get("numpy"),
+                          "reference_us_per_pair": refs,
                           "checked": not a.no_check, "ok": "FAILED" not in ok})
 
     print("\nTimes are microseconds per (data, template) pair, best of "
-          f"{a.reps}.\nnumpy is a floor, not a rival - it is here so the "
-          "comparison runs anywhere.")
+          f"{a.reps}.\nnumpy is a floor rather than a rival; FFTW is the "
+          "comparison that means something.\nEvery reference computes the "
+          "whole correlation, while this computes only the binned\nmaxima and "
+          "may skip work that cannot produce one -- which is the point of the\n"
+          "library, but does mean it is not a like-for-like FFT comparison.")
 
     hier_rows = []
     if not a.no_hier:

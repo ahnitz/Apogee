@@ -431,20 +431,48 @@ def benchmarks_section(runs):
         o.append(line_chart(rel, "Cost relative to linux-x86_64",
                             "transform length n", "ratio (1 = same)"))
 
+    engines = sorted({e for r in runs for f in r.get("flat", [])
+                      for e in (f.get("reference_us_per_pair") or {})})
+    if engines:
+        o.append("<h4>Against other FFT implementations</h4>")
+        o.append("<p>FFTW is the comparison that means something; numpy is a "
+                 "floor that runs everywhere. Every reference computes the whole "
+                 "correlation, while this computes only the binned maxima and may "
+                 "skip work that cannot produce one, so it is not a like-for-like "
+                 "FFT comparison.</p>")
+        for r in runs:
+            pts = [(f["n"], f["us_per_pair"]) for f in r.get("flat", [])
+                   if (f.get("reference_us_per_pair") or {})]
+            if not pts:
+                continue
+            ser = [("matchedfilter", pts)]
+            for e in engines:
+                q = [(f["n"], f["reference_us_per_pair"][e])
+                     for f in r.get("flat", [])
+                     if e in (f.get("reference_us_per_pair") or {})]
+                if q:
+                    ser.append((e, q))
+            if len(ser) > 1:
+                o.append(line_chart(ser, "%s: cost per pair" % r["host"]["label"],
+                                    "transform length n", "microseconds per pair"))
+
     rows = []
     for r in runs:
         for f in r.get("flat", []):
-            sp = ("%.1fx" % (f["numpy_us_per_pair"] / f["us_per_pair"])
-                  if f.get("numpy_us_per_pair") else "-")
-            rows.append([html.escape(r["host"]["label"]), f["n"],
-                         "%dx%d" % (f["data"], f["templates"]),
-                         "%.3f" % f["us_per_pair"],
-                         "%.2f" % f["numpy_us_per_pair"] if f.get("numpy_us_per_pair") else "-",
-                         sp, "yes" if f.get("ok") else "NO"])
+            refs = f.get("reference_us_per_pair") or {}
+            row = [html.escape(r["host"]["label"]), f["n"],
+                   "%dx%d" % (f["data"], f["templates"]), "%.3f" % f["us_per_pair"]]
+            for e in engines:
+                row.append("%.1f" % refs[e] if e in refs else "-")
+            for e in engines:
+                row.append("<b>%.1fx</b>" % (refs[e] / f["us_per_pair"]) if e in refs else "-")
+            row.append("yes" if f.get("ok") else "NO")
+            rows.append(row)
     if rows:
+        hdr = (["runner", "n", "shape", "us/pair"] + ["%s us" % e for e in engines]
+               + ["vs %s" % e for e in engines] + ["matches numpy"])
         o.append("<details><summary>All matched-filter results (%d rows)</summary>%s</details>"
-                 % (len(rows), table(["runner", "n", "shape", "us/pair",
-                                      "numpy us/pair", "vs numpy", "matches numpy"], rows)))
+                 % (len(rows), table(hdr, rows)))
     return "".join(o)
 
 

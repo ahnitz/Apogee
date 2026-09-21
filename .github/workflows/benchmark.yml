@@ -55,7 +55,14 @@ jobs:
           cc --version | head -1
 
       - name: Install
-        run: python -m pip install --upgrade pip && python -m pip install .[test]
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[test]
+          # FFTW is the reference worth comparing against, but pyfftw has no
+          # wheel on every platform here.  Optional by design: the benchmark
+          # reports whichever references it finds.
+          python -m pip install pyfftw scipy || \
+            echo "::notice::pyfftw/scipy unavailable; comparing against numpy only"
 
       - name: Test and benchmark every back end on this host
         # The suite gates the benchmark: a timing of a wrong answer is
