@@ -85,9 +85,21 @@ if IS_X86:
         ("src/be_avx512.c",  AVX512, []),
         ("src/balanced.c",   AVX512, []),                   # generic source, 16 lanes
         ("src/balanced.c",   AVX2,   [("AP_W", "8")]),      # generic source, 8 lanes
-        # Same source a third time, compiler-vectorised.  Built on x86 too so
-        # the two can be compared inside one process.
-        ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1")]),
+        # Same source a third time, compiler-vectorised, and deliberately
+        # built at BASELINE on x86 with no -m flags.
+        #
+        # This is the back end the dispatcher falls through to when the CPU
+        # has neither AVX-512 nor AVX2+FMA -- a pre-Haswell Xeon, say.  Built
+        # with -mavx2 -mfma it contained 1340 FMA instructions, so the safe
+        # fallback was made of exactly the instructions the fallback case
+        # lacks, and would have died with SIGILL on the first transform.
+        # Nothing caught it because every machine in CI has AVX2.
+        ("src/balanced.c",   [],     [("AP_W", "8"), ("AP_PORTABLE", "1"),
+                                      ("AP_PORT_LEVEL", "0")]),
+        # ...and again with AVX2, so a capable CPU is not stuck on the
+        # fallback build.  The dispatcher chooses between them at run time.
+        ("src/balanced.c",   AVX2,   [("AP_W", "8"), ("AP_PORTABLE", "1"),
+                                      ("AP_PORT_LEVEL", "2")]),
         ("src/matchfilt.c",  BASE,   [X86_KERNELS]),
         ("src/hmf.c",        BASE,   []),
         ("src/dispatch.c",   [],     [X86_KERNELS]),      # baseline only
@@ -97,7 +109,8 @@ else:
     # No -m flags: the vector extensions lower to whatever the target has
     # (NEON on arm64), and naming an ISA here would only restrict it.
     GROUPS = [
-        ("src/balanced.c",   [], [("AP_W", "8"), ("AP_PORTABLE", "1")]),
+        ("src/balanced.c",   [], [("AP_W", "8"), ("AP_PORTABLE", "1"),
+                                  ("AP_PORT_LEVEL", "0")]),
         ("src/matchfilt.c",  BASE, [X86_KERNELS]),
         ("src/hmf.c",        BASE, []),
         ("src/dispatch.c",   [],   [X86_KERNELS]),

@@ -27,8 +27,11 @@ UNITS = [
     ("be_avx512.c",  ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]),
     ("balanced.c",   ["-DAP_W=16", "-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]),
     ("balanced.c",   ["-DAP_W=8", "-mavx2", "-mfma"]),
-    # the compiler-vectorised build of the same source; dispatch.c references it
-    ("balanced.c",   ["-DAP_W=8", "-DAP_PORTABLE", "-mavx2", "-mfma"]),
+    # Both compiler-vectorised builds; dispatch.c references each by name.
+    # Level 0 is baseline so it runs on a CPU without AVX2, level 2 uses it.
+    ("balanced.c",   ["-DAP_W=8", "-DAP_PORTABLE", "-DAP_PORT_LEVEL=0"]),
+    ("balanced.c",   ["-DAP_W=8", "-DAP_PORTABLE", "-DAP_PORT_LEVEL=2",
+                      "-mavx2", "-mfma"]),
     ("dispatch.c",   []),
     ("matchfilt.c",  []),
     ("hmf.c",        []),

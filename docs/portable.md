@@ -9,6 +9,32 @@ It is built on x86 as well, so both back ends live in one binary and can be
 compared inside a single process. `MF_ISA=portable` selects it; on non-x86 it
 is the only one there is.
 
+## Two builds, chosen at run time
+
+On x86 the portable source is compiled twice: at **baseline** with no `-m`
+flags, and again with `-mavx2 -mfma`. The dispatcher picks the best one the
+CPU supports, and `MF_ISA=portable0` forces the baseline build.
+
+This exists because of a bug worth recording. The portable back end is what
+the dispatcher falls through to when a CPU has neither AVX-512 nor AVX2+FMA --
+a pre-Haswell Xeon, for instance. It was compiled with `-mavx2 -mfma`, so that
+fallback contained 1340 FMA instructions and 12719 ymm operands: it was built
+out of precisely the instructions the fallback case lacks, and would have died
+with SIGILL on the first transform. Nothing caught it because every machine in
+CI and every development machine here has AVX2.
+
+The two builds differ by more than the flags suggest, which is why keeping
+both matters rather than just shipping the safe one:
+
+| build | instructions | FMA | ymm | cost vs AVX2 kernels |
+|---|---:|---:|---:|---:|
+| level 2 (`-mavx2 -mfma`) | 22214 | 1340 | 12719 | 1.18x |
+| level 0 (baseline) | 52192 | 0 | 0 | 6.08x |
+
+The baseline build is 2.4x the instruction count and about 6x the runtime. It
+is a genuine fallback, not a second choice -- but it runs where nothing else
+would.
+
 **Status: close, not yet at parity.** The bar is no measurable loss against the
 AVX2 intrinsics at the same width. The remaining gap is 7-16% and is diffuse:
 both phases now sit near 1.1x rather than one of them carrying it.

@@ -8,7 +8,9 @@
  *   avx2         width-generic balanced split at 8 lanes
  *   balanced512  the same generic source at 16 lanes (cross-check)
  *   portable     the same source again, compiler-vectorised rather than
- *                hand-written; the only back end on non-x86
+ *                hand-written; the best build the CPU supports
+ *   portable0    that source at baseline, with no AVX2 -- the fallback for a
+ *                CPU with neither AVX-512 nor AVX2+FMA
  */
 #include <stdlib.h>
 #include <string.h>
@@ -49,7 +51,15 @@ static int have_avx2(void){
 static const ap_backend *pick(void){
   const char *e = getenv("MF_ISA");
   if(e && *e){
-    if(!strcmp(e,"portable"))    return &ap_be_port8;
+    if(!strcmp(e,"portable0"))   return &ap_be_port80;
+    if(!strcmp(e,"portable")){
+#if AP_HAVE_X86
+      /* Pick the best portable build, so forcing "portable" to compare it
+         against the intrinsics compares like with like. */
+      if(have_avx2()) return &ap_be_port82;
+#endif
+      return &ap_be_port80;
+    }
 #if AP_HAVE_X86
     if(!strcmp(e,"avx512"))      return have_avx512() ? &ap_be_avx512 : NULL;
     if(!strcmp(e,"avx2"))        return have_avx2()   ? &ap_be_bal8   : NULL;
@@ -62,9 +72,10 @@ static const ap_backend *pick(void){
   if(have_avx512()) return &ap_be_avx512;
   if(have_avx2())   return &ap_be_bal8;
 #endif
-  /* Everywhere else -- arm64, or x86 without AVX2 -- the portable back end is
-     the only one built, and it needs no feature test. */
-  return &ap_be_port8;
+  /* Everywhere else: arm64, where the baseline build is the only one, or an
+     x86 with neither AVX-512 nor AVX2+FMA -- a pre-Haswell Xeon, say -- where
+     it is the only build that can legally execute. */
+  return &ap_be_port80;
 }
 
 const char *ap_isa(void){ const ap_backend *b=pick(); return b?b->name:"unsupported"; }
@@ -180,6 +191,10 @@ int ap_binmax(ap_plan *p,const float *in,size_t dist,int B,
 int ap_lane_width(void){
   const ap_backend *b=pick();
   if(!b) return 0;
-  if(b==&ap_be_bal8 || b==&ap_be_port8) return 8;
+  if(b==&ap_be_bal8 || b==&ap_be_port80
+#if AP_HAVE_X86
+     || b==&ap_be_port82
+#endif
+    ) return 8;
   return 16;
 }

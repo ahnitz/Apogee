@@ -33,5 +33,12 @@ typedef struct {
 extern const ap_backend ap_be_avx512;   /* specialised: 1024 kernel + tuned 2^17..2^20 */
 extern const ap_backend ap_be_bal8;    /* width-generic balanced split, 8 lanes (AVX2)  */
 extern const ap_backend ap_be_bal16;   /* same source at 16 lanes, for cross-checking  */
-extern const ap_backend ap_be_port8;   /* same source again, compiler-vectorised       */
+/* The same source compiled against compiler vector extensions.  Level 0 is
+   baseline x86-64 (or whatever the target's default is) and is the fallback
+   that must run anywhere; level 2 adds AVX2 and FMA.  Only level 0 exists off
+   x86, where there is nothing to fall back from. */
+extern const ap_backend ap_be_port80;
+#if defined(__x86_64__) || defined(__i386__)
+extern const ap_backend ap_be_port82;
+#endif
 #endif
