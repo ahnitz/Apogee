@@ -170,7 +170,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     print(f"matchedfilter {mf.__version__}   "
-          f"{platform.processor() or platform.machine()}")
+          f"{platform.processor() or platform.machine()}   "
+          f"backend={mf.backend()}")
     print(f"python {sys.version.split()[0]}   numpy {np.__version__}")
     print(f"{a.data} data x {a.templates} templates = {a.data * a.templates} pairs, "
           f"{a.window:.0%} window\n")

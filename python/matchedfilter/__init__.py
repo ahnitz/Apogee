@@ -33,7 +33,18 @@ except (ImportError, PackageNotFoundError):  # running from a source tree
 #: dtype of the arrays returned by :meth:`MatchedFilter.run`.
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
 
-__all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "__version__"]
+__all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "backend",
+           "__version__"]
+
+
+def backend():
+    """Name of the kernel the dispatcher selected for this CPU.
+
+    Which one runs depends on the host, so a benchmark number is not
+    interpretable without it.  Override with the ``MF_ISA`` environment
+    variable to force a narrower one (``avx2``) and compare.
+    """
+    return _core.backend()
 
 
 def _as_c64(a, n, what):

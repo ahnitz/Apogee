@@ -255,7 +255,13 @@ static PyTypeObject HMFType={
   .tp_methods=HMF_methods, .tp_doc="matchedfilter hierarchical matched filter (opaque)",
 };
 
-static PyMethodDef methods[]={{NULL,NULL,0,NULL}};
+static PyObject *M_backend(PyObject *self,PyObject *args){
+  (void)self;(void)args;
+  return PyUnicode_FromString(ap_isa());
+}
+static PyMethodDef methods[]={
+  {"backend",M_backend,METH_NOARGS,"backend() -> name of the selected kernel"},
+  {NULL,NULL,0,NULL}};
 static struct PyModuleDef mod={PyModuleDef_HEAD_INIT,"matchedfilter._core",NULL,-1,methods};
 PyMODINIT_FUNC PyInit__core(void){
   if(PyType_Ready(&MFType)<0) return NULL;

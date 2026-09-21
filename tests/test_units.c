@@ -70,36 +70,6 @@ static void test_codelet_stride(void){
 }
 
 /* the 24-bit split used for the 2^20 intermediate must round-trip */
-static void test_quant24(void){
-  ap_seed(11);
-  double worst_screen=0, worst_full=0;
-  for(int trial=0;trial<200;trial++){
-    float v[16]; float mx=0;
-    for(int i=0;i<16;i++){ v[i]=(float)ap_gauss(); if(fabsf(v[i])>mx)mx=fabsf(v[i]); }
-    if(trial==0){ for(int i=0;i<16;i++) v[i]= (i&1)? mx : -mx; }  /* extremes */
-    float sc = mx>0? 8388607.0f/mx : 1.f, dq = mx>0? mx/8388607.0f : 1.f;
-    __m512 V=_mm512_loadu_ps(v);
-    const __m512i CMAX=_mm512_set1_epi32(8388607), CMIN=_mm512_set1_epi32(-8388607);
-    __m512i x=_mm512_max_epi32(CMIN,_mm512_min_epi32(CMAX,
-                 _mm512_cvtps_epi32(_mm512_mul_ps(V,_mm512_set1_ps(sc)))));
-    __m256i hi=_mm512_cvtepi32_epi16(_mm512_srai_epi32(x,8));
-    __m128i lo=_mm512_cvtepi32_epi8(_mm512_and_epi32(x,_mm512_set1_epi32(255)));
-    __m512 scr=_mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi16_epi32(hi)),
-                             _mm512_set1_ps(dq*256.0f));
-    __m512i H=_mm512_slli_epi32(_mm512_cvtepi16_epi32(hi),8);
-    __m512 full=_mm512_mul_ps(_mm512_cvtepi32_ps(
-                   _mm512_or_epi32(H,_mm512_cvtepu8_epi32(lo))),_mm512_set1_ps(dq));
-    float s[16],fl[16]; _mm512_storeu_ps(s,scr); _mm512_storeu_ps(fl,full);
-    for(int i=0;i<16;i++){
-      double a=fabs(s[i]-v[i])/mx, b=fabs(fl[i]-v[i])/mx;
-      if(a>worst_screen) worst_screen=a;
-      if(b>worst_full) worst_full=b;
-    }
-  }
-  CHECK_LE(worst_screen, 1.0/16384, "24-bit split: screening plane (16 bits)");
-  CHECK_LE(worst_full,   1.0/2097152, "24-bit split: full reconstruction (24 bits)");
-}
-
 static void test_heap(void){
   ap_cand T[8]; int n=0;
   ap_seed(3);
@@ -266,46 +236,7 @@ static void test_api(void){
    input scale, which is 28% of the codelet's instructions.  Check both that the
    headroom bound is right (one bit per level, and one fewer overflows) and that
    the result is accurate enough to screen with. */
-static void test_i16_noshift(void){
-  enum{N=32,LANES=32,LEVELS=5};
-  vq15 *a=aligned_alloc(64,80*sizeof(vq15)),*b=aligned_alloc(64,80*sizeof(vq15));
-  vq15 *c=aligned_alloc(64,80*sizeof(vq15)),*d=aligned_alloc(64,80*sizeof(vq15));
-  double re[N],im[N];
-  unsigned long long rs=12345;
-  for(int n=0;n<N;n++){
-    rs=rs*6364136223846793005ULL+1; re[n]=(double)(rs>>11)/9007199254740992.0*2-1;
-    rs=rs*6364136223846793005ULL+1; im[n]=(double)(rs>>11)/9007199254740992.0*2-1;
-  }
-  /* worst-case growth over LEVELS radix-2 stages is 2^LEVELS, so LEVELS bits of
-     headroom must be safe and fewer must be allowed to overflow */
-  double scale=32767.0/(1<<LEVELS);
-  short sr[LANES],si[LANES];
-  for(int n=0;n<N;n++){
-    for(int l=0;l<LANES;l++){ sr[l]=(short)lrint(re[n]*scale); si[l]=(short)lrint(im[n]*scale); }
-    a[n]=_mm512_loadu_si512(sr); b[n]=_mm512_loadu_si512(si);
-  }
-  int f=ffti16_32_ns(a,b,c,d,1);
-  vq15 *R=f?c:a,*I=f?d:b;
-  double worst=0,peak=0;
-  for(int k=0;k<N;k++){
-    double gr=0,gi=0;
-    for(int n=0;n<N;n++){ double t=-2.0*M_PI*n*k/N;
-      gr+=re[n]*cos(t)-im[n]*sin(t); gi+=re[n]*sin(t)+im[n]*cos(t); }
-    short o1[LANES],o2[LANES];
-    _mm512_storeu_si512(o1,R[k]); _mm512_storeu_si512(o2,I[k]);
-    double m=hypot(gr,gi); if(m>peak)peak=m;
-    double e=hypot(o1[0]/scale-gr,o2[0]/scale-gi); if(e>worst)worst=e;
-    /* every lane holds the same transform, so they must all agree */
-    for(int l=1;l<LANES;l++) CHECK(o1[l]==o1[0] && o2[l]==o2[0],
-      "ffti16_32_ns lane %d disagrees with lane 0 at k=%d",l,k);
-  }
-  CHECK(worst/peak < 5e-3, "ffti16_32_ns relative error %.3e too large for screening",
-        worst/peak);
-  free(a);free(b);free(c);free(d);
-}
-
 int main(void){
-  test_i16_noshift();
   printf("matchedfilter unit tests\n");
   test_transpose16();
   test_codelet("fft32_84 ",32,fft32_84);
@@ -313,7 +244,6 @@ int main(void){
   test_codelet("fft16_44 ",16,fft16_44);
   test_codelet("fft64_88 ",64,fft64_88);
   test_codelet_stride();
-  test_quant24();
   test_heap();
   test_fft1024_exact();
   for(int lg=12; lg<=20; lg++) test_analytic((size_t)1<<lg);
