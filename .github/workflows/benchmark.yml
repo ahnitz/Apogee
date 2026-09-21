@@ -92,7 +92,7 @@ jobs:
           if-no-files-found: error
 
   page:
-    name: Build the results page
+    name: Build the documentation page
     needs: bench
     if: always()
     runs-on: ubuntu-latest
@@ -104,7 +104,9 @@ jobs:
         with: { pattern: bench-*, path: results, merge-multiple: true }
       - run: |
           ls -l results
-          python tools/build_report.py results --out site/index.html
+          # --root so the prose comes from this checkout's README and docs/,
+          # keeping the page and the source in step.
+          python tools/build_report.py results --root . --out site/index.html
       - uses: actions/upload-artifact@v4
         with:
           name: benchmark-page
