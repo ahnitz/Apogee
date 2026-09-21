@@ -28,12 +28,16 @@ peaks["index"], peaks["value"], peaks["magnitude"]
 ## Install
 
 ```bash
-pip install --pre matchedfilter
+pip install matchedfilter
 ```
 
-`--pre` because this is an alpha release. Wheels are built for CPython 3.9 to
-3.13 on manylinux x86-64; anywhere else pip falls back to the source
-distribution, which needs numpy and a C compiler.
+Every release so far is an alpha, and pip installs a pre-release when that is
+all a project has. Once a stable version exists, getting an alpha will need
+`pip install --pre matchedfilter`.
+
+Wheels are built for CPython 3.9 to 3.13, manylinux and musllinux, x86-64.
+Anywhere else pip falls back to the source distribution, which needs numpy and
+a C compiler.
 
 **x86-64 only for now.** The kernels are AVX2 and AVX-512 intrinsics with no
 portable fallback, so a build on any other architecture stops with an error
