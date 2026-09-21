@@ -2,7 +2,10 @@
 # that survives compiles itself from tests/test_internals.py, so `pytest` is
 # the single entry point for the suite.
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+# >=77 for PEP 639: the SPDX `license` expression and `license-files`
+# produce Metadata 2.4.  An older setuptools reads the same lines as the
+# legacy free-text form and emits different metadata.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
