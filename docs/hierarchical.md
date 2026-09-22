@@ -521,26 +521,32 @@ D data segments against T templates is a symmetric product: the pair loop
 tiles both axes, so a 24x16 batch and a 16x24 one cost the same to within a
 percent, and the two axes are interchangeable in every measurement. What is
 *not* symmetric is a degenerate shape. One data segment against a large bank
-makes the kernel stream the whole bank once for T pairs, and nothing is reused
-across the call:
+makes the even coarse pass -- the one every pair pays for -- stream the whole
+coarse bank once for T pairs, reusing none of it.
 
-| templates | 1 segment | 8 segments |
-|---|---|---|
-| 37  | 1.245 us/pair | 1.196 |
-| 128 | 1.195 | 1.224 |
-| 418 | 1.588 | 1.304 |
+Whether grouping segments is worth anything turns on one thing: whether that
+bank stays in L2 between segments. While it does, grouping buys nothing and a
+large group only costs spectra to hold. Once it does not, the bank is
+re-streamed per segment and grouping is the only thing that amortises it.
+Measured, us/pair, best marked:
 
-Below ~128 templates the coarse bank stays in cache and the shape does not
-matter. At 418 it is worth 1.17x. Eight is where the curve flattens; sixteen is
-never better and costs more spectra to hold.
+| templates | coarse bank | g1 | g4 | g8 | g16 | g32 |
+|---|---:|---:|---:|---:|---:|---:|
+| 37 | 296 KiB | 1.200 | **1.197** | 1.199 | 1.216 | 1.260 |
+| 74 | 592 KiB | 1.183 | **1.158** | 1.170 | 1.205 | 1.207 |
+| 128 | 1024 KiB | 1.227 | **1.193** | 1.239 | 1.238 | 1.217 |
+| 256 | 2048 KiB | 1.312 | 1.358 | 1.292 | 1.270 | **1.237** |
+| 418 | 3344 KiB | 1.501 | 1.426 | 1.329 | 1.321 | **1.305** |
 
-So `run_series` groups blocks itself rather than asking the caller for a batch
-size: consecutive blocks that share a window are filtered in one call, the
-group breaking at the ragged windows at a segment's edges. The size comes from
-the transform length alone (bounded so the held spectra stay under 4 MB) and is
-overridable with `MF_DGROUP` for measurement. `tests/test_api.py` pins the
-result to be identical across group sizes, which is the only guarantee that
-matters here -- this is an arrangement decision, not an approximation.
+The turn is exactly at L2, so that is the rule rather than a fitted threshold:
+group 32 when the coarse bank exceeds it, 4 when it does not. Worth 1.15x at
+418 templates against the degenerate shape and nothing at 37, which is why it
+is chosen internally and not asked of the caller.
+
+`run_series` groups blocks that share a window, the group breaking at the
+ragged windows at a segment's edges, and `MF_DGROUP` overrides it for
+measurement. `tests/test_api.py` pins the result to be identical across group
+sizes -- this is an arrangement decision, not an approximation.
 
 Two things deliberately stay per-segment. The odd coarse transform runs on one
 pair at a time because only ~27% of pairs reach it, and the full reconstruction

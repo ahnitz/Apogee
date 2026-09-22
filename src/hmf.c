@@ -182,20 +182,31 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
    *
    * D x T is symmetric and the pair loop tiles both axes, so what matters is
    * the SHAPE of a batch, not its size.  One data segment against a large bank
-   * is the worst shape there is: the coarse bank is streamed once per segment,
-   * and at 418 templates that is 6.8 MB for 418 pairs.  Filtering several
-   * segments together amortises it -- measured 1.52 to 1.30 us a pair, 1.17x,
-   * at that shape, and flat below ~128 templates where the bank stays in
-   * cache.  Eight is where it stops improving; sixteen is never better and
-   * costs more spectra to hold.
+   * is the worst shape there is: the even coarse pass, which every pair pays
+   * for, streams the whole coarse bank once per segment and reuses none of it.
+   * Filtering several segments together amortises that.
    *
-   * It is a plain win at every shape measured, so there is no size rule: the
-   * only bound is what the extra spectra cost, which matters at long
-   * transforms.  The caller should not have to know any of this, which is why
+   * Whether it is worth anything depends on one thing -- whether the coarse
+   * bank stays in L2 between segments.  While it does, grouping buys nothing
+   * and a large group only costs spectra to hold; once it does not, the bank
+   * is re-streamed per segment and grouping is the only thing that amortises
+   * it.  Measured, us/pair, best marked:
+   *
+   *     templates   coarse bank    g1      g4      g8     g16     g32
+   *        37          296 KiB   1.200   1.197*  1.199   1.216   1.260
+   *        74          592 KiB   1.183   1.158*  1.170   1.205   1.207
+   *       128         1024 KiB   1.227   1.193*  1.239   1.238   1.217
+   *       256         2048 KiB   1.312   1.358   1.292   1.270   1.237*
+   *       418         3344 KiB   1.501   1.426   1.329   1.321   1.305*
+   *
+   * The turn is exactly at L2, so that is the rule rather than a fitted
+   * threshold.  The caller should not have to know any of this, which is why
    * it is here and not in the API -- hand the filter as much data as is
    * available and let it choose the arrangement. */
-  int grp = 8;
+  const size_t cbank = (size_t)ntmpl * 2 * band * sizeof(float);
+  int grp = cbank > (size_t)1024*1024 ? 32 : 4;
   { const char *e=getenv("MF_DGROUP"); if(e){ int v=atoi(e); if(v>0) grp=v; } }
+  /* bounded by what the held spectra cost, which is what bites at long n */
   while(grp>1 && (size_t)grp*2*n*sizeof(float) > (size_t)4*1024*1024) grp>>=1;
   p->dgroup=grp;
   const int ndi = ndata>grp ? ndata : grp;
