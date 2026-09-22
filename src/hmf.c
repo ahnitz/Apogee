@@ -40,6 +40,8 @@
 
 #define HMF_IK 4            /* half-width of the bracket taps: 9 in all */
 static void design_taps(const float *w, size_t m, int K, double delta, float *h);
+static float interp_abs(const float *ev,const float *od,size_t m,int U,
+                        const float *w,int K,int i,long j);
 
 #define HMF_NSUB 7            /* sub-positions per coarse interval; matches the
                                  grid the table's recovery factor was measured on */
@@ -73,7 +75,7 @@ struct ap_hmf_plan {
      template, so one reference serves a whole bank -- and skips the
      per-template ingest measurement. */
   int    ref_on;
-  float  even_margin, gate_margin;
+  float  even_margin, gate_margin, gscale; int gcal;
   float  ref_f, ref_g, ref_graw, ref_graw1;
   float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
   float *shift;               /* [2m]       scratch for the measurement         */
@@ -235,6 +237,15 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      flat filter where 1.0 gives 3.32x.  The table's recovery factors are
      measured from a mean spectrum and are not a bound on a realisation; see
      docs/hierarchical.md.  Until that is fixed this is the honest control. */
+  /* Automatic gate calibration, off by default.  It lands within 1.5% of the
+     hand-tuned operating point, but the scale below is fitted, not derived:
+     hmf_threshold already models the noise statistics, and taking a low
+     quantile of the recovered signal peak counts that fluctuation a second
+     time.  Until the double count is removed this is a re-parametrised knob,
+     not a corrected model. */
+  p->gcal=0; p->gscale=1.40f;
+  { const char *e=getenv("MF_GSCALE"); if(e) p->gscale=(float)atof(e); }
+  { const char *e=getenv("MF_GCAL"); if(e) p->gcal=atoi(e); }
   p->gate_margin=1.0f;
   { const char *e=getenv("MF_GATE_MARGIN"); if(e) p->gate_margin=(float)atof(e); }
   p->even_margin=0.92f;
@@ -350,14 +361,34 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
        it returned 0.74 where no pair in 27000 went below 0.81, and the even
        gate then opened on 70% of pairs.  A quantile needs enough samples to be
        a quantile. */
-    const int K=128;
+    const int K=128; const int K2=p->K;
     /* Noise levels to sweep.  The pairs this gate decides are the marginal
        ones, where the combined maximum is barely at the gate and may be a
        noise peak rather than the signal.  Simulating at one high SNR only
        ever reproduces the noiseless scallop, which is what the even gate is
        NOT allowed to assume. */
-    static const double nzlev[4]={0.35,0.8,1.6,3.2};
+    /* Noise levels.  For graw1 -- a ratio of two maxima of the same series --
+       the level barely matters, so a wide sweep was harmless.  For g and graw
+       the reference is the SIGNAL's peak, and the guarantee is for a signal of
+       strength snr, so the level has to put the peak there: any louder and the
+       recovery is trivially 1, any quieter and the maximum is noise and the
+       ratio is meaningless.  Peak is sum(amp); noise at a lag is
+       nz*sqrt(2*sum(amp^2)); set their ratio to snr and spread a little. */
+    double sa=0,sa2=0;
+    for(size_t k=0;k<m;k++){ const double a=power[k]>0?power[k]:0; sa+=a; sa2+=a*a; }
+    const double snr0=p->snr>0.f?(double)p->snr:5.0;
+    const double nz0=(sa2>0&&snr0>0)?sa/(snr0*sqrt(2.0*sa2)):0.35;
+    const double nzlev[4]={nz0*0.7,nz0,nz0*1.4,nz0*2.0};
     float *rat=malloc((size_t)K*sizeof(float));
+    /* The same realisations also bound what the filter recovers of a SIGNAL,
+       which is what the final gate needs.  measure_recovery derives g and graw
+       from a noiseless autocorrelation, and that is a mean shape rather than a
+       bound on any realisation -- the same error that made graw1 wrong.  The
+       reference is the signal's own peak, sum over the band of the product's
+       amplitude, which is what all phases aligning gives. */
+    float *ratg=malloc((size_t)K*sizeof(float));
+    float *ratr=malloc((size_t)K*sizeof(float));
+    double pk=0; for(size_t k=0;k<m;k++) pk+=power[k]>0?power[k]:0;
     unsigned long long rs=0x9E3779B97F4A7C15ULL;
     for(int r=0;r<K;r++){
       for(size_t k=0;k<m;k++){
@@ -402,17 +433,56 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
       }
       float comb = be>bo?be:bo;
       rat[r] = comb>0.f ? sqrtf(be/comb) : 1.f;
+      /* combined-grid and interpolated recovery of the signal's peak */
+      { long bj=0; float bv=-1.f;
+        const int UU=p->U;
+        const size_t G=m*(size_t)UU;
+        for(size_t j=0;j<G;j++){
+          const float *z=(UU==1)?p->cev+2*j:((j&1)?p->cod+((j>>1)*2):p->cev+((j>>1)*2));
+          const float v=z[0]*z[0]+z[1]*z[1];
+          if(v>bv){ bv=v; bj=(long)j; }
+        }
+        const float ball=sqrtf(bv>0?bv:0);
+        float bi=ball;
+        for(int i=0;i<HMF_NSUB;i++){
+          const float u1=interp_abs(p->cev,p->cod,m,p->U,p->taps,K2,i,bj-1);
+          const float u2=interp_abs(p->cev,p->cod,m,p->U,p->taps,K2,i,bj);
+          if(u1>bi) bi=u1;
+          if(u2>bi) bi=u2;
+        }
+        ratr[r] = pk>0 ? (float)(ball/pk) : 1.f;
+        ratg[r] = pk>0 ? (float)(bi/pk)   : 1.f;
+      }
     }
     /* low quantile: second smallest of 128 is about the 1% point */
     for(int i=0;i<3;i++)
       for(int j=i+1;j<K;j++)
         if(rat[j]<rat[i]){ float t=rat[i]; rat[i]=rat[j]; rat[j]=t; }
+    /* low quantile of each, then keep whichever is more conservative */
+    for(int i=0;i<3;i++) for(int j=i+1;j<K;j++){
+      if(ratg[j]<ratg[i]){ float t=ratg[i]; ratg[i]=ratg[j]; ratg[j]=t; }
+      if(ratr[j]<ratr[i]){ float t=ratr[i]; ratr[i]=ratr[j]; ratr[j]=t; }
+    }
+    const float g_noiseless=p->ref_g, r_noiseless=p->ref_graw;
+    if(p->gcal){
+      /* The realisation reference is the noiseless signal amplitude, so this
+         ratio also carries the peak's own noise fluctuation -- which is not a
+         grid loss and moves the coarse and full statistics together.  Scale
+         controls how much of it to believe while that is sorted out. */
+      const float gs=p->gscale;
+      if(ratg[1]*gs<p->ref_g)    p->ref_g   =ratg[1]*gs>1.f?1.f:ratg[1]*gs;
+      if(ratr[1]*gs<p->ref_graw) p->ref_graw=ratr[1]*gs>1.f?1.f:ratr[1]*gs;
+    }
+    if(getenv("MF_HMF_DIAG"))
+      fprintf(stderr,"    [diag] g: noiseless %.4f realisations %.4f -> %.4f | "
+              "graw: noiseless %.4f realisations %.4f -> %.4f\n",
+              g_noiseless,ratg[1],p->ref_g,r_noiseless,ratr[1],p->ref_graw);
     float q=rat[1];
     if(getenv("MF_HMF_DIAG"))
       fprintf(stderr,"    [diag] graw1: scallop %.4f  realisations %.4f -> %.4f\n",
               p->ref_graw1, q, q<p->ref_graw1?q:p->ref_graw1);
     if(q<p->ref_graw1) p->ref_graw1=q;
-    free(rat);
+    free(rat); free(ratg); free(ratr);
   }
   for(size_t k=0;k<m;k++) p->refpow[k]=power[k]>0?power[k]:0.f;
   p->taps_stale=1;
