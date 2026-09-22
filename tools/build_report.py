@@ -219,6 +219,27 @@ details>.scroll{margin-bottom:1rem}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:8px;padding:.8rem .9rem}
 .card .k{font-size:1.5rem;font-weight:700;letter-spacing:-.02em}
 .card .l{font-size:12.5px;color:var(--mut);margin-top:.15rem}
+.tabs{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;
+      margin:1.4rem 0 0;border-bottom:1px solid var(--bd);padding-bottom:.6rem}
+.tabs .cap{font-size:12.5px;color:var(--mut);margin-right:.35rem}
+.tab{cursor:pointer;font:inherit;font-size:13.5px;padding:.32rem .8rem;
+     border:1px solid var(--bd);background:var(--panel);color:var(--mut);
+     border-radius:6px;transition:background .12s,color .12s}
+.tab:hover{color:var(--fg);border-color:var(--mut)}
+.tab.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.panels>[hidden]{display:none}
+.pagenav{display:flex;justify-content:space-between;gap:1rem;margin-top:3rem;
+         padding-top:1.2rem;border-top:1px solid var(--bd);font-size:14px}
+.pagenav a{color:var(--accent);text-decoration:none}
+.pagenav a:hover{text-decoration:underline}
+.toc{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+     gap:.8rem;margin:1.4rem 0}
+.toc a{display:block;padding:.85rem 1rem;border:1px solid var(--bd);
+       border-radius:8px;background:var(--panel);text-decoration:none;color:var(--fg)}
+.toc a:hover{border-color:var(--accent)}
+.toc .t{font-weight:600;font-size:14.5px}
+.toc .d{color:var(--mut);font-size:13px;margin-top:.2rem}
+nav a.on{color:var(--fg);background:var(--panel);border-left-color:var(--accent);font-weight:600}
 footer{margin-top:4rem;padding-top:1.2rem;border-top:1px solid var(--bd);
        color:var(--mut);font-size:13px}
 @media (max-width:820px){
@@ -279,7 +300,13 @@ def md(text):
             out.append('<div class="note">%s</div>' % inline(" ".join(buf)))
             continue
         if ln.strip():
-            buf = []
+            # Take this line unconditionally, THEN gather. Gathering first
+            # lets a line that reached here but fails the continuation test --
+            # a "|" that begins prose rather than a table row, as
+            # docs/coarse-narrow.md does with "|P|^2 -- the energy family" --
+            # leave i where it was and loop forever emitting empty paragraphs.
+            # Every branch in this loop must consume at least one line.
+            buf = [lines[i]]; i += 1
             while i < len(lines) and lines[i].strip() and not lines[i].startswith(("#", "|", "```", ">")) \
                     and not _re.match(r"^\s*[-*]\s+", lines[i]):
                 buf.append(lines[i]); i += 1
@@ -332,28 +359,50 @@ def split_readme(text):
     return parts
 
 
-def benchmarks_section(runs):
-    """The benchmark part of the docs: charts first, raw numbers folded away."""
-    runs = [r for r in runs if r.get("flat") or r.get("hierarchical")]
-    runs.sort(key=lambda r: r["host"]["label"])
-    if not runs:
-        return "<p>No benchmark results were available when this page was built.</p>"
-    names = [r["host"]["label"] for r in runs]
-    o = []
+_TABSEQ = [0]
 
-    o.append("<p>Measured in CI on every platform the library is tested on. "
-             "Shared runners are noisy, so these are comparisons between back "
-             "ends rather than absolute figures for any particular CPU.</p>")
 
-    best = max((h["speedup"] for r in runs for h in r.get("hierarchical", [])), default=0)
-    o.append('<div class="cards">'
-             '<div class="card"><div class="k">%d</div><div class="l">platforms measured</div></div>'
-             '<div class="card"><div class="k">%.1fx</div><div class="l">best gate speedup</div></div>'
-             '<div class="card"><div class="k">%d</div><div class="l">transform lengths</div></div>'
-             '</div>' % (len(runs), best,
-                         len({f["n"] for r in runs for f in r.get("flat", [])})))
+def tabs(items, caption=""):
+    """Buttons that switch between panels, first one shown.
 
-    o.append("<h3>What was tested</h3>")
+    The benchmark grew a chart per transform length and a chart per runner,
+    which stacked into a page nobody scrolls to the bottom of.  Switching
+    between them shows one at a time and makes them comparable, since they
+    land in the same place.
+    """
+    items = [(nm, h) for nm, h in items if h]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0][1]
+    _TABSEQ[0] += 1
+    g = "g%d" % _TABSEQ[0]
+    btn = ['<div class="tabs" data-group="%s">' % g]
+    if caption:
+        btn.append('<span class="cap">%s</span>' % html.escape(caption))
+    pan = ['<div class="panels">']
+    for i, (nm, h) in enumerate(items):
+        btn.append('<button class="tab%s" data-tab="%s-%d">%s</button>'
+                   % (" on" if not i else "", g, i, html.escape(nm)))
+        pan.append('<div data-tab="%s-%d"%s>%s</div>'
+                   % (g, i, "" if not i else " hidden", h))
+    return "".join(btn) + "</div>" + "".join(pan) + "</div>"
+
+
+TABJS = """
+document.addEventListener('click',function(e){
+  var b=e.target.closest && e.target.closest('.tab'); if(!b) return;
+  var bar=b.parentNode, panels=bar.nextElementSibling;
+  Array.prototype.forEach.call(bar.querySelectorAll('.tab'),function(x){
+    x.classList.toggle('on', x===b); });
+  Array.prototype.forEach.call(panels.children,function(p){
+    p.hidden = (p.getAttribute('data-tab') !== b.getAttribute('data-tab')); });
+});
+"""
+
+
+def bench_what(runs):
+    """Which machines reported, and what that does and does not let you compare."""
     rows = []
     for r in runs:
         h = r["host"]
@@ -361,21 +410,23 @@ def benchmarks_section(runs):
                      html.escape(h["machine"]), "<code>%s</code>" % html.escape(h["backend"]),
                      html.escape(h.get("isa_forced") or "auto"),
                      html.escape(h.get("python", ""))])
-    o.append(table(["runner", "os", "arch", "back end", "MF_ISA", "python"], rows))
-    o.append('<div class="note">The back end is chosen at run time from the CPU. '
-             'Rows sharing a prefix ran in <em>one job on one host</em>, so those '
-             'compare kernels. Rows with different prefixes ran on different '
-             'runners and compare machines at least as much as kernels. '
-             'A platform that is absent did not report; it did not pass.</div>')
+    return (table(["runner", "os", "arch", "back end", "MF_ISA", "python"], rows)
+            + '<div class="note">The back end is chosen at run time from the CPU. '
+              'Rows sharing a prefix ran in <em>one job on one host</em>, so those '
+              'compare kernels. Rows with different prefixes ran on different '
+              'runners and compare machines at least as much as kernels. '
+              'A platform that is absent did not report; it did not pass.</div>')
 
-    # ---------- hierarchical ----------
-    o.append("<h3>Hierarchical gate</h3>")
-    o.append("<p>The gate runs a cheap low-band pass first and pays for the full "
-             "correlation only where a detection is still possible. Speedup is "
-             "against the flat filter on the same data. The dashed line marks 1x, "
-             "where gating has bought nothing.</p>")
+
+def bench_gate(runs, names):
+    """Gated vs flat, one panel per transform length."""
+    o = ["<p>The gate runs a cheap low-band pass first and pays for the full "
+         "correlation only where a detection is still possible. Speedup is "
+         "against the flat filter on the same pure-noise data. The dashed line "
+         "marks 1x, where gating has bought nothing.</p>"]
     snrs = sorted({h["snr"] for r in runs for h in r.get("hierarchical", [])})
     sizes = sorted({h["n"] for r in runs for h in r.get("hierarchical", [])})
+    panels = []
     for n in sizes:
         groups = []
         for snr in snrs:
@@ -385,40 +436,35 @@ def benchmarks_section(runs):
                 vs.append(m[0]["speedup"] if m else None)
             groups.append(("snr %g" % snr, vs))
         if any(v is not None for _, vs in groups for v in vs):
-            o.append(bar_chart(groups, names, "Gated vs flat, n=%d" % n, "speedup"))
+            panels.append(("n = %d" % n,
+                           bar_chart(groups, names, "Gated vs flat, n=%d" % n, "speedup")))
+    o.append(tabs(panels, "transform length"))
+    o.append('<div class="note">Within a panel the bars should climb with the '
+             'SNR threshold: a higher threshold lets the filter choose a '
+             'narrower first pass and a tighter gate. A flat profile means the '
+             'configuration is not being chosen from the threshold.</div>')
 
     fired = [(r["host"]["label"], h) for r in runs for h in r.get("hierarchical", [])
              if h["trigger_rate"] > 0]
     if fired:
         o.append('<div class="note warn"><strong>Where the gate opened on noise.</strong> '
                  'The gate should stay shut on pure noise; where it does not, the '
-                 'work is wasted rather than wrong, and the speedup falls. This is '
-                 'identical across every platform, so it is a property of the '
-                 'calibration table rather than of any machine.</div>')
+                 'work is wasted rather than wrong, and the speedup falls.</div>')
         o.append(table(["runner", "n", "snr", "speedup", "triggered"],
                        [[html.escape(l), h["n"], "%g" % h["snr"],
                          "%.2fx" % h["speedup"], "%.1f%%" % (h["trigger_rate"] * 100)]
                         for l, h in fired]))
+    return "".join(o)
 
-    rows = [[html.escape(r["host"]["label"]), h["n"], "%g" % h["snr"],
-             "%.3f" % h["flat_ms"], "%.3f" % h["gated_ms"],
-             "<b>%.2fx</b>" % h["speedup"], "%.2f%%" % (h["trigger_rate"] * 100)]
-            for r in runs for h in r.get("hierarchical", [])]
-    if rows:
-        o.append("<details><summary>All hierarchical results (%d rows)</summary>%s</details>"
-                 % (len(rows), table(["runner", "n", "snr", "flat (ms)", "gated (ms)",
-                                      "speedup", "triggered"], rows)))
 
-    # ---------- flat ----------
-    o.append("<h3>Matched filter, per pair</h3>")
-    o.append("<p>Cost of one (data, template) correlation with peak-only output. "
-             "Lower is better. numpy is included as a floor that runs everywhere, "
-             "not as a competitive FFT.</p>")
+def bench_pair(runs):
+    """Cost of one correlation, and the same thing relative to the x86 default."""
+    o = ["<p>Cost of one (data, template) correlation with peak-only output. "
+         "Lower is better.</p>"]
     series = [(r["host"]["label"], [(f["n"], f["us_per_pair"]) for f in r.get("flat", [])])
               for r in runs if r.get("flat")]
-    o.append(line_chart(series, "Time per pair", "transform length n",
-                        "microseconds per pair"))
-
+    panels = [("absolute", line_chart(series, "Time per pair", "transform length n",
+                                      "microseconds per pair"))]
     ref = next((r for r in runs if r["host"]["label"] == "linux-x86_64"), None)
     if ref:
         base = {f["n"]: f["us_per_pair"] for f in ref["flat"]}
@@ -427,36 +473,47 @@ def benchmarks_section(runs):
                  for f in r.get("flat", []) if f["n"] in base])
                for r in runs]
         rel = [x for x in rel if x[1]]
-        o.append("<h4>Relative to the default x86 back end</h4>")
-        o.append(line_chart(rel, "Cost relative to linux-x86_64",
-                            "transform length n", "ratio (1 = same)"))
+        panels.append(("relative to linux-x86_64",
+                       line_chart(rel, "Cost relative to linux-x86_64",
+                                  "transform length n", "ratio (1 = same)")))
+    o.append(tabs(panels, "scale"))
+    return "".join(o)
 
-    engines = sorted({e for r in runs for f in r.get("flat", [])
-                      for e in (f.get("reference_us_per_pair") or {})})
-    if engines:
-        o.append("<h4>Against other FFT implementations</h4>")
-        o.append("<p>FFTW is the comparison that means something; numpy is a "
-                 "floor that runs everywhere. Every reference computes the whole "
-                 "correlation, while this computes only the binned maxima and may "
-                 "skip work that cannot produce one, so it is not a like-for-like "
-                 "FFT comparison.</p>")
-        for r in runs:
-            pts = [(f["n"], f["us_per_pair"]) for f in r.get("flat", [])
-                   if (f.get("reference_us_per_pair") or {})]
-            if not pts:
-                continue
-            ser = [("matchedfilter", pts)]
-            for e in engines:
-                q = [(f["n"], f["reference_us_per_pair"][e])
-                     for f in r.get("flat", [])
-                     if e in (f.get("reference_us_per_pair") or {})]
-                if q:
-                    ser.append((e, q))
-            if len(ser) > 1:
-                o.append(line_chart(ser, "%s: cost per pair" % r["host"]["label"],
-                                    "transform length n", "microseconds per pair"))
 
-    rows = []
+def bench_refs(runs, engines):
+    """Against FFTW and numpy, one panel per runner."""
+    o = ["<p>FFTW is the comparison that means something; numpy is a floor that "
+         "runs everywhere. Every reference computes the whole correlation, while "
+         "this computes only the binned maxima and may skip work that cannot "
+         "produce one, so it is not a like-for-like FFT comparison.</p>"]
+    panels = []
+    for r in runs:
+        pts = [(f["n"], f["us_per_pair"]) for f in r.get("flat", [])
+               if (f.get("reference_us_per_pair") or {})]
+        if not pts:
+            continue
+        ser = [("matchedfilter", pts)]
+        for e in engines:
+            q = [(f["n"], f["reference_us_per_pair"][e])
+                 for f in r.get("flat", [])
+                 if e in (f.get("reference_us_per_pair") or {})]
+            if q:
+                ser.append((e, q))
+        if len(ser) > 1:
+            panels.append((r["host"]["label"],
+                           line_chart(ser, "%s: cost per pair" % r["host"]["label"],
+                                      "transform length n", "microseconds per pair")))
+    o.append(tabs(panels, "runner"))
+    return "".join(o) if panels else ""
+
+
+def bench_raw(runs, engines):
+    """Every number behind the charts, in two switchable tables."""
+    hrows = [[html.escape(r["host"]["label"]), h["n"], "%g" % h["snr"],
+              "%.3f" % h["flat_ms"], "%.3f" % h["gated_ms"],
+              "<b>%.2fx</b>" % h["speedup"], "%.2f%%" % (h["trigger_rate"] * 100)]
+             for r in runs for h in r.get("hierarchical", [])]
+    frows = []
     for r in runs:
         for f in r.get("flat", []):
             refs = f.get("reference_us_per_pair") or {}
@@ -467,75 +524,188 @@ def benchmarks_section(runs):
             for e in engines:
                 row.append("<b>%.1fx</b>" % (refs[e] / f["us_per_pair"]) if e in refs else "-")
             row.append("yes" if f.get("ok") else "NO")
-            rows.append(row)
-    if rows:
-        hdr = (["runner", "n", "shape", "us/pair"] + ["%s us" % e for e in engines]
-               + ["vs %s" % e for e in engines] + ["matches numpy"])
-        o.append("<details><summary>All matched-filter results (%d rows)</summary>%s</details>"
-                 % (len(rows), table(hdr, rows)))
+            frows.append(row)
+    hdr = (["runner", "n", "shape", "us/pair"] + ["%s us" % e for e in engines]
+           + ["vs %s" % e for e in engines] + ["matches numpy"])
+    return tabs([
+        ("hierarchical (%d rows)" % len(hrows),
+         table(["runner", "n", "snr", "flat (ms)", "gated (ms)", "speedup",
+                "triggered"], hrows) if hrows else ""),
+        ("matched filter (%d rows)" % len(frows),
+         table(hdr, frows) if frows else ""),
+    ], "table")
+
+
+def benchmarks_page(runs):
+    """The benchmark page: headline, then one view at a time."""
+    runs = [r for r in runs if r.get("flat") or r.get("hierarchical")]
+    runs.sort(key=lambda r: r["host"]["label"])
+    if not runs:
+        return "<p>No benchmark results were available when this page was built.</p>"
+    names = [r["host"]["label"] for r in runs]
+    engines = sorted({e for r in runs for f in r.get("flat", [])
+                      for e in (f.get("reference_us_per_pair") or {})})
+    best = max((h["speedup"] for r in runs for h in r.get("hierarchical", [])), default=0)
+    o = ["<p>Measured in CI on every platform the library is tested on. Shared "
+         "runners are noisy, so these are comparisons between back ends rather "
+         "than absolute figures for any particular CPU.</p>",
+         '<div class="cards">'
+         '<div class="card"><div class="k">%d</div><div class="l">platforms measured</div></div>'
+         '<div class="card"><div class="k">%.1fx</div><div class="l">best gate speedup</div></div>'
+         '<div class="card"><div class="k">%d</div><div class="l">transform lengths</div></div>'
+         '</div>' % (len(runs), best,
+                     len({f["n"] for r in runs for f in r.get("flat", [])}))]
+    o.append(tabs([
+        ("Hierarchical gate", bench_gate(runs, names)),
+        ("Cost per pair", bench_pair(runs)),
+        ("Against other FFTs", bench_refs(runs, engines)),
+        ("What was tested", bench_what(runs)),
+        ("All numbers", bench_raw(runs, engines)),
+    ], "view"))
     return "".join(o)
 
 
-# Section id, sidebar label, and where the prose comes from.
-SECTIONS = [
-    ("overview",     "Overview",              ("readme", "_intro")),
-    ("install",      "Install",               ("readme", "Install")),
-    ("how",          "How it works",          ("readme", "How it works")),
-    ("hierarchical", "Hierarchical filtering", ("readme", "Hierarchical filtering")),
-    ("benchmarks",   "Benchmarks",            ("bench", None)),
-    ("caveats",      "Caveats",               ("readme", "Caveats")),
-    ("development",  "Development",           ("readme", "Development")),
-    ("notes",        "Design notes",          ("notes", None)),
-]
+# One page per topic.  The site used to be a single scroll with everything on
+# it -- README, five charts per transform length, every design note expanded --
+# which made the benchmark numbers hard to find and impossible to compare.
+#
+# (file, nav label, kind, argument).  `kind` says where the prose comes from:
+# readme sections, the generated benchmark, the notes index, or a notes file.
+NOTES = [("docs/hierarchical.md", "The hierarchical filter",
+          "Why a cheap low-band pass first, what it can and cannot skip."),
+         ("docs/design.md", "Batched matched filter design",
+          "The four-step transform, the split layout, and the fused peak scan."),
+         ("docs/simd.md", "The SIMD layer",
+          "How one source produces AVX-512, AVX2, SSE4 and NEON kernels."),
+         ("docs/coarse-narrow.md", "A narrower coarse pass",
+          "Measurements on how far the first stage can be narrowed."),
+         ("docs/machine-notes.md", "Zen 5 instruction notes",
+          "Measured issue rates, not vendor documentation."),
+         ("docs/roadmap.md", "What is left, and what is closed",
+          "Live avenues, and the ones measurement has ruled out.")]
 
-NOTE_FILES = [("docs/hierarchical.md", "The hierarchical filter"),
-              ("docs/simd.md", "The SIMD layer"),
-              ("docs/design.md", "Batched matched filter design")]
+PAGES = [("index.html", "Overview", "readme", ["_intro", "Install"]),
+         ("how-it-works.html", "How it works", "readme",
+          ["How it works", "Hierarchical filtering"]),
+         ("benchmarks.html", "Benchmarks", "bench", None),
+         ("notes.html", "Design notes", "notes-index", None),
+         ("caveats.html", "Caveats & development", "readme",
+          ["Caveats", "Development"])]
 
 
-def build(runs, root="."):
-    readme = split_readme(read(os.path.join(root, "README.md")))
-    version = next((r["host"].get("version") for r in runs if r.get("host")), "")
+def note_page_name(path):
+    return "note-%s.html" % os.path.basename(path)[:-3]
 
-    nav = ['<nav><div class="brand">matchedfilter</div>'
+
+def shell(active, title, body, version, sub=None, prev_next=None):
+    """Wrap one page's content in the shared nav and chrome."""
+    nav = ['<nav><div class="brand"><a href="index.html" '
+           'style="color:inherit;text-decoration:none">matchedfilter</a></div>'
            '<div class="ver">%s</div><div class="links">' % html.escape(version or "docs")]
-    body = []
-    for sid, label, (src, key) in SECTIONS:
-        if src == "readme":
-            text = readme.get(key, "")
-            if not text:
-                continue
-            content = md(text)
-        elif src == "bench":
-            content = benchmarks_section(runs)
-        else:
-            content = "".join(
-                '<details><summary>%s</summary>%s</details>'
-                % (html.escape(title), md(read(os.path.join(root, f))))
-                for f, title in NOTE_FILES if read(os.path.join(root, f)))
-            if not content:
-                continue
-        nav.append('<a href="#%s">%s</a>' % (sid, html.escape(label)))
-        heading = "" if sid == "overview" else "<h2>%s</h2>" % html.escape(label)
-        body.append('<section id="%s">%s%s</section>' % (sid, heading, content))
+    for fn, label, _, _ in PAGES:
+        nav.append('<a href="%s"%s>%s</a>'
+                   % (fn, ' class="on"' if fn == active else "", html.escape(label)))
+        if fn == "notes.html" and (active == fn or (sub and sub[0] == "note")):
+            for np_, ttl, _d in NOTES:
+                f2 = note_page_name(np_)
+                nav.append('<a class="sub%s" href="%s">%s</a>'
+                           % (" on" if f2 == active else "", f2, html.escape(ttl)))
     nav.append("</div></nav>")
-
-    head = ('<h1>matchedfilter</h1>'
-            '<p class="lede">A fast single-threaded matched filter for x86, arm64 '
-            'and macOS, with peak-only output and an optional hierarchical gate.</p>')
+    pn = ""
+    if prev_next:
+        a, b = prev_next
+        pn = ('<div class="pagenav"><div>%s</div><div>%s</div></div>'
+              % ('<a href="%s">← %s</a>' % (a[0], html.escape(a[1])) if a else "",
+                 '<a href="%s">%s →</a>' % (b[0], html.escape(b[1])) if b else ""))
     foot = ('<footer>Built by <code>tools/build_report.py</code> from the README, '
             'the notes in <code>docs/</code>, and the artifacts of the Benchmark '
             'workflow. Benchmark numbers come from shared CI runners and are '
             'comparisons, not hardware specifications.</footer>')
-    return '<div class="wrap">%s<main>%s%s%s</main></div>' % (
-        "".join(nav), head, "".join(body), foot)
+    return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>%s</title><style>%s</style></head><body>'
+            '<div class="wrap">%s<main>%s%s%s</main></div>'
+            '<script>%s</script></body></html>'
+            % (html.escape(title), CSS, "".join(nav), body, pn, foot, TABJS))
+
+
+def strip_self_reference(text):
+    """Drop the README's own title and its banner linking to this site.
+
+    The README leads with a link to the documentation because a reader on
+    GitHub needs one.  A reader who is already here does not, and the page
+    supplies its own h1, so both would be duplicates.  Whole paragraphs go,
+    not lines: the banner wraps, and dropping its first line alone left the
+    remainder stranded as a sentence fragment.
+    """
+    keep = []
+    for para in text.split("\n\n"):
+        body = "\n".join(l for l in para.split("\n") if not l.startswith("# "))
+        if not body.strip():
+            continue
+        if ("ahnitz.github.io/matchedfilter" in body
+                or body.lstrip().startswith("Built by CI")):
+            continue
+        keep.append(body)
+    return "\n\n".join(keep).strip()
+
+
+def build(runs, root="."):
+    """Return {filename: html} for the whole site."""
+    readme = split_readme(read(os.path.join(root, "README.md")))
+    readme["_intro"] = strip_self_reference(readme.get("_intro", ""))
+    version = next((r["host"].get("version") for r in runs if r.get("host")), "")
+    order = [(fn, label) for fn, label, _, _ in PAGES]
+    out = {}
+    for i, (fn, label, kind, arg) in enumerate(PAGES):
+        if kind == "readme":
+            parts = []
+            for j, key in enumerate(arg):
+                text = readme.get(key, "")
+                if not text:
+                    continue
+                if key != "_intro":
+                    parts.append("<h2>%s</h2>" % html.escape(key))
+                parts.append(md(text))
+            body = "".join(parts)
+        elif kind == "bench":
+            body = "<h2>Benchmarks</h2>" + benchmarks_page(runs)
+        else:
+            body = ('<h2>Design notes</h2><p>Working notes on why the library is '
+                    'built the way it is. Each records what was measured, '
+                    'including the approaches that measurement ruled out.</p>'
+                    '<div class="toc">%s</div>'
+                    % "".join('<a href="%s"><div class="t">%s</div>'
+                              '<div class="d">%s</div></a>'
+                              % (note_page_name(f), html.escape(t), html.escape(d))
+                              for f, t, d in NOTES if read(os.path.join(root, f))))
+        if fn == "index.html":
+            body = ('<h1>matchedfilter</h1><p class="lede">A fast single-threaded '
+                    'matched filter for x86, arm64 and macOS, with peak-only output '
+                    'and an optional hierarchical gate.</p>') + body
+        out[fn] = shell(fn, "matchedfilter — %s" % label, body, version,
+                        prev_next=(order[i - 1] if i else None,
+                                   order[i + 1] if i + 1 < len(order) else None))
+
+    notes = [(f, t) for f, t, _ in NOTES if read(os.path.join(root, f))]
+    for i, (f, title) in enumerate(notes):
+        fn = note_page_name(f)
+        body = md(read(os.path.join(root, f)))
+        prev = (note_page_name(notes[i - 1][0]), notes[i - 1][1]) if i else \
+               ("notes.html", "Design notes")
+        nxt = (note_page_name(notes[i + 1][0]), notes[i + 1][1]) \
+              if i + 1 < len(notes) else None
+        out[fn] = shell(fn, "matchedfilter — %s" % title, body, version,
+                        sub=("note", title), prev_next=(prev, nxt))
+    return out
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="JSON files or directories of them")
-    ap.add_argument("--out", default="site/index.html")
+    ap.add_argument("--out", default="site/index.html",
+                    help="output path; its directory receives the whole site")
     ap.add_argument("--root", default=".",
                     help="repository root, for README.md and docs/")
     a = ap.parse_args()
@@ -547,16 +717,15 @@ def main():
         raise SystemExit("no benchmark JSON found in %s" % ", ".join(a.inputs))
     runs = load(paths)
 
-    body = build(runs, root=a.root)
-    page = ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            "<title>matchedfilter</title><style>%s</style></head>"
-            "<body>%s</body></html>" % (CSS, body))
-    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-    with open(a.out, "w") as fh:
-        fh.write(page)
-    print("wrote %s from %d run(s): %s"
-          % (a.out, len(runs), ", ".join(r["host"]["label"] for r in runs)))
+    outdir = os.path.dirname(a.out) or "."
+    os.makedirs(outdir, exist_ok=True)
+    pages = build(runs, root=a.root)
+    for fn, page in pages.items():
+        with open(os.path.join(outdir, fn), "w") as fh:
+            fh.write(page)
+    print("wrote %d pages to %s/ from %d run(s): %s"
+          % (len(pages), outdir, len(runs),
+             ", ".join(r["host"]["label"] for r in runs)))
 
 
 if __name__ == "__main__":

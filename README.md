@@ -1,4 +1,9 @@
-# matchedfilter
+# [matchedfilter](https://ahnitz.github.io/matchedfilter/)
+
+### » [Read the documentation](https://ahnitz.github.io/matchedfilter/) «
+
+Built by CI from this README, the notes in `docs/`, and benchmark results
+measured on every platform the library is tested on.
 
 A fast single-threaded matched filter. You give it a batch of data
 segments and a batch of templates; it correlates every pair and hands back only
@@ -34,8 +39,6 @@ pip install matchedfilter
 Every release so far is an alpha, and pip installs a pre-release when that is
 all a project has. Once a stable version exists, getting an alpha will need
 `pip install --pre matchedfilter`.
-
-Full documentation, built by CI: **https://ahnitz.github.io/matchedfilter/**
 
 The hierarchical filter chooses its first-stage configuration from a measured
 tuning table shipped with the package. It is keyed on the caller's reference
