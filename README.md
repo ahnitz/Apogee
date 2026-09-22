@@ -13,8 +13,9 @@ Not returning the full correlation is the point. Most searches threshold the
 output and throw the rest away, and once you say so up front the filter can
 skip work that could not have produced a peak anyway.
 
-> **Status: work in progress.** The API still moves, and there is a known
-> calibration weakness in the hierarchical filter. See
+> **Status: work in progress.** The API still moves, and the hierarchical
+> filter's tuning tables cover a limited range of transform lengths and
+> thresholds -- outside it the library refuses rather than guessing. See
 > [Caveats](#caveats).
 
 ```python
@@ -148,13 +149,22 @@ falls toward 1x on data where most pairs trigger.
 
 ## Caveats
 
-- **The false-dismissal budget is not currently met at low thresholds.**
-  `fd` is honoured well at snr 6 and above. At snr 5.0 to 5.5 with a coarse
-  band the gate omits more than it should: 1.4% against a 0.1% budget in a
-  418-template search. The cause is that the gate's recovery factors are
-  measured from a mean frequency series, which is not a bound on any
-  individual realisation. Tracked by an `xfail` test in `tests/test_api.py` and written up
-  in [docs/hierarchical.md](docs/hierarchical.md).
+- **The library refuses configurations its tables do not cover.** Band,
+  oversampling, taps and gate are chosen from two measured tables shipped with
+  the package, keyed on the reference you supply. Outside their coverage --
+  currently `n=4096` at snr 5.0/5.5/6.0 -- construction raises rather than
+  guessing. Extend it by running `tools/hmf_tune.py`, or state the
+  configuration yourself at construction, which always works.
+- **A hand-specified configuration does not get a tuned gate.** Passing
+  `band`/`oversample`/`taps` bypasses selection, and the gate then comes from
+  the compiled model in `src/hmf_table.h`, whose recovery factors are derived
+  from the reference's mean spectrum and are not a bound on an individual
+  realisation. On a ratio-filter-shaped workload that costs 8 omissions in 140
+  against a 3% budget; the same workload passes when the library chooses.
+  Pinned in `tests/test_api.py`.
+- **Most admitted accuracy cells read 0.0 dismissal**, which is the trial-count
+  resolution floor rather than a demonstration of safety. The shipped table
+  resolves to about 3e-4, so an `fd` much below that is not yet evidenced.
 - Single-threaded by design. Parallelism is the caller's to arrange.
 - Narrower targets cost what their width implies: on one machine SSE4 runs
   the same workload at 2.05x AVX3 and AVX2 at 1.10x. See

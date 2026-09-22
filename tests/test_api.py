@@ -449,20 +449,35 @@ def test_run_series_grouping_is_invisible():
 
 
 @pytest.mark.xfail(
-    reason="known: g and graw are measured from the reference's mean frequency "
-           "series, "
-           "which is not a bound on an individual realisation. Real peaks are "
-           "sharper than the mean, so the gate sits too high and omits more "
-           "than the budget allows -- ~5% here against 1%. graw1 was fixed this "
-           "way already; g and graw were not. Reproduced independently in a "
-           "418-template search: 1.4% against a 0.1% budget at snr 5.5. "
-           "See docs/hierarchical.md.",
+    reason="known, and scoped to the HAND-SPECIFIED path: pinning band/taps "
+           "bypasses selection, so the gate falls back to the compiled model "
+           "in src/hmf_table.h, whose g and graw are measured from the "
+           "reference's MEAN frequency series and are not a bound on an "
+           "individual realisation. Real peaks are sharper than the mean, the "
+           "gate sits too high, and this omits ~8/140 against a 3% budget. "
+           "The same workload PASSES when the library chooses -- see "
+           "test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not "
+           "below, which is what makes this a statement about the pinned path "
+           "rather than about the method. See docs/hierarchical.md.",
     strict=False)
 def test_ratio_filter_shaped_workload():
-    _ratio_filter_shaped_workload()
+    _ratio_filter_shaped_workload(pin=True)
 
 
-def _ratio_filter_shaped_workload():
+def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():
+    """The same workload, with the library choosing instead of the caller.
+
+    This is the whole claim of the tuning tables in one assertion: given only
+    the reference and the budget, selection finds a configuration that meets
+    the budget on a workload where a hand-picked band does not.
+    `test_ratio_filter_shaped_workload` above is the pinned half of the pair
+    and is xfail; if this one ever starts failing too, the tables have gone
+    stale against the code and regenerating them is the fix, not loosening
+    the bound.
+    """
+    _ratio_filter_shaped_workload(pin=False)
+
+def _ratio_filter_shaped_workload(pin=True):
     """The shape a ratio/FIR search actually uses.
 
     What makes it different from every other test here:
@@ -538,8 +553,9 @@ def _ratio_filter_shaped_workload():
             inj = unit * amp * ph ** lag
             scale = (snr + 2.0) / max(np.abs(np.fft.ifft(inj * np.conj(H[t])) * n).max(), 1e-30)
             ser[starts[b]:starts[b] + n] += (np.fft.ifft(inj) * n * scale).astype(np.complex64)
-    hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
-                                   band=512, oversample=2, taps=8)
+    hf = (mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
+                                band=512, oversample=2, taps=8) if pin else
+          mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2))
     hf.set_reference(ref)
     hf.set_templates(H)
     got = hf.run_series(ser, starts, ws, we, binsize=n, threshold=snr)

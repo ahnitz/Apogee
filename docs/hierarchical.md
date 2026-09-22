@@ -278,7 +278,7 @@ sharper.  g and graw are still measured deterministically from that mean shape,
 and the same argument applies to them -- it just does not bite until the grid is
 coarse.
 
-Seen in a real search at snr 5.0, forcing bands the design table does not pick:
+Seen in a real search at snr 5.0, forcing bands the tables do not pick:
 
     band   kernel   trigger   triggers recovered
     2048   0.200 s     0.8%   893/893   <- what the table picks
@@ -588,8 +588,8 @@ dependence on either axis -- so it is left fixed rather than fitted to noise.
 
 The band, oversample and tap count used to come from `hmf_choose`, a
 nearest-neighbour lookup on `(n, snr, fd)` that never saw the signal. They now
-come from a measured table, `python/matchedfilter/tuning.txt`, shipped as
-package data and read once when the plan is built.
+come from two measured tables, `python/matchedfilter/accuracy.txt` and
+`cost.txt`, shipped as package data and read once when the plan is built.
 
 **What it is keyed on.** Two numbers per candidate band, both computed from
 the caller's reference:
@@ -622,15 +622,24 @@ Timing on the injected harness made every band read 9-13 us/pair, because
 injections force half the pairs to fire whatever the band. On noise the same
 cells separate 12.7 us/pair from 1.8.
 
-**What it delivers.** Asked for `fd=1e-3` on the twelve captures it picks band
-2048 and returns **0 of 842**, against the old default's 31 of 842 -- which is
-3.7% missed on a 0.1% budget. It costs 16.07 ms/segment where the default ran
-10.05. The guarantee is the thing being bought.
+**What it delivers.** Asked for `fd=1e-3` on the twelve captures it returns
+**0 of 842**, against the old compiled default's 31 of 842 -- 3.7% missed on a
+0.1% budget. The guarantee is the thing being bought.
 
-It is not yet optimal. Hand-tuning band 1024 with `gate_margin=0.94` also
-reaches 0/842, at 13.2 ms -- 22% cheaper. The tuner cannot find that because
-its candidate space is `(band, oversample, taps)` and does not include the
-gate scaling. Adding that dimension is the next step.
+It also now buys back most of the cost. The gate scaling is a fourth selected
+dimension rather than a hand-set constant, and the cost rows are relative
+measurements taken against a pivot on a common reference, so configurations
+are actually comparable. Together those moved the pick from band 512 at
+gate 0.90 -- the slowest of the four admissible options, 0.082 ms/block -- to
+band 2048 at gate 1.00 at 0.065, 21% cheaper at unchanged accuracy.
+
+The cheapest admissible row is not always the cheapest thing that works on a
+given dataset. Band 1024 at gate 0.94 measures 0.053 ms/block and misses
+nothing on the captures, but its measured dismissal is 1.3e-3 against a 1e-3
+budget, so it is declined. That is the right call and worth being explicit
+about: 67 triggers cannot resolve 1e-3, so the captures agreeing is not
+evidence, and the table is the only instrument here that sees that far down.
+A caller who wants it can ask for `fd=2e-3` and get it.
 
 **Regenerating.** `tools/hmf_tune.py`. The two halves go stale independently:
 COST on any kernel or machine change, FDR on any change to the gate or the
@@ -651,7 +660,11 @@ export MF_COST=$PWD/mycost.txt
 ```
 
 It re-measures the timings at the cells the shipped accuracy table already
-covers. A few minutes on a many-core box; it parallelises over cells.
+covers. A few minutes on a many-core box; it parallelises over cells, which is
+safe precisely because the numbers are ratios -- every configuration in a pass
+is timed against a pivot in that same pass, so contention is common to all of
+them and cancels. Measuring under contention is in any case the condition most
+deployments run in.
 `MF_ACCURACY` overrides the other half if you ever need to.
 
 The accuracy table should not normally need regenerating -- they describe the

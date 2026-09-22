@@ -64,147 +64,7 @@ If it moved `min(S/true)` from 0.893 to 0.95, `ilo` could rise from 0.912 to
 0.978, and the measured `ilo` sweep says that roughly halves the odd pass again.
 Worth up to ~10% overall. This is the best-posed live item on the page.
 
-### 2. Choose the band AND the gate from the reference, jointly
-
-These are listed here as one item because they are one problem, and treating
-them as two is what makes both of them wrong.
-
-**What happens now.** `hmf_choose(n, snr, fd, &band, &u, &k)` is a
-nearest-neighbour lookup over a hardcoded list of design points. It never sees
-the signal power. It runs inside `ap_hmf_create`, and `set_reference` -- which
-supplies exactly the integrated-power information the choice needs -- arrives
-afterwards. The gate, by contrast, *is* power-aware: `t_c` is tabulated against
-the effective band fraction `f*g^2`, so once the band is fixed the threshold
-adapts. Half the decision uses the reference and half ignores it.
-
-**What it costs.** For a bank whose power lies entirely below bin 512, the
-table still picks 2048:
-
-| band | time | triggers | trigger rate |
-|---|---:|---:|---:|
-| 2048 (table) | 14.94 ms | 15 | 0.18% |
-| **512** | **8.83 ms** | 14 | 0.15% |
-| 256 | 32.04 ms | 15 | 99.48% |
-
-1.7x for band it does not need, while 256 collapses -- so the optimum is a real
-interior point that depends on where the power is. On the captures the same gap
-appears from the other side: the table picks 2048 and reaches 0/842 at 16.0
-ms/segment, where band 1024 with `gate_margin=0.94` reaches 0/842 at 13.3 --
-20% faster.
-
-**Why they cannot be separated.** Band 1024 *alone* at gate 1.00 misses 31/842.
-The table picks 2048 precisely because its recovery factors are optimistic
-(g = 0.9995 against a measured 0.88-0.91), so it buys the accuracy back with
-bandwidth. Narrow the band without fixing the gate and triggers are lost; fix
-the gate without narrowing the band and the saving is left on the table. The
-target is: *given this reference, the cheapest (band, oversample, taps, gate)
-that meets fd.*
-
-**What already exists.** `tools/hmf_design.py` performs exactly this
-optimisation -- `recovery()` for g, `solve_tc()` for the gate meeting alpha,
-`_cost_units()` for the cost model, and `design()` minimising
-`coarse_cost + trigger_rate`. It just runs offline against a synthetic template
-built to a hardcoded `POWER_FRAC`, which the source concedes: "the cost of a
-mismatch is efficiency, not accuracy". At runtime, C already has
-`measure_recovery()` for g and `hmf_threshold()` for t_c from `f*g^2`.
-
-**Status: mechanism built, model blocked.** `select_band` + `probe_recovery` +
-`probe_rate` are in and work -- every candidate band is probed, its recovery
-measured, its noise rate measured through the real transform, and the
-band-dependent state rebuilt through `alloc_band_state`. It is off by default
-(`MF_AUTOBAND=1`, `MF_BAND_DIAG=1`) because it picks wrong, and the reason is
-structural rather than a modelling slip:
-
-| band | reference (sets the gate) | templates (set the noise) |
-|---|---:|---:|
-| 256 | 0.7956 | 0.3230 |
-| 512 | **0.9335** | **0.4517** |
-| 1024 | 0.9875 | 0.7089 |
-| 2048 | 1.0000 | 1.0000 |
-
-**The cause is a probe fidelity bug, not a missing input.** An earlier reading
-of this blamed a divergence between the reference and the filter's own power
-(0.9335 against 0.4517 at band 512) and concluded the templates were needed.
-That was wrong. What governs both the signal captured and the noise admitted is
-the distribution of the *reconstructed SNR*, which is `refpow * tpow` -- the
-product the tap design already uses -- and on the captures that is **0.9340 at
-band 512 against the reference's 0.9335**. The reference alone is sufficient;
-the filter's own fraction was never the relevant number.
-
-The real fault is that the probe does not reproduce the gate the run will use:
-
-| | probe | run |
-|---|---|---|
-| band 512 | g = 0.9539, t_c = 3.715 | **g = 0.9979, gate = 4.237** |
-| band 1024 | g = 0.9709, t_c = 4.246 | **g = 0.9995, gate = 4.787** |
-
-That half is now **fixed**: `K` is part of the choice rather than inherited
-from before it, and the probe reproduces the run to the digit -- g = 0.9979,
-t_c = 4.237 at band 512; 0.9995 and 4.787 at 1024.
-
-What remains is `probe_rate`. Its synthetic noise does not reproduce the real
-coarse statistic: it returns 1.6e-2 at band 512 and 0 at 1024 where the
-captures measure **8.75%** and **1.46%**. The suspect is its normalisation --
-the generated product spectrum is scaled by the reference's total, where the
-gate is quoted in units that make the FULL statistic unit-variance. Until that
-matches, selection still picks too narrow (108/842 against 31).
-
-The decision itself is cheap and reusable, which is the point of taking a
-reference: clean, noise-free information supplied once, one optimisation, then
-reused for every run against it.
-
-### Finishing it: what is actually left
-
-The runtime plumbing is done and tested -- probe, cost model, rebuild,
-invariance. What is missing is the accuracy constraint, and the right place for
-it is offline, because resolving a 1e-4 dismissal rate needs far more trials
-than a plan setup can afford.
-
-`tools/hmf_design.py:design()` already takes `want_f`, the power fraction below
-the n/8 reference edge, which is precisely the scalar a reference supplies. Run
-over a grid it behaves correctly -- the band narrows as the reference
-concentrates and widens as `fd` tightens, and 1e-4 is already in its grid:
-
-| want_f | fd=1e-2 | fd=1e-3 | fd=1e-4 |
-|---|---|---|---|
-| 0.30 | 2048 | 2048 | 2048 |
-| 0.85 | 512 | 2048 | 2048 |
-| 0.95 | 256 | 256 | 512 |
-| 0.99 | 256 | 256 | 256 |
-
-So the remaining work is:
-
-1. **Key the pick table on `want_f`** as well as (snr, fd). Today `hmf_picks`
-   is keyed on (n, snr, fd) and cannot see the reference at all.
-2. **Validate every cell with `validate(..., ntrial=40000)` and keep only picks
-   whose MEASURED dismissal meets fd.** This is the step that matters and the
-   one the current table skips: `design()` reports m=256 as optimal at
-   want_f=0.95, fd=1e-3 with `trig`=0.094, where band 256 measured on the
-   captures triggers 60% of the time and costs 23 ms. The integrated model is
-   optimistic in the same way the runtime recovery factors are -- which is the
-   root of the 31/842 and of the 34-trigger pycbc loss -- so a table built from
-   it unvalidated would inherit the fault.
-3. **Look it up in `set_reference`**: compute the reference's `want_f`, select,
-   rebuild. That plumbing exists and is under test.
-4. Manual override already works -- `band`/`oversample`/`taps` at construction
-   bypass selection entirely.
-
-The lifetime part is already done: `alloc_band_state`/`free_band_state` own
-everything sized by the band, and `set_reference` rebuilds through them.
-
-**Calibration, which this subsumes.** `MF_GCAL=1` already meets the budget --
-it is what makes the xfailed ratio-filter workload pass, which
-`test_autotuned_calibration_meets_the_budget_where_the_default_does_not` now
-pins. It is off because it over-corrects: 14.43 ms/segment against 13.29 for
-the same 0/842 when the gate is cut by hand, and its `gscale` is a fitted
-constant behind a hard clamp (`g = min(0.9995, 0.7022*gscale)`) with nothing
-usable either side of 1.40. This subsumes what used to be listed separately as "calibration". The honest
-`g`, measured as coarse-over-full on the same realisation across 4440 real
-pairs, is median 0.9761, p1 0.9125, min 0.8660. A per-template `g` is not worth
-it -- split-half reliability of the per-template estimate is r = 0.218, so that
-spread is sampling noise and a single global constant is the right model.
-
-### 3. Template support pruning -- small here, real for the flat filter
+### 2. Template support pruning -- small here, real for the flat filter
 
 Measured on the captures: templates are **exactly zero in 2047 of 4096 bins**.
 The product is therefore zero above n/2, and half the full filter's product
@@ -222,11 +82,57 @@ is 6% of the hierarchical cost, so **0.7% here** -- but 12% for anyone using
 Detect the support at ingest (measure it, do not assume it); a filter that is
 dense gets the current path.
 
-### 4. Output protocol
+### 3. Output protocol
 
 `fill` writes zeroed peak records for the 98.5% of pairs that report nothing.
 Returning fired peaks plus a count instead would remove it. Worth 1%, and it
 changes the API.
+
+## Done
+
+### Choosing the band and the gate from the reference, jointly
+
+This was the largest live item on the page and it is now shipped. Kept here in
+summary because the argument is still the reason the design looks as it does.
+
+**The problem it solved.** Band selection was `hmf_choose(n, snr, fd, ...)`, a
+nearest-neighbour lookup over hardcoded design points that never saw the signal
+power, while the gate *was* power-aware. Half the decision used the reference
+and half ignored it, and the two cannot be separated: band 1024 alone at gate
+1.00 misses 31/842, so the table picked 2048 and bought the accuracy back with
+bandwidth. Narrow the band without fixing the gate and triggers are lost; fix
+the gate without narrowing the band and the saving is left on the table.
+
+**What shipped.** Two measured tables, `accuracy.txt` and `cost.txt`, shipped
+as package data and read at `set_reference` time. They are split because they
+are different kinds of fact: dismissal is a property of the algorithm, cost is
+a property of the machine, and a user retuning for their own CPU must be able
+to replace one without touching the other. `choose_config` computes the
+reference's in-band fraction and effective bandwidth at each candidate band,
+keeps the configurations whose measured dismissal meets the budget, and takes
+the cheapest. There is no compiled design table and no model: a fit that does
+not promise the budget should not answer in the budget's name.
+
+**Outside the tables it refuses.** That is the point of measuring rather than
+modelling, and it is why `tools/hmf_tune.py` ships -- coverage is extended by
+running it, not by extrapolating.
+
+**Two faults found by measurement, both worth remembering.** The accuracy half
+was built from a numpy re-derivation of the statistic rather than the real
+filter, and reported FD = 0.0 for a configuration that triggers 60% of the
+time; the tuner now drives the actual code path, so a code change invalidates
+the table rather than silently disagreeing with it. The cost half built a
+separate synthetic reference per cell, so band 512 and band 1024 were timed on
+different signals -- not a noisy comparison but not a comparison at all -- and
+it ranked the slowest of four admissible options first. Cost is now measured by
+holding one reference fixed and timing every configuration against a pivot in
+the same loop, and stored as a ratio, so machine, clock state and contention
+cancel.
+
+**What is left here.** Coverage, and resolution. Most admitted cells read 0.0
+dismissal, which is the trials floor rather than a demonstration of safety, and
+`U=2` is the only oversampling measured -- so oversampling is not really a
+selected setting yet.
 
 ## The coarse pass, examined directly
 
@@ -464,6 +370,8 @@ by a least-squares tap design whose worst-case accuracy saturates at 17 taps,
 and a minimax design optimises exactly the quantity the bound depends on. That
 is worth up to ~10%.
 
-Calibration is a correctness item, not a speed one -- the honest `g` reproduces
-the hand-tuned `gate_margin=0.94` rather than beating it, and the per-template
-version is sampling noise. Everything else on this page is closed.
+Band and gate selection is done: it is driven by two measured tables read from
+the caller's reference, and on the captures it moves the pick from the slowest
+admissible configuration to the fastest, 21% at unchanged accuracy. What is
+left there is coverage and resolution, not method. Everything else on this page
+is closed.

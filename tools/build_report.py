@@ -590,7 +590,8 @@ def benchmarks_page(runs):
 # (file, nav label, kind, argument).  `kind` says where the prose comes from:
 # readme sections, the generated benchmark, the notes index, or a notes file.
 NOTES = [("docs/hierarchical.md", "The hierarchical filter",
-          "Why a cheap low-band pass first, what it can and cannot skip."),
+          "The cheap low-band pass, and how the tuning tables choose its "
+          "band and gate from your reference."),
          ("docs/design.md", "Batched matched filter design",
           "The four-step transform, the split layout, and the fused peak scan."),
          ("docs/simd.md", "The SIMD layer",
@@ -600,7 +601,8 @@ NOTES = [("docs/hierarchical.md", "The hierarchical filter",
          ("docs/machine-notes.md", "Zen 5 instruction notes",
           "Measured issue rates, not vendor documentation."),
          ("docs/roadmap.md", "What is left, and what is closed",
-          "Live avenues, and the ones measurement has ruled out.")]
+          "Three live avenues, what shipped, and the many that measurement "
+          "ruled out.")]
 
 PAGES = [("index.html", "Overview", "readme", ["_intro", "Install"]),
          ("how-it-works.html", "How it works", "readme",
