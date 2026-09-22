@@ -467,12 +467,12 @@ Measured per pair, at band 1024:
 | bracket on, scalar scan | 10410 | 420 | +8350 |
 | bracket on, vectorised | 2188 | 294 | -172 |
 
-With that fixed the bracket still measured break-even, and it was left off for
-a second time on a second wrong reading. Two things were wrong with it.
+With that fixed, the bracket has been turned on and off three times. It is
+off. This is the evidence.
 
 The reject branch fires when `S/ilo < raw_gate`. A wrong rejection only loses a
-trigger when it happens above the gate, and `raw_gate = graw * gate`, so the
-branch is sound while
+trigger above the gate, and `raw_gate = graw * gate`, so the branch is sound
+while
 
     ilo <= min(S / true) / graw
 
@@ -487,27 +487,28 @@ bracket happened to leave behind. It saturates with tap count:
 | 17 | 8 | 0.8931 | 0.9199 |
 | 21 | 10 | 0.8931 | 0.9199 |
 
-17 and 21 taps give the identical worst case, which says the limit is the
-design criterion and not the length -- the taps are a weighted least-squares
-fit, which minimises mean error, not the worst case. 13 taps sits at the knee.
+17 and 21 tie, which says the limit is the design criterion and not the length:
+the taps are a weighted least-squares fit, which minimises mean error and does
+nothing about the tail. At `ilo=0.90`, inside the 13-tap bound, the bracket is
+a ~2% win on the captures with 31/842 and 0/842 unchanged.
 
-The first wrong reading was running `ilo=0.90` because it was the old default,
-without deriving what the bound permitted: 0.9121. The second was that the
-per-block cost was higher then, so the odd-pass saving was a smaller share of
-the total. With both fixed the bracket is a plain win at every operating point,
-at a reject bound with margin still in hand:
+**It then lost a trigger on the first independent workload it met.** The
+`pycbc_inspiral_fir` example at threshold 5.0 returns 893 triggers with the
+bracket off and 892 with it on, and its kernel is 4% *slower* with it on
+(0.229 s against 0.220 s). The bound was derived from one dataset and does not
+transfer. Backing `ilo` off to 0.86 -- conservative enough to be safe on both
+-- makes it a loss on the captures as well (10.63 ms against 10.14). There is
+no setting that is both safe and profitable, so it stays off.
 
-| | bracket off | bracket on |
-|---|---|---|
-| default gate | 10.14 ms/seg, 3.61x | **9.97 ms/seg, 3.66x** |
-| zero-loss gate | 13.44 ms, 2.76x | **12.90 ms, 2.81x** |
-| threshold 5.5 | 8.06 ms, 4.42x | **8.01 ms, 4.52x** |
+It does help where the trigger rate is low: at threshold 5.5 the same example
+gives 0.084 s with it on against 0.089 s off, with the same 60 triggers. A
+caller who knows their operating point can turn it on with `MF_BRACKET=1`.
 
-with 31/842 and 0/842 unchanged. The knob does not tolerate being pushed past
-its bound: at 9 taps, where the bound is 0.8636, `ilo=0.93` costs 3 triggers of
-842 and 0.97 costs 20.
+What the exercise bought is a correct implementation -- the vectorised
+`interp_max` it depends on was dead code, which is why it used to measure 5x
+slower -- and a derived soundness criterion in place of a fitted constant.
 
-Two knobs matter and they are not symmetric:Two knobs matter and they are not symmetric:
+Two knobs matter and they are not symmetric:Two knobs matter and they are not symmetric:Two knobs matter and they are not symmetric:
 
 - **`MF_IFRAC`** (0.95) is the candidate cut, as a fraction of the grid maximum.
   Below ~0.79, the band's worst-case recovery, the cut is provably free. 0.95

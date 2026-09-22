@@ -242,33 +242,30 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      Derived on six captured segments and checked on six others, which violated
      at 0.19%, so they carry a margin -- only the lower one can lose a trigger;
      an over-report merely fires the coarse gate for nothing. */
-  /* The bracket is ON, at a reject bound that is derived rather than tuned.
+  /* The bracket is OFF.  It has been turned on and off three times; this is
+     why it is off.
      
      It settles a pair without the odd coarse transform when the interpolated
-     statistic's two-sided bound does not straddle the gate. The reject side is
-     sound only while
-         ilo <= min(S/true) / graw
-     over real triggers. MF_BRACKET=2 computes the statistic without acting on
-     it so that minimum can be measured on every pair rather than on the ones
-     the bracket left behind. Measured over the twelve captures it saturates
-     with tap count -- 0.8384 at 9 taps, 0.8855 at 13, 0.8931 at 17 and 21 --
-     so HMF_IK=6 sits at the knee and the bound is 0.8855/0.9709 = 0.9121.
+     statistic's two-sided bound does not straddle the gate.  The reject side
+     is sound only while ilo <= min(S/true)/graw over real triggers, and that
+     minimum was MEASURED over the twelve captures -- 0.8384 at 9 taps, 0.8855
+     at 13, saturating at 0.8931 by 17 -- giving a bound of 0.9121 at the 13
+     taps HMF_IK=6 selects.  At ilo=0.90, inside that bound, it is a 2% win on
+     the captures with 31/842 and 0/842 unchanged.
      
-     ilo is 0.90, below that bound, so it keeps margin against a future pair
-     whose ratio is slightly worse than anything in 3192 observed triggers.
-     It does not tolerate being pushed past the bound: at 9 taps, where the
-     bound is 0.8636, running 0.93 costs 3 triggers of 842 and 0.97 costs 20.
+     It then lost a trigger on the first independent workload it met: the
+     pycbc_inspiral_fir example at threshold 5.0 returns 893 triggers with the
+     bracket off and 892 with it on, and is 4% SLOWER with it on (0.229 s
+     against 0.220 s of kernel time).  The bound was derived from one dataset
+     and does not transfer.  Backing ilo off to 0.86, conservative enough to be
+     safe on both, makes it a loss on the captures too (10.63 ms against
+     10.14).  So there is no setting that is both safe and profitable.
      
-     This was off for a long time on two separate wrong readings. First it
-     measured 5x slower, which was a dead-code bug -- the vectorised
-     interp_max was plumbed through dispatch.c and never called. Then, fixed,
-     it measured break-even at ilo=0.90, because 0.90 was the old default and
-     nobody had derived what the bound actually permitted; and because the
-     per-block cost was higher then, which made the odd-pass saving a smaller
-     share. Both are now resolved and it is a plain win at every operating
-     point: 10.14 -> 9.97 ms/segment at the default gate, 13.44 -> 12.91 at
-     the zero-loss gate, and 4.42x -> 4.52x at threshold 5.5. */
-  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=1; p->incand=16;   /* MF_BRACKET=0 disables */
+     What survives is a correct implementation behind MF_BRACKET=1 -- the
+     vectorised interp_max it needs was dead code, plumbed through dispatch.c
+     and never called, which is why it used to measure 5x slower -- and the
+     soundness criterion above in place of a fitted constant. */
+  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=0; p->incand=16;   /* MF_BRACKET=1 enables */
   { const char *e;
     if((e=getenv("MF_BRACKET"))) p->ibrk=atoi(e);
     if((e=getenv("MF_BRACKET_LO"))) p->ilo=(float)atof(e);
