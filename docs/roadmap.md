@@ -64,25 +64,62 @@ If it moved `min(S/true)` from 0.893 to 0.95, `ilo` could rise from 0.912 to
 0.978, and the measured `ilo` sweep says that roughly halves the odd pass again.
 Worth up to ~10% overall. This is the best-posed live item on the page.
 
-### 2. Calibration -- worth correctness, not speed
+### 2. Choose the band AND the gate from the reference, jointly
 
-The recovery factor `g` is derived from a noiseless autocorrelation and is
-0.9995, where the honest quantity is the ratio of the coarse statistic to the
-**full filter's** statistic on the same realisation. Measured on 4440 real
-pairs: median 0.9761, p1 0.9125, p0.1 0.8837, min 0.8660.
+These are listed here as one item because they are one problem, and treating
+them as two is what makes both of them wrong.
 
-So a principled `g` lands near 0.88-0.91. Applied through
-`hmf_threshold(fpow*g^2, ...)` that is a ~9% cut in the gate, against the 6%
-that `gate_margin=0.94` already applies by hand. **It would reproduce the
-existing zero-loss operating point, not beat it.** The value is that the point
-becomes automatic instead of user-tuned, and that the fitted `gscale=1.40`
-disappears.
+**What happens now.** `hmf_choose(n, snr, fd, &band, &u, &k)` is a
+nearest-neighbour lookup over a hardcoded list of design points. It never sees
+the signal power. It runs inside `ap_hmf_create`, and `set_reference` -- which
+supplies exactly the integrated-power information the choice needs -- arrives
+afterwards. The gate, by contrast, *is* power-aware: `t_c` is tabulated against
+the effective band fraction `f*g^2`, so once the band is fixed the threshold
+adapts. Half the decision uses the reference and half ignores it.
 
-A *per-template* `g` looked like the speed win -- per-template worst cases
-spread 0.866 to 0.928 -- but that spread is sampling noise: splitting each
-template's samples in half and correlating the two halves' p10 gives
-**r = 0.218**. The templates genuinely have the same recovery. A global
-constant is the right model.
+**What it costs.** For a bank whose power lies entirely below bin 512, the
+table still picks 2048:
+
+| band | time | triggers | trigger rate |
+|---|---:|---:|---:|
+| 2048 (table) | 14.94 ms | 15 | 0.18% |
+| **512** | **8.83 ms** | 14 | 0.15% |
+| 256 | 32.04 ms | 15 | 99.48% |
+
+1.7x for band it does not need, while 256 collapses -- so the optimum is a real
+interior point that depends on where the power is. On the captures the same gap
+appears from the other side: the table picks 2048 and reaches 0/842 at 16.0
+ms/segment, where band 1024 with `gate_margin=0.94` reaches 0/842 at 13.3 --
+20% faster.
+
+**Why they cannot be separated.** Band 1024 *alone* at gate 1.00 misses 31/842.
+The table picks 2048 precisely because its recovery factors are optimistic
+(g = 0.9995 against a measured 0.88-0.91), so it buys the accuracy back with
+bandwidth. Narrow the band without fixing the gate and triggers are lost; fix
+the gate without narrowing the band and the saving is left on the table. The
+target is: *given this reference, the cheapest (band, oversample, taps, gate)
+that meets fd.*
+
+**What already exists.** `tools/hmf_design.py` performs exactly this
+optimisation -- `recovery()` for g, `solve_tc()` for the gate meeting alpha,
+`_cost_units()` for the cost model, and `design()` minimising
+`coarse_cost + trigger_rate`. It just runs offline against a synthetic template
+built to a hardcoded `POWER_FRAC`, which the source concedes: "the cost of a
+mismatch is efficiency, not accuracy". At runtime, C already has
+`measure_recovery()` for g and `hmf_threshold()` for t_c from `f*g^2`.
+
+**What is missing.** The predicted trigger rate at a candidate gate, the cost
+model constants, and the lifetime change -- band-dependent allocation
+(`ap_mf_create(band,...)`, `cf`, `ct0/ct1`, `cd`, the scratch buffers) has to
+move out of `ap_hmf_create` and into `set_reference`, or the reference has to
+be accepted at construction. Templates ingested before the reference would need
+re-ingesting, since they are stored as coarse spectra at the chosen band.
+
+This subsumes what used to be listed separately as "calibration". The honest
+`g`, measured as coarse-over-full on the same realisation across 4440 real
+pairs, is median 0.9761, p1 0.9125, min 0.8660. A per-template `g` is not worth
+it -- split-half reliability of the per-template estimate is r = 0.218, so that
+spread is sampling noise and a single global constant is the right model.
 
 ### 3. Template support pruning -- small here, real for the flat filter
 
