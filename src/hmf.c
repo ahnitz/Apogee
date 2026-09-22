@@ -167,6 +167,40 @@ static void prod_inter_nc(const float *d,const float *h,float *o,size_t m){
   }
 }
 
+/* The state whose size depends on the band.  It is a unit because the band is
+   not known until the caller supplies a reference: everything here is torn
+   down and rebuilt when set_reference picks a different one. */
+static void free_band_state(ap_hmf_plan *p){
+  if(p->coarse){ ap_mf_destroy(p->coarse); p->coarse=NULL; }
+  if(p->cf){ ap_destroy(p->cf); p->cf=NULL; }
+  free(p->ct0);  p->ct0=NULL;   free(p->ct1);   p->ct1=NULL;
+  free(p->shift);p->shift=NULL; free(p->shift2);p->shift2=NULL;
+  free(p->prod); p->prod=NULL;  free(p->cev);   p->cev=NULL;
+  free(p->cod);  p->cod=NULL;   free(p->taps);  p->taps=NULL;
+  free(p->refpow);p->refpow=NULL; free(p->tpow);p->tpow=NULL;
+}
+
+static int alloc_band_state(ap_hmf_plan *p,size_t band,int U,int K,
+                            int ndi,int ntmpl){
+  p->m=band; p->U=U; p->K=K;
+  p->coarse =ap_mf_create(band,ndi,2*ntmpl);
+  p->cf     =ap_create(band);
+  p->ct0    =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
+  p->ct1    =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
+  p->shift  =ap_alloc64(2*band*sizeof(float));
+  p->shift2 =ap_alloc64(4*band*sizeof(float));
+  p->prod   =ap_alloc64(2*band*sizeof(float));
+  p->cev    =ap_alloc64(2*band*sizeof(float));
+  p->cod    =ap_alloc64(2*band*sizeof(float));
+  p->taps   =ap_alloc64((size_t)2*HMF_NSUB*K*sizeof(float));
+  p->refpow =calloc(band,sizeof(float));
+  p->tpow   =calloc(band,sizeof(float));
+  if(!p->coarse||!p->cf||!p->ct0||!p->ct1||!p->shift||!p->shift2||!p->prod||
+     !p->cev||!p->cod||!p->taps||!p->refpow||!p->tpow) return -1;
+  build_taps(p->taps,K,U);
+  return 0;
+}
+
 ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
                               size_t band,int oversample,int taps){
   if(ndata<1||ntmpl<1||!ap_supported(n)) return NULL;
@@ -208,25 +242,16 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   const int ndi = ndata>grp ? ndata : grp;
   p->nd=ndi; p->nt=ntmpl; p->snr=snr; p->fd=fd;
   p->full  =ap_mf_create(n,ndi,ntmpl);
-  p->coarse=ap_mf_create(band,ndi,2*ntmpl);
-  p->cf      =ap_create(band);
+  if(alloc_band_state(p,band,oversample,taps,ndi,ntmpl)){ ap_hmf_destroy(p); return NULL; }
   p->full_fft=ap_create(n);
   p->fwd =ap_alloc64(2*n*sizeof(float));
   p->spec=ap_alloc64((size_t)grp*2*n*sizeof(float));
   p->dspec=calloc((size_t)ndi,sizeof(*p->dspec));
   p->dready=calloc((size_t)ndi,1);
-  p->ct0 =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
-  p->ct1 =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
   p->fpow=calloc((size_t)ntmpl,sizeof(float));
   p->tg=calloc((size_t)ntmpl,sizeof(float));
   p->tgraw=calloc((size_t)ntmpl,sizeof(float));
   p->tgraw1=calloc((size_t)ntmpl,sizeof(float));
-  p->shift=ap_alloc64(2*band*sizeof(float));
-  p->shift2=ap_alloc64(4*band*sizeof(float));
-  p->prod=ap_alloc64(2*band*sizeof(float));
-  p->cev =ap_alloc64(2*band*sizeof(float));
-  p->cod =ap_alloc64(2*band*sizeof(float));
-  p->taps=ap_alloc64((size_t)2*HMF_NSUB*taps*sizeof(float));
   p->tcbuf=calloc((size_t)ntmpl,sizeof(float));
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
@@ -235,8 +260,6 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->ihlo=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
   p->ihhi=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
   p->ibuf=calloc((size_t)ndi*ntmpl,sizeof(float));
-  p->refpow=calloc(band?band:1,sizeof(float));
-  p->tpow=calloc(band?band:1,sizeof(float));
   p->taps_stale=1;
   /* Bounds on the interpolated statistic against the true combined maximum.
      Derived on six captured segments and checked on six others, which violated
@@ -273,7 +296,6 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
     if((e=getenv("MF_BRACKET_C"))) p->incand=atoi(e); }
   if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf||!p->firebuf||!p->ihlo||!p->ihhi||!p->ibuf||!p->refpow||!p->tpow){ ap_hmf_destroy(p); return NULL; }
-  build_taps(p->taps,taps,oversample);
   /* Safety factor on the even gate, over and above the measured graw1.
      The realisation model is a power-law reference filtered by a matched
      template; the ratio filter's product is shaped differently, and on 12
