@@ -31,21 +31,19 @@ from test_api import (inspiral_power, template_with_power, noise)  # noqa: E402
 import matchedfilter as mf                                    # noqa: E402
 
 
-def measure(n, band, U, K, snr, trials, seed=13, nt=1):
-    """Measured (dismissal, seconds) for one configuration, through the API.
+def measure(n, band, U, K, snr, trials, seed=13, batch=64):
+    """Measured (dismissal, seconds-per-pair) for one configuration.
 
-    Injects a signal at a known lag into noise, runs the ungated filter and
-    the hierarchical one on the same spectrum, and counts the peaks the first
-    reports that the second does not.  Same recipe as
-    test_omission_rate_meets_the_budget, which is the suite's existing
-    statement of the guarantee -- so the tuner and the test cannot disagree
-    about what a dismissal is.
+    Both numbers come from the real filter.  Injections go into a batch of
+    data spectra at once, which is how a caller drives it, so the time is
+    throughput rather than per-call overhead, and the trial count needed to
+    resolve 1e-4 stays affordable.
     """
     rng = np.random.default_rng(seed)
     power = inspiral_power(n)
     H = template_with_power(n, power)
-    flat = mf.MatchedFilter(n, ndata=1, ntemplates=1)
-    hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=1e-3,
+    flat = mf.MatchedFilter(n, ndata=batch, ntemplates=1)
+    hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
                                band=band, oversample=U, taps=K)
     hf.set_reference(power)
     flat.set_templates(H[None, :])
@@ -53,21 +51,27 @@ def measure(n, band, U, K, snr, trials, seed=13, nt=1):
 
     detected = omitted = 0
     sec = 0.0
+    npair = 0
     ph = np.exp(2j * np.pi * np.arange(n) / n)
-    for i in range(trials):
-        lag = (37 * i) % n
-        D = noise((1, n), rng)
-        D[0] += (snr * H * ph ** lag).astype(np.complex64)
+    lag0 = 0
+    for _ in range((trials + batch - 1) // batch):
+        D = noise((batch, n), rng)
+        for j in range(batch):
+            lag0 = (lag0 + 37) % n
+            D[j] += (snr * H * ph ** lag0).astype(np.complex64)
         flat.set_data(D)
         hf.set_data(D)
-        a = flat.run(binsize=n, threshold=snr)
+        a_ = flat.run(binsize=n, threshold=snr, raw=True)
         t0 = time.perf_counter()
-        b = hf.run(binsize=n, threshold=snr)
+        b_ = hf.run(binsize=n, threshold=snr, raw=True)
         sec += time.perf_counter() - t0
-        if a["index"][0, 0, 0] >= 0:
-            detected += 1
-            omitted += b["index"][0, 0, 0] < 0
-    return (omitted / detected if detected else 1.0), detected, sec / max(trials, 1)
+        npair += batch
+        ai = np.array(a_[0])[:, 0, 0]
+        bi = np.array(b_[0])[:, 0, 0]
+        hit = ai >= 0
+        detected += int(hit.sum())
+        omitted += int((bi[hit] < 0).sum())
+    return (omitted / detected if detected else 1.0), detected, sec / npair
 
 
 def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True):
@@ -88,8 +92,8 @@ def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True):
                 rows.append(dict(band=band, U=U, K=K, dismissal=dm,
                                  detected=det, sec=sec, ok=ok))
                 if verbose:
-                    print("  band %-5d U=%d K=%-3d  dismissed %.3e of %d  "
-                          "%7.3f ms  %s" % (band, U, K, dm, det, sec * 1e3,
+                    print("  band %-5d U=%d K=%-3d  dismissed %.3e of %-6d "
+                          "%8.3f us/pair  %s" % (band, U, K, dm, det, sec * 1e6,
                                             "OK" if ok else "REJECT"))
     live = [r for r in rows if r["ok"]]
     return (min(live, key=lambda r: r["sec"]) if live else None), rows
