@@ -433,6 +433,58 @@ Per-pair only; nothing here relates one template to another.
   signal lag against N1 noise lags: it rejects 20% of noise pairs and saves
   only stage B on those.
 
+## The bracket
+
+The odd coarse transform exists to find peaks that fall between the even pass's
+grid samples. It runs on the ~27% of pairs that clear the even gate, and for
+most of them the answer is already determined: the even series can be
+interpolated to a statistic `S` whose ratio to the true combined maximum is
+bounded on both sides, and a bracket that does not straddle the gate settles
+the pair without the second transform.
+
+This was implemented, measured 5x slower, and left off behind `MF_BRACKET=1`
+for a long time. Five separate diagnoses failed to explain it -- compilation
+unit, an inner-loop branch hoisted to a template, 4K aliasing, the low-threshold
+peak-update branch, an in-place read of the output buffer. None of them was the
+cause.
+
+The cause was that the fast path was dead code. `interp_max` exists twice: a
+vectorised one in `balanced-inl.h`, compiled once per SIMD target, whose own
+comment says it lives there because the scalar version "ran scalar there,
+costing more than the transform it saves"; and a scalar one in `matchfilt.c`,
+which is built at the **baseline ISA** so the library can be loaded before the
+CPU is interrogated. The vectorised one was fully plumbed -- exported in the
+back-end vtable, wrapped as `ap_interp_max` in `dispatch.c`, declared in
+`transform.h` -- and never called. The call site used the baseline one, which
+walks every lag scalar while maintaining a top-16 list with an O(n) rescan on
+each improvement.
+
+Measured per pair, at band 1024:
+
+| | even | odd | net |
+|---|---:|---:|---:|
+| bracket off | 2114 | 540 | -- |
+| bracket on, scalar scan | 10410 | 420 | +8350 |
+| bracket on, vectorised | 2188 | 294 | -172 |
+
+Two knobs matter and they are not symmetric:
+
+- **`MF_IFRAC`** (0.95) is the candidate cut, as a fraction of the grid maximum.
+  Below ~0.79, the band's worst-case recovery, the cut is provably free. 0.95
+  is past that and empirical: it costs a third of the pass and settles just as
+  many pairs, because the candidate that decides is the maximum and its
+  neighbours. Miss count is flat from 0.75 to 0.99.
+- **`MF_BRACKET_LO`** (0.90) is the reject side, and it is the one that can cost
+  a trigger, because an under-estimated `S` rejects a pair that should have
+  fired. It does not tolerate tuning: 0.90 misses 31/842 -- identical to the
+  bracket being off -- while 0.93 misses 34 and 0.97 misses 51. The fire side
+  (`MF_BRACKET_HI`, 1.10) is safe in the other direction and barely matters,
+  since fires are 0.9% of pairs against 11.4% rejects.
+
+At the default gate this is 11.03 -> 10.58 ms/segment (3.37x -> 3.49x) and at
+the zero-loss gate 14.78 -> 13.92 (2.52x -> 2.67x), with 31/842 and 0/842
+unchanged respectively.
+
 ## Batch shape
 
 D data segments against T templates is a symmetric product: the pair loop

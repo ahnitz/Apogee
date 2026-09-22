@@ -237,7 +237,14 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      Derived on six captured segments and checked on six others, which violated
      at 0.19%, so they carry a margin -- only the lower one can lose a trigger;
      an over-report merely fires the coarse gate for nothing. */
-  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=0; p->incand=16;   /* MF_BRACKET=1: experimental */
+  /* The bracket is on.  It was off for a long time because it measured 5x
+     SLOWER, which turned out to be a dead-code bug and not a property of the
+     method: the vectorised interp_max in the kernel was fully plumbed through
+     dispatch.c and never called, while the call site used a scalar scan of
+     every lag compiled at the baseline ISA.  See docs/hierarchical.md.
+     ilo is the reject side and is the one that can cost a trigger; 0.90 is
+     the tightest value that does not (0.93 costs 3 of 842, 0.97 costs 20). */
+  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=1; p->incand=16;
   { const char *e;
     if((e=getenv("MF_BRACKET"))) p->ibrk=atoi(e);
     if((e=getenv("MF_BRACKET_LO"))) p->ilo=(float)atof(e);

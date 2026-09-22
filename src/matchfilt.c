@@ -47,12 +47,11 @@ struct ap_mf_plan {
   /* Interpolated coarse maximum, when a caller asks for it.  See interp_max. */
   const float *ihlo, *ihhi;   /* complex taps for the two half-sample offsets */
   int iK, incand;
+  float ifrac;                /* candidate cut, as a fraction of the grid max */
   float *iout;                /* [nd*nt] one interpolated maximum per pair */
   const float *iser;          /* the back end's series buffer */
   size_t istride;
   int ipause;                 /* skip it for calls that do not want it */
-  int icand[AP_MF_MAXCAND];
-  float icval[AP_MF_MAXCAND];
 };
 
 ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
@@ -161,52 +160,8 @@ int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
  * worst, so a handful suffices; an earlier attempt stopped at 16 and wrongly
  * concluded the route was closed.
  */
-static float interp_max(const float *ser, size_t stride, size_t ws, size_t we,
-                        const float *hlo, const float *hhi, int K, int nc,
-                        int *cand, float *cval) {
-#define SRE(k) ser[(k)]
-#define SIM(k) ser[stride + (k)]
-  int n = 0;
-  float worst = -1.f;          /* smallest kept candidate */
-  for (size_t k = ws; k < we; k++) {
-    const float re = SRE(k), im = SIM(k);
-    const float m2 = re*re + im*im;
-    if (n < nc) {
-      cand[n] = (int)k; cval[n] = m2; n++;
-      if (n == nc) { worst = cval[0];
-        for (int i = 1; i < nc; i++) if (cval[i] < worst) worst = cval[i]; }
-    } else if (m2 > worst) {
-      int wi = 0;
-      for (int i = 1; i < nc; i++) if (cval[i] < cval[wi]) wi = i;
-      cand[wi] = (int)k; cval[wi] = m2;
-      worst = cval[0];
-      for (int i = 1; i < nc; i++) if (cval[i] < worst) worst = cval[i];
-    }
-  }
-  float best = 0.f;
-  for (int i = 0; i < n; i++) {
-    if (cval[i] > best) best = cval[i];        /* the grid sample itself */
-    const long j = cand[i];
-    float ar = 0.f, ai = 0.f, br = 0.f, bi = 0.f;
-    for (int t = -K; t <= K; t++) {
-      long kk = j + t;
-      if (kk < 0 || kk >= (long)(we + K)) continue;
-      const float re = SRE(kk), im = SIM(kk);
-      const float lr = hlo[2*(t+K)], li = hlo[2*(t+K)+1];
-      const float hr = hhi[2*(t+K)], hi_ = hhi[2*(t+K)+1];
-      ar += re*lr - im*li;  ai += re*li + im*lr;
-      br += re*hr - im*hi_; bi += re*hi_ + im*hr;
-    }
-    const float m1 = ar*ar + ai*ai, m2 = br*br + bi*bi;
-    if (m1 > best) best = m1;
-    if (m2 > best) best = m2;
-  }
-  return sqrtf(best);
-#undef SRE
-#undef SIM
-}
-
 void ap_mf_interp_pause(ap_mf_plan *p, int on) { if (p) p->ipause = on; }
+
 
 int ap_mf_set_interp(ap_mf_plan *p, const float *hlo, const float *hhi,
                      int ntap, int ncand, float *out) {
@@ -218,6 +173,19 @@ int ap_mf_set_interp(ap_mf_plan *p, const float *hlo, const float *hhi,
   }
   if (ncand > AP_MF_MAXCAND) ncand = AP_MF_MAXCAND;
   p->ihlo = hlo; p->ihhi = hhi; p->iK = ntap/2; p->incand = ncand; p->iout = out;
+  /* Candidates are the grid samples within `ifrac` of the grid maximum.
+     Below about 0.79 -- the band's worst-case recovery -- the cut is provably
+     free, since a sample under g of the maximum cannot interpolate above it
+     and the maximum is already in the running best.  0.95 is past that and is
+     an empirical choice: it costs a third of the pass and settles just as many
+     pairs, because the candidate that decides is the maximum and its
+     neighbours.  What it can do is make the statistic an UNDER-estimate, and
+     only one of the two bracket branches is unsafe in that direction -- the
+     reject.  Swept against the captures, the miss count is flat from 0.75 to
+     0.99, and the reject branch's own margin is the separate knob below. */
+  p->ifrac = 0.95f;
+  { const char *e = getenv("MF_IFRAC"); if (e) { float v = (float)atof(e);
+      if (v > 0.f && v < 1.f) p->ifrac = v; } }
   p->iser = p->fft ? ap_series_buf(p->fft, 1) : NULL;
   p->istride = p->fft ? ap_series_stride(p->fft) : 0;
   return p->iser ? 0 : -1;
@@ -270,9 +238,16 @@ static int run_pairs(ap_mf_plan *p, int d0, int nd, int t0, int nt,
                             peaks+row*nb,&c,AP_BACKWARD,start,end);
       }
       if(r<0) return -1;
-      if(p->ihlo && p->iout && p->iser && !p->ipause)
-        p->iout[row] = interp_max(p->iser, p->istride, start, end, p->ihlo, p->ihhi,
-                                  p->iK, p->incand, p->icand, p->icval);
+      if(p->ihlo && p->iout && p->iser && !p->ipause){
+        /* The grid maximum this pass just found.  Candidates are taken
+           relative to it, which is what lets the scan be a vector compare
+           that almost never hits instead of a scalar walk of every lag. */
+        float ev=0.f;
+        for(size_t b=0;b<nb;b++) if(peaks[row*nb+b].magnitude>ev)
+          ev=peaks[row*nb+b].magnitude;
+        p->iout[row] = ap_interp_max(p->fft, start, end, ev, p->ihlo, p->ihhi,
+                                     p->iK, p->incand, p->ifrac);
+      }
       if(counts) counts[row]=c;
       total += c;
     }

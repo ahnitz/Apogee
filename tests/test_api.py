@@ -374,6 +374,43 @@ def test_run_series_matches_block_by_block():
         np.testing.assert_array_equal(got["value"][b, :, 0], want["value"][0, :, 0])
 
 
+def test_bracket_does_not_change_what_is_reported():
+    """The bracket settles pairs without the second coarse transform.
+
+    It is allowed to do that only where the interpolated statistic's bracket
+    does not straddle the gate, so every pair it settles it settles the way
+    the transform would have.  Turning it off must therefore change the time
+    taken and nothing else.  The reject side is the one that can cost a
+    trigger if its margin is too tight, which is why this asserts identity
+    rather than a tolerance -- a bracket that is merely close is a bracket
+    that is silently dismissing signals.
+    """
+    n, nseries, ntaps, nt = 4096, 1 << 16, 451, 6
+    rng = np.random.default_rng(11)
+    power = inspiral_power(n)
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+    ser = coloured_series(nseries, -7 / 3.0, rng)
+    starts, ws, we = overlap_save_layout(nseries, n, ntaps)
+
+    def go(on):
+        old = os.environ.get("MF_BRACKET")
+        os.environ["MF_BRACKET"] = str(on)
+        try:
+            hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-2)
+            hf.set_reference(power)
+            hf.set_templates(H)
+            r = hf.run_series(ser, starts, ws, we, binsize=n, threshold=0.0)
+            return r["index"].copy(), r["value"].copy()
+        finally:
+            if old is None: del os.environ["MF_BRACKET"]
+            else: os.environ["MF_BRACKET"] = old
+
+    oi, ov = go(0)
+    bi, bv = go(1)
+    np.testing.assert_array_equal(bi, oi)
+    np.testing.assert_array_equal(bv, ov)
+
+
 def test_run_series_grouping_is_invisible():
     """How many blocks are filtered together must not change any output.
 
