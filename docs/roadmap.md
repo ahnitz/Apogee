@@ -254,7 +254,7 @@ int16 on the arithmetic itself (0.54x).
 Precision was never the obstacle: a full Q15 pipeline modelled on 456 real
 pairs -- exact int32 product, one renormalising shift, unconditional `>>1` per
 stage, no block-floating-point reduction -- gives a **1.0125x** error band
-against a 1.19x margin margin, with zero saturation. See `tools/coarse_fixed.py`
+against a 1.19x margin, with zero saturation. See `tools/coarse_fixed.py`
 and `docs/coarse-narrow.md`.
 
 ### Stage-A Parseval bound

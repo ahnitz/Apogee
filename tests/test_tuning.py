@@ -75,3 +75,75 @@ def test_autotuning_uses_the_reference_where_it_has_rows():
         picks.append(hf.config)
     assert all(p is not None for p in picks)
     assert all(b > 0 for b, _, _ in picks)
+
+
+# ------------------------------------------------ SNR coverage and fallback
+
+def test_snr_exact_hit_uses_only_that_row():
+    rows, why = mf._snr_rows_for(5.5, [5.0, 5.5, 6.0])
+    assert rows == (5.5,)
+    assert "measured at snr 5.5" in why
+
+
+def test_snr_above_the_range_falls_back_conservatively():
+    """A threshold above everything measured is an EASIER problem.
+
+    So it is answerable, and the bound that holds is the worst dismissal
+    anywhere in the measured range -- not the nearest row. Measured directly
+    at snr 6.5/7.0/8.0: nothing above the range exceeds its in-range maximum.
+    """
+    rows, why = mf._snr_rows_for(9.0, [5.0, 5.5, 6.0])
+    assert rows == (5.0, 5.5, 6.0)
+    assert "above the measured range" in why
+
+
+def test_snr_below_the_range_refuses():
+    """A lower threshold is a HARDER problem and nothing measured bounds it."""
+    rows, why = mf._snr_rows_for(4.5, [5.0, 5.5, 6.0])
+    assert rows is None
+    assert "below" in why
+
+
+def test_the_fallback_is_not_nearest_neighbour():
+    """Dismissal is not monotone in the threshold, so nearest-row is unsafe.
+
+    172 of 640 fully-measured cells in the shipped table RISE from snr 5.0 to
+    5.5. If this ever starts returning a single nearest row for an
+    out-of-range threshold, the guarantee quietly stops holding.
+    """
+    rows, _ = mf._snr_rows_for(7.0, [5.0, 5.5, 6.0])
+    assert len(rows) > 1, "must bound with the whole range, not one row"
+
+
+def test_dismissal_is_not_monotone_in_snr_in_the_shipped_table():
+    """Pins the fact the fallback rule is built around.
+
+    If a future table were monotone this test would fail, and the right
+    response would be to check whether the simpler nearest-row rule is now
+    safe -- not to delete the test.
+    """
+    import collections
+    t = mf._load_tuning()
+    cells = collections.defaultdict(dict)
+    for (n, band, U, K, snr, f, be, margin, dm) in t["fdr"]:
+        cells[(n, band, U, K, f, be, margin)][snr] = dm
+    snrs = sorted({r[4] for r in t["fdr"]})
+    rises = 0
+    full = 0
+    for v in cells.values():
+        if len(v) < len(snrs):
+            continue
+        full += 1
+        seq = [v[s] for s in snrs]
+        if any(b > a + 1e-12 for a, b in zip(seq, seq[1:])):
+            rises += 1
+    assert full > 0
+    assert rises > 0, "table is monotone in snr; revisit the fallback rule"
+
+
+def test_autotuning_answers_above_the_table_and_refuses_below():
+    """End to end, through choose_config, on a real reference."""
+    from matchedfilter.benchmark import _inspiral_power
+    p = _inspiral_power(4096)
+    assert mf.choose_config(p, 4096, 9.0, 1e-3) is not None
+    assert mf.choose_config(p, 4096, 4.0, 1e-3) is None

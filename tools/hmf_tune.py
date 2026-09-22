@@ -612,7 +612,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
     return {c: v / piv for c, v in med.items()}, resid
 
 
-def cost_grid(n, snr_list, bands, Ks, coarse thresholds, f_list, be_fracs, reps=4,
+def cost_grid(n, snr_list, bands, Ks, margins, f_list, be_fracs, reps=4,
               nt=16, batch=64, verbose=True):
     """Relative cost per configuration, averaged over many references.
 
@@ -623,7 +623,7 @@ def cost_grid(n, snr_list, bands, Ks, coarse thresholds, f_list, be_fracs, reps=
     computes at selection time -- not the parameters the reference was built
     from, which is the mistake the first table made.
     """
-    configs = [(b, 2, K, g) for b in bands for K in Ks for g in coarse thresholds]
+    configs = [(b, 2, K, g) for b in bands for K in Ks for g in margins]
     if COST_PIVOT not in configs:
         configs.append(COST_PIVOT)
     rows, resids = [], []

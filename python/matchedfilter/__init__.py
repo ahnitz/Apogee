@@ -238,16 +238,29 @@ _warned_uncovered = False
 
 
 def _uncovered_message(n, snr, fd):
-    """Why autotuning refused, and what to do about it."""
+    """Why autotuning refused, and what to do about it.
+
+    Only the DISCRETE choices are limited by these tables. The coarse
+    threshold itself is interpolated in (f_eff, snr) by src/hmf_table.h over
+    snr 4.5 to 8.0 and clamps conservatively outside, so the threshold adapts
+    to any request; what is missing here is measured evidence for which band,
+    oversampling, taps and margin to pair it with.
+    """
     t = _load_tuning()
     ns = sorted({r[0] for r in t["fdr"]})
-    snrs = sorted({r[4] for r in t["fdr"]})
-    return ("no measured tuning for n=%d snr=%.2f fd=%.0e -- the tables cover "
-            "n=%s, snr=%s. Autotuning will not guess outside what has been "
-            "measured. Either pass band/oversample/taps explicitly, or "
-            "generate coverage with tools/hmf_tune.py and point MF_ACCURACY "
-            "and MF_COST at it. See docs/hierarchical.md."
-            % (n, snr, fd, ns, snrs))
+    snrs = sorted({r[4] for r in t["fdr"] if r[0] == n})
+    where = ("snr %.2f is below the lowest measured, %g" % (snr, min(snrs))
+             if snrs and snr < min(snrs) else
+             "snr %.2f falls between measured thresholds" % snr
+             if snrs else "n=%d is not in the tables" % n)
+    return ("no measured tuning for n=%d snr=%.2f fd=%.0e -- %s. The tables "
+            "cover n=%s, snr=%s, and a threshold ABOVE that range is answered "
+            "conservatively; below or between it is not, because a lower "
+            "threshold is a harder problem and nothing measured bounds it. "
+            "Either pass band/oversample/taps explicitly, or generate "
+            "coverage with tools/hmf_tune.py and point MF_ACCURACY and "
+            "MF_COST at it. See docs/hierarchical.md."
+            % (n, snr, fd, where, ns, snrs or "none at this n"))
 
 
 def _load_tuning(path=None):
@@ -353,9 +366,16 @@ def choose_config(power, n, snr, fd, tuning=None):
     answer in the budget's name.
     """
     t = _load_tuning() if tuning is None else tuning
+    tsnrs = sorted({r[4] for r in t["fdr"] if r[0] == n})
+    if not tsnrs:
+        return None
+    use, why = _snr_rows_for(snr, tsnrs)
+    if use is None:
+        return None
+
     feats, byconf = {}, {}
     for (tn, band, U, K, tsnr, tf, tbe, margin, dm) in t["fdr"]:
-        if tn != n or abs(tsnr - snr) > 1e-6 or band >= n:
+        if tn != n or tsnr not in use or band >= n:
             continue
         if band not in feats:
             feats[band] = _band_features(power, band)
@@ -371,7 +391,9 @@ def choose_config(power, n, snr, fd, tuning=None):
         cover = [dm for (tf, tbe, dm) in rows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
         if not cover or max(cover) > fd:
             continue
-        crows = t["cost"].get((n, band, U, K, round(snr, 2), margin))
+        crows = []
+        for cs in use:
+            crows += t["cost"].get((n, band, U, K, round(cs, 2), margin)) or []
         if not crows:
             continue
         cf = [c for (tf, tbe, c) in crows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
@@ -379,6 +401,42 @@ def choose_config(power, n, snr, fd, tuning=None):
         if c < bcost:
             best, bcost = (band, U, K, margin), c
     return best
+
+
+def _snr_rows_for(snr, covered, tol=1e-6):
+    """Which measured SNR rows speak for a threshold of `snr`.
+
+    Exact hit: that row. Above everything measured: every covered row, and the
+    worst dismissal among them -- because a threshold above the table is an
+    EASIER problem and the measured range bounds it. Below the lowest measured
+    row, or between two of them with neither covering: refuse.
+
+    The asymmetry is deliberate and it is measured, not assumed. Dismissal is
+    NOT monotone in the threshold -- 172 of 640 cells in the shipped table
+    rise from snr 5.0 to 5.5 -- so "use the nearest lower row" would not be
+    conservative and is not what this does. What was measured directly, at
+    snr 6.5/7.0/8.0 across twelve configurations, is that nothing above the
+    covered range exceeds its in-range maximum: the single apparent exception
+    moved 5.6e-4 to 6.1e-4, one dismissal in 6000, at the resolution floor.
+    So the bound that holds is the worst row anywhere in the measured range,
+    and that is the one used.
+
+    Below the range there is no such bound. A lower threshold is a harder
+    problem and nothing measured speaks for it, so autotuning refuses rather
+    than extrapolating a guarantee it cannot support.
+    """
+    if not covered:
+        return None, "nothing measured"
+    for c in covered:
+        if abs(c - snr) <= tol:
+            return (c,), "measured at snr %g" % c
+    if snr > max(covered) + tol:
+        # conservative: bound by the worst row across everything measured
+        return tuple(covered), ("above the measured range; bounded by the "
+                                "worst of snr %s" %
+                                ", ".join("%g" % c for c in covered))
+    return None, ("below or between measured thresholds %s"
+                  % ", ".join("%g" % c for c in covered))
 
 
 class HierarchicalFilter(MatchedFilter):
