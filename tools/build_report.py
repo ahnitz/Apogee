@@ -172,7 +172,7 @@ def correlation_chart(case, width=760, height=300):
     return "".join(o)
 
 
-def demo_page():
+def demo_page(require=False):
     """Run the demo for real and show the plots beside the code that made them.
 
     Imported and executed here, at page-build time, so the figures cannot go
@@ -183,6 +183,12 @@ def demo_page():
         import inspect
         from matchedfilter import demo
     except Exception as e:
+        if require:
+            raise SystemExit(
+                "the demo could not be run (%s: %s), so this page would "
+                "publish with an apology where its figures go. Install the "
+                "package before building, or drop --require-demo."
+                % (type(e).__name__, e))
         return ('<div class="note warn">The demo could not be run when this '
                 'page was built (<code>%s</code>), so there is nothing here '
                 'to show. That is a build problem, not a result: the figures '
@@ -946,7 +952,7 @@ def strip_self_reference(text):
     return "\n\n".join(keep).strip()
 
 
-def build(runs, root="."):
+def build(runs, root=".", require_demo=False):
     """Return {filename: html} for the whole site."""
     readme = split_readme(read(os.path.join(root, "README.md")))
     readme = {k: retarget_anchors(v) for k, v in readme.items()}
@@ -972,7 +978,7 @@ def build(runs, root="."):
             body = ("<h2>Benchmarks: the hierarchical filter</h2>"
                     + hier_benchmarks_page(runs))
         elif kind == "demo":
-            body = "<h2>See it work</h2>" + demo_page()
+            body = "<h2>See it work</h2>" + demo_page(require_demo)
         else:
             body = ('<h2>Design notes</h2><p>Working notes on why the library is '
                     'built the way it is. Each records what was measured, '
@@ -1011,6 +1017,9 @@ def main():
                     help="output path; its directory receives the whole site")
     ap.add_argument("--root", default=".",
                     help="repository root, for README.md and docs/")
+    ap.add_argument("--require-demo", action="store_true",
+                    help="fail if the demo cannot be run, rather than "
+                         "publishing a page that says so")
     a = ap.parse_args()
 
     paths = []
@@ -1022,7 +1031,7 @@ def main():
 
     outdir = os.path.dirname(a.out) or "."
     os.makedirs(outdir, exist_ok=True)
-    pages = build(runs, root=a.root)
+    pages = build(runs, root=a.root, require_demo=a.require_demo)
     for fn, page in pages.items():
         with open(os.path.join(outdir, fn), "w") as fh:
             fh.write(page)

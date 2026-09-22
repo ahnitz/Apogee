@@ -121,11 +121,25 @@ jobs:
         with: { python-version: "3.12" }
       - uses: actions/download-artifact@v4
         with: { pattern: bench-*, path: results, merge-multiple: true }
+
+      - name: Install the library, so the demo page can run it
+        # The "See it work" page executes the library while the page is being
+        # built and plots what comes back. Without the package installed it
+        # has nothing to run, and a documentation page whose whole claim is
+        # that its figures are generated rather than cached should not
+        # quietly publish saying so.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
       - run: |
           ls -l results
           # --root so the prose comes from this checkout's README and docs/,
           # keeping the page and the source in step.
-          python tools/build_report.py results --root . --out site/index.html
+          # --require-demo so a page that cannot run the library fails here
+          # rather than publishing with an apology where the figures go.
+          python tools/build_report.py results --root . --require-demo \
+                 --out site/index.html
       - uses: actions/upload-artifact@v4
         with:
           name: benchmark-page
