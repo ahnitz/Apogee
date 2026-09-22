@@ -65,7 +65,6 @@ struct ap_hmf_plan {
   float     *fwd,*spec;       /* [2n] block staging; spec is [dgroup][2n]        */
   ap_plan   *cf;              /* explicit m-point plan, for the rare interpolation
                                  path that needs the series materialised        */
-  float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
   const float **dspec;        /* [nd]       caller's full spectra, ingested lazily */
   char *dready;               /* [nd]       1 once ingested into the full plan  */
   int dgroup;                 /* data segments filtered together; see create */
@@ -214,7 +213,6 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->full_fft=ap_create(n);
   p->fwd =ap_alloc64(2*n*sizeof(float));
   p->spec=ap_alloc64((size_t)grp*2*n*sizeof(float));
-  p->cd  =ap_alloc64((size_t)ndi*2*band*sizeof(float));
   p->dspec=calloc((size_t)ndi,sizeof(*p->dspec));
   p->dready=calloc((size_t)ndi,1);
   p->ct0 =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
@@ -267,7 +265,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
     if((e=getenv("MF_BRACKET_LO"))) p->ilo=(float)atof(e);
     if((e=getenv("MF_BRACKET_HI"))) p->ihi=(float)atof(e);
     if((e=getenv("MF_BRACKET_C"))) p->incand=atoi(e); }
-  if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->cd||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
+  if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf||!p->firebuf||!p->ihlo||!p->ihhi||!p->ibuf||!p->refpow||!p->tpow){ ap_hmf_destroy(p); return NULL; }
   build_taps(p->taps,taps,oversample);
   /* Safety factor on the even gate, over and above the measured graw1.
@@ -315,7 +313,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->cf)   ap_destroy(p->cf);
   if(p->full_fft) ap_destroy(p->full_fft);
   free(p->fwd);free(p->spec);
-  free(p->dspec);free(p->dready);free(p->cd);free(p->ct0);free(p->ct1);free(p->fpow);
+  free(p->dspec);free(p->dready);free(p->ct0);free(p->ct1);free(p->fpow);
   if(p->dump) fclose(p->dump);
   free(p->ihlo);free(p->ihhi);free(p->ibuf);free(p->refpow);free(p->tpow);
   free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);free(p->shift2);
@@ -547,7 +545,11 @@ int ap_hmf_set_data(ap_hmf_plan *p,int d,const float *spec){
      contract: set_data then run. */
   p->dspec[d]=spec;
   p->dready[d]=0;
-  memcpy(p->cd+(size_t)d*2*p->m,spec,2*p->m*sizeof(float));
+  /* The coarse band IS the first 2m floats of the spectrum, so the interleaved
+     copy this used to keep was the same bytes at a second address.  The rare
+     refinement path reads them through dspec instead; the spectrum has to stay
+     valid until run() returns either way, which is what the lazy full ingest
+     above already depends on. */
   if(ap_mf_set_data(p->coarse,d,spec)) return -1;   /* only the kept band */
   return 0;
 }
@@ -897,7 +899,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                  cstart,cend)<0) return -1;
     if(p->prof) p->c_even += ap_ticks()-_eb; } /* batched: charged to the batch */
   for(int d=0;d<nd;d++){
-    const float *Dc=p->cd+(size_t)(d0+d)*2*m;
+    const float *Dc=p->dspec[d0+d];      /* coarse band = its first 2m */
     int nfire=0;
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
