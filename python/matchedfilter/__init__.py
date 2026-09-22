@@ -272,11 +272,12 @@ def _load_tuning(path=None):
             f = line.split()
             if f[0] in ("FDR", "ACC"):
                 fdr.append((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
-                            float(f[5]), float(f[6]), float(f[7]), float(f[8])))
+                            float(f[5]), float(f[6]), float(f[7]),
+                            float(f[8]), float(f[9])))
             elif f[0] == "COST":
                 cost.setdefault((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
-                                 float(f[5])), []).append(
-                                     (float(f[6]), float(f[7]), float(f[8])))
+                                 float(f[5]), float(f[8])), []).append(
+                                     (float(f[6]), float(f[7]), float(f[9])))
     t = {"fdr": fdr, "cost": cost, "meta": meta, "paths": paths}
     if path is None or _TUNING is None:
         _TUNING = t
@@ -336,14 +337,14 @@ def choose_config(power, n, snr, fd, tuning=None):
     """
     t = _load_tuning() if tuning is None else tuning
     feats, byconf = {}, {}
-    for (tn, band, U, K, tsnr, tf, tbe, dm) in t["fdr"]:
+    for (tn, band, U, K, tsnr, tf, tbe, gate, dm) in t["fdr"]:
         if tn != n or abs(tsnr - snr) > 1e-6 or band >= n:
             continue
         if band not in feats:
             feats[band] = _band_features(power, band)
-        byconf.setdefault((band, U, K), []).append((tf, tbe, dm))
+        byconf.setdefault((band, U, K, gate), []).append((tf, tbe, dm))
     best, bcost = None, float("inf")
-    for (band, U, K), rows in byconf.items():
+    for (band, U, K, gate), rows in byconf.items():
         f, be = feats[band]
         # clamp to the grid: past its edge the most pessimistic row is the
         # best evidence there is, and saying so beats extrapolating
@@ -353,13 +354,13 @@ def choose_config(power, n, snr, fd, tuning=None):
         cover = [dm for (tf, tbe, dm) in rows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
         if not cover or max(cover) > fd:
             continue
-        crows = t["cost"].get((n, band, U, K, round(snr, 2)))
+        crows = t["cost"].get((n, band, U, K, round(snr, 2), gate))
         if not crows:
             continue
         cf = [c for (tf, tbe, c) in crows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
         c = max(cf) if cf else max(c for (_, _, c) in crows)
         if c < bcost:
-            best, bcost = (band, U, K), c
+            best, bcost = (band, U, K, gate), c
     return best
 
 
@@ -438,9 +439,13 @@ class HierarchicalFilter(MatchedFilter):
             # answer a question it had no measurement for. A caller who wants
             # a configuration the tables do not cover states it directly.
             raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
-        b, u, k = cfg
+        b, u, k, gate = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
                              self.snr, self.fd, int(b), int(u), int(k))
+        # the gate is the strongest lever and is tuned with the rest; it is
+        # read per run, so setting it here is enough
+        if abs(gate - 1.0) > 1e-9:
+            self._mf.set_gate_margin(float(gate))
         if self._pending_ref is not None:
             self._mf.set_reference(self._pending_ref)
         return self._mf
