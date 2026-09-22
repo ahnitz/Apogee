@@ -31,7 +31,7 @@ from test_api import (inspiral_power, template_with_power, noise)  # noqa: E402
 import matchedfilter as mf                                    # noqa: E402
 
 
-def measure(n, band, U, K, snr, trials, seed=13, batch=64):
+def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None):
     """Measured (dismissal, seconds-per-pair) for one configuration.
 
     Both numbers come from the real filter.  Injections go into a batch of
@@ -40,7 +40,14 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=64):
     resolve 1e-4 stays affordable.
     """
     rng = np.random.default_rng(seed)
-    power = inspiral_power(n)
+    if power is None:
+        power = inspiral_power(n)
+    power = np.ascontiguousarray(power, dtype=np.float32)
+    # The statistic's distribution is fixed by how the SNR accumulates with
+    # frequency, which is what the reference states.  A template whose own
+    # power equals the reference reproduces that accumulation exactly, so it
+    # stands in for any bank with the same profile -- including a ratio filter
+    # whose own spectrum looks nothing like its output.
     H = template_with_power(n, power)
     flat = mf.MatchedFilter(n, ndata=batch, ntemplates=1)
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
@@ -74,7 +81,8 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=64):
     return (omitted / detected if detected else 1.0), detected, sec / npair
 
 
-def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True):
+def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True,
+         power=None):
     if bands is None:
         bands = [b for b in (256, 512, 1024, 2048, 4096) if b <= n // 2]
     rows = []
@@ -82,7 +90,8 @@ def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True):
         for U in (1, 2):
             for K in (4, 8):
                 try:
-                    dm, det, sec = measure(n, band, U, K, snr, trials, seed)
+                    dm, det, sec = measure(n, band, U, K, snr, trials, seed,
+                                           power=power)
                 except Exception as e:                       # unsupported combo
                     if verbose:
                         print("  band %-5d U=%d K=%-3d  unavailable (%s)"
