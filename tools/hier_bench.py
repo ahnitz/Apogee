@@ -116,7 +116,7 @@ def dataset(mf, n, ntmpl, series_len, ninject, snr_lo, snr_hi, rng,
     # Injections are drawn from the bank itself, so each one lights up its own
     # template and its neighbours -- the co-firing a real search sees.  Their
     # SNRs straddle the threshold on purpose: a population well above it makes
-    # every trigger a true one and hides whatever the gate is wasting.
+    # every trigger a true one and hides whatever the coarse threshold is wasting.
     snrs = rng.uniform(snr_lo, snr_hi, ninject)
     for j in range(ninject):
         t0 = int(rng.uniform(0.02, 0.95) * (series_len - n))
@@ -165,12 +165,12 @@ def replay(mf, path, reps, a):
 
     band / oversample / first stage can be overridden, which is the point: the
     capture fixes the data, the bank and the thresholds, so a sweep over the
-    gate's configuration is a clean experiment with a pass/fail attached.
+    margin's configuration is a clean experiment with a pass/fail attached.
     """
     z = np.load(path)
     n = int(z["n_fft"])
     # The capture's data, bank and reference do not depend on the threshold,
-    # only the gate and the trigger set do -- so a different threshold can be
+    # only the coarse threshold and the trigger set do -- so a different threshold can be
     # replayed on the same capture.  What cannot be replayed is the comparison
     # against pycbc's own triggers, which were taken at the captured value;
     # the flat filter is the reference in that case.
@@ -205,7 +205,7 @@ def replay(mf, path, reps, a):
     gv = np.array(gv[:, :, 0])
 
     # The flat filter on the same blocks: both the timing reference and the
-    # ground truth.  The capture says what pycbc got, which is itself gated --
+    # ground truth.  The capture says what pycbc got, which is itself hierarchical --
     # comparing only against it cannot distinguish "we lost a trigger" from
     # "we found one the default configuration missed".
     f = mf.MatchedFilter(n, 1, nb)
@@ -250,7 +250,7 @@ def replay(mf, path, reps, a):
     print("  %-24s %10s" % ("flat filter", "%.2f ms" % flat_ms))
     print("  %-24s %10s   %.2fx" % ("hierarchical", "%.2f ms" % (best * 1e3),
                                     flat_ms / (best * 1e3)))
-    print("  %-24s %10s" % ("triggered", "%.2f%%" % (100 * p.trigger_rate)))
+    print("  %-24s %10s" % ("triggered", "%.2f%%" % (100 * p.refine_rate)))
     print("  %-24s %10d" % ("triggers pycbc got", int((ci >= 0).sum())))
     print("  %-24s %10d" % ("the flat filter finds", int(truth.sum())))
 
@@ -312,7 +312,7 @@ def main(argv=None):
                     help="replay a call captured from pycbc_inspiral_fir")
     ap.add_argument("--snr", type=float, default=0.0,
                     help="replay the capture at a different SNR threshold; the "
-                         "data and bank are unchanged, so only the gate and the "
+                         "data and bank are unchanged, so only the coarse threshold and the "
                          "trigger set move.  pycbc's own triggers are then not "
                          "comparable and the flat filter is the only reference.")
     ap.add_argument("--no-profile", action="store_true")
@@ -359,8 +359,8 @@ def main(argv=None):
         best = min(best, time.perf_counter() - t0)
     gi = np.array(gi).reshape(len(st), a.templates)
     gm = np.array(gm).reshape(len(st), a.templates)
-    gated_ms = best * 1e3
-    rate = p.trigger_rate
+    hier_ms = best * 1e3
+    rate = p.refine_rate
 
     found = fi >= 0
     omitted = found & (gi < 0)
@@ -391,8 +391,8 @@ def main(argv=None):
           % (len(st), a.templates, npair, a.inject, p.config))
 
     print("  %-24s %10s" % ("flat filter", "%.2f ms" % flat_ms))
-    print("  %-24s %10s   %.2fx" % ("hierarchical", "%.2f ms" % gated_ms,
-                                    flat_ms / gated_ms))
+    print("  %-24s %10s   %.2fx" % ("hierarchical", "%.2f ms" % hier_ms,
+                                    flat_ms / hier_ms))
     print("  %-24s %10s" % ("triggered", "%.2f%%" % (100 * rate)))
     print("  %-24s %10d" % ("peaks in the flat run", int(found.sum())))
     ntrig = int(round(rate * npair))

@@ -5,7 +5,7 @@
 # trials  48 references x 32 configurations, 3 timed passes each
 #
 # The number is cost RELATIVE to the pivot configuration band 1024, U 2, K 8,
-# gate 1.00 -- not microseconds.  Absolute time is a property of machine, load
+# margin 1.00 -- not microseconds.  Absolute time is a property of machine, load
 # and reference together; the ratio is a property of the configuration, which
 # is the only thing selection needs, since it never compares across machines
 # or across references.
@@ -25,14 +25,14 @@
 # comparison, and it made selection pick the slowest of four admissible
 # options (20.30 ms/segment where 13.29 was available).
 #
-# Must be measured on NOISE: the gate sets the trigger rate, which is the
+# Must be measured on NOISE: the coarse threshold sets the trigger rate, which is the
 # coarse-to-reconstruction ratio and therefore most of the cost.
 #
 # Regenerate locally for your own CPU:
 #   python tools/hmf_tune.py --retune-cost --out mycost.txt
 #   export MF_COST=$PWD/mycost.txt
 #
-# COST n band U K snr f beff gate relative_cost
+# COST n band U K snr f beff coarse_margin relative_cost
 COST 4096 256 2 4 5.00 0.4630 248.2 0.900 1.0553
 COST 4096 256 2 4 5.00 0.4630 248.2 0.940 1.1081
 COST 4096 256 2 4 5.00 0.4630 248.2 0.970 1.0711

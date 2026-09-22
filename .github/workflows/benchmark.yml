@@ -66,13 +66,17 @@ jobs:
             echo "::notice::pyfftw/scipy unavailable; comparing against numpy only"
 
       - name: Test and benchmark every target on this host
-        # The suite gates the benchmark: a timing of a wrong answer is
+        # The suite coarse thresholds the benchmark: a timing of a wrong answer is
         # worthless, and a kernel has produced wrong answers before.
         #
         # The target list comes from the build, not from this file: which
         # ones a wheel contains is the compiler's decision, and which of
         # those will run is the runner's.
         run: |
+          # Single-threaded is the claim, so pin the references too: an
+          # FFTW or scipy that quietly used every core would be comparing
+          # core counts rather than transforms.
+          export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
           mkdir -p /tmp/run && cd /tmp/run
           targets=$(python -c "import matchedfilter;print(' '.join(matchedfilter.targets()))")
           echo "targets on this host: $targets"

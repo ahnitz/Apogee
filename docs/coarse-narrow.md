@@ -2,7 +2,7 @@
 
 The coarse pass is 84% of the hierarchical filter's time at the operating
 point that misses no triggers. It answers one question -- is anything in this
-lag window above the gate -- and that question tolerates arithmetic the
+lag window above the coarse threshold -- and that question tolerates arithmetic the
 reconstruction could not.
 
 This is the plan for exploiting that, and the measurements it rests on. All
@@ -13,13 +13,13 @@ figures come from captured `pycbc_inspiral_fir` calls, not synthetic data.
 Correctness here is structural, not statistical.
 
 Quantisation makes the coarse statistic read slightly low or slightly high.
-Multiply it by its own worst-case under-report before comparing to the gate
+Multiply it by its own worst-case under-report before comparing to the coarse threshold
 and it can no longer read low at all, so **no trigger can be lost at any
 width**. The entire error budget turns into trigger rate, and trigger rate is
 cheap: reconstruction is 16% of the time at the operating point, so paying for
 a few more reconstructions buys a lot of coarse-pass speed.
 
-Measured over 520 real pairs, gate placed where the true statistic gives a 5%
+Measured over 520 real pairs, margin placed where the true statistic gives a 5%
 trigger rate:
 
 | bits | worst under-report | bias | unsafe flips | reconstructions |
@@ -37,12 +37,12 @@ reconstructions.
 ## Two things that do not work
 
 **Saturating inside the transform.** Putting the fixed-point scale where the
-decision is -- gate high in the range, louder values clipping -- sounds right
+decision is -- margin high in the range, louder values clipping -- sounds right
 and is wrong. The transform is linear and every intermediate contributes to
 the peak, so a clipped intermediate does not mean "loud", it means the peak
 comes out wrong. Measured against block floating point at the same widths:
 
-| bits | block float | gate-fixed + saturate |
+| bits | block float | margin-fixed + saturate |
 |---:|---|---|
 | 8 | +23% reconstructions | +177% |
 | 6 | +92% | +1100% |
@@ -163,11 +163,11 @@ the number of format boundaries per transform.
 **Phase 3 -- precision hierarchy.** This is where "resolution where it
 matters" actually pays, since it cannot pay inside the butterfly. An int8
 reject pass with the upward bias, then the existing pass only on survivors. At
-a 1% trigger gate int8 passes 6.2% of pairs, so the cost model is
+a 1% trigger margin int8 passes 6.2% of pairs, so the cost model is
 `0.5C + 0.06C = 0.56C` against `C` for int16 alone -- and unsafe flips stay at
 zero by construction, so the fixtures should show 842/842 unchanged.
 
-**Phase 4 -- integrate**, with `tools/hier_all.sh` as the gate: 12 captured
+**Phase 4 -- integrate**, with `tools/hier_all.sh` as the coarse threshold: 12 captured
 segments, 842 triggers, zero missed, and the ms/segment must fall.
 
 Phases 2 to 4 were not run: Phase 1's ceiling measurement removed their
@@ -226,7 +226,7 @@ the effort naturally goes. Modelled end to end on 456 real captured pairs --
 data and template each quantised to Q15, product formed exactly in int32 and
 renormalised by one shift, then a Q15 transform with an unconditional `>>1` per
 stage and no block-floating-point reduction at all -- the error band on the
-coarse maximum is **1.0125x**, against a gate that sits 1.19x above the median.
+coarse maximum is **1.0125x**, against a margin that sits 1.19x above the median.
 Zero saturation. `tools/coarse_fixed.py` has the models; the product, not the
 transform, carries the error, because a Q15 multiply rounds each partial
 product before the subtract and pins the output scale to two operand maxima
@@ -257,7 +257,7 @@ handful of registers, and operations only between the current sample and a
 register. Nothing need be linear or sensible; the point is to let a search
 exploit whatever the operations do. `tools/stream_search.py` does this, scored
 on BRACKET WIDTH (the ratio of largest to smallest truth/prediction), which is
-what decides how many pairs a gate settles without the transform.
+what decides how many pairs a margin settles without the transform.
 
 It does not work, at least not yet, and the interesting part is why.
 
@@ -269,7 +269,7 @@ It does not work, at least not yet, and the interesting part is why.
 | search, 6 registers, 10 instructions | 20480 | 1.644 |
 | interpolation, after the first transform | 2304 | 1.14 |
 
-Anything above about 1.2 settles no pairs at the gate, which sits only ~1.7x
+Anything above about 1.2 settles no pairs at the coarse threshold, which sits only ~1.7x
 above a typical maximum. Every search converges to an accumulator over |P| or
 |P|^2 -- the energy family -- and cannot beat what that family gives by hand.
 
@@ -304,15 +304,15 @@ to superoptimisation.
 
 ## The one number that judges any pre-filter
 
-Any pre-filter, however computed, rejects a pair only when `stat/worst < gate`.
+Any pre-filter, however computed, rejects a pair only when `stat/worst < margin`.
 Since `stat >= worst * truth`, that rejects exactly the pairs with
-`truth < worst * gate`. So the rejection fraction depends on a single property
+`truth < worst * margin`. So the rejection fraction depends on a single property
 of the statistic -- its worst-case recovery -- and on the distribution of the
 true coarse maximum. Measured over 2052 real pairs, that maximum has a
-coefficient of variation of **0.103**, so the gate sits only **1.19x** above
+coefficient of variation of **0.103**, so the coarse threshold sits only **1.19x** above
 the median. The resulting curve:
 
-| worst-case recovery | rejects at the 5% gate | at the 1% gate |
+| worst-case recovery | rejects at the 5% margin | at the 1% margin |
 |---:|---:|---:|
 | 0.70 | 1.2% | 9.3% |
 | 0.80 | 26.4% | 62.7% |

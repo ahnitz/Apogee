@@ -79,7 +79,7 @@ jobs:
             || { echo "::error::src/hmf_table.h is stale; re-run 'python3 tools/hmf_design.py emit'"; exit 1; }
 
   benchmark:
-    # Advisory only.  A shared runner's timings are too noisy to gate a merge
+    # Advisory only.  A shared runner's timings are too noisy to margin a merge
     # on; this is here so the numbers stay visible and an order-of-magnitude
     # regression is obvious in the log.
     runs-on: ubuntu-latest

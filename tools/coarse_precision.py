@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What does a narrower coarse pass cost the gate statistic?
+"""What does a narrower coarse pass cost the coarse threshold statistic?
 
 The coarse pass only has to decide whether something loud is present, so its
 arithmetic can be much cruder than the reconstruction's.  This measures how
@@ -83,8 +83,8 @@ def main(path, nblocks=10, ntmpl=6):
         rel = r / base
         print("%-16s %9.4f %10.4f %10.4f"
               % (label, np.median(rel), np.percentile(rel, 1), rel.min()))
-    print("\nA statistic that reads low by x needs the gate lowered by x;\n"
-          "the gate currently carries 6% of margin for calibration.")
+    print("\nA statistic that reads low by x needs the coarse threshold lowered by x;\n"
+          "the coarse threshold currently carries 6% of margin for calibration.")
 
 
 if __name__ == "__main__":

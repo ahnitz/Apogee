@@ -126,7 +126,7 @@ size_t ap_hmf_nbins(const ap_hmf_plan *p, size_t binsize, size_t start, size_t e
  * distribution of the SNR it produces.  That holds only when the data is white
  * and the template is whitened.  It fails, for instance, when the template is a
  * broadband ratio filter whose output reconstructs a strongly low-frequency
- * signal: the gate would read the filter and be badly wrong.
+ * signal: the coarse threshold would read the filter and be badly wrong.
  *
  * In practice the output distribution is a property of the SIGNAL, not of the
  * individual template, and is near-identical across a bank -- so supply it once
@@ -141,7 +141,7 @@ int    ap_hmf_set_reference(ap_hmf_plan *p, const float *power);
    needed.  Pass <=0 to go back to deriving it.  Band, oversample and taps are
    fixed at plan creation and are unaffected. */
 int    ap_hmf_set_first_stage(ap_hmf_plan *p, float snr);
-int    ap_hmf_set_gate_margin(ap_hmf_plan *p, float g);
+int    ap_hmf_set_coarse_margin(ap_hmf_plan *p, float g);
 
 int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
 int    ap_hmf_set_template(ap_hmf_plan *p, int t, const float *spec);
@@ -155,7 +155,7 @@ int ap_hmf_run(ap_hmf_plan *p, int d0, int nd, int t0, int nt,
  *
  * The caller still owns the overlap-save arithmetic: it decides where each
  * block starts and which span of each block's output is valid.  matchedfilter only
- * executes that plan -- forward transform per block, gate, refine where needed
+ * executes that plan -- forward transform per block, margin, refine where needed
  * -- which removes the per-block round trip through the caller entirely: no
  * separately-planned forward FFT, no spectrum handed back and forth, and one
  * call per segment instead of one per block.
@@ -179,7 +179,7 @@ int ap_hmf_run_series(ap_hmf_plan *p,
    The ratio is the measured trigger rate, which is what the speedup rides on. */
 void ap_hmf_stats(const ap_hmf_plan *p, long *pairs, long *triggers);
 
-/* The band / oversampling / taps / gate the table chose, for reporting. */
+/* The band / oversampling / taps / margin the table chose, for reporting. */
 void ap_hmf_config(const ap_hmf_plan *p, size_t *band, int *oversample, int *taps);
 
 int ap_supported(size_t n);

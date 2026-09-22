@@ -241,10 +241,10 @@ static PyObject *HMF_config(HMFObject *self,PyObject *a){
   size_t band=0; int u=0,k=0; (void)a; ap_hmf_config(self->p,&band,&u,&k);
   return Py_BuildValue("(nii)",(Py_ssize_t)band,u,k);
 }
-static PyObject *HMF_set_gate_margin(HMFObject *self,PyObject *args){
+static PyObject *HMF_set_coarse_margin(HMFObject *self,PyObject *args){
   float g; if(!PyArg_ParseTuple(args,"f",&g)) return NULL;
-  if(ap_hmf_set_gate_margin(self->p,g)<0){
-    PyErr_SetString(PyExc_RuntimeError,"set_gate_margin failed"); return NULL; }
+  if(ap_hmf_set_coarse_margin(self->p,g)<0){
+    PyErr_SetString(PyExc_RuntimeError,"set_coarse_margin failed"); return NULL; }
   Py_RETURN_NONE;
 }
 static PyObject *HMF_set_first_stage(HMFObject *self,PyObject *args){
@@ -260,7 +260,7 @@ static PyMethodDef HMF_methods[]={
   {"set_template",(PyCFunction)HMF_set_template,METH_VARARGS,"set_template(i, buffer)"},
   {"set_reference",(PyCFunction)HMF_set_reference,METH_VARARGS,"set_reference(buffer|None)"},
   {"set_first_stage",(PyCFunction)HMF_set_first_stage,METH_VARARGS,"set_first_stage(snr)"},
-  {"set_gate_margin",(PyCFunction)HMF_set_gate_margin,METH_VARARGS,"set_gate_margin(g)"},
+  {"set_coarse_margin",(PyCFunction)HMF_set_coarse_margin,METH_VARARGS,"set_coarse_margin(g)"},
   {"run",(PyCFunction)HMF_run,METH_VARARGS,"run(...) -> total crossings"},
   {"nbins",(PyCFunction)HMF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},
   {"run_series",(PyCFunction)HMF_run_series,METH_VARARGS,"run_series(...)"},

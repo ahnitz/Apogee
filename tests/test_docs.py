@@ -57,7 +57,7 @@ def test_site_pages_are_linked_and_complete():
            "flat": [{"n": 4096, "data": 8, "templates": 32, "us_per_pair": 1.0,
                      "ok": True, "reference_us_per_pair": {"numpy": 4.0}}],
            "hierarchical": [{"n": 4096, "snr": 5.0, "fd": 1e-3, "flat_ms": 2.0,
-                             "gated_ms": 1.0, "speedup": 2.0, "trigger_rate": 0.0}]}
+                             "hier_ms": 1.0, "speedup": 2.0, "refine_rate": 0.0}]}
     pages = build_report.build([run], root=ROOT)
     assert "index.html" in pages and "benchmarks.html" in pages
     for name, html_text in pages.items():

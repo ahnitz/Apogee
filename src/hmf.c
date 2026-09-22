@@ -5,7 +5,7 @@
  * the coarse result could still become a detection.
  *
  * The guarantee is one-sided: a reported peak is bit-identical to ap_mf_run's,
- * because when the gate fires this calls ap_mf_run.  Only omissions are
+ * because when the coarse pass escalates this calls ap_mf_run.  Only omissions are
  * possible, at the rate the compiled-in table was calibrated for.
  *
  * Three things make the coarse pass cheap enough to be worth it:
@@ -24,7 +24,7 @@
  *    samples, which is why the error hides.  The right kernel is the Dirichlet
  *    one, a MODULATED sinc.  See docs/machine-notes.md.
  *
- * 3. The gate only needs |v|, and the re-modulation phase has unit magnitude,
+ * 3. The margin only needs |v|, and the re-modulation phase has unit magnitude,
  *    so it cancels.  demodulate -> interpolate -> re-modulate collapses into one
  *    complex tap w_k * exp(i pi (d-k)/U), applied directly to the raw series.
  */
@@ -75,7 +75,7 @@ struct ap_hmf_plan {
      template, so one reference serves a whole bank -- and skips the
      per-template ingest measurement. */
   int    ref_on;
-  float  even_margin, gate_margin, gscale; int gcal;
+  float  even_margin, coarse_margin, gscale; int gcal;
   float  ref_f, ref_g, ref_graw, ref_graw1;
   float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
   float *shift;               /* [2m]       scratch for the measurement         */
@@ -93,7 +93,7 @@ struct ap_hmf_plan {
      second, so both are measured and the taps are rebuilt when either moves. */
   float *refpow, *tpow; int ntpow, taps_stale;
   float ilo, ihi; int ibrk, incand;
-  float *tcbuf,*rawbuf,*evenbuf; /* [nt] per-template gates, derived once a run */
+  float *tcbuf,*rawbuf,*evenbuf; /* [nt] per-template coarse thresholds, derived once a run */
   ap_peak *cebuf;             /* [nd*nt] even coarse maxima, whole batch */
   int *firebuf;               /* [nt] which templates fired, for one segment */
   long pairs, trig;
@@ -101,9 +101,9 @@ struct ap_hmf_plan {
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
   unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
   long nbrk_fire,nbrk_rej;    /* pairs the bracket settled without the odd pass */
-  FILE *dump;          /* MF_HMF_DUMP: per-pair (even, combined, gate) */
-  long npre, ninterp, nskip;   /* diagnostics: pre-gate passes, interpolations run */
-  float lastgate;
+  FILE *dump;          /* MF_HMF_DUMP: per-pair (even, combined, margin) */
+  long npre, ninterp, nskip;   /* diagnostics: pre-screen passes, interpolations run */
+  float last_thr;
   float fs_snr;        /* explicit first-stage SNR; <=0 means derive it */
 };
 
@@ -158,7 +158,7 @@ static void prod_inter(const float *d,const float *h,float *o,size_t m){
    templates in the form ap_mf_set_template was handed, i.e. before that call
    conjugated them, so it must do the conjugation itself.  Passing them to
    prod_inter instead silently measures conj(D*H) -- the wrong series, giving
-   wrong recovery factors and a gate far below where it belongs. */
+   wrong recovery factors and a margin far below where it belongs. */
 static void prod_inter_nc(const float *d,const float *h,float *o,size_t m){
   for(size_t k=0;k<m;k++){
     float x=d[2*k],y=d[2*k+1],u=h[2*k],v=h[2*k+1];
@@ -254,12 +254,12 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   /* Bounds on the interpolated statistic against the true combined maximum.
      Derived on six captured segments and checked on six others, which violated
      at 0.19%, so they carry a margin -- only the lower one can lose a trigger;
-     an over-report merely fires the coarse gate for nothing. */
+     an over-report merely fires the coarse threshold for nothing. */
   /* The bracket is OFF.  It has been turned on and off three times; this is
      why it is off.
      
      It settles a pair without the odd coarse transform when the interpolated
-     statistic's two-sided bound does not straddle the gate.  The reject side
+     statistic's two-sided bound does not straddle the coarse threshold.  The reject side
      is sound only while ilo <= min(S/true)/graw over real triggers, and that
      minimum was MEASURED over the twelve captures -- 0.8384 at 9 taps, 0.8855
      at 13, saturating at 0.8931 by 17 -- giving a bound of 0.9121 at the 13
@@ -286,21 +286,21 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
     if((e=getenv("MF_BRACKET_C"))) p->incand=atoi(e); }
   if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
      !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf||!p->firebuf||!p->ihlo||!p->ihhi||!p->ibuf||!p->refpow||!p->tpow){ ap_hmf_destroy(p); return NULL; }
-  /* Safety factor on the even gate, over and above the measured graw1.
+  /* Safety factor on the even-pass threshold, over and above the measured graw1.
      The realisation model is a power-law reference filtered by a matched
      template; the ratio filter's product is shaped differently, and on 12
      captured pycbc segments the real even/combined ratio reached 0.809 where
      the model says 0.897.  Swept against those captures over 811 triggers:
      0.92 and below lose nothing, 0.95 loses one (1.2e-3, already past the
      1e-3 budget) and 1.00 loses sixteen. */
-  /* Scale on the gate the design table derives.  1.0 is that table's own
+  /* Scale on the coarse threshold the design table derives.  1.0 is that table's own
      answer, and on 12 captured pycbc segments it misses 31 of 842 real
      triggers -- 3.7%, and 13% for triggers within 0.5% of the threshold,
      against a 1e-3 budget.  0.94 recovers all of them, at 2.51x against the
      flat filter where 1.0 gives 3.32x.  The table's recovery factors are
      measured from a mean spectrum and are not a bound on a realisation; see
      docs/hierarchical.md.  Until that is fixed this is the honest control. */
-  /* Automatic gate calibration, off by default.  It lands within 1.5% of the
+  /* Automatic margin calibration, off by default.  It lands within 1.5% of the
      hand-tuned operating point, but the scale below is fitted, not derived:
      hmf_threshold already models the noise statistics, and taking a low
      quantile of the recovered signal peak counts that fluctuation a second
@@ -309,8 +309,8 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->gcal=0; p->gscale=1.40f;
   { const char *e=getenv("MF_GSCALE"); if(e) p->gscale=(float)atof(e); }
   { const char *e=getenv("MF_GCAL"); if(e) p->gcal=atoi(e); }
-  p->gate_margin=1.0f;
-  { const char *e=getenv("MF_GATE_MARGIN"); if(e) p->gate_margin=(float)atof(e); }
+  p->coarse_margin=1.0f;
+  { const char *e=getenv("MF_GATE_MARGIN"); if(e) p->coarse_margin=(float)atof(e); }
   p->even_margin=0.92f;
   { const char *e=getenv("MF_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
   p->prof = getenv("MF_HMF_PROF") ? 1 : 0;
@@ -359,11 +359,11 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
             (double)p->c_fill/p->pairs,100*p->c_fill/tot);
   }
   if(getenv("MF_HMF_DIAG"))
-    fprintf(stderr,"    [diag] pairs=%ld pre-gate passes=%ld (%.1f/pair) "
-            "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% gate=%.3f\n",
+    fprintf(stderr,"    [diag] pairs=%ld pre-screen passes=%ld (%.1f/pair) "
+            "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% margin=%.3f\n",
             p->pairs,p->npre,(double)p->npre/(p->pairs?p->pairs:1),
             p->ninterp,(double)p->ninterp/(p->pairs?p->pairs:1),
-            100.0*p->nskip/(p->pairs?p->pairs:1),p->lastgate);
+            100.0*p->nskip/(p->pairs?p->pairs:1),p->last_thr);
   if(getenv("MF_HMF_DIAG"))
     fprintf(stderr,"    [diag] bracket: fired %ld (%.1f%%) rejected %ld (%.1f%%) "
             "of %ld pairs\n", p->nbrk_fire,100.0*p->nbrk_fire/(p->pairs?p->pairs:1),
@@ -379,12 +379,12 @@ void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *oversample,int *taps){
 static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a1,
                              float *gout,float *grawout,float *graw1out);
 
-/* Scale on the gate, and the strongest lever there is: it trades trigger
+/* Scale on the coarse threshold, and the strongest lever there is: it trades trigger
    rate against dismissal directly, where band and oversample only do so
    through the statistic.  Read per run, so it applies at once. */
-int ap_hmf_set_gate_margin(ap_hmf_plan *p,float g){
+int ap_hmf_set_coarse_margin(ap_hmf_plan *p,float g){
   if(!p||!(g>0.f)) return -1;
-  p->gate_margin=g; return 0;
+  p->coarse_margin=g; return 0;
 }
 int ap_hmf_set_first_stage(ap_hmf_plan *p,float snr){
   if(!p) return -1;
@@ -421,7 +421,7 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
   /* graw1 from the average spectrum is not a bound on a realisation.
    *
    * The early-out skips the odd transform when the even samples alone cannot
-   * reach the gate, which needs a bound on even_max/combined_max.  Derived
+   * reach the coarse threshold, which needs a bound on even_max/combined_max.  Derived
    * from the reference's autocorrelation that is a MEAN shape: an individual
    * noise peak can be sharper, the even grid then loses more than the mean
    * predicts, and the peak is dismissed.  Measured in a real search this cost
@@ -435,13 +435,13 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
     /* Sample size and quantile.  The original took the second smallest of 128,
        which is one unlucky draw away from anything: on a real captured search
        it returned 0.74 where no pair in 27000 went below 0.81, and the even
-       gate then opened on 70% of pairs.  A quantile needs enough samples to be
+       margin then opened on 70% of pairs.  A quantile needs enough samples to be
        a quantile. */
     const int K=128; const int K2=p->K;
-    /* Noise levels to sweep.  The pairs this gate decides are the marginal
-       ones, where the combined maximum is barely at the gate and may be a
+    /* Noise levels to sweep.  The pairs this margin decides are the marginal
+       ones, where the combined maximum is barely at the coarse threshold and may be a
        noise peak rather than the signal.  Simulating at one high SNR only
-       ever reproduces the noiseless scallop, which is what the even gate is
+       ever reproduces the noiseless scallop, which is what the even-pass threshold is
        NOT allowed to assume. */
     /* Noise levels.  For graw1 -- a ratio of two maxima of the same series --
        the level barely matters, so a wide sweep was harmless.  For g and graw
@@ -457,7 +457,7 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
     const double nzlev[4]={nz0*0.7,nz0,nz0*1.4,nz0*2.0};
     float *rat=malloc((size_t)K*sizeof(float));
     /* The same realisations also bound what the filter recovers of a SIGNAL,
-       which is what the final gate needs.  measure_recovery derives g and graw
+       which is what the final margin needs.  measure_recovery derives g and graw
        from a noiseless autocorrelation, and that is a mean shape rather than a
        bound on any realisation -- the same error that made graw1 wrong.  The
        reference is the signal's own peak, sum over the band of the product's
@@ -569,7 +569,7 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
 int ap_hmf_set_data(ap_hmf_plan *p,int d,const float *spec){
   if(!p||d<0||d>=p->nd) return -1;
   /* The FULL plan's ingest is a group-major transpose of n complex, and the
-     gate discards it on the overwhelming majority of pairs -- 99.9% at a 0.1%
+     margin discards it on the overwhelming majority of pairs -- 99.9% at a 0.1%
      trigger rate.  Keep the caller's pointer instead and ingest lazily, the
      first time a pair on this data segment actually reaches refinement.  The
      spectrum must stay valid until run() returns, which is already the
@@ -666,7 +666,7 @@ static void design_taps(const float *w, size_t m, int K, double delta, float *h)
  * The table's figures were measured on the design template (85% of its power in
  * the lowest n/8 bins).  Recovery depends on the spectral shape *inside* the
  * kept band -- a flatter template has a sharper correlation peak and recovers
- * less -- so a caller whose templates differ would have gates calibrated for a
+ * less -- so a caller whose templates differ would have coarse thresholds calibrated for a
  * peak shape they do not have, and would lose detections with nothing to show
  * for it.  Preprocessing is free here (T >> D), so measure it exactly.
  *
@@ -683,7 +683,7 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
      graw1 describes what the even samples alone recover, so offsets that only
      span R/U never test a peak sitting between two even samples.  At R=2, U=2
      that left exactly one offset, the aligned one, and graw1 came back 1.0 when
-     the true figure was 0.958: the even gate was then ~4% too high and every
+     the true figure was 0.958: the even-pass threshold was then ~4% too high and every
      peak on an odd lag was silently dismissed.  Spanning R covers both grids.
      Stride so the sampled set spans the interval even when R is large. */
   size_t nstep=R; if(!nstep) nstep=1;
@@ -723,7 +723,7 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
     if(bi  /pk<gi) gi=bi/pk;
   }
   /* Clamp to <=1: the interpolator can overshoot slightly, and a recovery above
-     1 would raise the gate above what the statistics justify. */
+     1 would raise the coarse threshold above what the statistics justify. */
   *gout     = gi>1.f?1.f:gi;
   *grawout  = gr>1.f?1.f:gr;
   *graw1out = g1>1.f?1.f:g1;
@@ -733,9 +733,9 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
   if(!p||t<0||t>=p->nt) return -1;
   if(ap_mf_set_template(p->full,t,spec)) return -1;
   const size_t n=p->n,m=p->m;
-  /* Band power fraction decides the gate: rho_c = sqrt(f)*rho_full + noise, so
+  /* Band power fraction decides the coarse threshold: rho_c = sqrt(f)*rho_full + noise, so
      f is what sets how far the coarse value sits below the full one.  It varies
-     per template, so the threshold has to as well - one global gate would be
+     per template, so the threshold has to as well - one global margin would be
      wrong for every template but one. */
   double tot=0,lo=0;
   for(size_t k=0;k<n;k++){
@@ -750,7 +750,7 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
      the SIGNAL's band fraction: the coarse noise variance is
      s^2 * sum_{k<m}|H|^2 W and the full one sum_k |H|^2 W, so s^2 = 1/f with
      the same W the reference describes.  Using the template's own fraction
-     would mis-scale the coarse output and shift the gate off calibration. */
+     would mis-scale the coarse output and shift the coarse threshold off calibration. */
   double s = f>0.f ? 1.0/sqrt((double)f) : 0.0;
   float *a0=p->ct0+(size_t)t*2*m, *a1=p->ct1+(size_t)t*2*m;
   for(size_t k=0;k<m;k++){
@@ -865,16 +865,16 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   const size_t nb=ap_mf_nbins(p->full,binsize,start,end);
   (void)U;
   /* coarse index range covering the window; the grid step is n/G lags */
-  /* Recalibrate the gate for the weakest signal that can actually be REPORTED,
+  /* Recalibrate the coarse threshold for the weakest signal that can actually be REPORTED,
      which is max(snr, threshold).  Two wrong ways to do this:
-       - gate at max(tc, threshold): raises the gate above what snr calibrated,
+       - margin at max(tc, threshold): raises the coarse threshold above what snr calibrated,
          so it dismisses at a rate the design never bounded.
-       - gate at tc alone when threshold > snr: correct but wasteful, since
+       - margin at tc alone when threshold > snr: correct but wasteful, since
          signals between snr and threshold are discarded by the full filter
-         anyway, and calibrating for them only opens the gate needlessly.
+         anyway, and calibrating for them only opens the coarse threshold needlessly.
      Both the threshold and snr are in units where the noise has unit-variance
      components, which is the caller's pre-normalisation contract. */
-  /* All three gates depend only on the template, so derive them once per run
+  /* All three coarse thresholds depend only on the template, so derive them once per run
      rather than per pair.  With D data segments and T templates the pair loop
      runs D*T times and this runs T times: the whole point of the D x T shape is
      that anything one-sided belongs outside the product. */
@@ -902,7 +902,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                                : (threshold>p->snr ? threshold : p->snr);
     for(int t=0;t<nt;t++){
       float gt=p->tg[t0+t];
-      tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->gate_margin;
+      tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
       rawg[t] =tcs[t]*p->tgraw [t0+t]*0.999f;
       eveng[t]=tcs[t]*p->tgraw1[t0+t]*p->even_margin;
     }
@@ -918,9 +918,9 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   const size_t cspan = cend>cstart ? cend-cstart : 1;
   /* Even coarse pass for ALL templates of a data segment in one call.  The
      data spectrum is read once and stays resident across the whole template
-     sweep, and consecutive transforms are no longer separated by the gate
+     sweep, and consecutive transforms are no longer separated by the coarse threshold
      branch, so they can overlap.  One threshold has to serve every template, so
-     use the lowest: a template whose own gate is higher is filtered below, and
+     use the lowest: a template whose own margin is higher is filtered below, and
      a lower threshold only ever reports MORE peaks. */
   float minev=eveng[0];
   for(int t=1;t<nt;t++) if(eveng[t]<minev) minev=eveng[t];
@@ -935,68 +935,68 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
-      const float gate = tcs[t]; p->lastgate=gate;
-      const float raw_gate  = rawg[t];
+      const float margin = tcs[t]; p->last_thr=margin;
+      const float raw_thr  = rawg[t];
       int fire=0;
       /* Fused coarse pass: product, transform and maximum in one kernel, with
        * the product never reaching memory.  One bin spanning the whole coarse
        * window means the reported peak IS the maximum, so the separate scan
        * that used to walk the materialised series disappears entirely.
-       * Threshold at raw_gate: below it, interpolation cannot reach the gate,
+       * Threshold at raw_thr: below it, interpolation cannot reach the coarse threshold,
        * so ap_mf_run returns index<0 and there is nothing more to do. */
       ap_peak ce,co; int cc=0;
       co.index=-1; co.magnitude=0.f;
-      /* Even half first, thresholded at graw1*gate rather than graw*gate.  The
+      /* Even half first, thresholded at graw1*margin rather than graw*margin.  The
        * even samples alone are the U=1 series, so if their maximum falls below
-       * graw1*gate the true continuous peak cannot reach the gate no matter
+       * graw1*margin the true continuous peak cannot reach the coarse threshold no matter
        * what the odd samples hold - and the odd transform, half the coarse
        * cost, is skipped outright.  On noise that is the overwhelming majority
        * of pairs.  It must be graw1 and not graw: graw describes the combined
        * U=2 grid, which recovers more, so using it here would cut off peaks the
        * odd half would have found. */
-      const float even_gate = eveng[t];
+      const float even_thr = eveng[t];
       unsigned long long _t0 = p->prof ? ap_ticks() : 0;
       ce = p->cebuf[(size_t)d*nt+t];
-      if(ce.index>=0 && ce.magnitude<even_gate) ce.index=-1;   /* per-template gate */
+      if(ce.index>=0 && ce.magnitude<even_thr) ce.index=-1;   /* per-template margin */
       if(ce.index<0){
         if(getenv("MF_HMF_TRACE") && p->pairs<6)
-          fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
-                  "even max BELOW even_gate\n",p->pairs,gate,even_gate);
-                                            /* cannot reach the gate: done */
+          fprintf(stderr,"    [trace] pair=%ld margin=%.3f even_thr=%.3f "
+                  "even max BELOW even_thr\n",p->pairs,margin,even_thr);
+                                            /* cannot reach the coarse threshold: done */
         p->nskip++;
         goto verdict;
       }
       /* Bracket the odd transform.  The interpolated statistic S bounds the
          combined maximum on both sides, and a bracket that does not straddle
-         the gate settles the pair without paying for the transform.  Every
+         the coarse threshold settles the pair without paying for the transform.  Every
          pair it cannot settle still gets the transform, so the reported
          triggers are unchanged. */
       if(p->ibrk==1 && U>1){
         const float S=p->ibuf[(size_t)d*nt+t];
         float lower=S/p->ihi;
         if(ce.magnitude>lower) lower=ce.magnitude;   /* exact, and free */
-        if(lower>=gate){ fire=1; p->nbrk_fire++; goto verdict; }
-        if(S/p->ilo<raw_gate){ p->nbrk_rej++; goto verdict; }
+        if(lower>=margin){ fire=1; p->nbrk_fire++; goto verdict; }
+        if(S/p->ilo<raw_thr){ p->nbrk_rej++; goto verdict; }
       }
       if(U>1){
         ap_mf_interp_pause(p->coarse,1);
-        int rr=ap_mf_run(p->coarse,d0+d,1,p->nt+t0+t,1,cspan,raw_gate,&co,&cc,
+        int rr=ap_mf_run(p->coarse,d0+d,1,p->nt+t0+t,1,cspan,raw_thr,&co,&cc,
                          cstart,cend);
         ap_mf_interp_pause(p->coarse,0);
         if(rr<0) return -1;
       }
       if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
-      if(p->dump){ float rec[4]={ce.magnitude,bestmag,gate,
+      if(p->dump){ float rec[4]={ce.magnitude,bestmag,margin,
                                  p->ibrk?p->ibuf[(size_t)d*nt+t]:0.f};
                    fwrite(rec,sizeof rec,1,p->dump); }
       if(getenv("MF_HMF_TRACE") && p->pairs<6)
-        fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "
+        fprintf(stderr,"    [trace] pair=%ld margin=%.3f even_thr=%.3f "
                 "coarse max=%.3f (even %.3f odd %.3f)\n",
-                p->pairs,gate,even_gate,bestmag,ce.magnitude,co.magnitude);
-      fire = bestmag>=gate;
-      if(!fire && bestmag>=raw_gate){
-        /* Rare: the raw maximum sits in [graw*gate, gate), the only window where
+                p->pairs,margin,even_thr,bestmag,ce.magnitude,co.magnitude);
+      fire = bestmag>=margin;
+      if(!fire && bestmag>=raw_thr){
+        /* Rare: the raw maximum sits in [graw*margin, margin), the only window where
            interpolation can change the answer.  Only here is the series worth
            materialising, and only around the argmax -- which is exactly what the
            table's recovery factor was measured on. */
@@ -1012,8 +1012,8 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
         }
         for(int i=0;i<HMF_NSUB && !fire;i++){
           p->ninterp+=2;
-          if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj-1) >= gate) fire=1;
-          else if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj) >= gate) fire=1;
+          if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj-1) >= margin) fire=1;
+          else if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj) >= margin) fire=1;
         }
       }
       verdict:
@@ -1032,7 +1032,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     }
     /* Second stage, for every template of this segment that fired, in one
        call.  Run one at a time it re-read the data spectrum per template and
-       cost 4.65 us/pair against 2.76 us batched; the gate makes the fired set
+       cost 4.65 us/pair against 2.76 us batched; the coarse threshold makes the fired set
        sparse and scattered, which is why ap_mf_run_sel takes an index list
        rather than a range. */
     if(nfire){

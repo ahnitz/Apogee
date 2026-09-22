@@ -300,7 +300,7 @@ def _band_features(power, m):
 
     These two determine the statistic: the fraction says how much signal the
     band keeps, the bandwidth how sharp the resulting correlation peak is --
-    and the peak's width against the lag spacing is what the gate has to
+    and the peak's width against the lag spacing is what the coarse threshold has to
     survive.  Both come straight from the reference.
     """
     p = np.asarray(power, dtype=np.float64)
@@ -324,7 +324,7 @@ def choose_config(power, n, snr, fd, tuning=None):
     the answer the same way -- measured, not assumed: at band 512 dismissal
     runs 2.9e-4 to 1.6e-2 as the in-band fraction goes 0.80 to 0.99, and
     2.9e-4 to 6.9e-3 as the effective bandwidth goes 10 bins to 463.  A higher
-    fraction raises the gate; a broader in-band spread sharpens the peak the
+    fraction raises the coarse threshold; a broader in-band spread sharpens the peak the
     lag grid has to catch.  So the row that speaks for a reference is one
     measured at least as high in both, and the worst such row is the one to
     believe.
@@ -354,14 +354,14 @@ def choose_config(power, n, snr, fd, tuning=None):
     """
     t = _load_tuning() if tuning is None else tuning
     feats, byconf = {}, {}
-    for (tn, band, U, K, tsnr, tf, tbe, gate, dm) in t["fdr"]:
+    for (tn, band, U, K, tsnr, tf, tbe, margin, dm) in t["fdr"]:
         if tn != n or abs(tsnr - snr) > 1e-6 or band >= n:
             continue
         if band not in feats:
             feats[band] = _band_features(power, band)
-        byconf.setdefault((band, U, K, gate), []).append((tf, tbe, dm))
+        byconf.setdefault((band, U, K, margin), []).append((tf, tbe, dm))
     best, bcost = None, float("inf")
-    for (band, U, K, gate), rows in byconf.items():
+    for (band, U, K, margin), rows in byconf.items():
         f, be = feats[band]
         # clamp to the grid: past its edge the most pessimistic row is the
         # best evidence there is, and saying so beats extrapolating
@@ -371,13 +371,13 @@ def choose_config(power, n, snr, fd, tuning=None):
         cover = [dm for (tf, tbe, dm) in rows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
         if not cover or max(cover) > fd:
             continue
-        crows = t["cost"].get((n, band, U, K, round(snr, 2), gate))
+        crows = t["cost"].get((n, band, U, K, round(snr, 2), margin))
         if not crows:
             continue
         cf = [c for (tf, tbe, c) in crows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
         c = max(cf) if cf else max(c for (_, _, c) in crows)
         if c < bcost:
-            best, bcost = (band, U, K, gate), c
+            best, bcost = (band, U, K, margin), c
     return best
 
 
@@ -393,19 +393,19 @@ class HierarchicalFilter(MatchedFilter):
         >>> hf.set_data(data_spectra)
         >>> hf.set_templates(template_spectra)
         >>> peaks = hf.run(binsize=1024, threshold=t)
-        >>> hf.trigger_rate        # fraction of pairs that needed the full filter
+        >>> hf.refine_rate        # fraction of pairs that needed the full filter
 
     The guarantee is one-sided and exact.  Every peak it reports is
-    bit-identical to :class:`MatchedFilter`'s, because when the gate fires it
+    bit-identical to :class:`MatchedFilter`'s, because when the coarse pass escalates it
     runs that filter.  It never invents a peak and never shifts one.  What it can
     do is MISS one, with probability at most ``fd`` for a signal of strength
     ``snr``.  If that is not acceptable, use :class:`MatchedFilter`.
 
     ``snr`` is the |rho| of the weakest signal that must be kept; ``fd`` is the
     tolerated false-dismissal probability for such a signal.  Lowering either
-    costs speed, because the gate has to open wider.  Band, oversampling and tap
+    costs speed, because the coarse threshold has to open wider.  Band, oversampling and tap
     count come from a compiled-in measured table - matchedfilter does not tune the
-    gate against your data - and can be pinned with ``band`` / ``oversample`` /
+    margin against your data - and can be pinned with ``band`` / ``oversample`` /
     ``taps`` for testing.  How the work is *arranged*, on the other hand, is
     chosen here and not by the caller: see :meth:`run_series`.
     """
@@ -457,13 +457,13 @@ class HierarchicalFilter(MatchedFilter):
             # answer a question it had no measurement for. A caller who wants
             # a configuration the tables do not cover states it directly.
             raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
-        b, u, k, gate = cfg
+        b, u, k, margin = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
                              self.snr, self.fd, int(b), int(u), int(k))
-        # the gate is the strongest lever and is tuned with the rest; it is
+        # the coarse threshold is the strongest lever and is tuned with the rest; it is
         # read per run, so setting it here is enough
-        if abs(gate - 1.0) > 1e-9:
-            self._mf.set_gate_margin(float(gate))
+        if abs(margin - 1.0) > 1e-9:
+            self._mf.set_coarse_margin(float(margin))
         if self._pending_ref is not None:
             self._mf.set_reference(self._pending_ref)
         return self._mf
@@ -504,7 +504,7 @@ class HierarchicalFilter(MatchedFilter):
         distribution is the distribution of the SNR it produces.  That holds
         only when the data is white and the template whitened.  A broadband
         ratio filter reconstructing a low-frequency signal breaks it badly --
-        the gate would read the filter, not the signal.
+        the coarse threshold would read the filter, not the signal.
 
         The output distribution is a property of the signal rather than of any
         one template and is near-identical across a bank, so set it once here
@@ -600,12 +600,12 @@ class HierarchicalFilter(MatchedFilter):
         return self._ensure().stats()
 
     @property
-    def trigger_rate(self):
+    def refine_rate(self):
         """Fraction of pairs that needed the full correlation.
 
         This is what the speedup rides on, and the first thing to look at when
         the filter is slower than expected: a data set noisier than the design
-        assumed opens the gate more often, and at a high enough trigger rate the
+        assumed opens the coarse threshold more often, and at a high enough trigger rate the
         coarse pass is pure overhead.
 
         Counted over the plan's whole lifetime, not per run.  To measure one

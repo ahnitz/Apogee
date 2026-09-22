@@ -152,7 +152,7 @@ int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
  * costs as much as the first.  Interpolating instead cannot replace it -- the
  * kernel for a critically sampled band needs length -- but it BRACKETS it:
  * a statistic S with measured bounds lo <= S/true <= hi settles every pair
- * whose bracket does not straddle the gate, and only the rest pay the
+ * whose bracket does not straddle the coarse threshold, and only the rest pay the
  * transform.  See docs/hierarchical.md.
  *
  * Candidates are the largest few even samples.  Measured on captured searches,

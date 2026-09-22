@@ -535,9 +535,9 @@ Paired A/B in one binary, median of 3:
 Neutral.  The staging buffer is at most N2*AP_W complex - 8 KiB - so the round
 trip it removes was L1 traffic, which was never the constraint.
 
-It also has to be gated: with a two-level element transform the fused loader
+It also has to be hierarchical: with a two-level element transform the fused loader
 walks the source with stride M1*AP_W (2 KiB at 2^18) where the unfused path reads
-sequentially into a buffer.  Ungated it measured 14% worse at 2^16 and 18% at
+sequentially into a buffer.  Without it it measured 14% worse at 2^16 and 18% at
 2^18 on AVX2.  `eprod_ok()` restricts it to single-level sizes.
 
 **Why fusing cannot help, and what AVX2 would actually need.**  Codelet-only cost
@@ -683,11 +683,11 @@ right one for whatever kernel is ultimately selected:
   sub-positions are exactly i/R.  The LUT needs **R rows, not 1024** -- 4 KiB at
   R=8 instead of 512 KiB, L1-resident, and it makes the operation a polyphase
   bank of R fixed filters.
-- Gate with L1 norms: |re|+|im| >= |z|, so it is a valid upper bound and skips
-  without a sqrt.  Gate at block level first, then per sample.
-- The gate bound must be padded for interpolation overshoot (measured up to
+- Coarse threshold with L1 norms: |re|+|im| >= |z|, so it is a valid upper bound and skips
+  without a sqrt.  Coarse threshold at block level first, then per sample.
+- The margin bound must be padded for interpolation overshoot (measured up to
   102.8% at 256 taps).  Overshoot inflates, so it can never cause a dismissal,
-  but the bound has to allow for it or the gate will.
+  but the bound has to allow for it or the coarse threshold will.
 
 ### Corrections to the above, found by head-to-head
 

@@ -9,16 +9,16 @@ concentrated high -- the slice bounds nothing useful and the pre-pass is added
 cost with no saving.
 
 The guarantee is deliberately one-sided.  Every peak it reports is
-**bit-identical** to `ap_mf_run`'s, because when the gate fires it *is*
+**bit-identical** to `ap_mf_run`'s, because when the coarse pass escalates it *is*
 `ap_mf_run`.  It never invents a peak and never shifts one.  What it can do is
 miss one, with probability at most `fd` for a signal of strength `snr`.
 
 ## Where the speedup comes from
 
-    cost  =  coarse transform  +  gate scan  +  trigger rate x full correlation
+    cost  =  coarse transform  +  margin scan  +  trigger rate x full correlation
 
 The trigger rate is the whole game.  It falls off as `exp(-t_c^2/2)` per coarse
-sample, so a gate threshold a few tenths higher is worth more than any amount of
+sample, so a margin threshold a few tenths higher is worth more than any amount of
 micro-optimisation in the coarse pass.  Everything below is in service of
 raising `t_c` without breaking the false-dismissal bound.
 
@@ -65,7 +65,7 @@ a modulated sinc.  Two consequences worth stating plainly:
   100.0% and 12 or 16 add nothing.  At U=1 no tap count helps much, and every
   window makes it worse, monotonically - a window's transition band needs empty
   spectrum to sit in, and critical sampling has none.
-- **The gate only needs `|v|`**, and the re-modulation phase has unit magnitude,
+- **The margin only needs `|v|`**, and the re-modulation phase has unit magnitude,
   so it cancels.  demodulate -> interpolate -> re-modulate collapses into one
   complex tap `w_k * exp(i pi (d-k)/U)` applied to the raw series.
 
@@ -73,7 +73,7 @@ Because the fine grid is an exact integer subdivision of the coarse one, the tap
 bank needs `HMF_NSUB` rows rather than the ~1024 a general resampler would: a few
 hundred bytes, L1-resident, effectively a polyphase bank.
 
-## Calibrating the gate
+## Calibrating the coarse threshold
 
 With the band split, `rho_c = sqrt(f) rho_full + sqrt(1-f) xi` with `xi`
 independent.  Conditional on the full-filter value, the coarse value is Gaussian
@@ -116,11 +116,11 @@ top of the calibrated rate without any test noticing unless it counts omissions.
   smallest supported size.  The unconstrained design often wants 64 or 128, so
   supporting smaller transforms would unlock more speedup, particularly at
   N=2^11 and high SNR.
-- **The gate is per pair, not per bin.**  The transform is global, so a partial
+- **The margin is per pair, not per bin.**  The transform is global, so a partial
   one would not help; but it means a single loud bin drags the whole pair
   through the full correlation.
 - **The trigger rate depends on the data.**  On noisier data than the design
-  assumed the gate opens more often, and at a high enough rate the coarse pass
+  assumed the coarse pass escalates more often, and at a high enough rate the coarse pass
   is pure overhead.  `ap_hmf_stats` reports it; that is the first number to look
   at when the filter is slower than expected.
 
@@ -129,7 +129,7 @@ top of the calibrated rate without any test noticing unless it counts omissions.
 One core of a Zen 5, AVX-512, D=T=16, bin n/4, whole record searched.  Per pair,
 against the ordinary filter on the same inputs.
 
-    pure noise - the gate should stay shut
+    pure noise - the coarse threshold should stay shut
       2^11 snr5.5 fd1e-2   band=256   mf= 1.24us  hmf= 0.64us   1.95x  trig= 0.0%
       2^12 snr5.5 fd1e-2   band=256   mf= 2.25us  hmf= 0.65us   3.48x  trig= 0.0%
       2^12 snr5.0 fd1e-4   band=1024  mf= 2.27us  hmf= 2.70us   0.84x  trig= 0.4%
@@ -150,7 +150,7 @@ full correlation.  0.5-0.9x is the correct floor for that, not a defect.  Real
 searches have many templates and few signals, which is the first block.
 
 The `fd=1e-4, snr=5.0` row is the weak corner and is below 1x even on noise:
-that combination forces `t_c` low enough that the gate opens on noise alone.
+that combination forces `t_c` low enough that the coarse pass escalates on noise alone.
 `ap_hmf_stats` exists so this is visible rather than mysterious.
 
 The measured speedups on noise (1.95-3.57x) sit below the design model's
@@ -161,30 +161,30 @@ what a 256-point transform actually costs.
 ## A scan that was conservative and still wrong
 
 The first working version interpolated around every sample that passed the cheap
-pre-gate.  That is *safe* - strictly more places checked than the calibration
+pre-screen.  That is *safe* - strictly more places checked than the calibration
 assumes, so it can never lose a detection - and it measured **0.08x**, twelve
 times slower than the plain filter it was meant to beat.
 
 The cause is worth remembering because it is invisible in the design model.  The
 benchmark template has f = 0.994: its power is so concentrated that the
-correlation peak is *broad*.  A broad peak's shoulder sits between `graw*gate`
-and `gate` for ~100 consecutive samples, and each one paid 14 interpolations -
+correlation peak is *broad*.  A broad peak's shoulder sits between `graw*margin`
+and `margin` for ~100 consecutive samples, and each one paid 14 interpolations -
 1360 per pair where 14 suffice.
 
 The fix is also what makes the code match its own calibration.  `recovery()`
 measures the interpolated maximum **around the global argmax**, so the scan
 should do exactly that: one running-maximum pass with no sqrt and no branches,
 then interpolate only around the winner, and only when the raw maximum lands in
-`[graw*gate, gate)`.  Interpolations per pair fell from 1360 to 2.1 and the
+`[graw*margin, margin)`.  Interpolations per pair fell from 1360 to 2.1 and the
 worst case from 0.08x to 0.79x.
 
-The general lesson: a gate that is conservative in the *statistical* sense can
+The general lesson: a margin that is conservative in the *statistical* sense can
 still be catastrophic in the *computational* sense, and the test suite will not
-notice, because conservative gating produces correct answers.  Only the
+notice, because conservative the coarse pass produces correct answers.  Only the
 benchmark catches it, and only on data whose peak shape differs from the design
 template's.
 
-## Open: the gate does not behave as modelled at large N
+## Open: the coarse threshold does not behave as modelled at large N
 
 At 2^18 and 2^20 the measured trigger rate disagrees with the design model, and
 the disagreement is in the unsafe direction.
@@ -193,11 +193,11 @@ the disagreement is in the unsafe direction.
     2^18   t_c=4.93, trig 50.4%, 1.04x    trig 0.0%, 5.01x
     2^20   t_c=1.32, trig  100%, 1.00x    trig 0.0%, 2933x
 
-The model is the one to believe here.  The gate sits below the detection
+The model is the one to believe here.  The margin sits below the detection
 threshold by construction, and with ~10^6 lags the coarse maximum in pure noise
-reaches about sqrt(2 ln G) ~ 3.7 -- far above a gate of ~1.5.  Essentially every
-pair should trigger.  A measured 0% means the run-time gate is much higher than
-the calibration intends, and **a gate that is too high dismisses real signals
+reaches about sqrt(2 ln G) ~ 3.7 -- far above a margin of ~1.5.  Essentially every
+pair should trigger.  A measured 0% means the run-time margin is much higher than
+the calibration intends, and **a margin that is too high dismisses real signals
 silently**.  Reported peaks stay bit-identical either way, so the test suite
 cannot see this; only the trigger rate can.
 
@@ -210,9 +210,9 @@ Two things this also makes clear, independent of the bug:
 - **A realistic threshold at large N is not 5.5.**  The full filter alone
   expects n*exp(-t^2/2) noise crossings per pair - about 0.3 at 2^20 and t=5.5 -
   so a real search would set the threshold from the trials factor.  The
-  hierarchical gate's usefulness depends on the margin between that threshold
+  hierarchical margin's usefulness depends on the margin between that threshold
   and sqrt(2 ln G), which shrinks as N grows.
-- **The gate is per pair, not per bin.**  The output is one peak per bin, but
+- **The margin is per pair, not per bin.**  The output is one peak per bin, but
   one loud bin drags the whole pair through the full correlation.  For a search
   that wants a trigger in every window this is the binding limitation, and the
   cost model does not currently account for it.
@@ -226,7 +226,7 @@ trigger, running at 18.3 flops/cycle -- 57% of the AVX2 FMA peak.  It is not
 overhead-bound, so the only way through is less arithmetic, and the coarse stage
 is the one place in matchedfilter that can afford it: refinement is a separate exact
 transform, so a ~1e-3 relative error in the coarse values cannot change a
-reported peak, only the gate decision.
+reported peak, only the coarse threshold decision.
 
 The int16 codelets already exist and are tested (`ffti16_8/16/32/64`, with and
 without shift, covered by tests/test_units).  Band 256 splits 16x16, so both
@@ -252,7 +252,7 @@ trigger rate matters.
 
 This is a substantial change, not a microoptimisation: a new transform path plus
 a re-calibration.  It should not be attempted in a context too small to finish
-and re-validate it, because a half-finished gate that is slightly wrong looks
+and re-validate it, because a half-finished margin that is slightly wrong looks
 *faster*, and the correctness suite cannot see it.
 
 ## The first-stage threshold can be set directly
@@ -285,8 +285,8 @@ Seen in a real search at snr 5.0, forcing bands the tables do not pick:
     1024   0.144 s     1.5%   859/893   34 lost
      512   0.135 s     8.7%   885/893    8 lost
 
-Losing more at 1024 than at 256 is not how a merely-strict gate behaves: at
-R=4 the deterministic g and graw run optimistic, so the gate sits too high.
+Losing more at 1024 than at 256 is not how a merely-strict margin behaves: at
+R=4 the deterministic g and graw run optimistic, so the coarse threshold sits too high.
 Nothing is broken today, because the table never selects those bands -- but a
 smaller band at low SNR needs this fixed first.
 
@@ -339,8 +339,8 @@ measurements set C and the kernel length:
 
 Bounds derived on six captured segments and tested on the other six violate at
 0.188%, so they need a safety margin and fixture validation, exactly as the
-even gate's does. Only the lower bound is dangerous: an over-report fires the
-coarse gate spuriously, which costs a reconstruction and cannot invent a
+even-pass threshold's does. Only the lower bound is dangerous: an over-report fires the
+coarse margin spuriously, which costs a reconstruction and cannot invent a
 trigger, while an under-report past the bound loses one.
 
 Projected: the odd pass falls to 0.18 of its cost, the filter from 14.77 to
@@ -369,7 +369,7 @@ pairs, taking the odd samples adjacent to the largest even samples:
 
 The odd maximum is not located near the large even samples. Sixteen exact
 evaluations cost five times the whole transform and still leave a worst case
-of 0.926, against the 0.897 the even gate already achieves for free. The
+of 0.926, against the 0.897 the even-pass threshold already achieves for free. The
 candidate set cannot be narrowed, so nearly everything must be evaluated, and
 an FFT is the efficient way to evaluate everything.
 
@@ -423,11 +423,11 @@ Per-pair only; nothing here relates one template to another.
 - **A third rung on band.** A band-512 statistic, biased up by its worst-case
   ratio to the band-1024 one (0.792, so a 1.26 bias), rejects 52% of pairs at
   0.45 of the cost: net 1.08x at the operating point. At a 1% trigger rate it
-  would be 1.44x, so it is a function of where the gate sits rather than a
+  would be 1.44x, so it is a function of where the coarse threshold sits rather than a
   property of the method.
 - **A pre-test with no transform at all.** The only O(m) bound available from
   the spectrum is Parseval, `max <= sqrt(m) ||P||`, which is loose by
-  `sqrt(m / ln m)`, about 12x at m=1024. Nothing to gate on.
+  `sqrt(m / ln m)`, about 12x at m=1024. Nothing to margin on.
 - **Stage-A partial results.** Parseval along the k1 axis gives the energy of
   each residue class of lags for free once stage A is done, but that sums one
   signal lag against N1 noise lags: it rejects 20% of noise pairs and saves
@@ -436,10 +436,10 @@ Per-pair only; nothing here relates one template to another.
 ## The bracket
 
 The odd coarse transform exists to find peaks that fall between the even pass's
-grid samples. It runs on the ~27% of pairs that clear the even gate, and for
+grid samples. It runs on the ~27% of pairs that clear the even-pass threshold, and for
 most of them the answer is already determined: the even series can be
 interpolated to a statistic `S` whose ratio to the true combined maximum is
-bounded on both sides, and a bracket that does not straddle the gate settles
+bounded on both sides, and a bracket that does not straddle the coarse threshold settles
 the pair without the second transform.
 
 This was implemented, measured 5x slower, and left off behind `MF_BRACKET=1`
@@ -470,8 +470,8 @@ Measured per pair, at band 1024:
 With that fixed, the bracket has been turned on and off three times. It is
 off. This is the evidence.
 
-The reject branch fires when `S/ilo < raw_gate`. A wrong rejection only loses a
-trigger above the gate, and `raw_gate = graw * gate`, so the branch is sound
+The reject branch fires when `S/ilo < raw_thr`. A wrong rejection only loses a
+trigger above the coarse threshold, and `raw_thr = graw * margin`, so the branch is sound
 while
 
     ilo <= min(S / true) / graw
@@ -568,8 +568,8 @@ the next block overwrote it. Giving the group one buffer per slot -- `dgroup *
 the work only for blocks that fire.
 
 Worth 43.84 -> 41.79 us/block at threshold 5.0 and 34.89 -> 33.61 at 5.5. End
-to end that is 11.05 -> 10.50 ms/segment (3.38x -> 3.56x) at the default gate
-and 14.77 -> 13.75 (2.54x -> 2.67x) at the zero-loss gate, with 31/842 and
+to end that is 11.05 -> 10.50 ms/segment (3.38x -> 3.56x) at the default margin
+and 14.77 -> 13.75 (2.54x -> 2.67x) at the zero-loss margin, with 31/842 and
 0/842 unchanged.
 
 Two things deliberately stay per-segment. The odd coarse transform runs on one
@@ -616,7 +616,7 @@ workloads, which is the subtlety:
 | | workload | why |
 |---|---|---|
 | FDR rows | injections at the threshold | you cannot count dismissals without signals |
-| COST rows | pure noise at the threshold | cost is set by how often the gate opens, which on real data is ~1% |
+| COST rows | pure noise at the threshold | cost is set by how often the coarse pass escalates, which on real data is ~1% |
 
 Timing on the injected harness made every band read 9-13 us/pair, because
 injections force half the pairs to fire whatever the band. On noise the same
@@ -626,15 +626,15 @@ cells separate 12.7 us/pair from 1.8.
 **0 of 842**, against the old compiled default's 31 of 842 -- 3.7% missed on a
 0.1% budget. The guarantee is the thing being bought.
 
-It also now buys back most of the cost. The gate scaling is a fourth selected
+It also now buys back most of the cost. The margin scaling is a fourth selected
 dimension rather than a hand-set constant, and the cost rows are relative
 measurements taken against a pivot on a common reference, so configurations
 are actually comparable. Together those moved the pick from band 512 at
-gate 0.90 -- the slowest of the four admissible options, 0.082 ms/block -- to
-band 2048 at gate 1.00 at 0.065, 21% cheaper at unchanged accuracy.
+margin 0.90 -- the slowest of the four admissible options, 0.082 ms/block -- to
+band 2048 at margin 1.00 at 0.065, 21% cheaper at unchanged accuracy.
 
 The cheapest admissible row is not always the cheapest thing that works on a
-given dataset. Band 1024 at gate 0.94 measures 0.053 ms/block and misses
+given dataset. Band 1024 at margin 0.94 measures 0.053 ms/block and misses
 nothing on the captures, but its measured dismissal is 1.3e-3 against a 1e-3
 budget, so it is declined. That is the right call and worth being explicit
 about: 67 triggers cannot resolve 1e-3, so the captures agreeing is not
@@ -642,7 +642,7 @@ evidence, and the table is the only instrument here that sees that far down.
 A caller who wants it can ask for `fd=2e-3` and get it.
 
 **Regenerating.** `tools/hmf_tune.py`. The two halves go stale independently:
-COST on any kernel or machine change, FDR on any change to the gate or the
+COST on any kernel or machine change, FDR on any change to the coarse threshold or the
 interpolation. The file carries its CPU, commit, trial count and resolution
 floor, and `MF_TUNING` points at a different one -- so retuning needs no
 rebuild.
@@ -669,7 +669,7 @@ deployments run in.
 
 The accuracy table should not normally need regenerating -- they describe the
 statistic, not the machine, so they travel. Regenerate them if you change the
-gate, the recovery factors, the interpolation taps or the oversampled grid,
+margin, the recovery factors, the interpolation taps or the oversampled grid,
 since those change what is being measured:
 
 ```

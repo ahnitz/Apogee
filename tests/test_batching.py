@@ -26,7 +26,7 @@ def test_data_passed_as_a_temporary_survives_the_run():
     passed at 12.
 
     This drives it deliberately: a reference concentrated enough to open the
-    gate often, no name bound to the data, and enough segments and repeats to
+    margin often, no name bound to the data, and enough segments and repeats to
     give the allocator a chance to reuse the freed block.
 
     Be honest about what it is worth: reverting the fix does NOT reliably

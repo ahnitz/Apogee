@@ -135,28 +135,28 @@ power of the filter **output** in each bin. Only its shape is used; the overall
 normalisation is divided out.
 
 This is the output, not the template. The two differ whenever the data is
-coloured, and passing the template's own power will mis-set the gate: a
+coloured, and passing the template's own power will mis-set the coarse threshold: a
 broadband template reconstructing a narrowband signal is the case where it goes
 wrong by the largest factor.
 
-The gate is one-sided by construction: peaks it reports are bit-identical to
+The margin is one-sided by construction: peaks it reports are bit-identical to
 the flat filter's. It can only omit, never invent. `fd` is the budget for how
 often it is allowed to omit one.
 
-On pure noise at n=4096 the gate runs about **7x faster** than the flat filter.
+On pure noise at n=4096 the coarse threshold runs about **7x faster** than the flat filter.
 The saving scales with how little survives, so it grows with your threshold and
 falls toward 1x on data where most pairs trigger.
 
 ## Caveats
 
 - **The library refuses configurations its tables do not cover.** Band,
-  oversampling, taps and gate are chosen from two measured tables shipped with
+  oversampling, taps and margin are chosen from two measured tables shipped with
   the package, keyed on the reference you supply. Outside their coverage --
   currently `n=4096` at snr 5.0/5.5/6.0 -- construction raises rather than
   guessing. Extend it by running `tools/hmf_tune.py`, or state the
   configuration yourself at construction, which always works.
-- **A hand-specified configuration does not get a tuned gate.** Passing
-  `band`/`oversample`/`taps` bypasses selection, and the gate then comes from
+- **A hand-specified configuration does not get a tuned margin.** Passing
+  `band`/`oversample`/`taps` bypasses selection, and the coarse threshold then comes from
   the compiled model in `src/hmf_table.h`, whose recovery factors are derived
   from the reference's mean spectrum and are not a bound on an individual
   realisation. On a ratio-filter-shaped workload that costs 8 omissions in 140
@@ -180,7 +180,7 @@ python -m matchedfilter.benchmark
 python -m matchedfilter.benchmark --backends      # every target, one process
 ```
 
-[docs/](docs/) holds the design notes: how the hierarchical gate is
+[docs/](docs/) holds the design notes: how the hierarchical margin is
 calibrated, and measurements of the approaches that were tried and rejected.
 
 ## License

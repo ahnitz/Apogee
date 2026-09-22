@@ -7,8 +7,8 @@ cheaper is to do it in fewer bits.  What matters is NOT that the fixed-point
 maximum be accurate -- it is that its error be BOUNDED.  With a bound eps, the
 pass stays exact:
 
-    fixed*(1+eps) <  gate   ->  reject, no float transform
-    fixed*(1-eps) >= gate   ->  fire
+    fixed*(1+eps) <  margin   ->  reject, no float transform
+    fixed*(1-eps) >= margin   ->  fire
     otherwise                   run the float pass as today
 
 so the question this answers is how wide that undecided band is.  A pass that

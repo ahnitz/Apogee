@@ -6,8 +6,8 @@ int16 kernels directly -- those are internal and there is no way to reach them
 through MatchedFilter or HierarchicalFilter.
 
 The hierarchical tests are written around a single idea: the guarantee is
-one-sided.  A reported peak must be bit-identical to the ungated filter's,
-because when the gate fires it runs that filter.  Only omissions are allowed,
+one-sided.  A reported peak must be bit-identical to the full filter's,
+because when the coarse pass escalates it runs that filter.  Only omissions are allowed,
 and only at the calibrated rate.  Tests that assert closeness rather than
 identity would pass while the refinement path quietly diverged, so they assert
 identity.
@@ -156,7 +156,7 @@ def test_hierarchical_is_identical_or_absent():
     power = inspiral_power(n)
     H = np.stack([template_with_power(n, power) for _ in range(nt)])
     D = noise((nd, n), rng)
-    for d in range(nd):                       # a loud signal so the gate fires
+    for d in range(nd):                       # a loud signal so the coarse pass escalates
         lag = 300 + 17 * d
         D[d] += (12.0 * H[0] * np.exp(2j * np.pi * np.arange(n) * lag / n)
                  ).astype(np.complex64)
@@ -171,14 +171,14 @@ def test_hierarchical_is_identical_or_absent():
     b = hf.run(binsize=1024, threshold=5.5)
 
     fired = b["index"] >= 0
-    assert fired.any(), "gate never opened on a 12-sigma signal"
+    assert fired.any(), "margin never opened on a 12-sigma signal"
     assert not (fired & (a["index"] < 0)).any(), "invented a peak"
     np.testing.assert_array_equal(a["index"][fired], b["index"][fired])
     np.testing.assert_array_equal(a["value"][fired], b["value"][fired])
     np.testing.assert_array_equal(a["magnitude"][fired], b["magnitude"][fired])
 
 
-def test_gate_stays_shut_on_noise():
+def test_coarse_pass_rules_out_pure_noise():
     n, nd = 4096, 64
     rng = np.random.default_rng(12)
     power = inspiral_power(n)
@@ -188,14 +188,14 @@ def test_gate_stays_shut_on_noise():
     hf.set_templates(template_with_power(n, power)[None, :])
     peaks = hf.run(binsize=n, threshold=5.5)
     assert (peaks["index"] < 0).all()
-    assert hf.trigger_rate < 0.25
+    assert hf.refine_rate < 0.25
 
 
 def test_omission_rate_meets_the_budget():
     """The false-dismissal budget is a promise; hold the code to it.
 
     Bit-identity says nothing about what is NOT reported, so without this a
-    gate set too high passes every other test while quietly losing signals.
+    margin set too high passes every other test while quietly losing signals.
     """
     n, trials, snr, fd = 4096, 1500, 5.5, 1e-2
     rng = np.random.default_rng(13)
@@ -226,10 +226,10 @@ def test_omission_rate_meets_the_budget():
     assert rate <= 3 * fd, f"omitted {rate:.3%} of {detected}, budget {fd:.1%}"
 
 
-def test_gate_reads_the_signal_not_the_template():
+def test_coarse_threshold_reads_the_reference_not_the_template():
     """A broadband template whose output is narrowband -- the ratio-filter case.
 
-    Without a reference the gate measures the template's own power and is badly
+    Without a reference the coarse threshold measures the template's own power and is badly
     wrong.  With one it measures the signal the template reconstructs.
     """
     n, band = 4096, 512
@@ -252,8 +252,8 @@ def test_gate_reads_the_signal_not_the_template():
     hf.set_data(noise((32, n), rng))
     hf.run(binsize=n, threshold=5.5)
     # Reading the template would both mis-scale the coarse series and mis-set
-    # the gate; either way the gate fires on pure noise.
-    assert hf.trigger_rate < 0.25
+    # the coarse threshold; either way the coarse pass escalates on pure noise.
+    assert hf.refine_rate < 0.25
 
 
 def test_coarse_scaling_follows_the_reference():
@@ -262,7 +262,7 @@ def test_coarse_scaling_follows_the_reference():
     It exists so the coarse series carries the same noise level as the full
     filter, which is what makes one threshold serve both.  Taking f from a
     broadband template whose output is narrowband inflates the coarse series --
-    by 1/sqrt(0.06) = 4x here -- and the gate then fires on everything.
+    by 1/sqrt(0.06) = 4x here -- and the coarse threshold then fires on everything.
     """
     n, band = 4096, 512
     rng = np.random.default_rng(16)
@@ -280,14 +280,14 @@ def test_coarse_scaling_follows_the_reference():
     hf.set_templates(H[None, :])
     hf.set_data(noise((64, n), rng))
     hf.run(binsize=n, threshold=5.5)
-    assert hf.trigger_rate < 0.25
+    assert hf.refine_rate < 0.25
 
 
 def test_peaks_on_odd_lags_survive():
     """Regression: the even-grid recovery must span the even grid's spacing.
 
     Measured over offsets of R/U rather than R, graw1 came back 1.0 where the
-    truth was 0.958, the even gate sat too high, and every peak landing on an
+    truth was 0.958, the even-pass threshold sat too high, and every peak landing on an
     odd lag was dismissed.  At band = n/2 that is R=2, so only odd lags expose
     it, and no other test here places a peak there.
     """
@@ -378,7 +378,7 @@ def test_bracket_does_not_change_what_is_reported():
     """The bracket settles pairs without the second coarse transform.
 
     It is allowed to do that only where the interpolated statistic's bracket
-    does not straddle the gate, so every pair it settles it settles the way
+    does not straddle the coarse threshold, so every pair it settles it settles the way
     the transform would have.  Turning it off must therefore change the time
     taken and nothing else.  The reject side is the one that can cost a
     trigger if its margin is too tight, which is why this asserts identity
@@ -450,11 +450,11 @@ def test_run_series_grouping_is_invisible():
 
 @pytest.mark.xfail(
     reason="known, and scoped to the HAND-SPECIFIED path: pinning band/taps "
-           "bypasses selection, so the gate falls back to the compiled model "
+           "bypasses selection, so the coarse threshold falls back to the compiled model "
            "in src/hmf_table.h, whose g and graw are measured from the "
            "reference's MEAN frequency series and are not a bound on an "
            "individual realisation. Real peaks are sharper than the mean, the "
-           "gate sits too high, and this omits ~8/140 against a 3% budget. "
+           "margin sits too high, and this omits ~8/140 against a 3% budget. "
            "The same workload PASSES when the library chooses -- see "
            "test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not "
            "below, which is what makes this a statement about the pinned path "
@@ -482,12 +482,12 @@ def _ratio_filter_shaped_workload(pin=True):
 
     What makes it different from every other test here:
       * the templates are short, BROADBAND filters, while the SNR they
-        reconstruct is strongly low-frequency -- so the gate has to read the
+        reconstruct is strongly low-frequency -- so the coarse threshold has to read the
         reference, not the template;
       * the data is one long series walked by overlapping blocks;
       * each block carries its own window, ragged at the ends.
 
-    The truth is the ungated filter on the same blocks.  Note this comparison
+    The truth is the full filter on the same blocks.  Note this comparison
     is to a tolerance rather than bit-identical, unlike the other hierarchical
     tests: run_series does each block's forward transform inside matchedfilter while
     the reference path uses numpy's, and the two agree only to float32
@@ -531,16 +531,16 @@ def _ratio_filter_shaped_workload(pin=True):
     # heavily coloured, so the correlation is smooth over lags and carries far
     # fewer independent samples than its length suggests -- the noise maximum
     # sits near 3, not the sqrt(2 ln N) ~ 4 a white series would give.  Fishing
-    # below that would leave the gate calibrated for one level and tested at
+    # below that would leave the coarse threshold calibrated for one level and tested at
     # another; injecting keeps both at the same SNR.
     snr = 5.0
     ph = np.exp(2j * np.pi * np.arange(n) / n)
     # The injected signal has to have the same spectral shape as everything
-    # else the gate sees.  Injecting H[t] itself gives a response proportional
-    # to |H[t]|^2 -- broadband, since these filters are -- which the gate would
+    # else the coarse threshold sees.  Injecting H[t] itself gives a response proportional
+    # to |H[t]|^2 -- broadband, since these filters are -- which the coarse threshold would
     # rightly dismiss as not looking like the reference.  Take the phase from
     # the template so the bins add coherently, and the amplitude from the
-    # reference so the response lands where the gate is looking.
+    # reference so the response lands where the coarse threshold is looking.
     amp = np.sqrt(ref).astype(np.complex64)
     unit = np.zeros(n, np.complex64)
     nz = np.abs(H[0]) > 0
@@ -580,9 +580,9 @@ def _ratio_filter_shaped_workload(pin=True):
             elif have["index"][t] >= 0:
                 invented += 1
 
-    assert detected > 50, f"only {detected} peaks; the test is not exercising the gate"
+    assert detected > 50, f"only {detected} peaks; the test is not exercising the coarse threshold"
     assert invented == 0, f"invented {invented} peaks"
-    assert differ == 0, f"{differ} recovered peaks differ from the ungated filter"
+    assert differ == 0, f"{differ} recovered peaks differ from the full filter"
     assert omitted / detected <= 3e-2, f"omitted {omitted}/{detected}"
 
 
@@ -592,14 +592,14 @@ def test_autotuned_calibration_meets_the_budget_where_the_default_does_not():
     `test_ratio_filter_shaped_workload` above is xfail for exactly one reason:
     g and graw are derived from a noiseless autocorrelation of the reference's
     MEAN spectrum, which is not a bound on any individual realisation, so the
-    gate sits too high and the omission rate runs ~5% against a 1% budget.
+    margin sits too high and the omission rate runs ~5% against a 1% budget.
     The autotune re-measures both over realisations and the budget then holds.
 
     Pinning that here does two things. It stops the autotune silently ceasing
     to work -- nothing else in the suite exercises it. And it makes the xfail
     above a statement about the DEFAULT rather than about the method: the
     calibration is capable of meeting the budget, it is simply not on, because
-    it also over-corrects and costs ~9% more than tuning the gate by hand
+    it also over-corrects and costs ~9% more than tuning the coarse threshold by hand
     (14.43 against 13.29 ms/segment on the captures, both at zero loss).
     """
     old = os.environ.get("MF_GCAL")
@@ -677,7 +677,7 @@ def test_first_stage_threshold_is_independent_of_configuration():
         hf.set_data(d)
         hf.set_first_stage(fs)
         hf.run(binsize=n, threshold=5.5)
-        rates[fs], cfgs[fs] = hf.trigger_rate, hf.config
+        rates[fs], cfgs[fs] = hf.refine_rate, hf.config
 
     # the workload must actually exercise the first stage, or the rest is vacuous
     assert rates[5.5] > 0.01, (
@@ -719,6 +719,6 @@ def test_first_stage_below_the_design_grid_is_clamped():
         hf.set_data(d)
         hf.set_first_stage(fs)
         hf.run(binsize=n, threshold=5.5)
-        got[fs] = hf.trigger_rate
+        got[fs] = hf.refine_rate
     assert got[3.0] == pytest.approx(got[4.5], rel=1e-6)
     assert got[0.01] == pytest.approx(got[4.5], rel=1e-6)

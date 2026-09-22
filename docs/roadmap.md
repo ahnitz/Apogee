@@ -27,13 +27,13 @@ touch the even pass is worth at most 25%, and at the higher threshold at most
 
 ## The one number that kills most ideas
 
-The true coarse maximum has a coefficient of variation of 0.103, so the gate
+The true coarse maximum has a coefficient of variation of 0.103, so the coarse threshold
 sits only **1.19x above the median**. A pre-filter rejects a pair only when
-`stat/worst_case_recovery < gate`, so the rejection fraction depends on one
+`stat/worst_case_recovery < margin`, so the rejection fraction depends on one
 property of the statistic -- its worst-case recovery -- and the curve has a
 cliff:
 
-| worst-case recovery | rejects at the 5% gate |
+| worst-case recovery | rejects at the 5% margin |
 |---:|---:|
 | 0.70 | 1.2% |
 | 0.85 | 53.3% |
@@ -90,18 +90,18 @@ changes the API.
 
 ## Done
 
-### Choosing the band and the gate from the reference, jointly
+### Choosing the band and the coarse threshold from the reference, jointly
 
 This was the largest live item on the page and it is now shipped. Kept here in
 summary because the argument is still the reason the design looks as it does.
 
 **The problem it solved.** Band selection was `hmf_choose(n, snr, fd, ...)`, a
 nearest-neighbour lookup over hardcoded design points that never saw the signal
-power, while the gate *was* power-aware. Half the decision used the reference
-and half ignored it, and the two cannot be separated: band 1024 alone at gate
+power, while the coarse threshold *was* power-aware. Half the decision used the reference
+and half ignored it, and the two cannot be separated: band 1024 alone at margin
 1.00 misses 31/842, so the table picked 2048 and bought the accuracy back with
-bandwidth. Narrow the band without fixing the gate and triggers are lost; fix
-the gate without narrowing the band and the saving is left on the table.
+bandwidth. Narrow the band without fixing the coarse threshold and triggers are lost; fix
+the coarse threshold without narrowing the band and the saving is left on the table.
 
 **What shipped.** Two measured tables, `accuracy.txt` and `cost.txt`, shipped
 as package data and read at `set_reference` time. They are split because they
@@ -143,8 +143,8 @@ two conclusions on this page had to be withdrawn after being drawn across that
 gap.
 
 ### Nothing cheaper can precede it
-The even gate sits at only **1.064x the median even maximum** (CV 0.091), which
-is a steeper cliff than the final gate's 1.19x. A pre-filter placed before the
+The even-pass threshold sits at only **1.064x the median even maximum** (CV 0.091), which
+is a steeper cliff than the final margin's 1.19x. A pre-filter placed before the
 even pass rejects:
 
 | worst-case recovery | 0.70 | 0.80 | 0.85 | 0.90 | 0.95 |
@@ -172,7 +172,7 @@ same grid, so scalloping gets worse. Against the true continuous peak:
 | truncate (current) | 0.9772 | 0.9192 | **0.9116** |
 | fold (exact in frequency) | 0.9879 | 0.9034 | **0.8915** |
 
-The gate is set by the worst case, so folding makes it worse. Truncation is not
+The margin is set by the worst case, so folding makes it worse. Truncation is not
 a cost-saving approximation that happens to work -- it is load-bearing, and it
 is why the band has a real optimum rather than being "as wide as affordable".
 
@@ -223,22 +223,22 @@ even before the mixed-radix penalty.
 15.92 at 2048. A parabola through those has its minimum at band **1209**, worth
 12.88 ms -- a **2.3% ceiling**, which is less than radix-3/5 codelets cost
 relative to radix-2/4/8. Also checked that band 2048 does not tolerate a higher
-gate to compensate: at gate 1.06 it misses 638/842.
+margin to compensate: at margin 1.06 it misses 638/842.
 
 ### Finer oversampling (U=4)
 **Closed.** U improves only the lag-grid scalloping loss, and that factor is
 already accurate. Measured recovery of the U-fold grid against the continuous
 maximum on 624 real pairs: U=1 worst 0.7908, U=2 **0.8963**, U=4 0.9820, U=8
 0.9958, tracking the `sinc(1/2U)` bound. U=4 would move a factor from 0.90 to
-0.98 -- but the factor that actually binds the gate is `g`, which is 0.88-0.91
+0.98 -- but the factor that actually binds the coarse threshold is `g`, which is 0.88-0.91
 and is about band-limiting, not scalloping. The kernel hard-limits U to {1,2};
 U=1 misses 244/842, so the odd pass is not optional.
 
-### A more conservative even gate
+### A more conservative even-pass threshold
 **Closed.** Sweeping `even_margin` *downward* -- 0.92, 0.88, 0.84, 0.80 -- the
 miss count stays at exactly 31/842 while the cost rises 41% (10.12 to 14.26
-ms/segment). **None of the misses come from the even gate.** All of them come
-from the main gate, i.e. from `g`. Upward it breaks immediately (0.96 costs 3),
+ms/segment). **None of the misses come from the even-pass threshold.** All of them come
+from the main margin, i.e. from `g`. Upward it breaks immediately (0.96 costs 3),
 so 0.92 is both correct and tight.
 
 
@@ -254,14 +254,14 @@ int16 on the arithmetic itself (0.54x).
 Precision was never the obstacle: a full Q15 pipeline modelled on 456 real
 pairs -- exact int32 product, one renormalising shift, unconditional `>>1` per
 stage, no block-floating-point reduction -- gives a **1.0125x** error band
-against a 1.19x gate margin, with zero saturation. See `tools/coarse_fixed.py`
+against a 1.19x margin margin, with zero saturation. See `tools/coarse_fixed.py`
 and `docs/coarse-narrow.md`.
 
 ### Stage-A Parseval bound
 **Closed.** After stage A the energy of each residue class of lags is free, and
 the class maximum is bounded by its square root. Measured on real pairs, the
 bound is 2.5-4.9x the true maximum, i.e. worst-case recovery **0.16 to 0.39** --
-far under the 0.85 cliff, so it rejects essentially nothing at our gate.
+far under the 0.85 cliff, so it rejects essentially nothing at our margin.
 Tested at 32, 64 and 128 classes, both as consecutive blocks and as residues.
 
 ### Any cheaper pre-filter
@@ -285,8 +285,8 @@ when a *few* outputs are wanted, not a quarter of them.
 
 ### Band width
 **Closed.** Swept over all twelve captures. Band 1024 is optimal at *both*
-operating points: at zero loss, band 1024 at gate 0.94 costs 14.77 ms against
-band 512 at gate 0.90 needing 20.97 ms. Band 512 wins only in the 3-6 missed
+operating points: at zero loss, band 1024 at margin 0.94 costs 14.77 ms against
+band 512 at margin 0.90 needing 20.97 ms. Band 512 wins only in the 3-6 missed
 regime, which is not an operating point anyone wants.
 
 ### Four-step factorisation and blocking
@@ -294,7 +294,7 @@ regime, which is not an operating point anyone wants.
 at 64. `MF_GBLK` and `MF_BBLK` move it by nothing (2210-2285 across all
 settings).
 
-### Gate margins
+### Coarse threshold margins
 **Closed.** `even_margin` 0.92 is optimal: 0.96 costs 3 triggers of 842 and
 1.00 costs 16. The scalloping bound alone is not sufficient; the extra factor
 is doing real work.
@@ -316,7 +316,7 @@ transform instead of even+odd costs `2m log 2m` against
 precisely because the odd one is usually skipped.
 
 ### Early exit inside stage B
-**Closed.** A pair could stop as soon as a partial maximum clears the gate --
+**Closed.** A pair could stop as soon as a partial maximum clears the coarse threshold --
 but that only helps pairs that fire, which are 1.5%. The 98.5% that do not fire
 must finish regardless.
 
@@ -370,7 +370,7 @@ by a least-squares tap design whose worst-case accuracy saturates at 17 taps,
 and a minimax design optimises exactly the quantity the bound depends on. That
 is worth up to ~10%.
 
-Band and gate selection is done: it is driven by two measured tables read from
+Band and margin selection is done: it is driven by two measured tables read from
 the caller's reference, and on the captures it moves the pick from the slowest
 admissible configuration to the fastest, 21% at unchanged accuracy. What is
 left there is coverage and resolution, not method. Everything else on this page

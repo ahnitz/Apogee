@@ -100,7 +100,7 @@ print(json.dumps({
     "backend": mf.backend(),
     "ms": best * 1e3,
     "blocks": len(starts),
-    "trigger_rate": p.trigger_rate,
+    "refine_rate": p.refine_rate,
     # a cheap fingerprint of the whole result, so a disagreement anywhere shows
     "idx_sum": int(np.asarray(idx, dtype=np.int64).sum()),
     "mag_sum": float(np.asarray(mag, dtype=np.float64).sum()),

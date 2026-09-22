@@ -4,13 +4,13 @@
 # trials  12000 injected per cell
 #
 # A property of the ALGORITHM, not of any machine. Regenerate only when
-# the gate, the recovery factors, the taps or the oversampled grid change.
+# the coarse threshold, the recovery factors, the taps or the oversampled grid change.
 # Injections are required: you cannot count dismissals without signals.
 #
 # COVERAGE: n=4096, U=2 only -- so oversample is not a selected setting,
 # it is simply the only one measured. Adding U=1 rows would open it.
 #
-# n band U K snr f beff gate dismissal
+# n band U K snr f beff coarse_margin dismissal
 ACC 4096 256 2 4 5.00 0.8000 5.2 0.900 1.1723e-04
 ACC 4096 256 2 4 5.00 0.8000 5.2 0.940 1.1723e-04
 ACC 4096 256 2 4 5.00 0.8000 5.2 0.970 2.3447e-04

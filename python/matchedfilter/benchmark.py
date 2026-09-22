@@ -47,48 +47,77 @@ FFTW_PLAN = {"estimate": "FFTW_ESTIMATE", "measure": "FFTW_MEASURE",
 _plan_seconds = {}
 
 
-def reference_engines(n, fftw_plan="measure"):
-    """FFT implementations to compare against, whichever are installed.
+def reference_transforms(n, batch, x, fftw_plan="measure"):
+    """Zero-argument callables, each doing one batched inverse transform.
 
-    numpy is always present and is a floor rather than a rival.  FFTW is the
-    one worth beating, since it is what someone would otherwise reach for; it
-    is optional because pyfftw has no wheel everywhere, and a benchmark that
-    refuses to run is worse than one that reports less.
-
-    FFTW is driven through a planned pyfftw.FFTW object over pre-allocated
-    aligned buffers, not through pyfftw.interfaces.  The interfaces layer adds
-    per-call Python work that, at these sizes, made FFTW measure slower than
-    numpy -- an unfair comparison, and one that flattered this library.
-
-    The plan is built here, before the caller starts its clock, so planning is
-    never inside a reported time.  How long it took is recorded in
-    _plan_seconds and printed, so that claim can be checked rather than taken
-    on trust.  FFTW_MEASURE is the default because it is what anyone timing
-    FFTW would use; --fftw-plan raises or lowers it.
+    Bound to `x` up front so that what gets timed is the transform and not the
+    plumbing around it. That matters most for FFTW: it works out of its own
+    aligned buffers, so copying into them and normalising afterwards are costs
+    of the harness rather than of the transform, and charging them to FFTW
+    made it measure slower than numpy, which is not a result anyone should
+    believe.
     """
-    engines = [("numpy", np.fft.ifft)]
+    out = [("numpy", lambda: np.fft.ifft(x, axis=-1))]
     try:
         import pyfftw
-        src = pyfftw.empty_aligned(n, dtype="complex128")
-        dst = pyfftw.empty_aligned(n, dtype="complex128")
+        # complex64, to match what this library computes in. An earlier
+        # version planned complex128 and timed the references on doubled-up
+        # copies of the data, so every reference did twice the arithmetic --
+        # which flattered this library about 2x and was not the same
+        # computation. threads=1 because this library is single-threaded and
+        # a threaded reference compares core counts.
+        src = pyfftw.empty_aligned((batch, n), dtype="complex64")
+        dst = pyfftw.empty_aligned((batch, n), dtype="complex64")
         _t0 = time.perf_counter()
-        plan = pyfftw.FFTW(src, dst, direction="FFTW_BACKWARD",
-                           flags=(FFTW_PLAN[fftw_plan],))
+        plan = pyfftw.FFTW(src, dst, axes=(-1,), direction="FFTW_BACKWARD",
+                           flags=(FFTW_PLAN[fftw_plan],), threads=1,
+                           normalise_idft=True)
         _plan_seconds[n] = time.perf_counter() - _t0
-
-        def fftw_ifft(x, _p=plan, _s=src, _d=dst, _n=float(n)):
-            _s[:] = x
-            _p()
-            return _d / _n          # FFTW's backward transform is unnormalised
-        engines.append(("fftw", fftw_ifft))
+        src[:] = x
+        out.append(("fftw", plan))
     except Exception:
         pass
     try:
         from scipy import fft as _sfft
-        engines.append(("scipy", _sfft.ifft))
+        out.append(("scipy", lambda: _sfft.ifft(x, axis=-1, workers=1)))
     except Exception:
         pass
-    return engines
+    return out
+
+
+def reference_transform_us(n, batch, reps, fftw_plan="measure"):
+    """Microseconds for ONE inverse transform, and nothing else.
+
+    What this measures, and what it deliberately does not: the reference
+    number is the inverse FFT alone -- no product, no magnitude, no peak scan
+    -- batched, single precision, one thread. matchedfilter's number covers
+    all of it. So the comparison is this library's whole job against the
+    single step that normally dominates it, and that asymmetry is the point
+    rather than a flaw: it is not an FFT library, and the question a reader
+    has is whether skipping the rest of the correlation beats doing the
+    transform at all.
+
+    An earlier version timed the references through a Python loop calling
+    ifft once per pair with temporaries around it. At n=1024 that read 30.5
+    us/pair against 8.6 batched -- 3.6x of Python overhead reported as FFT
+    time, on top of the precision mistake above.
+    """
+    rng = np.random.default_rng(7)
+    x = (rng.standard_normal((batch, n))
+         + 1j * rng.standard_normal((batch, n))).astype(np.complex64)
+    out = {}
+    for name, fn in reference_transforms(n, batch, x, fftw_plan):
+        try:
+            fn()                        # warm, after planning
+            best = float("inf")
+            for _ in range(reps):
+                t0 = time.perf_counter()
+                fn()
+                best = min(best, time.perf_counter() - t0)
+            out[name] = best / batch * 1e6
+        except Exception:
+            continue
+    return out
 
 
 def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we, ifft=None):
@@ -152,14 +181,10 @@ def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
         filt.run(binsize=binsize, threshold=thr, window=(ws, we))
         best = min(best, time.perf_counter() - t0)
 
-    refs = {}
-    if check:
-        dd, td = dspec.astype(np.complex128), tspec.astype(np.complex128)
-        for name, fn in reference_engines(dspec.shape[1], fftw_plan):
-            fn(dd[0])                     # warm, after planning
-            t0 = time.perf_counter()
-            _numpy_matched_filter(dd, td, binsize, thr, ws, we, ifft=fn)
-            refs[name] = (time.perf_counter() - t0) / (nd * nt) * 1e6
+    # Reference: the inverse transform alone, batched, single precision, one
+    # thread. Capped so a 2^18 transform does not need a gigabyte to time.
+    rbatch = int(min(nd * nt, max(4, 2 ** 22 // n)))
+    refs = reference_transform_us(n, rbatch, reps, fftw_plan)
 
     pairs = nd * nt
     return best / pairs * 1e6, refs, ok
@@ -258,7 +283,7 @@ def compare_backends(isas, reps, n=4096, ntmpl=64, ntaps=1024,
             q.set_reference(power); q.set_templates(h)
             return q
 
-        # Separate plans for the two passes.  trigger_rate counts over a
+        # Separate plans for the two passes.  refine_rate counts over a
         # plan's whole lifetime, so running the injected comparison on the
         # plan that is about to be timed reports a blend of the two.
         c = build()
@@ -291,14 +316,14 @@ def compare_backends(isas, reps, n=4096, ntmpl=64, ntaps=1024,
             tot[isa] += time.perf_counter() - t0
     base = tot[names[0]]
     return [(i, tot[i] / reps * 1e3, tot[i] / base, agree[i],
-             plans[i].trigger_rate) for i in names]
+             plans[i].refine_rate) for i in names]
 
 
 def _bench_hier(n, nd, nt, snr, fd, reps):
-    """Gate vs flat filter on the same pure-noise data.
+    """Coarse threshold vs flat filter on the same pure-noise data.
 
-    Pure noise is the case the gate is built for -- almost nothing survives, so
-    the skipped work is real.  On data where every pair triggers the gate can
+    Pure noise is the case the coarse threshold is built for -- almost nothing survives, so
+    the skipped work is real.  On data where every pair triggers the coarse threshold can
     only add cost, and the ratio would drop below 1.
     """
     rng = np.random.default_rng(7)
@@ -316,7 +341,7 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     # reference and the threshold, which is the thing worth benchmarking.
     # Pinning band=n//8 here meant the same first stage ran at every
     # threshold, so the plotted speedup could not show what a higher
-    # threshold buys -- a narrower first pass and a tighter gate -- and it
+    # threshold buys -- a narrower first pass and a tighter margin -- and it
     # measured a configuration no caller would get.
     hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd)
     hf.set_reference(power)
@@ -334,7 +359,7 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
 
     tf = best_of(lambda: flat.run(binsize=n, threshold=snr))
     th = best_of(lambda: hf.run(binsize=n, threshold=snr))
-    return tf, th, hf.trigger_rate, hf.config
+    return tf, th, hf.refine_rate, hf.config
 
 
 def host_info(label):
@@ -373,14 +398,14 @@ def main(argv=None):
     ap.add_argument("--no-check", action="store_true",
                     help="skip the numpy cross-check (much faster for large n)")
     ap.add_argument("--no-hier", action="store_true",
-                    help="skip the hierarchical-gate table")
+                    help="skip the hierarchical table")
     ap.add_argument("--backends", nargs="*", metavar="ISA",
                     help="compare SIMD back ends on a ratio-filter-shaped "
                          "hierarchical workload and exit, e.g. --backends "
                          "AVX3 AVX2 SSE4. Targets that this build "
                          "does not contain are skipped.")
     ap.add_argument("--fd", type=float, default=1e-3,
-                    help="false-dismissal budget for the gate")
+                    help="false-dismissal budget for the coarse threshold")
     ap.add_argument("--json", metavar="PATH",
                     help="also write the results as JSON, for combining runs "
                          "from different machines")
@@ -460,18 +485,20 @@ def main(argv=None):
               % (FFTW_PLAN[a.fftw_plan],
                  ", ".join("n=%d %.2fs" % (n, t) for n, t in sorted(_plan_seconds.items()))
                  + (" | total %.2fs" % tot)))
-    print("\nTimes are microseconds per (data, template) pair, best of "
-          f"{a.reps}.\nnumpy is a floor rather than a rival; FFTW is the "
-          "comparison that means something.\nEvery reference computes the "
-          "whole correlation, while this computes only the binned\nmaxima and "
-          "may skip work that cannot produce one -- which is the point of the\n"
-          "library, but does mean it is not a like-for-like FFT comparison.")
+    print("\n" + "The reference columns time ONE INVERSE TRANSFORM and nothing\n"
+          "else -- batched, single precision, one thread. This library's column\n"
+          "covers the whole matched filter: the product, the transform and the\n"
+          "peak scan. So the ratio is this library's entire job against the one\n"
+          "step that normally dominates it. That is the honest framing -- it is\n"
+          "not an FFT library and does not implement a general FFT -- and it is\n"
+          "why the ratio is a statement about the algorithm rather than about\n"
+          "anyone's transform being slow.")
 
     hier_rows = []
     if not a.no_hier:
-        print(f"\n\nHierarchical gate vs the flat filter, pure noise, "
+        print(f"\n\nHierarchical vs flat filter, pure noise, "
               f"false dismissal {a.fd:g}")
-        print(f"  {'n':>8} {'snr':>5} {'flat':>11} {'gated':>11} "
+        print(f"  {'n':>8} {'snr':>5} {'flat':>11} {'hierarchical':>11} "
               f"{'speedup':>9} {'triggered':>10} {'chosen':>14}")
         for n in a.n:
             for snr in (5.0, 5.5, 6.0, 6.5):
@@ -494,11 +521,11 @@ def main(argv=None):
                       f"{tag:>14}")
                 hier_rows.append({"n": n, "snr": snr, "fd": a.fd,
                                   "data": a.data, "templates": a.templates,
-                                  "flat_ms": tf * 1e3, "gated_ms": th * 1e3,
-                                  "speedup": tf / th, "trigger_rate": rate,
+                                  "flat_ms": tf * 1e3, "hier_ms": th * 1e3,
+                                  "speedup": tf / th, "refine_rate": rate,
                                   "band": cfg[0], "oversample": cfg[1],
                                   "taps": cfg[2]})
-        print("\nThe gate skips a pair when a cheap low-band estimate rules out\n"
+        print("\nThe margin skips a pair when a cheap low-band estimate rules out\n"
               "any sample reaching the threshold, so the speedup grows with the\n"
               "threshold and falls to ~1 on data where everything triggers.\n"
               "'chosen' is the first-stage band/oversample/taps the library\n"

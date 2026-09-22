@@ -9,8 +9,8 @@ integer arithmetic on it approximates multiplication of the values.
 
 Fitness is BRACKET WIDTH: the ratio of the largest to the smallest
 truth/prediction over real captured pairs.  That is what decides how many
-pairs a gate settles without running the transform.  1.0 is perfect; above
-about 1.2 settles nothing, because the gate sits only ~1.7x above a typical
+pairs a margin settles without running the transform.  1.0 is perfect; above
+about 1.2 settles nothing, because the coarse threshold sits only ~1.7x above a typical
 maximum.
 
 An earlier version of this was far too restrictive and its negative result
