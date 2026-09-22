@@ -595,45 +595,79 @@ def test_autotuned_calibration_meets_the_budget_where_the_default_does_not():
         else: os.environ["MF_GCAL"] = old
 
 
-def test_band_autoselect_is_off_and_the_default_band_is_used():
-    """The power-driven band choice must stay off until it can decide.
+@pytest.fixture(autouse=False)
+def _autoband():
+    old = os.environ.get("MF_AUTOBAND")
+    yield
+    if old is None: os.environ.pop("MF_AUTOBAND", None)
+    else: os.environ["MF_AUTOBAND"] = old
 
-    `select_band` probes every candidate band against the caller's reference
-    and rebuilds the plan around the cheapest. The mechanism works; the
-    decision does not, because the gate is calibrated on the SIGNAL's band
-    fraction while the coarse statistic's noise comes from the FILTER's, and
-    those diverge (0.9335 against 0.4517 at band 512 on the captures). Driven
-    by the reference alone it picks too narrow and loses triggers -- 110 of
-    842 against 31.
 
-    So this asserts the default is untouched by a reference, and that the
-    machinery is still reachable behind the flag. When the missing term lands,
-    this test is what says the default has changed.
+def test_band_autoselect_tracks_where_the_reference_puts_its_power(_autoband):
+    """The whole point of taking a reference: decide once, from clean
+    information, and reuse it.
+
+    The band is the first stage's frequency cut. Too wide and every pair pays
+    for spectrum the signal does not occupy; too narrow and the gate opens and
+    the second stage runs constantly. Which is right depends only on where the
+    reconstructed SNR puts its power -- which is exactly what the reference
+    is -- so the choice must move with it.
     """
     n, nt = 4096, 4
     power = inspiral_power(n)
     H = np.stack([template_with_power(n, power) for _ in range(nt)])
 
-    def band_after_reference(env):
-        old = os.environ.get("MF_AUTOBAND")
-        if env is None: os.environ.pop("MF_AUTOBAND", None)
-        else: os.environ["MF_AUTOBAND"] = env
-        try:
-            hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-3)
-            before = hf.config[0]
-            hf.set_reference(power)
-            hf.set_templates(H)
-            return before, hf.config[0]
-        finally:
-            if old is None: os.environ.pop("MF_AUTOBAND", None)
-            else: os.environ["MF_AUTOBAND"] = old
+    def pick(ref):
+        os.environ["MF_AUTOBAND"] = "1"
+        hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-3)
+        hf.set_reference(np.ascontiguousarray(ref, dtype=np.float32))
+        return hf.config[0]
 
-    before, after = band_after_reference(None)
-    assert after == before, (
-        f"set_reference changed the band {before} -> {after} with the "
-        "autoselect off; it must not")
-    _, picked = band_after_reference("1")
-    assert picked > 0
+    wide = pick(power)
+    narrow_ref = power.copy(); narrow_ref[n // 8:] = 0.0
+    narrow = pick(narrow_ref)
+    assert narrow <= wide, (
+        f"a reference confined to the bottom eighth chose band {narrow} where "
+        f"the full one chose {wide}; the choice must not widen")
+    assert narrow <= n // 8 * 2, f"band {narrow} is far wider than the power"
+
+
+def test_band_autoselect_is_invariant_to_the_template(_autoband):
+    """Given the same reference, the choice must not depend on the templates.
+
+    This is the property that makes deciding once and reusing it legitimate.
+    The reference states how the output's power is distributed; the individual
+    filters producing it may be anything -- in a ratio search they are short
+    broadband things whose own spectra look nothing like their output. If the
+    pick moved with the template, it would have to be redone per bank and the
+    reference would not be carrying the information it claims to.
+    """
+    n, nt = 4096, 4
+    power = inspiral_power(n)
+    rng = np.random.default_rng(17)
+
+    def pick_with(templates):
+        os.environ["MF_AUTOBAND"] = "1"
+        hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=len(templates),
+                                   snr=5.0, fd=1e-3)
+        hf.set_reference(power)
+        hf.set_templates(templates)
+        return hf.config
+
+    banks = [
+        np.stack([template_with_power(n, power) for _ in range(nt)]),
+        np.stack([template_with_power(n, inspiral_power(n) ** 0.5)
+                  for _ in range(nt)]),
+    ]
+    flat = np.zeros((nt, n), np.complex64)          # broadband, unlike its output
+    flat[:, 1:n // 2] = (rng.standard_normal((nt, n // 2 - 1))
+                         + 1j * rng.standard_normal((nt, n // 2 - 1)))
+    banks.append(flat)
+
+    picks = [pick_with(b) for b in banks]
+    assert len(set(picks)) == 1, (
+        f"the same reference gave different configurations {picks}; the choice "
+        "must come from the reference, not the bank")
 
 
 def test_python_overhead_stays_off_the_hot_path():

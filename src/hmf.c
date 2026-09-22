@@ -514,7 +514,17 @@ static int probe_recovery(ap_hmf_plan *p,const float *power,size_t m,int U,int K
       /* the gate this band would run at, then how often noise clears it */
       const double tc=hmf_threshold((float)(f*(double)(*g)*(double)(*g)),T,fd);
       *tc_out=tc;
-      *rate_out=probe_rate(p,power,m,U,tc,64);
+      /* The output is a matched-filter statistic: unit-variance real and
+         imaginary parts, with an autocorrelation set entirely by the
+         reference.  Keeping the bins below m scales that variance to f, so
+         the exceedance per lag is the Rayleigh tail and the pass rate is its
+         extreme value over the grid.  Simulating this instead needs far more
+         than a few dozen trials to resolve a 1% rate -- the earlier 64-trial
+         probe returned 1/64 and 0/64, which is its own floor, not a
+         measurement. */
+      { const double p1=exp(-(tc*tc)/(2.0*f));
+        double r=1.0-pow(1.0-(p1>1.0?1.0:p1),(double)(m*(size_t)U));
+        *rate_out = r<0?0:(r>1?1:r); }
       rc=0;
     }
   }
@@ -540,7 +550,10 @@ static int select_band(ap_hmf_plan *p,const float *power,size_t *bm,int *bu,int 
        tap count picked before selection -- was what made g come back low and
        inverted the ordering. With the right K the probe reproduces the run
        exactly (g=0.9979, t_c=4.237 at band 512; 0.9995 and 4.787 at 1024). */
-    for(int U=1;U<=2;U++) for(int Ki=0;Ki<2;Ki++){
+    /* U=1 always looks cheap and always loses: on the captures it misses
+       244/842, which is an accuracy cost the cost model does not carry. The
+       oversampled grid is the only safe one, so it is not a candidate. */
+    for(int U=2;U<=2;U++) for(int Ki=0;Ki<2;Ki++){
       const int Kc = Ki ? 8 : 4;
       float g,graw,graw1; double tc=0,rate=1;
       if(probe_recovery(p,power,m,U,Kc,T,p->fd,f,&g,&graw,&graw1,&tc,&rate)) continue;
@@ -563,34 +576,29 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
      coarse spectra at the current band, so re-choosing would invalidate them.
      Every caller sets the reference first, which is also the documented
      order. */
-  /* OFF by default: the probe does not yet reproduce the gate the run uses.
+  /* OFF by default: the choice minimises cost without a constraint on
+     accuracy, which is the last thing missing.
      
-     select_band probes each candidate band, measures its recovery and its
-     noise rate through the real transform, costs them and rebuilds. The
-     mechanism is right; the probe is not faithful enough. Measured against a
-     run at the same band, g comes back low -- 0.9539 against 0.9979 at band
-     512, 0.9709 against 0.9995 at 1024 -- so t_c is low, so the modelled rate
-     is much too high, and by a band-dependent factor that inverts the
-     ordering. Enabling it costs 110/842 against 31.
+     Everything else now works. The probe reproduces the run exactly once K is
+     part of the choice rather than inherited from before it (g=0.9979,
+     t_c=4.237 at band 512; 0.9995 and 4.787 at 1024, matching a run at those
+     bands to the digit). The rate is the Rayleigh extreme value, which is the
+     right form because the output is a matched-filter statistic -- unit
+     variance per component, autocorrelation set entirely by the reference --
+     with the band keeping a fraction f of it; predicted 6.6e-2/1.9e-2/1.6e-2
+     at m=512/1024/2048 against 8.75/1.46/0.82% measured. And the pick is
+     invariant to the bank given the reference, which two tests now assert.
      
-     The gate half is now FIXED: K is part of the choice rather than inherited
-     from before it, and with that the probe reproduces the run exactly --
-     g=0.9979 and t_c=4.237 at band 512, 0.9995 and 4.787 at 1024, matching a
-     run at those bands to the digit.
+     What it lacks is the fd side. It picks the cheapest candidate, not the
+     cheapest that MEETS the target: on the pycbc example it takes 1024 over
+     the table's 2048, saving 2.4% of modelled cost and losing 34 triggers of
+     893. The table's picks are conservative because they were solved against
+     a false-dismissal target; this is not.
      
-     What remains is probe_rate. Its synthetic noise does not reproduce the
-     real coarse statistic's distribution: it returns 1.6e-2 at band 512 and
-     0 at 1024 where the captures measure 8.75% and 1.46%. The normalisation
-     of the generated product spectrum is the suspect -- it is scaled by the
-     reference's total rather than by whatever makes the FULL statistic
-     unit-variance, which is the convention the gate is quoted in.
-     
-     Note what is NOT wrong: the reference is a sufficient input. Both the
-     signal captured and the noise admitted are governed by the distribution
-     of the reconstructed SNR, refpow*tpow -- the product the tap design
-     already uses -- and that is 0.9340 at band 512 against the reference's
-     0.9335. An earlier reading blamed the filter's own band fraction (0.4517)
-     and concluded the templates were needed at set_reference; that was wrong.
+     Completing it means predicting the dismissal rate per candidate and
+     rejecting any that misses fd before ranking on cost -- solve_tc in
+     tools/hmf_design.py already does exactly that offline, over many trials,
+     and the same has to happen here and be verified down to fd=1e-4.
      
      MF_AUTOBAND=1 with MF_BAND_DIAG=1 prints the candidate table. */
   { const char *e=getenv("MF_AUTOBAND");
