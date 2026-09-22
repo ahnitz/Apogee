@@ -11,7 +11,10 @@
 # Must be measured on NOISE: the gate sets the trigger rate, which is the
 # coarse-to-reconstruction ratio and therefore most of the cost.
 #
-# WARNING: these do not yet predict real cost. Selecting on them picks
+# WARNING: these do not predict real cost, quantified. On the captures all
+# four of (512,0.90), (1024,0.90), (2048,1.00), (1024,0.94) meet the budget at
+# 0/842, measuring 20.30, 16.83, 16.04 and 13.29 ms/segment. Selection on
+# these rows picks the FIRST -- the slowest, 53% off the best available. Selecting on them picks
 # (512,2,8,gate 0.90) for the captures' reference, which measures 20.59
 # ms/segment where the untuned-gate pick of band 2048 measures 16.07 -- both
 # at 0/842. The cells are timed with one template at batch 64 against a
