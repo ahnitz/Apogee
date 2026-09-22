@@ -49,6 +49,17 @@ disagree on g (0.9979 against 1.0000) and so on the gate (4.237 against
 4.266), and the Rayleigh tail is steep enough there that 0.7% of gate
 straddles the target.
 
+Nor does it collapse onto f_eff = f*g^2, the one scalar the runtime already
+measures exactly.  At band 512, U=2, K=8 the synthetic family dismisses
+5.3e-4, 6.8e-4, 1.2e-3 and 8.0e-4 at concentrations 0.88, 0.92, 0.95 and 0.97
+-- not even monotonic -- while the captures' real reference dismisses 3.4e-3,
+three to six times worse than any of them.  The real curve is harder than
+anything this family produces, so no single number drawn from it can order the
+candidates.  That is what it means for the power-versus-frequency curve to be
+the input: different problems have genuinely different curves, and the
+accumulated power at each candidate edge is the characterisation, not a scalar
+summary of it.
+
 So the grid has to be built from references that reproduce real ones -- either
 captured references directly, or a family validated against them -- not from
 make_template.  Generating from make_template would hardcode a table that
