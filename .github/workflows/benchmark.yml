@@ -64,6 +64,10 @@ jobs:
           # reports whichever references it finds.
           python -m pip install pyfftw scipy || \
             echo "::notice::pyfftw/scipy unavailable; comparing against numpy only"
+          # MKL is x86-only and has no arm64 or macOS wheel, so this is
+          # expected to fail on two of the three runners.
+          python -m pip install mkl mkl-fft || \
+            echo "::notice::MKL unavailable on this platform (expected off x86)"
 
       - name: Test and benchmark every target on this host
         # The suite coarse thresholds the benchmark: a timing of a wrong answer is

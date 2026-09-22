@@ -33,7 +33,8 @@ def available_engines():
     a cache hit rather than the planning it actually did.
     """
     names = ["numpy"]
-    for mod, name in (("pyfftw", "fftw"), ("scipy", "scipy")):
+    for mod, name in (("pyfftw", "fftw"), ("scipy", "scipy"),
+                      ("mkl_fft", "mkl")):
         try:
             __import__(mod)
             names.append(name)
@@ -45,9 +46,34 @@ def available_engines():
 FFTW_PLAN = {"estimate": "FFTW_ESTIMATE", "measure": "FFTW_MEASURE",
              "patient": "FFTW_PATIENT", "exhaustive": "FFTW_EXHAUSTIVE"}
 _plan_seconds = {}
+_plan_used = {}
+
+#: Largest transform planned with FFTW_PATIENT under --fftw-plan auto.
+#: Zero means measure everywhere, which is the default.
+#:
+#: Patient does produce a faster plan -- 26% at n=4096 (7.19 against 9.73 us)
+#: and 26% at n=16384 (57.3 against 77.1) -- but it costs far too much to
+#: plan: 22s at n=4096 and 180s at n=65536, against 1.4s for measure. A
+#: benchmark that spends minutes planning before it measures anything is not
+#: one CI can run.
+#:
+#: FFTW_MEASURE is also what anyone timing FFTW would actually use, so it is
+#: the honest default. The instability that first looked like a planning
+#: problem -- 9.73 us and 24.56 us on two runs of the same size -- was the
+#: ESTIMATOR: a single timed call, min over repeats, on a loaded machine.
+#: With a duration floor and a median it is steady. Raise this, or pass
+#: --fftw-plan patient, to give FFTW its best showing at small sizes.
+PATIENT_MAX_N = 0
 
 
-def reference_transforms(n, batch, x, fftw_plan="measure"):
+def plan_for(n, mode):
+    """Which FFTW planning flag to use at this size."""
+    if mode != "auto":
+        return mode
+    return "patient" if n <= PATIENT_MAX_N else "measure"
+
+
+def reference_transforms(n, batch, x, fftw_plan="auto"):
     """Zero-argument callables, each doing one batched inverse transform.
 
     Bound to `x` up front so that what gets timed is the transform and not the
@@ -70,8 +96,9 @@ def reference_transforms(n, batch, x, fftw_plan="measure"):
         dst = pyfftw.empty_aligned((batch, n), dtype="complex64")
         _t0 = time.perf_counter()
         plan = pyfftw.FFTW(src, dst, axes=(-1,), direction="FFTW_BACKWARD",
-                           flags=(FFTW_PLAN[fftw_plan],), threads=1,
-                           normalise_idft=True)
+                           flags=(FFTW_PLAN[plan_for(n, fftw_plan)],),
+                           threads=1, normalise_idft=True)
+        _plan_used[n] = plan_for(n, fftw_plan)
         _plan_seconds[n] = time.perf_counter() - _t0
         src[:] = x
         out.append(("fftw", plan))
@@ -82,10 +109,27 @@ def reference_transforms(n, batch, x, fftw_plan="measure"):
         out.append(("scipy", lambda: _sfft.ifft(x, axis=-1, workers=1)))
     except Exception:
         pass
+    try:
+        # Intel MKL, where it exists. x86-only and not packaged for arm64 or
+        # macOS, so its absence is normal rather than a problem -- the
+        # benchmark reports whichever references it finds.
+        from mkl_fft.interfaces import numpy_fft as _mkl
+        try:
+            # Single-threaded, like every other engine here. MKL defaults to
+            # every core, and a threaded reference compares core counts.
+            # Optional: the runtime module is not always importable even when
+            # mkl_fft is, and MKL_NUM_THREADS covers it either way.
+            import mkl as _mklrt
+            _mklrt.set_num_threads(1)
+        except Exception:
+            pass
+        out.append(("mkl", lambda: _mkl.ifft(x, axis=-1)))
+    except Exception:
+        pass
     return out
 
 
-def reference_transform_us(n, batch, reps, fftw_plan="measure"):
+def reference_transform_us(n, batch, reps, fftw_plan="auto"):
     """Microseconds for ONE inverse transform, and nothing else.
 
     What this measures, and what it deliberately does not: the reference
@@ -109,12 +153,23 @@ def reference_transform_us(n, batch, reps, fftw_plan="measure"):
     for name, fn in reference_transforms(n, batch, x, fftw_plan):
         try:
             fn()                        # warm, after planning
-            best = float("inf")
-            for _ in range(reps):
-                t0 = time.perf_counter()
+            # Median of repeats, each repeated to a duration floor -- the same
+            # estimator the hierarchical side uses. Min-of-reps on a single
+            # call reported 9.73 us and 24.56 us on two runs of the same size
+            # under load, which is the estimator failing rather than FFTW.
+            ts = []
+            for _ in range(max(5, reps)):
+                k, t0 = 1, time.perf_counter()
                 fn()
-                best = min(best, time.perf_counter() - t0)
-            out[name] = best / batch * 1e6
+                dt = time.perf_counter() - t0
+                while dt < 0.02:
+                    k *= 2
+                    t0 = time.perf_counter()
+                    for _ in range(k):
+                        fn()
+                    dt = time.perf_counter() - t0
+                ts.append(dt / k)
+            out[name] = float(np.median(ts)) / batch * 1e6
         except Exception:
             continue
     return out
@@ -348,18 +403,43 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     hf.set_data(d)
     hf.set_templates(h)
 
-    def best_of(fn):
-        fn()
-        b = float("inf")
-        for _ in range(reps):
-            t0 = time.perf_counter()
-            fn()
-            b = min(b, time.perf_counter() - t0)
-        return b
+    def per_call(fn, floor=0.02):
+        """Seconds per call, repeating until the timer has something to bite on.
 
-    tf = best_of(lambda: flat.run(binsize=n, threshold=snr))
-    th = best_of(lambda: hf.run(binsize=n, threshold=snr))
-    return tf, th, hf.refine_rate, hf.config
+        At n=1024 one call is tens of microseconds, so a single perf_counter
+        interval is mostly clock resolution and call overhead. Repeating to a
+        fixed floor makes the small and large lengths equally trustworthy
+        without making the large ones slow.
+        """
+        fn()
+        k = 1
+        while True:
+            t0 = time.perf_counter()
+            for _ in range(k):
+                fn()
+            dt = time.perf_counter() - t0
+            if dt >= floor:
+                return dt / k
+            k = max(2 * k, int(k * floor / max(dt, 1e-9)) + 1)
+
+    # Interleaved, and the ratio taken per rep. Timing the flat filter to
+    # completion and then the hierarchical one put any drift between the two
+    # loops straight into the speedup -- on a shared CI runner that is the
+    # dominant error. Within a rep the two run back to back under the same
+    # conditions, so clock and neighbours are common to both and cancel.
+    flat_run = lambda: flat.run(binsize=n, threshold=snr)
+    hier_run = lambda: hf.run(binsize=n, threshold=snr)
+    tfs, ths, ratios = [], [], []
+    for _ in range(max(3, reps)):
+        a = per_call(flat_run)
+        b = per_call(hier_run)
+        tfs.append(a)
+        ths.append(b)
+        ratios.append(a / b)
+    # Median of the per-rep ratios, not a ratio of medians: one descheduled
+    # rep then moves one sample instead of biasing the result.
+    tf, th = float(np.median(tfs)), float(np.median(ths))
+    return tf, th, hf.refine_rate, hf.config, float(np.median(ratios))
 
 
 def host_info(label):
@@ -409,9 +489,11 @@ def main(argv=None):
     ap.add_argument("--json", metavar="PATH",
                     help="also write the results as JSON, for combining runs "
                          "from different machines")
-    ap.add_argument("--fftw-plan", default="measure", choices=sorted(FFTW_PLAN),
-                    help="FFTW planning effort (default: measure). Planning is "
-                         "done before timing starts and is never counted.")
+    ap.add_argument("--fftw-plan", default="auto",
+                    choices=sorted(FFTW_PLAN) + ["auto"],
+                    help="FFTW planning effort. Default auto: patient up to "
+                         "n=%d, measure above. Planning happens before timing "
+                         "starts and is never counted." % PATIENT_MAX_N)
     ap.add_argument("--label", default="",
                     help="name for this machine in a combined report")
     a = ap.parse_args(argv)
@@ -481,10 +563,16 @@ def main(argv=None):
 
     if _plan_seconds:
         tot = sum(_plan_seconds.values())
-        print("\nFFTW planning (%s): %s -- excluded from every time above."
-              % (FFTW_PLAN[a.fftw_plan],
-                 ", ".join("n=%d %.2fs" % (n, t) for n, t in sorted(_plan_seconds.items()))
-                 + (" | total %.2fs" % tot)))
+        print("\nFFTW planning, excluded from every time above: %s | total "
+              "%.2fs.\n%s"
+              % (", ".join("n=%d %s %.2fs"
+                           % (n, _plan_used.get(n, "?"), t)
+                           for n, t in sorted(_plan_seconds.items())), tot,
+                 "FFTW_PATIENT is 26%% faster than FFTW_MEASURE where it is\n"
+                 "affordable, and far steadier -- measure returned 9.73 and\n"
+                 "24.56 us on two runs at n=4096. It is used up to n=%d; above\n"
+                 "that it does not finish planning in reasonable time (180s at\n"
+                 "n=65536 against 1.4s for measure)." % PATIENT_MAX_N))
     print("\n" + "The reference columns time ONE INVERSE TRANSFORM and nothing\n"
           "else -- batched, single precision, one thread. This library's column\n"
           "covers the whole matched filter: the product, the transform and the\n"
@@ -503,8 +591,8 @@ def main(argv=None):
         for n in a.n:
             for snr in (5.0, 5.5, 6.0, 6.5):
                 try:
-                    tf, th, rate, cfg = _bench_hier(n, a.data, a.templates, snr,
-                                                    a.fd, a.reps)
+                    tf, th, rate, cfg, speed = _bench_hier(
+                        n, a.data, a.templates, snr, a.fd, a.reps)
                 except (ValueError, RuntimeError) as e:
                     # An uncovered (n, snr, fd) is a refusal, not a failure:
                     # the tables are measured and the library will not answer
@@ -517,12 +605,12 @@ def main(argv=None):
                     continue
                 tag = "%d/%d/%d" % cfg
                 print(f"  {n:>8} {snr:>5.1f} {tf * 1e3:>10.2f}ms "
-                      f"{th * 1e3:>10.2f}ms {tf / th:>8.2f}x {rate:>9.1%} "
+                      f"{th * 1e3:>10.2f}ms {speed:>8.2f}x {rate:>9.1%} "
                       f"{tag:>14}")
                 hier_rows.append({"n": n, "snr": snr, "fd": a.fd,
                                   "data": a.data, "templates": a.templates,
                                   "flat_ms": tf * 1e3, "hier_ms": th * 1e3,
-                                  "speedup": tf / th, "refine_rate": rate,
+                                  "speedup": speed, "refine_rate": rate,
                                   "band": cfg[0], "oversample": cfg[1],
                                   "taps": cfg[2]})
         print("\nThe margin skips a pair when a cheap low-band estimate rules out\n"

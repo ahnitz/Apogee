@@ -554,6 +554,41 @@ def split_readme(text):
 _TABSEQ = [0]
 
 
+def workload_note(runs, kind):
+    """State the batch shape the numbers were taken at.
+
+    Throughput depends strongly on how many data segments and templates are
+    filtered together -- measured, up to 1.94x between shapes -- so a time per
+    pair means nothing without it. The page used to omit it entirely.
+    """
+    rows = [f for r in runs for f in r.get(kind, [])]
+    shapes = sorted({(f.get("data"), f.get("templates")) for f in rows
+                     if f.get("data") and f.get("templates")})
+    if not shapes:
+        return ""
+    txt = ", ".join("%d data segments x %d templates = %d pairs"
+                    % (d, t, d * t) for d, t in shapes)
+    return ('<div class="note"><strong>Workload.</strong> %s, single-threaded, '
+            'complex64 throughout. Batch shape matters: filtering D segments '
+            'against T templates together is up to 1.94x faster than the same '
+            'pairs one at a time, so a per-pair figure is only meaningful '
+            'alongside the shape it was measured at. It cannot change any '
+            'reported peak.</div>' % txt)
+
+
+def details(summary, body):
+    """A long table folded away.
+
+    Pages end in a few hundred rows of numbers that almost nobody reads but
+    that have to be there for anyone checking a claim. Stacked open they bury
+    the end of the page; folded, they are one click away.
+    """
+    if not body:
+        return ""
+    return ("<details><summary>%s</summary>%s</details>"
+            % (html.escape(summary), body))
+
+
 def tabs(items, caption=""):
     """Buttons that switch between panels, first one shown.
 
@@ -770,11 +805,14 @@ def filter_benchmarks_page(runs):
          '<div class="card"><div class="k">%.2f</div><div class="l">fastest us per pair</div></div>'
          '<div class="card"><div class="k">%d</div><div class="l">transform lengths</div></div>'
          '</div>' % (len(runs), fastest,
-                     len({f["n"] for r in runs for f in r.get("flat", [])}))]
+                     len({f["n"] for r in runs for f in r.get("flat", [])})),
+         workload_note(runs, "flat")]
     o.append(tabs([("Cost per pair", bench_pair(runs)),
-                   ("Against other FFTs", bench_refs(runs, engines)),
-                   ("What was tested", bench_what(runs)),
-                   ("All numbers", bench_flat_raw(runs, engines))], "view"))
+                   ("Against other FFTs", bench_refs(runs, engines))], "view"))
+    o.append(details("What was tested", bench_what(runs)))
+    o.append(details("All numbers (%d rows)"
+                     % sum(len(r.get("flat", [])) for r in runs),
+                     bench_flat_raw(runs, engines)))
     return "".join(o)
 
 
@@ -795,9 +833,16 @@ def hier_benchmarks_page(runs):
          '<div class="card"><div class="k">%.1fx</div><div class="l">best speedup</div></div>'
          '<div class="card"><div class="k">%.1fx</div><div class="l">median speedup</div></div>'
          '<div class="card"><div class="k">%d</div><div class="l">configurations measured</div></div>'
-         '</div>' % (best, med[len(med) // 2] if med else 0, len(hier))]
-    o.append(tabs([("Speedup", bench_speedup(runs, names)),
-                   ("All numbers", bench_hier_raw(runs))], "view"))
+         '</div>' % (best, med[len(med) // 2] if med else 0, len(hier)),
+         workload_note(runs, "hierarchical"),
+         '<div class="note">Timed interleaved: within each repeat the flat '
+         'and hierarchical filters run back to back on the same data, and the '
+         'speedup is the median of the per-repeat ratios. Timing one to '
+         'completion and then the other put drift between the two loops '
+         'straight into the ratio, which on a shared runner is the dominant '
+         'error.</div>']
+    o.append(bench_speedup(runs, names))
+    o.append(details("All numbers (%d rows)" % len(hier), bench_hier_raw(runs)))
     return "".join(o)
 
 

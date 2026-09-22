@@ -85,15 +85,17 @@ def test_snr_exact_hit_uses_only_that_row():
     assert "measured at snr 5.5" in why
 
 
-def test_snr_above_the_range_falls_back_conservatively():
+def test_snr_above_the_range_uses_the_highest_measured_row():
     """A threshold above everything measured is an EASIER problem.
 
-    So it is answerable, and the bound that holds is the worst dismissal
-    anywhere in the measured range -- not the nearest row. Measured directly
-    at snr 6.5/7.0/8.0: nothing above the range exceeds its in-range maximum.
+    So the nearest measurement BELOW it is the relevant one. Taking the worst
+    row across the whole range instead imported snr 5.0's behaviour into a
+    case easier than snr 6.0, and it cost real speed: snr 6.5 was handed band
+    1024 where snr 6.0 got band 256, so asking for a higher threshold
+    produced a slower filter.
     """
     rows, why = mf._snr_rows_for(9.0, [5.0, 5.5, 6.0])
-    assert rows == (5.0, 5.5, 6.0)
+    assert rows == (6.0,)
     assert "above the measured range" in why
 
 
@@ -104,15 +106,31 @@ def test_snr_below_the_range_refuses():
     assert "below the lowest measured" in why
 
 
-def test_the_fallback_is_not_nearest_neighbour():
-    """Dismissal is not monotone in the threshold, so nearest-row is unsafe.
+def test_interior_thresholds_are_bounded_by_both_neighbours():
+    """Dismissal is not monotone in the threshold, so one neighbour is unsafe.
 
     172 of 640 fully-measured cells in the shipped table RISE from snr 5.0 to
-    5.5. If this ever starts returning a single nearest row for an
-    out-of-range threshold, the guarantee quietly stops holding.
+    5.5, so a request at 5.2 cannot be answered from the 5.0 row alone. It is
+    bracketed, and the worse of the two neighbours is the honest bound.
     """
-    rows, _ = mf._snr_rows_for(7.0, [5.0, 5.5, 6.0])
-    assert len(rows) > 1, "must bound with the whole range, not one row"
+    rows, why = mf._snr_rows_for(5.2, [5.0, 5.5, 6.0])
+    assert rows == (5.0, 5.5), "must use both bracketing rows"
+    assert "between measured" in why
+
+
+def test_a_higher_threshold_never_gets_a_slower_configuration():
+    """Asking for more SNR must not make the filter worse.
+
+    The whole point of a higher threshold is that it admits a cheaper first
+    pass. If selection ever returns a more expensive configuration for a
+    stricter request, the fallback rule has gone backwards -- which it had.
+    """
+    from matchedfilter.benchmark import _inspiral_power
+    p = _inspiral_power(4096)
+    top = mf.choose_config(p, 4096, 6.0, 1e-3)
+    assert top is not None
+    for snr in (6.5, 7.0, 9.0):
+        assert mf.choose_config(p, 4096, snr, 1e-3) == top, snr
 
 
 def test_dismissal_is_not_monotone_in_snr_in_the_shipped_table():

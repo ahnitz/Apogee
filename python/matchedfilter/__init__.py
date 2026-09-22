@@ -430,16 +430,25 @@ def _snr_rows_for(snr, covered, tol=1e-6):
     for c in covered:
         if abs(c - snr) <= tol:
             return (c,), "measured at snr %g" % c
-    if snr > min(covered) + tol:
-        # Conservative: bound by the worst row across everything measured.
-        # Measured for both cases -- above the range at snr 6.5/7.0/8.0, and
-        # between rows at snr 5.2/5.8 -- across twelve configurations, and
-        # nothing exceeded its in-range maximum.
-        return tuple(covered), ("%s the measured range; bounded by the worst "
-                                "of snr %s"
-                                % ("above" if snr > max(covered) else "within",
-                                   ", ".join("%g" % c for c in covered)))
-    return None, ("below the lowest measured threshold, %g" % min(covered))
+    if snr < min(covered) - tol:
+        return None, "below the lowest measured threshold, %g" % min(covered)
+    if snr > max(covered) - tol:
+        # Above everything measured. Use the HIGHEST measured row, not the
+        # worst of all of them: a higher threshold is a strictly easier
+        # problem, so the nearest measurement below it is the relevant one,
+        # and taking the whole range's maximum imported snr 5.0's behaviour
+        # into a case that is easier than snr 6.0. That cost real speed --
+        # snr 6.5 was handed band 1024 where snr 6.0 got band 256, so asking
+        # for a HIGHER threshold produced a SLOWER filter, which is backwards.
+        hi = max(covered)
+        return (hi,), "above the measured range; using the highest measured, snr %g" % hi
+    lo = max(c for c in covered if c <= snr + tol)
+    hi = min(c for c in covered if c >= snr - tol)
+    # Strictly inside the range: bracketed, so the two neighbours bound it and
+    # the worse of them is the honest answer. Dismissal is NOT monotone in the
+    # threshold -- 172 of 640 fully-measured cells rise from snr 5.0 to 5.5 --
+    # so the nearer neighbour alone would not be a bound.
+    return (lo, hi), "between measured thresholds %g and %g" % (lo, hi)
 
 
 class HierarchicalFilter(MatchedFilter):
