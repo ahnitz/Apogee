@@ -150,13 +150,16 @@ that selection happens before any template is seen. The complete fix is:
 
 That closes it entirely within `hmf.c` plus an accessor on the full plan.
 
-**Also missing.** The cost -- band-dependent allocation
-(`ap_mf_create(band,...)`, `cf`, `ct0/ct1`, `cd`, the scratch buffers) has to
-move out of `ap_hmf_create` and into `set_reference`, or the reference has to
-be accepted at construction. Templates ingested before the reference would need
-re-ingesting, since they are stored as coarse spectra at the chosen band.
+The lifetime part is already done: `alloc_band_state`/`free_band_state` own
+everything sized by the band, and `set_reference` rebuilds through them.
 
-This subsumes what used to be listed separately as "calibration". The honest
+**Calibration, which this subsumes.** `MF_GCAL=1` already meets the budget --
+it is what makes the xfailed ratio-filter workload pass, which
+`test_autotuned_calibration_meets_the_budget_where_the_default_does_not` now
+pins. It is off because it over-corrects: 14.43 ms/segment against 13.29 for
+the same 0/842 when the gate is cut by hand, and its `gscale` is a fitted
+constant behind a hard clamp (`g = min(0.9995, 0.7022*gscale)`) with nothing
+usable either side of 1.40. This subsumes what used to be listed separately as "calibration". The honest
 `g`, measured as coarse-over-full on the same realisation across 4440 real
 pairs, is median 0.9761, p1 0.9125, min 0.8660. A per-template `g` is not worth
 it -- split-half reliability of the per-template estimate is r = 0.218, so that
