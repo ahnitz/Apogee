@@ -207,3 +207,57 @@ does not depend on narrow arithmetic being fast: a cheap reject pass followed
 by an accurate one works with any two representations, including two float
 ones at different transform sizes. That is the same idea as the existing
 even/odd split and would have to be justified against it.
+
+## Searching for a replacement instead of designing one
+
+The coarse stage answers one scalar question, so it is fair to ask whether a
+cheap program -- found rather than derived -- could answer it. Three
+constraints make the space searchable: a single pass over the band product, a
+handful of registers, and operations only between the current sample and a
+register. Nothing need be linear or sensible; the point is to let a search
+exploit whatever the operations do. `tools/stream_search.py` does this, scored
+on BRACKET WIDTH (the ratio of largest to smallest truth/prediction), which is
+what decides how many pairs a gate settles without the transform.
+
+It does not work, at least not yet, and the interesting part is why.
+
+| approach | flops | bracket width |
+|---|---:|---:|
+| sum \|P\| (by hand) | 4096 | 1.63 |
+| Parseval, sqrt(m*E) (by hand) | 2048 | 1.65 |
+| search, 4 registers, 6 instructions | 12288 | 1.690 |
+| search, 6 registers, 10 instructions | 20480 | 1.644 |
+| interpolation, after the first transform | 2304 | 1.14 |
+
+Anything above about 1.2 settles no pairs at the gate, which sits only ~1.7x
+above a typical maximum. Every search converges to an accumulator over |P| or
+|P|^2 -- the energy family -- and cannot beat what that family gives by hand.
+
+Two reasons, one physical and one about the search.
+
+The physical one: a matched filter's output energy is fixed by Parseval and a
+weak signal barely moves it. Measured over 2220 real pairs, sqrt(m*E) has a
+coefficient of variation of 0.033 against the true maximum's 0.100, and
+correlates with it at r = +0.27. The maximum is set by WHERE the phases align,
+and energy discards phase entirely. Every statistic cheap enough to consider
+either discards phase or aliases it: folding the spectrum by F costs 1/F of the
+transform but sums F lags incoherently into each output, diluting a peak by
+sqrt(F). That single law explains the band sweep, the fold statistics and the
+lag-grid experiments together.
+
+The search reason is that this search is weak, and its negative result should
+be read that way. Six thousand hill-climbing steps over a space of maybe 1e20,
+no crossover, no population, no seeding. It cannot reach the region worth
+exploring: a phasor needs two registers updated jointly with cos and sin
+constants, which single-instruction mutation will not assemble, so the search
+falls into the basin it can reach. A fair attempt needs batched fitness
+evaluation -- every candidate is the same 1024-step loop over different
+opcodes, which vectorises across candidates -- a real evolutionary search, and
+seeding from known primitives.
+
+Worth noting what the published work does and does not cover. AlphaDev and
+STOKE search instruction sequences against a cost model, but both require
+exact semantics, which is what lets them use equivalence checking. Searching
+for an APPROXIMATE surrogate replaces that with a statistical criterion, which
+is a weaker signal over a larger space, and closer to symbolic regression than
+to superoptimisation.

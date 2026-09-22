@@ -48,6 +48,11 @@ int ap_binmax_split(ap_plan *p, const float *re, const float *im,
    loader will consume it. */
 int ap_has_fused_prod(const ap_plan *p);
 
+/* Ask the back end to keep the output series in a plan-owned buffer, so a
+   caller can examine lags the peak scan discards.  NULL if unsupported. */
+float *ap_series_buf(ap_plan *p, int on);
+size_t ap_series_stride(ap_plan *p);
+
 int ap_binmax_prod(ap_plan *p, const float *dr, const float *di,
                    const float *tr, const float *ti,
                    size_t binsize, float threshold, ap_peak *peaks, int *count,

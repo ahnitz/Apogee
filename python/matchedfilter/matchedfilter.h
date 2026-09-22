@@ -79,6 +79,18 @@ int ap_mf_run_sel(ap_mf_plan *p, int d0, int nd, int t0, int nt,
                   size_t binsize, float threshold,
                   ap_peak *peaks, int *counts, size_t start, size_t end);
 
+/* Interpolated coarse maximum, alongside the peak scan.  hlo/hhi are complex
+   taps (2*ntap floats each) for the two half-sample offsets, ncand is how many
+   of the largest grid samples to probe, and out receives one value per pair in
+   the same [nd][nt] order as ap_mf_run's peaks.  Pass a NULL tap pointer to
+   turn it off.  See docs/hierarchical.md for why this brackets the second
+   coarse transform rather than replacing it. */
+int ap_mf_set_interp(ap_mf_plan *p, const float *hlo, const float *hhi,
+                     int ntap, int ncand, float *out);
+/* Skip the interpolation for calls that do not want it, without tearing down
+   the configuration -- the second coarse transform reuses the same plan. */
+void ap_mf_interp_pause(ap_mf_plan *p, int on);
+
 /* Is this length supported?  1024, and the powers of two from 4096 to 2^20. */
 /* ---------------------------------------------------------------------------
  * Hierarchical matched filter.

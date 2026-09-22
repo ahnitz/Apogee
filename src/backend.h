@@ -30,6 +30,11 @@ typedef struct {
   int   (*binmax_prod)(void *, const float *dr, const float *di,
                        const float *tr, const float *ti, size_t binsize,
                        float thr, ap_peak *out, int conj, size_t start, size_t end);
+  /* Keep the output series in a plan-owned buffer, laid out [k][re lanes][im
+     lanes] as the scan writes it, so a caller can look at lags the peak scan
+     discards.  NULL turns it off; returns the buffer. */
+  float *(*series)(void *, int on);
+  size_t (*series_stride)(void *);
 } ap_backend;
 
 /* The kernel for the target Highway's runtime dispatch selected, or NULL if

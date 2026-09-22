@@ -14,6 +14,7 @@
 #include "alloc.h"
 #include "matchedfilter.h"
 #include "transform.h"
+#define AP_MF_MAXCAND 64
 
 /* Unfused product, for a back end with no fused stage-A loader.  Every
    Highway build has one, so this runs only when MF_GMAJOR=0 disables the
@@ -43,6 +44,15 @@ struct ap_mf_plan {
   float *tre,*tim;     /* [nt][n], already conjugated */
   float *pr,*pi;       /* scratch for one product, split */
   float *scratch;      /* interleaved staging for ingest */
+  /* Interpolated coarse maximum, when a caller asks for it.  See interp_max. */
+  const float *ihlo, *ihhi;   /* complex taps for the two half-sample offsets */
+  int iK, incand;
+  float *iout;                /* [nd*nt] one interpolated maximum per pair */
+  const float *iser;          /* the back end's series buffer */
+  size_t istride;
+  int ipause;                 /* skip it for calls that do not want it */
+  int icand[AP_MF_MAXCAND];
+  float icval[AP_MF_MAXCAND];
 };
 
 ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
@@ -135,6 +145,84 @@ int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
   return 0;
 }
 
+
+/* ---- interpolated coarse maximum -------------------------------------
+ *
+ * The coarse pass samples the correlation on a stride-R lag grid.  The peak
+ * between samples is what the second (odd) transform exists to find, and that
+ * costs as much as the first.  Interpolating instead cannot replace it -- the
+ * kernel for a critically sampled band needs length -- but it BRACKETS it:
+ * a statistic S with measured bounds lo <= S/true <= hi settles every pair
+ * whose bracket does not straddle the gate, and only the rest pay the
+ * transform.  See docs/hierarchical.md.
+ *
+ * Candidates are the largest few even samples.  Measured on captured searches,
+ * the rank of the true peak's best even neighbour is 0 at the median and 26 at
+ * worst, so a handful suffices; an earlier attempt stopped at 16 and wrongly
+ * concluded the route was closed.
+ */
+static float interp_max(const float *ser, size_t stride, size_t ws, size_t we,
+                        const float *hlo, const float *hhi, int K, int nc,
+                        int *cand, float *cval) {
+#define SRE(k) ser[(k)]
+#define SIM(k) ser[stride + (k)]
+  int n = 0;
+  float worst = -1.f;          /* smallest kept candidate */
+  for (size_t k = ws; k < we; k++) {
+    const float re = SRE(k), im = SIM(k);
+    const float m2 = re*re + im*im;
+    if (n < nc) {
+      cand[n] = (int)k; cval[n] = m2; n++;
+      if (n == nc) { worst = cval[0];
+        for (int i = 1; i < nc; i++) if (cval[i] < worst) worst = cval[i]; }
+    } else if (m2 > worst) {
+      int wi = 0;
+      for (int i = 1; i < nc; i++) if (cval[i] < cval[wi]) wi = i;
+      cand[wi] = (int)k; cval[wi] = m2;
+      worst = cval[0];
+      for (int i = 1; i < nc; i++) if (cval[i] < worst) worst = cval[i];
+    }
+  }
+  float best = 0.f;
+  for (int i = 0; i < n; i++) {
+    if (cval[i] > best) best = cval[i];        /* the grid sample itself */
+    const long j = cand[i];
+    float ar = 0.f, ai = 0.f, br = 0.f, bi = 0.f;
+    for (int t = -K; t <= K; t++) {
+      long kk = j + t;
+      if (kk < 0 || kk >= (long)(we + K)) continue;
+      const float re = SRE(kk), im = SIM(kk);
+      const float lr = hlo[2*(t+K)], li = hlo[2*(t+K)+1];
+      const float hr = hhi[2*(t+K)], hi_ = hhi[2*(t+K)+1];
+      ar += re*lr - im*li;  ai += re*li + im*lr;
+      br += re*hr - im*hi_; bi += re*hi_ + im*hr;
+    }
+    const float m1 = ar*ar + ai*ai, m2 = br*br + bi*bi;
+    if (m1 > best) best = m1;
+    if (m2 > best) best = m2;
+  }
+  return sqrtf(best);
+#undef SRE
+#undef SIM
+}
+
+void ap_mf_interp_pause(ap_mf_plan *p, int on) { if (p) p->ipause = on; }
+
+int ap_mf_set_interp(ap_mf_plan *p, const float *hlo, const float *hhi,
+                     int ntap, int ncand, float *out) {
+  if (!p) return -1;
+  if (!hlo || !hhi || ntap < 1 || !(ntap & 1) || ncand < 1) {
+    p->ihlo = NULL;
+    if (p->fft) ap_series_buf(p->fft, 0);
+    return 0;
+  }
+  if (ncand > AP_MF_MAXCAND) ncand = AP_MF_MAXCAND;
+  p->ihlo = hlo; p->ihhi = hhi; p->iK = ntap/2; p->incand = ncand; p->iout = out;
+  p->iser = p->fft ? ap_series_buf(p->fft, 1) : NULL;
+  p->istride = p->fft ? ap_series_stride(p->fft) : 0;
+  return p->iser ? 0 : -1;
+}
+
 /* The pair loop.  `tsel` selects which templates to run: NULL means the
    contiguous range [0,nt), and otherwise tsel[0..nsel) holds local indices into
    that range.  A scattered selection is what the hierarchical filter's second
@@ -182,6 +270,9 @@ static int run_pairs(ap_mf_plan *p, int d0, int nd, int t0, int nt,
                             peaks+row*nb,&c,AP_BACKWARD,start,end);
       }
       if(r<0) return -1;
+      if(p->ihlo && p->iout && p->iser && !p->ipause)
+        p->iout[row] = interp_max(p->iser, p->istride, start, end, p->ihlo, p->ihhi,
+                                  p->iK, p->incand, p->icand, p->icval);
       if(counts) counts[row]=c;
       total += c;
     }

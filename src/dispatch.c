@@ -98,6 +98,16 @@ int ap_binmax_prod(ap_plan *p,const float *dr,const float *di,
   return c;
 }
 
+size_t ap_series_stride(ap_plan *p){
+  if(!p||!p->be->series_stride) return 0;
+  return p->be->series_stride(p->h);
+}
+
+float *ap_series_buf(ap_plan *p,int on){
+  if(!p||!p->be->series) return NULL;
+  return p->be->series(p->h,on);
+}
+
 int ap_binmax(ap_plan *p,const float *in,size_t dist,int B,
               size_t binsize,float threshold,ap_peak *peaks,int *counts,
               int sign,size_t start,size_t end){
