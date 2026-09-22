@@ -139,7 +139,7 @@ coloured, and passing the template's own power will mis-set the coarse threshold
 broadband template reconstructing a narrowband signal is the case where it goes
 wrong by the largest factor.
 
-The margin is one-sided by construction: peaks it reports are bit-identical to
+The coarse pass is one-sided by construction: peaks it reports are bit-identical to
 the flat filter's. It can only omit, never invent. `fd` is the budget for how
 often it is allowed to omit one.
 
@@ -180,7 +180,7 @@ python -m matchedfilter.benchmark
 python -m matchedfilter.benchmark --backends      # every target, one process
 ```
 
-[docs/](docs/) holds the design notes: how the hierarchical margin is
+[docs/](docs/) holds the design notes: how the hierarchical filter is
 calibrated, and measurements of the approaches that were tried and rejected.
 
 ## License

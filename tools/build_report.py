@@ -558,6 +558,17 @@ document.addEventListener('click',function(e){
 """
 
 
+def _rate(h):
+    """Fraction of pairs that needed the full correlation.
+
+    Tolerates both the absence of the field -- a row that reported no result
+    has no rate -- and the old "trigger_rate" spelling, so a page can still be
+    built from artifacts produced before the rename.
+    """
+    v = h.get("refine_rate", h.get("trigger_rate"))
+    return 0.0 if v is None else float(v)
+
+
 def bench_what(runs):
     """Which machines reported, and what that does and does not let you compare."""
     rows = []
@@ -577,7 +588,7 @@ def bench_what(runs):
 
 def bench_speedup(runs, names):
     """Gated vs flat, one panel per transform length."""
-    o = ["<p>The margin runs a cheap low-band pass first and pays for the full "
+    o = ["<p>The coarse pass runs first and pays for the full "
          "correlation only where a detection is still possible. Speedup is "
          "against the flat filter on the same pure-noise data. The dashed line "
          "marks 1x, where the coarse pass has bought nothing.</p>"]
@@ -617,15 +628,17 @@ def bench_speedup(runs, names):
                        [[html.escape(l), h["n"], "%g" % h["snr"]]
                         for l, h in gaps]))
 
+    # .get, not [...]: a row that reported no result carries neither a rate
+    # nor a speedup, and indexing it crashed the page build in CI.
     fired = [(r["host"]["label"], h) for r in runs for h in r.get("hierarchical", [])
-             if h["refine_rate"] > 0]
+             if _rate(h) > 0]
     if fired:
         o.append('<div class="note warn"><strong>Where the coarse pass escalated on noise.</strong> '
-                 'The margin should stay shut on pure noise; where it does not, the '
+                 'It should rule every pair out on pure noise; where it does not, the '
                  'work is wasted rather than wrong, and the speedup falls.</div>')
         o.append(table(["runner", "n", "snr", "speedup", "triggered"],
                        [[html.escape(l), h["n"], "%g" % h["snr"],
-                         "%.2fx" % h["speedup"], "%.1f%%" % (h["refine_rate"] * 100)]
+                         "%.2fx" % h["speedup"], "%.1f%%" % (_rate(h) * 100)]
                         for l, h in fired]))
     return "".join(o)
 
@@ -727,7 +740,7 @@ def filter_benchmarks_page(runs):
 
 
 def hier_benchmarks_page(runs):
-    """The hierarchical margin: how much of the flat filter it skips."""
+    """The hierarchical filter: how much of the flat filter it skips."""
     runs = _bench_runs(runs)
     if not runs:
         return "<p>No benchmark results were available when this page was built.</p>"
@@ -754,7 +767,7 @@ def bench_hier_raw(runs):
              ("%d/%d/%d" % (h["band"], h["oversample"], h["taps"])
               if "band" in h else "-"),
              "%.3f" % h["flat_ms"], "%.3f" % h["hier_ms"],
-             "<b>%.2fx</b>" % h["speedup"], "%.2f%%" % (h["refine_rate"] * 100)]
+             "<b>%.2fx</b>" % h["speedup"], "%.2f%%" % (_rate(h) * 100)]
             for r in runs for h in r.get("hierarchical", []) if "speedup" in h]
     if not rows:
         return ""
@@ -809,7 +822,7 @@ PAGES = [("index.html", "Overview", "readme",
          ("demo.html", "See it work", "demo", None),
          ("how-it-works.html", "How it works", "readme", ["How it works"]),
          ("benchmarks.html", "Benchmarks: matched filter", "bench-flat", None),
-         ("margin-benchmarks.html", "Benchmarks: margin", "bench-margin", None),
+         ("hierarchical-benchmarks.html", "Benchmarks: hierarchical", "bench-hier", None),
          ("notes.html", "Design notes", "notes-index", None),
          ("caveats.html", "Caveats & development", "readme",
           ["Caveats", "Development"])]
@@ -951,8 +964,8 @@ def build(runs, root="."):
         elif kind == "bench-flat":
             body = ("<h2>Benchmarks: the matched filter</h2>"
                     + filter_benchmarks_page(runs))
-        elif kind == "bench-margin":
-            body = ("<h2>Benchmarks: the hierarchical margin</h2>"
+        elif kind == "bench-hier":
+            body = ("<h2>Benchmarks: the hierarchical filter</h2>"
                     + hier_benchmarks_page(runs))
         elif kind == "demo":
             body = "<h2>See it work</h2>" + demo_page()
@@ -968,7 +981,7 @@ def build(runs, root="."):
         if fn == "index.html":
             body = ('<h1>matchedfilter</h1><p class="lede">A fast single-threaded '
                     'matched filter for x86, arm64 and macOS, with peak-only output '
-                    'and an optional hierarchical margin.</p>') + body
+                    'and an optional hierarchical mode.</p>') + body
         out[fn] = shell(fn, "matchedfilter — %s" % label, body, version,
                         prev_next=(order[i - 1] if i else None,
                                    order[i + 1] if i + 1 < len(order) else None))

@@ -15,10 +15,10 @@ miss one, with probability at most `fd` for a signal of strength `snr`.
 
 ## Where the speedup comes from
 
-    cost  =  coarse transform  +  margin scan  +  trigger rate x full correlation
+    cost  =  coarse transform  +  threshold scan  +  refine rate x full correlation
 
 The trigger rate is the whole game.  It falls off as `exp(-t_c^2/2)` per coarse
-sample, so a margin threshold a few tenths higher is worth more than any amount of
+sample, so a coarse threshold a few tenths higher is worth more than any amount of
 micro-optimisation in the coarse pass.  Everything below is in service of
 raising `t_c` without breaking the false-dismissal bound.
 
@@ -65,7 +65,7 @@ a modulated sinc.  Two consequences worth stating plainly:
   100.0% and 12 or 16 add nothing.  At U=1 no tap count helps much, and every
   window makes it worse, monotonically - a window's transition band needs empty
   spectrum to sit in, and critical sampling has none.
-- **The margin only needs `|v|`**, and the re-modulation phase has unit magnitude,
+- **The coarse pass only needs `|v|`**, and the re-modulation phase has unit magnitude,
   so it cancels.  demodulate -> interpolate -> re-modulate collapses into one
   complex tap `w_k * exp(i pi (d-k)/U)` applied to the raw series.
 
@@ -116,7 +116,7 @@ top of the calibrated rate without any test noticing unless it counts omissions.
   smallest supported size.  The unconstrained design often wants 64 or 128, so
   supporting smaller transforms would unlock more speedup, particularly at
   N=2^11 and high SNR.
-- **The margin is per pair, not per bin.**  The transform is global, so a partial
+- **The decision is per pair, not per bin.**  The transform is global, so a partial
   one would not help; but it means a single loud bin drags the whole pair
   through the full correlation.
 - **The trigger rate depends on the data.**  On noisier data than the design
@@ -193,7 +193,7 @@ the disagreement is in the unsafe direction.
     2^18   t_c=4.93, trig 50.4%, 1.04x    trig 0.0%, 5.01x
     2^20   t_c=1.32, trig  100%, 1.00x    trig 0.0%, 2933x
 
-The model is the one to believe here.  The margin sits below the detection
+The model is the one to believe here.  The coarse threshold sits below the detection
 threshold by construction, and with ~10^6 lags the coarse maximum in pure noise
 reaches about sqrt(2 ln G) ~ 3.7 -- far above a margin of ~1.5.  Essentially every
 pair should trigger.  A measured 0% means the run-time margin is much higher than
@@ -210,9 +210,9 @@ Two things this also makes clear, independent of the bug:
 - **A realistic threshold at large N is not 5.5.**  The full filter alone
   expects n*exp(-t^2/2) noise crossings per pair - about 0.3 at 2^20 and t=5.5 -
   so a real search would set the threshold from the trials factor.  The
-  hierarchical margin's usefulness depends on the margin between that threshold
+  hierarchical filter's usefulness depends on the margin between that threshold
   and sqrt(2 ln G), which shrinks as N grows.
-- **The margin is per pair, not per bin.**  The output is one peak per bin, but
+- **The decision is per pair, not per bin.**  The output is one peak per bin, but
   one loud bin drags the whole pair through the full correlation.  For a search
   that wants a trigger in every window this is the binding limitation, and the
   cost model does not currently account for it.

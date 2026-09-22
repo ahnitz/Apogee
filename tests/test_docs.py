@@ -56,8 +56,17 @@ def test_site_pages_are_linked_and_complete():
                     "backend": "AVX3", "python": "3.12", "version": "0.0.0"},
            "flat": [{"n": 4096, "data": 8, "templates": 32, "us_per_pair": 1.0,
                      "ok": True, "reference_us_per_pair": {"numpy": 4.0}}],
-           "hierarchical": [{"n": 4096, "snr": 5.0, "fd": 1e-3, "flat_ms": 2.0,
-                             "hier_ms": 1.0, "speedup": 2.0, "refine_rate": 0.0}]}
+           "hierarchical": [
+               {"n": 4096, "snr": 5.0, "fd": 1e-3, "flat_ms": 2.0,
+                "hier_ms": 1.0, "speedup": 2.0, "refine_rate": 0.0,
+                "band": 1024, "oversample": 2, "taps": 8},
+               # a row that escalated, so the "where it fired" table renders
+               {"n": 4096, "snr": 5.5, "fd": 1e-3, "flat_ms": 2.0,
+                "hier_ms": 1.5, "speedup": 1.33, "refine_rate": 0.12,
+                "band": 512, "oversample": 2, "taps": 8},
+               # and one the tables did not cover, which carries NO speedup
+               # and NO rate at all. This shape crashed the CI page build.
+               {"n": 16384, "snr": 6.5, "fd": 1e-3, "uncovered": "not tuned"}]}
     pages = build_report.build([run], root=ROOT)
     assert "index.html" in pages and "benchmarks.html" in pages
     for name, html_text in pages.items():
@@ -80,3 +89,20 @@ def test_readme_keeps_the_docs_link_but_the_site_does_not_repeat_it():
     assert "ahnitz.github.io" not in stripped
     assert not stripped.startswith("#")
     assert "Built by CI" not in stripped
+
+
+def test_page_builds_from_pre_rename_artifacts():
+    """Old artifacts say "trigger_rate"; the page must still build.
+
+    Benchmark JSON is uploaded by one CI job and consumed by another, and a
+    rerun of the page job can pick up artifacts produced before a rename.
+    """
+    run = {"host": {"label": "old-host", "system": "Linux", "machine": "x86_64",
+                    "backend": "AVX2", "python": "3.12", "version": "0.0.0"},
+           "flat": [{"n": 4096, "data": 8, "templates": 32, "us_per_pair": 1.0,
+                     "ok": True}],
+           "hierarchical": [{"n": 4096, "snr": 5.0, "fd": 1e-3, "flat_ms": 2.0,
+                             "hier_ms": 1.0, "speedup": 2.0,
+                             "trigger_rate": 0.2}]}
+    pages = build_report.build([run], root=ROOT)
+    assert "20.0%" in pages["hierarchical-benchmarks.html"]

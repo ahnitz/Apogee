@@ -685,7 +685,7 @@ right one for whatever kernel is ultimately selected:
   bank of R fixed filters.
 - Coarse threshold with L1 norms: |re|+|im| >= |z|, so it is a valid upper bound and skips
   without a sqrt.  Coarse threshold at block level first, then per sample.
-- The margin bound must be padded for interpolation overshoot (measured up to
+- The coarse-threshold bound must be padded for interpolation overshoot (measured up to
   102.8% at 256 taps).  Overshoot inflates, so it can never cause a dismissal,
   but the bound has to allow for it or the coarse threshold will.
 

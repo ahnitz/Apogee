@@ -46,7 +46,7 @@ power below the edge -- comfortably inside a 1e-3 target.  The captures' real
 reference sits at 0.9335, squarely in that range, and measures 1.97e-3: it
 fails where the synthetic passes.  The two agree on f(512) to four figures and
 disagree on g (0.9979 against 1.0000) and so on the coarse threshold (4.237 against
-4.266), and the Rayleigh tail is steep enough there that 0.7% of margin
+4.266), and the Rayleigh tail is steep enough there that 0.7% of coarse-threshold
 straddles the target.
 
 Nor does it collapse onto f_eff = f*g^2, the one scalar the runtime already
@@ -521,9 +521,9 @@ def _cost_cell(job):
 
 def measure_tc(n, band, U, K, snr, power, fd, trials=12000, lo=0.60, hi=1.25,
                tol=0.015):
-    """The margin at which measured dismissal reaches `fd`, and the g it implies.
+    """The coarse margin at which measured dismissal reaches `fd`, and the g it implies.
 
-    hmf_tc supplies this from a Rice model. The margin decomposes exactly as
+    hmf_tc supplies this from a Rice model. The coarse threshold decomposes exactly as
     t_c = T*sqrt(f_eff) - c(f_eff, fd) -- the SNR dependence is analytic and
     only the noise allowance c needs measuring -- so this measures the one
     quantity that is not already arithmetic. Bisects the coarse threshold scale, since
