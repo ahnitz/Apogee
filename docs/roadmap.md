@@ -102,17 +102,7 @@ is 6% of the hierarchical cost, so **0.7% here** -- but 12% for anyone using
 Detect the support at ingest (measure it, do not assume it); a filter that is
 dense gets the current path.
 
-### 4. Odd pass, via a better interpolation kernel
-
-The bracket settles pairs without the second coarse transform and is currently
-break-even when its reject bound is set soundly. Its quality is set by the
-interpolation kernel: going from 9 to 13 taps moved the measured worst-case
-`min(S/true)` from 0.8384 to 0.8855, which moves the sound `ilo` from 0.8635 to
-0.9120. A kernel designed to maximise the *worst case* rather than the
-least-squares fit might move it far enough to make the bracket pay. Ceiling is
-the whole odd pass: 19% at threshold 5.0, 8% at 5.5.
-
-### 5. Output protocol
+### 4. Output protocol
 
 `fill` writes zeroed peak records for the 98.5% of pairs that report nothing.
 Returning fired peaks plus a count instead would remove it. Worth 1%, and it
@@ -273,11 +263,16 @@ measurement.
 
 The even coarse pass is 75-90% of the cost, runs at ~60% of a realistic FFT
 ceiling, is 3.4x faster than pocketfft while doing more work, and is immune to
-element width, blocking, factorisation and band choice. Every cheaper statistic
-that could avoid it fails the 0.85 recovery cliff. **It is the floor of this
-algorithm.**
+element width, blocking, factorisation, band choice and transform size. Every
+cheaper statistic that could avoid it fails the 0.85 recovery cliff. **It is
+the floor of this algorithm**, and any plan that does not touch it is capped at
+25% -- 10% at the higher threshold.
 
-The remaining headroom is not in the hierarchy at all. It is in the gate
-calibration, which is worth 1.31x at the operating point that matters, and in
-parallelism, which is worth an order of magnitude and is a contract decision
-rather than an engineering one.
+Of what remains, one item is well posed: the bracket's reject bound is limited
+by a least-squares tap design whose worst-case accuracy saturates at 17 taps,
+and a minimax design optimises exactly the quantity the bound depends on. That
+is worth up to ~10%.
+
+Calibration is a correctness item, not a speed one -- the honest `g` reproduces
+the hand-tuned `gate_margin=0.94` rather than beating it, and the per-template
+version is sampling noise. Everything else on this page is closed.
