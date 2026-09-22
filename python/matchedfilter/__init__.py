@@ -329,22 +329,28 @@ def choose_config(power, n, snr, fd, tuning=None):
     measured at least as high in both, and the worst such row is the one to
     believe.
 
-    NOT WIRED IN, and must not be until the COST rows are remeasured. They
-    currently come from the same harness as the FDR rows, which injects at the
-    threshold so that roughly half of all pairs trigger whatever the band is.
-    That is right for counting dismissals and wrong for cost: it makes every
-    band look the same (9-13 us/pair) where the captures separate band 256 and
-    band 1024 by 23 ms/segment against 10. Cost is dominated by how often the
-    gate opens on NOISE at the operating point, so it needs a pure-noise run at
-    the search threshold -- a different workload from the FDR one, not a
-    different column of the same one.
+    Cost is RELATIVE, not microseconds, and that is what makes the ranking
+    mean anything.  Each row was measured by holding one reference fixed and
+    timing every configuration on it, so clock state, contention and the
+    machine cancel in the ratio.  An earlier table timed each cell against its
+    own synthetic reference, which meant band 512 and band 1024 were never
+    compared on the same signal; it ranked the slowest of four admissible
+    options first, 20.30 ms/segment where 13.29 was available.
 
-    With the present table this picks band 256, which measurement says
-    triggers 60% of the time on the captures. The FDR half is sound; the
-    ranking it feeds is not.
+    Ordering is what selection needs and ordering is what the table delivers:
+    on the captures it reproduces the measured order of every candidate
+    exactly.  Magnitudes are looser -- band 512 at a high in-band fraction
+    comes out about 15% cheap -- so these numbers rank configurations and
+    should not be read as predictions of runtime.
 
-    Returns None when the table says nothing, which leaves the caller on the
-    compiled-in design table rather than guessing.
+    The cheapest admissible configuration is not always the cheapest one that
+    works on a given dataset: accuracy is judged against the table's measured
+    dismissal rate, which resolves far below what any one dataset can show.
+
+    Returns None when the table covers nothing that fits, which makes the
+    caller refuse rather than guess -- there is no compiled fallback, by
+    design: a model that does not promise the budget should not be allowed to
+    answer in the budget's name.
     """
     t = _load_tuning() if tuning is None else tuning
     feats, byconf = {}, {}

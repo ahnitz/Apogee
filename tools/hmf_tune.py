@@ -610,3 +610,49 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
     pv = acc.get(COST_PIVOT) or list(acc.values())[0]
     resid = float(max(pv) / min(pv) - 1.0)       # what the ratios are worth
     return {c: v / piv for c, v in med.items()}, resid
+
+
+def cost_grid(n, snr_list, bands, Ks, gates, f_list, be_fracs, reps=4,
+              nt=16, batch=64, verbose=True):
+    """Relative cost per configuration, averaged over many references.
+
+    Reference outer, configurations inner: each sweep is internally comparable
+    and contributes ratios, so sweeps taken under different machine conditions
+    pool without normalising between them.  The features recorded against a row
+    are the reference's OWN f and B_eff at that band -- what the library
+    computes at selection time -- not the parameters the reference was built
+    from, which is the mistake the first table made.
+    """
+    configs = [(b, 2, K, g) for b in bands for K in Ks for g in gates]
+    if COST_PIVOT not in configs:
+        configs.append(COST_PIVOT)
+    rows, resids = [], []
+    for snr in snr_list:
+        for f in f_list:
+            for bf in be_fracs:
+                for anchor in bands:          # build the reference around each band
+                    power = make_ref(n, anchor, f, max(2.0, bf * anchor))
+                    rel, resid = cost_sweep_one_reference(
+                        n, power, snr, configs, reps=reps, nt=nt, batch=batch)
+                    resids.append(resid)
+                    for cfg, r in rel.items():
+                        band, U, K, gate = cfg
+                        ff, bb = _feat(power, band)
+                        rows.append(dict(n=n, band=band, U=U, K=K, snr=snr,
+                                         f=ff, beff=bb, gate=gate, rel=r))
+                    if verbose:
+                        print("  snr %.1f f %.2f be %.2f anchor %d: resid %.1f%%"
+                              % (snr, f, bf, anchor, 100 * resid), flush=True)
+    return rows, resids
+
+
+def _feat(power, m):
+    p = np.asarray(power, float)
+    p = np.where(p > 0, p, 0.0)
+    tot = p.sum()
+    inb = p[:m]
+    s = inb.sum()
+    if tot <= 0 or s <= 0:
+        return 0.0, 1.0
+    q = inb / s
+    return float(s / tot), float(1.0 / np.sum(q ** 2))
