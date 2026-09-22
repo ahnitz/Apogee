@@ -525,7 +525,7 @@ static int probe_recovery(ap_hmf_plan *p,const float *power,size_t m,int U,int K
   return rc;
 }
 
-static int select_band(ap_hmf_plan *p,const float *power,size_t *bm,int *bu){
+static int select_band(ap_hmf_plan *p,const float *power,size_t *bm,int *bu,int *bk){
   const size_t n=p->n;
   const float T = p->fs_snr>0.f ? p->fs_snr : p->snr;
   double tot=0; for(size_t k=0;k<n;k++) tot+= power[k]>0?power[k]:0;
@@ -536,15 +536,20 @@ static int select_band(ap_hmf_plan *p,const float *power,size_t *bm,int *bu){
     double lo=0; for(size_t k=0;k<m;k++) lo+= power[k]>0?power[k]:0;
     const double f=lo/tot;
     if(f<=0.0) continue;
-    for(int U=1;U<=2;U++){
+    /* K is part of the choice, not a constant: handing the probe p->K -- the
+       tap count picked before selection -- was what made g come back low and
+       inverted the ordering. With the right K the probe reproduces the run
+       exactly (g=0.9979, t_c=4.237 at band 512; 0.9995 and 4.787 at 1024). */
+    for(int U=1;U<=2;U++) for(int Ki=0;Ki<2;Ki++){
+      const int Kc = Ki ? 8 : 4;
       float g,graw,graw1; double tc=0,rate=1;
-      if(probe_recovery(p,power,m,U,p->K,T,p->fd,f,&g,&graw,&graw1,&tc,&rate)) continue;
+      if(probe_recovery(p,power,m,U,Kc,T,p->fd,f,&g,&graw,&graw1,&tc,&rate)) continue;
       const double cu=coarse_units(m,n);
       const double cost=cu*(1.0+HMF_PODD*(U-1))+HMF_RECON*rate;
-      if(cost<best){ best=cost; *bm=m; *bu=U; found=1; }
+      if(cost<best){ best=cost; *bm=m; *bu=U; *bk=Kc; found=1; }
       if(getenv("MF_BAND_DIAG"))
-        fprintf(stderr,"    [band] m=%-5zu U=%d  f=%.4f g=%.4f tc=%.3f "
-                "rate=%.3e cost=%.4f\n",m,U,f,(double)g,tc,rate,cost);
+        fprintf(stderr,"    [band] m=%-5zu U=%d K=%d f=%.4f g=%.4f tc=%.3f "
+                "rate=%.3e cost=%.4f\n",m,U,Kc,f,(double)g,tc,rate,cost);
     }
   }
   return found?0:-1;
@@ -568,8 +573,17 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
      is much too high, and by a band-dependent factor that inverts the
      ordering. Enabling it costs 110/842 against 31.
      
-     One cause is concrete: probe_recovery is handed p->K, the tap count
-     chosen before selection, while a run at that band uses its own.
+     The gate half is now FIXED: K is part of the choice rather than inherited
+     from before it, and with that the probe reproduces the run exactly --
+     g=0.9979 and t_c=4.237 at band 512, 0.9995 and 4.787 at 1024, matching a
+     run at those bands to the digit.
+     
+     What remains is probe_rate. Its synthetic noise does not reproduce the
+     real coarse statistic's distribution: it returns 1.6e-2 at band 512 and
+     0 at 1024 where the captures measure 8.75% and 1.46%. The normalisation
+     of the generated product spectrum is the suspect -- it is scaled by the
+     reference's total rather than by whatever makes the FULL statistic
+     unit-variance, which is the convention the gate is quoted in.
      
      Note what is NOT wrong: the reference is a sufficient input. Both the
      signal captured and the noise admitted are governed by the distribution
@@ -581,10 +595,11 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
      MF_AUTOBAND=1 with MF_BAND_DIAG=1 prints the candidate table. */
   { const char *e=getenv("MF_AUTOBAND");
     if(p->ntpow==0 && e && atoi(e)!=0){
-      size_t bm=p->m; int bu=p->U;
-      if(select_band(p,power,&bm,&bu)==0 && (bm!=p->m||bu!=p->U)){
+      size_t bm=p->m; int bu=p->U, bk=p->K;
+      if(select_band(p,power,&bm,&bu,&bk)==0
+         && (bm!=p->m||bu!=p->U||bk!=p->K)){
         free_band_state(p);
-        if(alloc_band_state(p,bm,bu,p->K,p->nd,p->nt)) return -1;
+        if(alloc_band_state(p,bm,bu,bk,p->nd,p->nt)) return -1;
       } } }
   const size_t n=p->n,m=p->m;
   double tot=0,lo=0;

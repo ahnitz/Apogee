@@ -138,12 +138,20 @@ The real fault is that the probe does not reproduce the gate the run will use:
 | band 512 | g = 0.9539, t_c = 3.715 | **g = 0.9979, gate = 4.237** |
 | band 1024 | g = 0.9709, t_c = 4.246 | **g = 0.9995, gate = 4.787** |
 
-`g` comes back low, so `t_c` is low, so the modelled rate is far too high --
-and by a band-dependent factor, which is exactly what inverts the ordering. At
-least one cause is concrete: `probe_recovery` is handed `p->K`, the tap count
-chosen *before* selection, where a run at that band uses its own. Making the
-probe compute what the run computes is the remaining work, and it is a bug fix
-rather than a design change.
+That half is now **fixed**: `K` is part of the choice rather than inherited
+from before it, and the probe reproduces the run to the digit -- g = 0.9979,
+t_c = 4.237 at band 512; 0.9995 and 4.787 at 1024.
+
+What remains is `probe_rate`. Its synthetic noise does not reproduce the real
+coarse statistic: it returns 1.6e-2 at band 512 and 0 at 1024 where the
+captures measure **8.75%** and **1.46%**. The suspect is its normalisation --
+the generated product spectrum is scaled by the reference's total, where the
+gate is quoted in units that make the FULL statistic unit-variance. Until that
+matches, selection still picks too narrow (108/842 against 31).
+
+The decision itself is cheap and reusable, which is the point of taking a
+reference: clean, noise-free information supplied once, one optimisation, then
+reused for every run against it.
 
 The lifetime part is already done: `alloc_band_state`/`free_band_state` own
 everything sized by the band, and `set_reference` rebuilds through them.
