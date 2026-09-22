@@ -312,8 +312,13 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     flat.set_data(d)
     flat.set_templates(h)
 
-    hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd,
-                                   band=max(256, n // 8), oversample=2, taps=8)
+    # No band, no oversample, no taps: the library picks them from the
+    # reference and the threshold, which is the thing worth benchmarking.
+    # Pinning band=n//8 here meant the same first stage ran at every
+    # threshold, so the plotted speedup could not show what a higher
+    # threshold buys -- a narrower first pass and a tighter gate -- and it
+    # measured a configuration no caller would get.
+    hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd)
     hf.set_reference(power)
     hf.set_data(d)
     hf.set_templates(h)
@@ -329,7 +334,7 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
 
     tf = best_of(lambda: flat.run(binsize=n, threshold=snr))
     th = best_of(lambda: hf.run(binsize=n, threshold=snr))
-    return tf, th, hf.trigger_rate
+    return tf, th, hf.trigger_rate, hf.config
 
 
 def host_info(label):
@@ -467,24 +472,38 @@ def main(argv=None):
         print(f"\n\nHierarchical gate vs the flat filter, pure noise, "
               f"false dismissal {a.fd:g}")
         print(f"  {'n':>8} {'snr':>5} {'flat':>11} {'gated':>11} "
-              f"{'speedup':>9} {'triggered':>10}")
+              f"{'speedup':>9} {'triggered':>10} {'chosen':>14}")
         for n in a.n:
             for snr in (5.0, 5.5, 6.0, 6.5):
                 try:
-                    tf, th, rate = _bench_hier(n, a.data, a.templates, snr,
-                                               a.fd, a.reps)
+                    tf, th, rate, cfg = _bench_hier(n, a.data, a.templates, snr,
+                                                    a.fd, a.reps)
                 except (ValueError, RuntimeError) as e:
-                    print(f"  {n:>8} {snr:>5.1f}   unsupported: {e}")
+                    # An uncovered (n, snr, fd) is a refusal, not a failure:
+                    # the tables are measured and the library will not answer
+                    # outside them. Report it as a gap in coverage.
+                    first = str(e).strip().split("\n")[0]
+                    print(f"  {n:>8} {snr:>5.1f}   not tuned: {first}")
+                    hier_rows.append({"n": n, "snr": snr, "fd": a.fd,
+                                      "data": a.data, "templates": a.templates,
+                                      "uncovered": first})
                     continue
+                tag = "%d/%d/%d" % cfg
                 print(f"  {n:>8} {snr:>5.1f} {tf * 1e3:>10.2f}ms "
-                      f"{th * 1e3:>10.2f}ms {tf / th:>8.2f}x {rate:>9.1%}")
+                      f"{th * 1e3:>10.2f}ms {tf / th:>8.2f}x {rate:>9.1%} "
+                      f"{tag:>14}")
                 hier_rows.append({"n": n, "snr": snr, "fd": a.fd,
                                   "data": a.data, "templates": a.templates,
                                   "flat_ms": tf * 1e3, "gated_ms": th * 1e3,
-                                  "speedup": tf / th, "trigger_rate": rate})
+                                  "speedup": tf / th, "trigger_rate": rate,
+                                  "band": cfg[0], "oversample": cfg[1],
+                                  "taps": cfg[2]})
         print("\nThe gate skips a pair when a cheap low-band estimate rules out\n"
               "any sample reaching the threshold, so the speedup grows with the\n"
-              "threshold and falls to ~1 on data where everything triggers.")
+              "threshold and falls to ~1 on data where everything triggers.\n"
+              "'chosen' is the first-stage band/oversample/taps the library\n"
+              "selected from the reference and the threshold -- not a setting\n"
+              "of this benchmark. It should narrow as the threshold rises.")
 
     if a.json:
         with open(a.json, "w") as fh:

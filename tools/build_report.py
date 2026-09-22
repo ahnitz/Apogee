@@ -204,7 +204,7 @@ details[open]{background:transparent}
 summary{cursor:pointer;padding:.7rem 1rem;font-size:14.5px;font-weight:600;
         list-style:none;user-select:none}
 summary::-webkit-details-marker{display:none}
-summary::before{content:"\25B8";display:inline-block;margin-right:.55rem;
+summary::before{content:"\\25B8";display:inline-block;margin-right:.55rem;
         color:var(--mut);transition:transform .15s}
 details[open]>summary::before{transform:rotate(90deg)}
 summary:hover{color:var(--accent)}
@@ -426,23 +426,39 @@ def bench_gate(runs, names):
          "marks 1x, where gating has bought nothing.</p>"]
     snrs = sorted({h["snr"] for r in runs for h in r.get("hierarchical", [])})
     sizes = sorted({h["n"] for r in runs for h in r.get("hierarchical", [])})
+    gaps = [(r["host"]["label"], h) for r in runs
+            for h in r.get("hierarchical", []) if h.get("uncovered")]
     panels = []
     for n in sizes:
         groups = []
         for snr in snrs:
             vs = []
             for r in runs:
-                m = [h for h in r.get("hierarchical", []) if h["n"] == n and h["snr"] == snr]
+                m = [h for h in r.get("hierarchical", [])
+                     if h["n"] == n and h["snr"] == snr and "speedup" in h]
                 vs.append(m[0]["speedup"] if m else None)
             groups.append(("snr %g" % snr, vs))
         if any(v is not None for _, vs in groups for v in vs):
             panels.append(("n = %d" % n,
                            bar_chart(groups, names, "Gated vs flat, n=%d" % n, "speedup")))
     o.append(tabs(panels, "transform length"))
-    o.append('<div class="note">Within a panel the bars should climb with the '
-             'SNR threshold: a higher threshold lets the filter choose a '
-             'narrower first pass and a tighter gate. A flat profile means the '
-             'configuration is not being chosen from the threshold.</div>')
+    o.append('<div class="note">The first stage is <em>not</em> set by this '
+             'benchmark. The library chooses band, oversampling and taps from '
+             'the reference and the threshold, and the chosen values are in '
+             '"All numbers". Within a panel the bars should climb with the SNR '
+             'threshold, because a higher threshold admits a narrower first '
+             'pass and a tighter gate. A flat profile means the choice is not '
+             'responding to the threshold.</div>')
+    if gaps:
+        o.append('<div class="note warn"><strong>Not tuned.</strong> '
+                 'The tuning tables are measured, and outside their coverage '
+                 'the library refuses rather than guessing a configuration it '
+                 'cannot stand behind. These combinations reported no result '
+                 'for that reason, which is a gap in the shipped tables and '
+                 'not a failure of the build.</div>')
+        o.append(table(["runner", "n", "snr"],
+                       [[html.escape(l), h["n"], "%g" % h["snr"]]
+                        for l, h in gaps]))
 
     fired = [(r["host"]["label"], h) for r in runs for h in r.get("hierarchical", [])
              if h["trigger_rate"] > 0]
@@ -510,9 +526,11 @@ def bench_refs(runs, engines):
 def bench_raw(runs, engines):
     """Every number behind the charts, in two switchable tables."""
     hrows = [[html.escape(r["host"]["label"]), h["n"], "%g" % h["snr"],
+              ("%d/%d/%d" % (h["band"], h["oversample"], h["taps"])
+               if "band" in h else "-"),
               "%.3f" % h["flat_ms"], "%.3f" % h["gated_ms"],
               "<b>%.2fx</b>" % h["speedup"], "%.2f%%" % (h["trigger_rate"] * 100)]
-             for r in runs for h in r.get("hierarchical", [])]
+             for r in runs for h in r.get("hierarchical", []) if "speedup" in h]
     frows = []
     for r in runs:
         for f in r.get("flat", []):
@@ -529,8 +547,8 @@ def bench_raw(runs, engines):
            + ["vs %s" % e for e in engines] + ["matches numpy"])
     return tabs([
         ("hierarchical (%d rows)" % len(hrows),
-         table(["runner", "n", "snr", "flat (ms)", "gated (ms)", "speedup",
-                "triggered"], hrows) if hrows else ""),
+         table(["runner", "n", "snr", "chosen b/U/K", "flat (ms)",
+                "gated (ms)", "speedup", "triggered"], hrows) if hrows else ""),
         ("matched filter (%d rows)" % len(frows),
          table(hdr, frows) if frows else ""),
     ], "table")
@@ -629,6 +647,24 @@ def shell(active, title, body, version, sub=None, prev_next=None):
             % (html.escape(title), CSS, "".join(nav), body, pn, foot, TABJS))
 
 
+#: README links written for a single page, and where they live on the site now.
+ANCHORS = {"#caveats": "caveats.html", "#install": "index.html",
+           "#how-it-works": "how-it-works.html",
+           "#hierarchical-filtering": "how-it-works.html",
+           "#development": "caveats.html"}
+
+
+def retarget_anchors(text):
+    """Point the README's in-page anchors at the pages that now hold them.
+
+    The README is written for GitHub, where it is one document and "#caveats"
+    resolves. Split across pages, those links land nowhere.
+    """
+    for frag, page in ANCHORS.items():
+        text = text.replace("](%s)" % frag, "](%s)" % page)
+    return text
+
+
 def strip_self_reference(text):
     """Drop the README's own title and its banner linking to this site.
 
@@ -653,6 +689,7 @@ def strip_self_reference(text):
 def build(runs, root="."):
     """Return {filename: html} for the whole site."""
     readme = split_readme(read(os.path.join(root, "README.md")))
+    readme = {k: retarget_anchors(v) for k, v in readme.items()}
     readme["_intro"] = strip_self_reference(readme.get("_intro", ""))
     version = next((r["host"].get("version") for r in runs if r.get("host")), "")
     order = [(fn, label) for fn, label, _, _ in PAGES]
