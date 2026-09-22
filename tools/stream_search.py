@@ -1,47 +1,68 @@
 #!/usr/bin/env python3
 """Search streaming register programs for a predictor of the coarse maximum.
 
-A candidate is a tiny machine: S real registers, one pass over the band
-product, and L instructions executed per sample.  Each instruction combines a
-register with either another register or a channel of the current sample.
-Nothing is assumed to be linear, or sensible -- the point is to let the search
-exploit whatever the operations do.
+A candidate is a tiny machine: S registers, one pass over the band product,
+L three-address instructions per sample.  Nothing is assumed to be linear or
+numerically sensible -- bit-level reinterpretation is in the op set precisely
+because a float's bit pattern read as an integer is an approximate log2, so
+integer arithmetic on it approximates multiplication of the values.
 
-Fitness is the BRACKET WIDTH, the ratio of the largest to the smallest
+Fitness is BRACKET WIDTH: the ratio of the largest to the smallest
 truth/prediction over real captured pairs.  That is what decides how many
-pairs a gate could settle without running the transform; reconstruction
-accuracy is the wrong objective.  1.0 is perfect, and anything above about
-1.2 is useless because the gate sits only ~1.7x above the typical maximum.
+pairs a gate settles without running the transform.  1.0 is perfect; above
+about 1.2 settles nothing, because the gate sits only ~1.7x above a typical
+maximum.
 
-    python tools/stream_search.py --iters 4000 --regs 4 --len 8
+An earlier version of this was far too restrictive and its negative result
+meant little: instructions were two-address, so a register could only
+accumulate into itself, which makes a rotation -- and therefore anything
+Fourier-like -- unreachable.  One restart is now seeded with Goertzel so the
+search starts inside that basin rather than having to find it.
+
+    python tools/stream_search.py --iters 20000 --regs 6 --len 10
 """
 import argparse
 import glob
+import multiprocessing as mp
+import os
 import numpy as np
 
-CHANNELS = ("re", "im", "mag", "mag2", "k")
-# Constant operands.  Without them the machine cannot build a phasor -- a
-# rotation needs R = R*cos - R'*sin -- nor any threshold, so it can only ever
-# combine data with data.  The first search converged to a leaky sum of |P|
-# for exactly that reason.
-CONSTS = (-1.0, -0.5, 0.25, 0.5, 0.7071067811865476, 0.9, 0.99, 1.0,
-          1.5, 2.0, 3.0, 0.9987954562051724, 0.049067674327418015)
-OPS = ("add", "sub", "mul", "max", "min", "absdiff", "addsq", "mulacc")
+CH = ("re", "im", "mag", "mag2", "k", "one")
+OPS = ("add", "sub", "mul", "max", "min", "absdiff", "div", "sqrtabs",
+       "rsqrt", "gt", "bitadd", "bitsub", "bitshr", "bitxor", "fma1")
+
+
+def _bits(x):
+    return np.asarray(x, np.float32).view(np.int32).astype(np.float64)
+
+
+def _unbits(x):
+    return (np.clip(np.asarray(x), -2**31, 2**31 - 1)
+            .astype(np.int32).view(np.float32).astype(np.float64))
 
 
 def apply_op(op, a, b):
-    if op == 0: return a + b
-    if op == 1: return a - b
-    if op == 2: return a * b
-    if op == 3: return np.maximum(a, b)
-    if op == 4: return np.minimum(a, b)
-    if op == 5: return np.abs(a - b)
-    if op == 6: return a + b * b
-    return a * 0.99 + b            # leaky accumulate
+    with np.errstate(all="ignore"):
+        if op == 0:  return a + b
+        if op == 1:  return a - b
+        if op == 2:  return a * b
+        if op == 3:  return np.maximum(a, b)
+        if op == 4:  return np.minimum(a, b)
+        if op == 5:  return np.abs(a - b)
+        if op == 6:  return a / np.where(np.abs(b) < 1e-30, 1e-30, b)
+        if op == 7:  return np.sqrt(np.abs(a))
+        if op == 8:  return 1.0 / np.sqrt(np.abs(a) + 1e-30)
+        if op == 9:  return (a > b).astype(np.float64)
+        # bit-level: a float's bits read as an int are an approximate log2
+        if op == 10: return _unbits(_bits(a) + _bits(b))
+        if op == 11: return _unbits(_bits(a) - _bits(b))
+        if op == 12: return _unbits(_bits(a) * 0.5)
+        if op == 13: return _unbits(np.bitwise_xor(
+            _bits(a).astype(np.int64), _bits(b).astype(np.int64)).astype(np.float64))
+        return a + a * b
 
 
 def load(nblk=8, stride=3, nfiles=6):
-    """Band products and their true coarse maxima, from captured segments."""
     files = sorted(glob.glob(
         "/home/ahnitz/projects/claude/searchdev/work/fixtures/hier-*.npz"))[:nfiles]
     rng = np.random.default_rng(5)
@@ -60,121 +81,158 @@ def load(nblk=8, stride=3, nfiles=6):
             a, b = max(0, lo // r - 1), min(m, (hi + r - 1) // r)
             for t in range(0, len(H), stride):
                 P = (D * H[t]).astype(np.complex128)[:m]
-                Ps.append(P)
-                Ts.append(np.abs(np.fft.ifft(P) * m)[a:b].max())
+                Ps.append(P); Ts.append(np.abs(np.fft.ifft(P) * m)[a:b].max())
     P = np.array(Ps); T = np.array(Ts)
-    # scale so the registers work in a sane range whatever the capture
     s = np.abs(P).mean()
     return P / s, T / s, m
 
 
-def run(prog, S, ch):
-    """Execute one program over the stream.  ch[c] is [m, npairs]."""
-    npair = ch[0].shape[1]
+def run(prog, S, ch, consts, cv=None):
+    npair = ch[0].shape[1]; m = ch[0].shape[0]
     R = np.zeros((S, npair))
-    m = ch[0].shape[0]
+    if cv is None:
+        cv = [np.full(npair, c) for c in consts]
+    def operand(kind, idx, k):
+        if kind == 0: return R[idx]
+        if kind == 1: return ch[idx][k]
+        return cv[idx]
     for k in range(m):
-        for (dst, op, kind, src) in prog:
-            b = (R[src] if kind == 0 else
-                 (ch[src][k] if kind == 1 else CONSTS[src]))
-            R[dst] = apply_op(op, R[dst], b)
-        np.clip(R, -1e12, 1e12, out=R)
+        for (dst, op, ka, ia, kb, ib) in prog:
+            R[dst] = apply_op(op, operand(ka, ia, k), operand(kb, ib, k))
+        np.clip(R, -1e15, 1e15, out=R)
+        np.nan_to_num(R, copy=False, nan=0.0, posinf=1e15, neginf=-1e15)
     return R
 
 
-def fitness(pred, T):
-    if not np.all(np.isfinite(pred)):
-        return 1e9
-    p = np.abs(pred)
-    if (p <= 0).any():
-        return 1e9
+def fitness(p, T):
+    if not np.all(np.isfinite(p)): return 1e9
+    p = np.abs(p)
+    if (p <= 0).any(): return 1e9
     r = T / p
     lo, hi = np.percentile(r, 0.5), np.percentile(r, 99.5)
-    if lo <= 0:
-        return 1e9
-    return hi / lo
-
-
-def nsrc(kind, S):
-    return S if kind == 0 else (len(CHANNELS) if kind == 1 else len(CONSTS))
+    return 1e9 if lo <= 0 else hi / lo
 
 
 def readout(R, T, S):
-    """Best single register, or ratio of two -- so it can normalise itself."""
     best = 1e9
     for i in range(S):
         f = fitness(R[i], T)
         if f < best: best = f
-        for j in range(S):
-            if i == j: continue
-            with np.errstate(all="ignore"):
-                f = fitness(R[i] / np.where(R[j] == 0, np.nan, R[j]), T)
-            if f < best: best = f
     return best
 
 
-def rand_instr(rng, S):
-    kind = int(rng.integers(3))     # register, channel, or constant
-    return (int(rng.integers(S)), int(rng.integers(len(OPS))), kind,
-            int(rng.integers(nsrc(kind, S))))
+def nsrc(kind, S, nc):
+    return (S, len(CH), nc)[kind]
 
 
-def rand_prog(rng, S, L):
-    return [rand_instr(rng, S) for _ in range(L)]
+def rand_instr(rng, S, nc):
+    ka, kb = int(rng.integers(3)), int(rng.integers(3))
+    return (int(rng.integers(S)), int(rng.integers(len(OPS))),
+            ka, int(rng.integers(nsrc(ka, S, nc))),
+            kb, int(rng.integers(nsrc(kb, S, nc))))
 
 
-def mutate(prog, rng, S):
+def mutate(prog, rng, S, nc):
     p = [list(i) for i in prog]
     i = int(rng.integers(len(p)))
     f = int(rng.integers(4))
     if f == 0: p[i][0] = int(rng.integers(S))
     elif f == 1: p[i][1] = int(rng.integers(len(OPS)))
     elif f == 2:
-        p[i][2] = int(rng.integers(2))
-        p[i][3] = int(rng.integers(S if p[i][2] == 0 else len(CHANNELS)))
-    else: p[i][3] = int(rng.integers(S if p[i][2] == 0 else len(CHANNELS)))
-    return [tuple(i) for i in p]
+        p[i][2] = int(rng.integers(3)); p[i][3] = int(rng.integers(nsrc(p[i][2], S, nc)))
+    else:
+        p[i][4] = int(rng.integers(3)); p[i][5] = int(rng.integers(nsrc(p[i][4], S, nc)))
+    return [tuple(x) for x in p]
+
+
+def goertzel_seed(S, consts):
+    """R0,R1 = a rotating phasor; R2,R3 accumulate the projection onto it.
+    This is the correlation at one lag, which the search should be able to
+    reach and improve on rather than having to invent."""
+    c = consts.index(0.9987954562051724); s = consts.index(0.049067674327418015)
+    one = CH.index("one"); re = CH.index("re"); im = CH.index("im")
+    return [(4, 2, 0, 0, 2, c),      # R4 = R0*cos
+            (5, 2, 0, 1, 2, s),      # R5 = R1*sin
+            (0, 1, 0, 4, 0, 5),      # R0 = R4 - R5
+            (1, 14, 0, 1, 2, c),     # R1 = R1 + R1*cos  (rough)
+            (2, 0, 0, 2, 1, re),     # R2 += re
+            (3, 0, 0, 3, 1, im)][:S + 2]
+
+
+_W = {}
+
+
+def _init(P, T, m, consts, S, L, iters):
+    """Per-worker setup: build the channel views once, not per restart."""
+    ch = [np.ascontiguousarray(x.T) for x in
+          (P.real, P.imag, np.abs(P), np.abs(P) ** 2,
+           np.tile(np.arange(m) / m, (len(P), 1)), np.ones((len(P), m)))]
+    _W.update(ch=ch, T=T, consts=consts, S=S, L=L, iters=iters,
+              cv=[np.full(len(T), c) for c in consts])
+
+
+def _restart(seed):
+    ch, T, consts = _W["ch"], _W["T"], _W["consts"]
+    S, L, iters, cv = _W["S"], _W["L"], _W["iters"], _W["cv"]
+    rng = np.random.default_rng(seed)
+    if seed == 0:
+        prog = goertzel_seed(S, consts)
+        while len(prog) < L: prog.append(rand_instr(rng, S, len(consts)))
+        prog = prog[:L]
+    else:
+        prog = [rand_instr(rng, S, len(consts)) for _ in range(L)]
+    cur = readout(run(prog, S, ch, consts, cv), T, S)
+    stall = 0
+    for _ in range(iters):
+        cand = mutate(prog, rng, S, len(consts))
+        f = readout(run(cand, S, ch, consts, cv), T, S)
+        if f < cur - 1e-9:
+            cur, prog, stall = f, cand, 0
+        else:
+            stall += 1
+            if stall > iters // 3:      # exhausted: jump somewhere new
+                prog = [rand_instr(rng, S, len(consts)) for _ in range(L)]
+                cur = readout(run(prog, S, ch, consts, cv), T, S)
+                stall = 0
+    return cur, prog
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--iters", type=int, default=2000)
-    ap.add_argument("--regs", type=int, default=4)
-    ap.add_argument("--len", type=int, default=8)
-    ap.add_argument("--restarts", type=int, default=20)
+    ap.add_argument("--iters", type=int, default=8000)
+    ap.add_argument("--regs", type=int, default=6)
+    ap.add_argument("--len", type=int, default=10)
+    ap.add_argument("--restarts", type=int, default=30)
+    ap.add_argument("--workers", type=int, default=0)
     a = ap.parse_args()
-
+    consts = [-1.0, -0.5, 0.25, 0.5, 0.7071067811865476, 0.9, 0.99, 1.0, 1.5,
+              2.0, 3.0, 0.9987954562051724, 0.049067674327418015]
     P, T, m = load()
-    ch = [np.ascontiguousarray(x.T) for x in
-          (P.real, P.imag, np.abs(P), np.abs(P) ** 2,
-           np.tile(np.arange(m) / m, (len(P), 1)))]
-    print("%d pairs, m=%d, %d registers, %d instructions" % (len(T), m, a.regs, a.len))
-    print("flops per pair: ~%d against the transform's %d\n"
-          % (a.len * m * 2, 5 * m * int(np.log2(m))))
-    rng = np.random.default_rng(0)
-    best, bprog = 1e9, None
+    print("%d pairs, m=%d, %d registers, %d three-address instructions" %
+          (len(T), m, a.regs, a.len))
+    print("ops: %s" % ", ".join(OPS))
+    print("flops/pair ~%d against the transform's %d\n" % (a.len * m * 2, 5 * m * 10))
+    nw = a.workers or min(os.cpu_count() or 1, a.restarts)
+    print("searching on %d cores, %d restarts x %d mutations\n"
+          % (nw, a.restarts, max(1, a.iters // a.restarts)))
     per = max(1, a.iters // a.restarts)
-    for r in range(a.restarts):
-        prog = rand_prog(rng, a.regs, a.len)
-        cur = readout(run(prog, a.regs, ch), T, a.regs)
-        for _ in range(per):
-            cand = mutate(prog, rng, a.regs)
-            R = run(cand, a.regs, ch)
-            f = readout(R, T, a.regs)
-            if f < cur:
-                cur, prog = f, cand
-        if cur < best:
-            best, bprog = cur, prog
-            print("  restart %2d: bracket width %.3f" % (r, best))
-    print("\nbest bracket width: %.3f" % best)
-    print("(the interpolated statistic, which needs the transform already done,"
-          " is 1.14;\n anything above ~1.2 settles no pairs at our gate)")
+    with mp.Pool(nw, initializer=_init,
+                 initargs=(P, T, m, consts, a.regs, a.len, per)) as pool:
+        best, bprog = 1e9, None
+        for i, (f, prog) in enumerate(
+                pool.imap_unordered(_restart, range(a.restarts))):
+            if f < best:
+                best, bprog = f, prog
+                print("  %4d/%d   bracket width %.4f" % (i + 1, a.restarts, best))
+    print("\nbest bracket width: %.3f   (need <1.2 to settle anything)" % best)
     if bprog:
         print("\nprogram:")
-        for (d, o, kind, s) in bprog:
-            src = ("R%d" % s if kind == 0 else
-                   (CHANNELS[s] if kind == 1 else "%.6g" % CONSTS[s]))
-            print("   R%d = %-8s(R%d, %s)" % (d, OPS[o], d, src))
+        for (d, o, ka, ia, kb, ib) in bprog:
+            def nm(k, i):
+                if k == 0: return "R%d" % i
+                if k == 1: return CH[i]
+                return "%.6g" % consts[i]
+            print("   R%d = %-8s(%s, %s)" % (d, OPS[o], nm(ka, ia), nm(kb, ib)))
 
 
 if __name__ == "__main__":

@@ -261,3 +261,69 @@ exact semantics, which is what lets them use equivalence checking. Searching
 for an APPROXIMATE surrogate replaces that with a statistical criterion, which
 is a weaker signal over a larger space, and closer to symbolic regression than
 to superoptimisation.
+
+## The one number that judges any pre-filter
+
+Any pre-filter, however computed, rejects a pair only when `stat/worst < gate`.
+Since `stat >= worst * truth`, that rejects exactly the pairs with
+`truth < worst * gate`. So the rejection fraction depends on a single property
+of the statistic -- its worst-case recovery -- and on the distribution of the
+true coarse maximum. Measured over 2052 real pairs, that maximum has a
+coefficient of variation of **0.103**, so the gate sits only **1.19x** above
+the median. The resulting curve:
+
+| worst-case recovery | rejects at the 5% gate | at the 1% gate |
+|---:|---:|---:|
+| 0.70 | 1.2% | 9.3% |
+| 0.80 | 26.4% | 62.7% |
+| 0.85 | 53.3% | 81.3% |
+| 0.90 | 75.3% | 92.1% |
+| 0.95 | 88.2% | 96.9% |
+
+There is a cliff between 0.70 and 0.85. A statistic pays for itself when the
+fraction it rejects exceeds its cost, so the design target is:
+
+> **worst-case recovery above ~0.85, at a cost below the rejection it buys.**
+
+Everything measured falls into place against it:
+
+| statistic | cost | worst | rejects | |
+|---|---:|---:|---:|---|
+| Parseval, L1, any cheap feature | 0.04 | ~0.1 | 0% | dead |
+| lag decimation F=8 | 0.13 | 0.39 | 0.6% | dead |
+| lag decimation F=2 | 0.49 | 0.67 | 4.5% | dead |
+| multi-offset F=4 x2 | 0.48 | 0.65 | 1.7% | dead |
+| semi-coherent stack F=2 | 0.94 | 0.97 | ~90% | costs too much |
+| interpolation from the even pass | 0.045 | 0.93-0.97 | 85-91% | ~6x |
+
+Nothing that decimates lags or narrows the band clears 0.85 -- every variant
+lands between 0.24 and 0.67, because both devices trade resolution for cost
+and the cliff is steep. Only a statistic with full lag resolution clears it,
+which is why interpolating from an already-computed transform is the one thing
+that has worked.
+
+## What the literature says about this shape of problem
+
+- **Filter-and-refine with a contractive bound.** The GEMINI framework
+  formalises exactly this: reduce dimensionality, bound the true distance from
+  below, and no candidate is ever falsely dismissed. Its canonical instance --
+  keep the first few DFT coefficients and bound the Euclidean distance by
+  Parseval -- is band-limiting, which is what the coarse pass does; the
+  recovery factors are the contraction constant. Standard practice there is to
+  **cascade several bounds** of increasing tightness and cost, where this
+  filter has only one.
+- **Hierarchical matched filtering** in gravitational-wave searches (Mohanty
+  and Dhurandhar, and the modern subsolar-mass work) builds its hierarchy over
+  *template spacing*. This one builds it over *frequency and lag resolution*.
+  The two axes are independent and could compose.
+- **Semi-coherent searches** and their N^(1/4) sensitivity law are the same
+  trade, with a better exponent because they stack powers rather than complex
+  amplitudes. Measured here: worst case improves from 0.60 to 0.97, but the
+  cost goes from 0.49 to 0.94, so at equal cost plain decimation still wins.
+- **Sparse FFT** is the closest relative -- sublinear recovery of the largest
+  Fourier coefficients by binning into buckets, which is what decimation does.
+  Its guarantees require an approximately k-sparse signal with a small tail,
+  and this regime is the opposite: a dense noise floor with a peak 1.19x above
+  the median. Its bucketing window was tried here and makes things worse
+  (worst case 0.19 against 0.57 without), because narrowing in lag means
+  narrowing in frequency, which throws away band.
