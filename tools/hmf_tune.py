@@ -122,6 +122,7 @@ the accumulation curve than one number, or be built from real references.
     python tools/hmf_tune.py --n 4096 --snr 5.0 --fd 1e-3 --trials 4000
 """
 import argparse
+import os
 import sys
 import time
 
@@ -211,13 +212,63 @@ def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True,
     return (min(live, key=lambda r: r["sec"]) if live else None), rows
 
 
+def retune_cost(table, out, trials=4000, jobs=None, verbose=True):
+    """Re-measure only the COST rows, keeping the FDR rows as they are.
+
+    This is the half that is about your machine.  The FDR rows describe the
+    statistic and travel; the COST rows are wall time on one CPU with one
+    build, so they are the ones worth regenerating locally.
+    """
+    import multiprocessing as mp
+    fdr, cost, head = [], [], []
+    for line in open(table):
+        if line.startswith("#"):
+            head.append(line.rstrip("\n"))
+        elif line.startswith("FDR"):
+            fdr.append(line.rstrip("\n"))
+    jobs = jobs or max(1, (os.cpu_count() or 2) - 2)
+    work, seen = [], set()
+    for ln in fdr:
+        f = ln.split()
+        key = (int(f[1]), int(f[2]), int(f[3]), int(f[4]), float(f[5]),
+               float(f[6]), float(f[7]))
+        if key in seen:
+            continue
+        seen.add(key)
+        work.append((key[0], key[1], key[2], key[3], key[4], key[5], key[6], trials))
+    if verbose:
+        print("re-measuring %d cost cells on %d cores" % (len(work), jobs), flush=True)
+    with mp.Pool(jobs) as pool:
+        rows = list(pool.imap_unordered(_cost_cell, work, chunksize=1))
+    with open(out, "w") as fh:
+        for h in head:
+            fh.write(h + "\n")
+        for ln in fdr:
+            fh.write(ln + "\n")
+        for r in sorted(rows, key=lambda x: (x["band"], x["K"], x["snr"], x["f"])):
+            if "error" in r:
+                continue
+            fh.write("COST %d %d %d %d %.2f %.4f %.1f %.4f\n"
+                     % (r["n"], r["band"], r["U"], r["K"], r["snr"], r["f"],
+                        r["beff_act"], r["sec"] * 1e6))
+    if verbose:
+        print("wrote %s" % out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=4096)
     ap.add_argument("--snr", type=float, default=5.0)
     ap.add_argument("--fd", type=float, default=1e-3)
     ap.add_argument("--trials", type=int, default=1500)
+    ap.add_argument("--retune-cost", metavar="TABLE",
+                    help="re-measure only the COST rows of TABLE for this "
+                         "machine, keeping its FDR rows; writes --out")
+    ap.add_argument("--out", default="tuning.txt")
     a = ap.parse_args()
+    if a.retune_cost:
+        retune_cost(a.retune_cost, a.out, trials=max(a.trials, 2000))
+        return
     print("n=%d snr=%.1f fd=%.0e -- every row is the real filter, not a model\n"
           % (a.n, a.snr, a.fd))
     best, _ = tune(a.n, a.snr, a.fd, trials=a.trials)

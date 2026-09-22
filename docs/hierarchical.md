@@ -637,3 +637,31 @@ COST on any kernel or machine change, FDR on any change to the gate or the
 interpolation. The file carries its CPU, commit, trial count and resolution
 floor, and `MF_TUNING` points at a different one -- so retuning needs no
 rebuild.
+
+### Retuning for your hardware
+
+The COST rows are wall time on one CPU with one build. They are the half worth
+regenerating locally, and doing so needs no rebuild of the library:
+
+```
+python tools/hmf_tune.py --retune-cost python/matchedfilter/tuning.txt \
+                         --out mytuning.txt
+export MF_TUNING=$PWD/mytuning.txt
+```
+
+It keeps the FDR rows and re-measures only the timings, on this machine, with
+the same keying. A few minutes on a many-core box; it parallelises over cells.
+
+The FDR rows should not normally need regenerating -- they describe the
+statistic, not the machine, so they travel. Regenerate them if you change the
+gate, the recovery factors, the interpolation taps or the oversampled grid,
+since those change what is being measured:
+
+```
+python tools/hmf_tune.py --n 4096 --snr 5.0 --fd 1e-3 --trials 20000
+```
+
+Budget ~10^5 detections a cell to resolve `fd = 1e-4`; the shipped table is at
+2x10^4 trials and resolves about 3e-4. Both halves are plain text and the file
+records the CPU, the commit and the trial count it was made at, so a stale
+table is identifiable rather than merely wrong.

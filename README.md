@@ -35,6 +35,11 @@ Every release so far is an alpha, and pip installs a pre-release when that is
 all a project has. Once a stable version exists, getting an alpha will need
 `pip install --pre matchedfilter`.
 
+The hierarchical filter chooses its first-stage configuration from a measured
+tuning table shipped with the package. It is keyed on the caller's reference
+and can be regenerated for your own hardware without rebuilding -- see
+[docs/hierarchical.md](docs/hierarchical.md#the-tuning-table).
+
 Wheels are built for CPython 3.9 to 3.13 on Linux x86-64 (manylinux and
 musllinux) and macOS arm64. Anywhere else pip falls back to the source
 distribution, which needs numpy and a C compiler -- including Linux arm64,
