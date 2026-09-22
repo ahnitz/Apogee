@@ -68,13 +68,26 @@ still differ threefold in dismissal, because they put 85.2% and 94.7% of their
 IN-BAND power below 256 respectively, and that is what sets the correlation
 peak width, hence the scalloping, hence g.  So:
 
-    band  256 -> keyed on f(256)
-    band  512 -> keyed on f(256), f(512)
-    band 1024 -> keyed on f(256), f(512), f(1024)
-    band 2048 -> and so on
+    band m -> keyed on f(m), the accumulated power at the edge,
+              and B_eff(m), the EFFECTIVE BANDWIDTH of the power inside it.
 
-which is a two- or three-dimensional fit per band, not a functional on curves,
-and every feature is something the caller's reference states directly.  At run
+B_eff is the participation ratio of the in-band power, (sum p)^2 / sum p^2, in
+bins.  It is the physical parameter: it sets the correlation peak width, and
+the scalloping is the lag spacing measured against that width.  The extremes
+make it obvious -- all the power in one bin is B_eff = 1, a maximally wide
+peak the coarse grid resolves perfectly; power flat across the band is
+B_eff = m and a peak one sample wide, which the grid misses.
+
+That is two numbers per band, not a functional on curves, and both are stated
+directly by the caller's reference.
+
+It also measures how far off the synthetic family is.  At band 512 every
+make_template reference lands at B_eff 6.8 to 18.8 bins while the captures'
+real reference is at 190.2 -- ten to twenty-seven times broader, a different
+regime, and exactly the direction that explains its 3.4e-3 dismissal against
+their 5.3e-4 to 1.2e-3.  A training family has to span B_eff from about 1 to
+m; this one spans a twentieth of that at the top end and none of it at the
+bottom.  At run
 time each candidate is evaluated at its own features and the cheapest
 admissible one wins.
 
