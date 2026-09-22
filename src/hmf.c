@@ -378,6 +378,13 @@ void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *oversample,int *taps){
 static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a1,
                              float *gout,float *grawout,float *graw1out);
 
+/* Scale on the gate, and the strongest lever there is: it trades trigger
+   rate against dismissal directly, where band and oversample only do so
+   through the statistic.  Read per run, so it applies at once. */
+int ap_hmf_set_gate_margin(ap_hmf_plan *p,float g){
+  if(!p||!(g>0.f)) return -1;
+  p->gate_margin=g; return 0;
+}
 int ap_hmf_set_first_stage(ap_hmf_plan *p,float snr){
   if(!p) return -1;
   p->fs_snr = snr > 0.0f ? snr : 0.0f;   /* <=0 restores the derived level */

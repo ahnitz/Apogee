@@ -13,3 +13,6 @@ recursive-include third_party/highway/hwy *.h *.cc *.h.in
 include third_party/highway/LICENSE
 prune build
 global-exclude *.pyc *.so *.o __pycache__
+
+# The measured tuning tables, read at run time and shipped with the package.
+recursive-include python/matchedfilter *.txt

@@ -133,4 +133,9 @@ setup(
         "matchedfilter._core", sources=[],
         include_dirs=["python/matchedfilter", "src", HWY_INC])],
     cmdclass={"build_ext": BuildExt},
+    # The tuning tables ship with the library and are read at run time.
+    # accuracy.txt describes the algorithm and travels; cost.txt is this
+    # machine's timings and is the one a user regenerates. Both are plain
+    # text so a wheel can be inspected and a local table diffed against it.
+    package_data={"matchedfilter": ["accuracy.txt", "cost.txt"]},
 )

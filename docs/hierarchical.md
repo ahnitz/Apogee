@@ -640,19 +640,21 @@ rebuild.
 
 ### Retuning for your hardware
 
-The COST rows are wall time on one CPU with one build. They are the half worth
-regenerating locally, and doing so needs no rebuild of the library:
+The two tables are separate files because they are different kinds of thing.
+`accuracy.txt` is a property of the ALGORITHM -- the same numbers hold on any
+machine running the same build. `cost.txt` is wall time on one CPU. Only the
+second is worth regenerating locally, and doing so cannot touch the first:
 
 ```
-python tools/hmf_tune.py --retune-cost python/matchedfilter/tuning.txt \
-                         --out mytuning.txt
-export MF_TUNING=$PWD/mytuning.txt
+python tools/hmf_tune.py --retune-cost --out mycost.txt
+export MF_COST=$PWD/mycost.txt
 ```
 
-It keeps the FDR rows and re-measures only the timings, on this machine, with
-the same keying. A few minutes on a many-core box; it parallelises over cells.
+It re-measures the timings at the cells the shipped accuracy table already
+covers. A few minutes on a many-core box; it parallelises over cells.
+`MF_ACCURACY` overrides the other half if you ever need to.
 
-The FDR rows should not normally need regenerating -- they describe the
+The accuracy table should not normally need regenerating -- they describe the
 statistic, not the machine, so they travel. Regenerate them if you change the
 gate, the recovery factors, the interpolation taps or the oversampled grid,
 since those change what is being measured:

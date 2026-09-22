@@ -22,6 +22,8 @@ sides are stored in the layout the correlation loop walks - which measures at
 Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 """
 import os
+import warnings
+
 import numpy as np
 from . import _core
 
@@ -221,6 +223,24 @@ def include_dir():
 
 
 _TUNING = None
+_warned_uncovered = False
+
+
+def _warn_uncovered(n, snr, fd):
+    """Say when the tuning table has nothing for this case."""
+    global _warned_uncovered
+    _warned_uncovered = True
+    t = _load_tuning()
+    ns = sorted({r[0] for r in t["fdr"]})
+    snrs = sorted({r[4] for r in t["fdr"]})
+    warnings.warn(
+        "matchedfilter: the tuning table has no rows for n=%d snr=%.2f "
+        "fd=%.0e (it covers n=%s, snr=%s). Falling back to the compiled "
+        "design table, which is a model rather than a measurement and does "
+        "not promise the false-dismissal budget. Generate coverage with "
+        "tools/hmf_tune.py and point MF_TUNING at it; see "
+        "docs/hierarchical.md." % (n, snr, fd, ns, snrs),
+        RuntimeWarning, stacklevel=3)
 
 
 def _load_tuning(path=None):
@@ -236,11 +256,14 @@ def _load_tuning(path=None):
     global _TUNING
     if _TUNING is not None and path is None:
         return _TUNING
-    if path is None:
-        path = os.environ.get("MF_TUNING") or os.path.join(
-            os.path.dirname(__file__), "tuning.txt")
+    here = os.path.dirname(__file__)
+    paths = [os.environ.get("MF_ACCURACY") or os.path.join(here, "accuracy.txt"),
+             os.environ.get("MF_COST") or os.path.join(here, "cost.txt")]
+    if path is not None:
+        paths = [path]
     fdr, cost, meta = [], {}, {}
-    with open(path) as fh:
+    for one in paths:
+      with open(one) as fh:
         for line in fh:
             line = line.strip()
             if line.startswith("#"):
@@ -251,14 +274,14 @@ def _load_tuning(path=None):
             if not line:
                 continue
             f = line.split()
-            if f[0] == "FDR":
+            if f[0] in ("FDR", "ACC"):
                 fdr.append((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
                             float(f[5]), float(f[6]), float(f[7]), float(f[8])))
             elif f[0] == "COST":
                 cost.setdefault((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
                                  float(f[5])), []).append(
                                      (float(f[6]), float(f[7]), float(f[8])))
-    t = {"fdr": fdr, "cost": cost, "meta": meta, "path": path}
+    t = {"fdr": fdr, "cost": cost, "meta": meta, "paths": paths}
     if path is None or _TUNING is None:
         _TUNING = t
     return t
@@ -412,8 +435,14 @@ class HierarchicalFilter(MatchedFilter):
             except Exception:
                 cfg = None       # a missing or unreadable table is not fatal
         if cfg is None:
-            # nothing measured for this case: fall back to the compiled design
-            # table, which is what the library did before the tuning file
+            # Nothing measured for this case. Fall back to the compiled design
+            # table -- what the library did before there was a tuning file --
+            # but say so. That table is a model, not a measurement, and it does
+            # not promise the fd budget: on the twelve captures it misses 3.7%
+            # against a 0.1% target. Falling back silently would let a caller
+            # believe they had a guarantee they do not have.
+            if self._pending_ref is not None and not _warned_uncovered:
+                _warn_uncovered(self.n, self.snr, self.fd)
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
                                  self.snr, self.fd)
         else:

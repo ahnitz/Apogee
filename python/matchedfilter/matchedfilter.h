@@ -142,6 +142,7 @@ int    ap_hmf_set_reference(ap_hmf_plan *p, const float *power);
    needed.  Pass <=0 to go back to deriving it.  Band, oversample and taps are
    fixed at plan creation and are unaffected. */
 int    ap_hmf_set_first_stage(ap_hmf_plan *p, float snr);
+int    ap_hmf_set_gate_margin(ap_hmf_plan *p, float g);
 
 int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
 int    ap_hmf_set_template(ap_hmf_plan *p, int t, const float *spec);

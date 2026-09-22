@@ -135,7 +135,8 @@ sys.path.insert(0, "tools")
 import hmf_design as D_design                                 # noqa: E402
 
 
-def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None):
+def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None,
+            gate=1.0):
     """Measured (dismissal, seconds-per-pair) for one configuration.
 
     Both numbers come from the real filter.  Injections go into a batch of
@@ -157,6 +158,8 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None):
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
                                band=band, oversample=U, taps=K)
     hf.set_reference(power)
+    if gate != 1.0:
+        hf._ensure().set_gate_margin(float(gate))
     flat.set_templates(H[None, :])
     hf.set_templates(H[None, :])
 
@@ -212,7 +215,17 @@ def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True,
     return (min(live, key=lambda r: r["sec"]) if live else None), rows
 
 
-def retune_cost(table, out, trials=4000, jobs=None, verbose=True):
+def _cpu_name():
+    try:
+        for l in open("/proc/cpuinfo"):
+            if l.startswith("model name"):
+                return l.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def retune_cost(accuracy, out, trials=4000, jobs=None, verbose=True):
     """Re-measure only the COST rows, keeping the FDR rows as they are.
 
     This is the half that is about your machine.  The FDR rows describe the
@@ -220,12 +233,8 @@ def retune_cost(table, out, trials=4000, jobs=None, verbose=True):
     build, so they are the ones worth regenerating locally.
     """
     import multiprocessing as mp
-    fdr, cost, head = [], [], []
-    for line in open(table):
-        if line.startswith("#"):
-            head.append(line.rstrip("\n"))
-        elif line.startswith("FDR"):
-            fdr.append(line.rstrip("\n"))
+    fdr = [l.rstrip("\n") for l in open(accuracy)
+           if l.startswith(("ACC", "FDR"))]
     jobs = jobs or max(1, (os.cpu_count() or 2) - 2)
     work, seen = [], set()
     for ln in fdr:
@@ -241,10 +250,11 @@ def retune_cost(table, out, trials=4000, jobs=None, verbose=True):
     with mp.Pool(jobs) as pool:
         rows = list(pool.imap_unordered(_cost_cell, work, chunksize=1))
     with open(out, "w") as fh:
-        for h in head:
-            fh.write(h + "\n")
-        for ln in fdr:
-            fh.write(ln + "\n")
+        fh.write("# matchedfilter COST table -- microseconds per pair, measured\n")
+        fh.write("# cpu     %s\n" % _cpu_name())
+        fh.write("# trials  %d pure-noise per cell at the search threshold\n#\n"
+                 % trials)
+        fh.write("# n band U K snr f beff us_per_pair\n")
         for r in sorted(rows, key=lambda x: (x["band"], x["K"], x["snr"], x["f"])):
             if "error" in r:
                 continue
@@ -261,13 +271,16 @@ def main():
     ap.add_argument("--snr", type=float, default=5.0)
     ap.add_argument("--fd", type=float, default=1e-3)
     ap.add_argument("--trials", type=int, default=1500)
-    ap.add_argument("--retune-cost", metavar="TABLE",
-                    help="re-measure only the COST rows of TABLE for this "
-                         "machine, keeping its FDR rows; writes --out")
-    ap.add_argument("--out", default="tuning.txt")
+    ap.add_argument("--retune-cost", nargs="?", const="", metavar="ACCURACY",
+                    help="re-measure the cost table for this machine, using "
+                         "the shipped accuracy table's cells; writes --out")
+    ap.add_argument("--out", default="cost.txt")
     a = ap.parse_args()
-    if a.retune_cost:
-        retune_cost(a.retune_cost, a.out, trials=max(a.trials, 2000))
+    if a.retune_cost is not None:
+        acc = a.retune_cost or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "python", "matchedfilter", "accuracy.txt")
+        retune_cost(acc, a.out, trials=max(a.trials, 2000))
         return
     print("n=%d snr=%.1f fd=%.0e -- every row is the real filter, not a model\n"
           % (a.n, a.snr, a.fd))
@@ -435,17 +448,18 @@ def make_ref(n, m, f, beff, tol=0.02):
 
 
 def _fdr_cell(job):
-    n, m, U, K, snr, f, be, trials = job
+    n, m, U, K, snr, f, be, trials, gate = job
     try:
         ref = make_ref(n, m, f, be)
-        dm, det, sec = measure(n, m, U, K, snr, trials, power=ref)
-        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be,
+        dm, det, sec = measure(n, m, U, K, snr, trials, power=ref, gate=gate)
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
                     beff_act=beff_of(ref, m), dismissal=dm, detected=det, sec=sec)
     except Exception as e:
-        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, error=str(e))
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
+                    error=str(e))
 
 
-def measure_cost(n, band, U, K, snr, trials, power, batch=64):
+def measure_cost(n, band, U, K, snr, trials, power, batch=64, gate=1.0):
     """Seconds per pair on NOISE at the operating threshold.
 
     Cost is dominated by how often the gate opens, and on real data that is a
@@ -461,6 +475,8 @@ def measure_cost(n, band, U, K, snr, trials, power, batch=64):
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
                                band=band, oversample=U, taps=K)
     hf.set_reference(power)
+    if gate != 1.0:
+        hf._ensure().set_gate_margin(float(gate))
     hf.set_templates(H[None, :])
     sec, npair, fired = 0.0, 0, 0
     for _ in range((trials + batch - 1) // batch):
@@ -475,11 +491,12 @@ def measure_cost(n, band, U, K, snr, trials, power, batch=64):
 
 
 def _cost_cell(job):
-    n, m, U, K, snr, f, be, trials = job
+    n, m, U, K, snr, f, be, trials, gate = job
     try:
         ref = make_ref(n, m, f, be)
-        sec, rate = measure_cost(n, m, U, K, snr, trials, ref)
-        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be,
+        sec, rate = measure_cost(n, m, U, K, snr, trials, ref, gate=gate)
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
                     beff_act=beff_of(ref, m), sec=sec, rate=rate)
     except Exception as e:
-        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, error=str(e))
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
+                    error=str(e))
