@@ -517,3 +517,35 @@ def _cost_cell(job):
     except Exception as e:
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
                     nt=locals().get("nt"), nd=locals().get("nd"), error=str(e))
+
+
+def measure_tc(n, band, U, K, snr, power, fd, trials=12000, lo=0.60, hi=1.25,
+               tol=0.015):
+    """The gate at which measured dismissal reaches `fd`, and the g it implies.
+
+    hmf_tc supplies this from a Rice model. The gate decomposes exactly as
+    t_c = T*sqrt(f_eff) - c(f_eff, fd) -- the SNR dependence is analytic and
+    only the noise allowance c needs measuring -- so this measures the one
+    quantity that is not already arithmetic. Bisects the gate scale, since
+    that is the only handle the library exposes on an absolute gate.
+    """
+    while hi - lo > tol:
+        mid = 0.5 * (lo + hi)
+        dm, det, _ = measure(n, band, U, K, snr, trials, power=power, gate=mid)
+        if det and dm <= fd:
+            lo = mid            # still safe: push the gate up
+        else:
+            hi = mid
+    return lo
+
+
+def _tc_cell(job):
+    n, m, U, K, snr, f, be, fd, trials = job
+    try:
+        ref = make_ref(n, m, f, be)
+        scale = measure_tc(n, m, U, K, snr, ref, fd, trials=trials)
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, fd=fd,
+                    beff_act=beff_of(ref, m), gate_scale=scale)
+    except Exception as e:
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, fd=fd,
+                    error=str(e))
