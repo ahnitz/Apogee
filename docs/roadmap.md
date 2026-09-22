@@ -108,8 +108,33 @@ built to a hardcoded `POWER_FRAC`, which the source concedes: "the cost of a
 mismatch is efficiency, not accuracy". At runtime, C already has
 `measure_recovery()` for g and `hmf_threshold()` for t_c from `f*g^2`.
 
-**What is missing.** The predicted trigger rate at a candidate gate, the cost
-model constants, and the lifetime change -- band-dependent allocation
+**Status: mechanism built, model blocked.** `select_band` + `probe_recovery` +
+`probe_rate` are in and work -- every candidate band is probed, its recovery
+measured, its noise rate measured through the real transform, and the
+band-dependent state rebuilt through `alloc_band_state`. It is off by default
+(`MF_AUTOBAND=1`, `MF_BAND_DIAG=1`) because it picks wrong, and the reason is
+structural rather than a modelling slip:
+
+| band | reference (sets the gate) | templates (set the noise) |
+|---|---:|---:|
+| 256 | 0.7956 | 0.3230 |
+| 512 | **0.9335** | **0.4517** |
+| 1024 | 0.9875 | 0.7089 |
+| 2048 | 1.0000 | 1.0000 |
+
+The gate is calibrated on the signal's band fraction (`ref_f`); the coarse
+statistic's noise comes from the filter's. They diverge 2.1x at band 512, so a
+probe driven by the reference alone sets a gate far too high there, predicts
+almost no triggers, and picks it -- the run then triggers 8.75% and loses
+110/842 instead of 31.
+
+The templates cannot be consulted at `set_reference`, because they are stored
+as coarse spectra *at the chosen band*. Completing this needs either the
+caller's template power passed alongside the reference, or deferring selection
+to the first run while keeping full-band template power to re-ingest from.
+Both are API changes, and that is the remaining decision.
+
+**Also missing.** The cost -- band-dependent allocation
 (`ap_mf_create(band,...)`, `cf`, `ct0/ct1`, `cd`, the scratch buffers) has to
 move out of `ap_hmf_create` and into `set_reference`, or the reference has to
 be accepted at construction. Templates ingested before the reference would need

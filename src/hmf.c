@@ -432,8 +432,58 @@ static double coarse_units(size_t m,size_t n){
 /* Probe the recovery factors at a candidate band without building the
    template storage or the coarse matched-filter plan, neither of which
    measure_recovery touches. */
+/* Fraction of pure-noise pairs whose coarse maximum clears `gate`, measured by
+   running noise through the real transform at this band rather than through an
+   extreme-value formula.  The formula gets the shape right and the scale wrong:
+   the lags are not independent, the window covers ~89% of them, and the gate it
+   is handed comes from the reference rather than from each template.  All three
+   are band-dependent, which is exactly what breaks the ordering. */
+static double probe_rate(ap_hmf_plan *p,const float *power,size_t m,int U,
+                         double gate,int ntrial){
+  const size_t n=p->n;
+  double tot=0; for(size_t k=0;k<n;k++) tot+= power[k]>0?power[k]:0;
+  if(tot<=0||gate<=0) return 1.0;
+  unsigned long long rs=0xD1B54A32D192ED03ULL;
+  int hit=0;
+  for(int r=0;r<ntrial;r++){
+    for(size_t k=0;k<m;k++){
+      rs^=rs<<13; rs^=rs>>7; rs^=rs<<17;
+      double u1=((rs>>11)*(1.0/9007199254740992.0))+1e-12;
+      rs^=rs<<13; rs^=rs>>7; rs^=rs<<17;
+      double u2=(rs>>11)*(1.0/9007199254740992.0);
+      const double rad=sqrt(-2*log(u1));
+      /* the product spectrum under noise: amplitude from the reference, phase
+         uniform, normalised so the FULL statistic has unit-variance parts */
+      const double amp=sqrt(power[k]>0?power[k]:0)/sqrt(tot);
+      p->prod[2*k]  =(float)(amp*rad*cos(2*M_PI*u2));
+      p->prod[2*k+1]=(float)(amp*rad*sin(2*M_PI*u2));
+    }
+    ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
+    if(U>1){
+      for(size_t k=0;k<m;k++){
+        double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
+        float xr=p->prod[2*k],xi=p->prod[2*k+1];
+        p->shift[2*k]  =(float)(xr*c-xi*sn);
+        p->shift[2*k+1]=(float)(xr*sn+xi*c);
+      }
+      ap_fft(p->cf,p->shift,p->cod,AP_BACKWARD);
+    }
+    double best=0;
+    for(size_t j=0;j<m;j++){
+      double e=(double)p->cev[2*j]*p->cev[2*j]+(double)p->cev[2*j+1]*p->cev[2*j+1];
+      if(e>best) best=e;
+      if(U>1){ double o=(double)p->cod[2*j]*p->cod[2*j]+(double)p->cod[2*j+1]*p->cod[2*j+1];
+               if(o>best) best=o; }
+    }
+    if(sqrt(best)>=gate) hit++;
+  }
+  return (double)hit/(double)ntrial;
+}
+
 static int probe_recovery(ap_hmf_plan *p,const float *power,size_t m,int U,int K,
-                          float *g,float *graw,float *graw1){
+                          float T,float fd,double f,
+                          float *g,float *graw,float *graw1,
+                          double *tc_out,double *rate_out){
   const size_t n=p->n;
   size_t m0=p->m; int U0=p->U,K0=p->K;
   ap_plan *cf0=p->cf; float *sh0=p->shift,*s20=p->shift2,*pr0=p->prod,
@@ -461,6 +511,10 @@ static int probe_recovery(ap_hmf_plan *p,const float *power,size_t m,int U,int K
         a1[2*k]=(float)(re*c); a1[2*k+1]=(float)(re*sn);
       }
       measure_recovery(p,0,a0,a1,g,graw,graw1);
+      /* the gate this band would run at, then how often noise clears it */
+      const double tc=hmf_threshold((float)(f*(double)(*g)*(double)(*g)),T,fd);
+      *tc_out=tc;
+      *rate_out=probe_rate(p,power,m,U,tc,64);
       rc=0;
     }
   }
@@ -483,17 +537,8 @@ static int select_band(ap_hmf_plan *p,const float *power,size_t *bm,int *bu){
     const double f=lo/tot;
     if(f<=0.0) continue;
     for(int U=1;U<=2;U++){
-      float g,graw,graw1;
-      if(probe_recovery(p,power,m,U,p->K,&g,&graw,&graw1)) continue;
-      const double feff=f*(double)g*(double)g;
-      const double tc=hmf_threshold((float)feff,T,p->fd);
-      /* how often the gate lets a pair through, on noise: the coarse
-         statistic keeps a fraction f of a unit-variance band, and the maximum
-         over the lag grid is the usual extreme-value form */
-      double p1=exp(-(tc*tc)/(2.0*f));
-      if(p1>1.0) p1=1.0;
-      double rate=1.0-pow(1.0-p1,(double)(m*(size_t)U));
-      if(rate<0) rate=0; if(rate>1) rate=1;
+      float g,graw,graw1; double tc=0,rate=1;
+      if(probe_recovery(p,power,m,U,p->K,T,p->fd,f,&g,&graw,&graw1,&tc,&rate)) continue;
       const double cu=coarse_units(m,n);
       const double cost=cu*(1.0+HMF_PODD*(U-1))+HMF_RECON*rate;
       if(cost<best){ best=cost; *bm=m; *bu=U; found=1; }
@@ -513,18 +558,29 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
      coarse spectra at the current band, so re-choosing would invalidate them.
      Every caller sets the reference first, which is also the documented
      order. */
-  /* OFF by default: the mechanism is right and the cost model is not yet.
-     The rate term mis-orders bands against measurement -- it predicts
-     2.9%/13.9%/1.6% at m=512/1024/2048 where the captures measure
-     8.75%/1.46%/0.82%. The reason is visible in MF_BAND_DIAG: measure_recovery
-     returns g=1.000 at m=512, correctly, because a narrower band widens the
-     correlation peak and the lag grid then resolves it perfectly. So f*g^2
-     comes out near-identical at 512 and 1024 (0.9335 against 0.9216), the
-     table hands back almost the same gate, and the model sees no reason to
-     prefer the wider band -- while measurement says it triggers six times
-     less. Something real is missing from the rate, most likely that the
-     band-limiting loss degrades the statistic in a way g does not capture.
-     Enable with MF_AUTOBAND=1 to experiment. */
+  /* OFF by default, and the reason is a structural one worth stating.
+     
+     The mechanism below works: it probes every candidate band, measures the
+     recovery and the noise rate through the real transform at that band, costs
+     them, and rebuilds. What it cannot do is get the answer right, because the
+     two quantities the cost depends on come from different places:
+     
+       the GATE is calibrated on the SIGNAL's band fraction   (ref_f, line ~866)
+       the NOISE comes from the FILTER's band fraction        (the templates)
+     
+     and those diverge. On the captures, band 512 holds 93.4% of the
+     reference's power but only 45.2% of the templates' -- a factor 2.1. So a
+     probe driven by the reference alone sets a gate far too high for a narrow
+     band, predicts almost no triggers there, and picks it; the run then
+     triggers 8.75% and loses 110 of 842.
+     
+     The templates are not ingested when set_reference runs, and cannot be:
+     they are stored as coarse spectra AT the chosen band, so the band has to
+     be fixed first. Completing this needs either the caller's template power
+     at set_reference, or deferring selection to the first run and keeping the
+     full-band template power to re-ingest from. Both are API changes.
+     
+     Enable with MF_AUTOBAND=1 and MF_BAND_DIAG=1 to see the candidate table. */
   { const char *e=getenv("MF_AUTOBAND");
     if(p->ntpow==0 && e && atoi(e)!=0){
       size_t bm=p->m; int bu=p->U;
