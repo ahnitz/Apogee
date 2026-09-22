@@ -122,33 +122,28 @@ structural rather than a modelling slip:
 | 1024 | 0.9875 | 0.7089 |
 | 2048 | 1.0000 | 1.0000 |
 
-The gate is calibrated on the signal's band fraction (`ref_f`); the coarse
-statistic's noise comes from the filter's. They diverge 2.1x at band 512, so a
-probe driven by the reference alone sets a gate far too high there, predicts
-almost no triggers, and picks it -- the run then triggers 8.75% and loses
-110/842 instead of 31.
+**The cause is a probe fidelity bug, not a missing input.** An earlier reading
+of this blamed a divergence between the reference and the filter's own power
+(0.9335 against 0.4517 at band 512) and concluded the templates were needed.
+That was wrong. What governs both the signal captured and the noise admitted is
+the distribution of the *reconstructed SNR*, which is `refpow * tpow` -- the
+product the tap design already uses -- and on the captures that is **0.9340 at
+band 512 against the reference's 0.9335**. The reference alone is sufficient;
+the filter's own fraction was never the relevant number.
 
-The reference is *deliberately* not the filter's power -- that is the whole
-reason `set_reference` exists. pycbc's `_set_engine_reference` builds it from
-the reference SNR series' own spectrum and says why: "0.30 of the filter's own
-power sits below 256 Hz against 0.927 of the SNR it produces". The gate needs
-the signal distribution and the noise needs the filter distribution, and for a
-FIR ratio filter those are different objects.
+The real fault is that the probe does not reproduce the gate the run will use:
 
-**This does not need an API change.** The filter distribution is already inside
-the library: `p->full` stores every template at full length. What is missing is
-only that `tpow` accumulates over the band (`for k<m`) rather than over n, and
-that selection happens before any template is seen. The complete fix is:
+| | probe | run |
+|---|---|---|
+| band 512 | g = 0.9539, t_c = 3.715 | **g = 0.9979, gate = 4.237** |
+| band 1024 | g = 0.9709, t_c = 4.246 | **g = 0.9995, gate = 4.787** |
 
-1. accumulate template power over the full n at ingest -- band-independent, one
-   n-float array;
-2. defer the joint selection to the first run, when both distributions are
-   known;
-3. on a band change, re-derive `ct0`/`ct1` from the templates the full plan
-   already holds, so the caller never re-uploads. pycbc caches its uploads
-   (`_ap_loaded`), so a rebuild that demanded re-ingest would be wrong.
-
-That closes it entirely within `hmf.c` plus an accessor on the full plan.
+`g` comes back low, so `t_c` is low, so the modelled rate is far too high --
+and by a band-dependent factor, which is exactly what inverts the ordering. At
+least one cause is concrete: `probe_recovery` is handed `p->K`, the tap count
+chosen *before* selection, where a run at that band uses its own. Making the
+probe compute what the run computes is the remaining work, and it is a bug fix
+rather than a design change.
 
 The lifetime part is already done: `alloc_band_state`/`free_band_state` own
 everything sized by the band, and `set_reference` rebuilds through them.

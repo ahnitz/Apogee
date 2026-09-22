@@ -558,29 +558,27 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
      coarse spectra at the current band, so re-choosing would invalidate them.
      Every caller sets the reference first, which is also the documented
      order. */
-  /* OFF by default, and the reason is a structural one worth stating.
+  /* OFF by default: the probe does not yet reproduce the gate the run uses.
      
-     The mechanism below works: it probes every candidate band, measures the
-     recovery and the noise rate through the real transform at that band, costs
-     them, and rebuilds. What it cannot do is get the answer right, because the
-     two quantities the cost depends on come from different places:
+     select_band probes each candidate band, measures its recovery and its
+     noise rate through the real transform, costs them and rebuilds. The
+     mechanism is right; the probe is not faithful enough. Measured against a
+     run at the same band, g comes back low -- 0.9539 against 0.9979 at band
+     512, 0.9709 against 0.9995 at 1024 -- so t_c is low, so the modelled rate
+     is much too high, and by a band-dependent factor that inverts the
+     ordering. Enabling it costs 110/842 against 31.
      
-       the GATE is calibrated on the SIGNAL's band fraction   (ref_f, line ~866)
-       the NOISE comes from the FILTER's band fraction        (the templates)
+     One cause is concrete: probe_recovery is handed p->K, the tap count
+     chosen before selection, while a run at that band uses its own.
      
-     and those diverge. On the captures, band 512 holds 93.4% of the
-     reference's power but only 45.2% of the templates' -- a factor 2.1. So a
-     probe driven by the reference alone sets a gate far too high for a narrow
-     band, predicts almost no triggers there, and picks it; the run then
-     triggers 8.75% and loses 110 of 842.
+     Note what is NOT wrong: the reference is a sufficient input. Both the
+     signal captured and the noise admitted are governed by the distribution
+     of the reconstructed SNR, refpow*tpow -- the product the tap design
+     already uses -- and that is 0.9340 at band 512 against the reference's
+     0.9335. An earlier reading blamed the filter's own band fraction (0.4517)
+     and concluded the templates were needed at set_reference; that was wrong.
      
-     The templates are not ingested when set_reference runs, and cannot be:
-     they are stored as coarse spectra AT the chosen band, so the band has to
-     be fixed first. Completing this needs either the caller's template power
-     at set_reference, or deferring selection to the first run and keeping the
-     full-band template power to re-ingest from. Both are API changes.
-     
-     Enable with MF_AUTOBAND=1 and MF_BAND_DIAG=1 to see the candidate table. */
+     MF_AUTOBAND=1 with MF_BAND_DIAG=1 prints the candidate table. */
   { const char *e=getenv("MF_AUTOBAND");
     if(p->ntpow==0 && e && atoi(e)!=0){
       size_t bm=p->m; int bu=p->U;
