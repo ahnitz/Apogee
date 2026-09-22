@@ -237,8 +237,10 @@ class HierarchicalFilter(MatchedFilter):
     ``snr`` is the |rho| of the weakest signal that must be kept; ``fd`` is the
     tolerated false-dismissal probability for such a signal.  Lowering either
     costs speed, because the gate has to open wider.  Band, oversampling and tap
-    count come from a compiled-in measured table - matchedfilter does not autotune -
-    and can be pinned with ``band`` / ``oversample`` / ``taps`` for testing.
+    count come from a compiled-in measured table - matchedfilter does not tune the
+    gate against your data - and can be pinned with ``band`` / ``oversample`` /
+    ``taps`` for testing.  How the work is *arranged*, on the other hand, is
+    chosen here and not by the caller: see :meth:`run_series`.
     """
 
     def __init__(self, n, ndata=1, ntemplates=1, snr=5.5, fd=1e-2,
@@ -324,6 +326,16 @@ class HierarchicalFilter(MatchedFilter):
         arrays ``(index, value, magnitude)`` of that shape -- which skips
         assembling the structured array, a real cost here because a whole
         segment's blocks come back at once.
+
+        Give this as much of the series as is available.  Blocks are filtered
+        several at a time, because D data segments against T templates is a
+        symmetric product and one segment against a large bank is the worst
+        shape to hand the kernel -- the bank gets streamed once per segment.
+        The grouping is chosen internally from the transform length, breaks
+        wherever consecutive blocks stop sharing a window, and cannot change
+        any result; it is worth 1.17x at 418 templates and nothing at 37.
+        Calling once per block, as an earlier version of the caller did,
+        forfeits it.
 
         The returned arrays are the plan's own buffers and the next call
         overwrites them.  Copy anything that has to outlive the call.

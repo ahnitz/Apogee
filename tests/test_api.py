@@ -14,6 +14,7 @@ identity.
 """
 import time
 
+import os
 import numpy as np
 import pytest
 
@@ -371,6 +372,43 @@ def test_run_series_matches_block_by_block():
                       window=(int(ws[b]), int(we[b])))
         np.testing.assert_array_equal(got["index"][b, :, 0], want["index"][0, :, 0])
         np.testing.assert_array_equal(got["value"][b, :, 0], want["value"][0, :, 0])
+
+
+def test_run_series_grouping_is_invisible():
+    """How many blocks are filtered together must not change any output.
+
+    run_series picks a data-batch size itself, because one segment against a
+    large bank is the worst shape to hand the kernel.  That choice is a
+    performance decision and nothing else: the grouped result has to be
+    bit-identical to filtering one block at a time, including where a run of
+    blocks is broken by the ragged windows at a segment's edges.
+    """
+    n, nseries, ntaps, nt = 4096, 1 << 16, 451, 6
+    rng = np.random.default_rng(3)
+    power = inspiral_power(n)
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+    ser = coloured_series(nseries, -7 / 3.0, rng)
+    starts, ws, we = overlap_save_layout(nseries, n, ntaps)
+    assert len(set(zip(map(int, ws), map(int, we)))) > 1, "need ragged windows"
+
+    def go(group):
+        old = os.environ.get("MF_DGROUP")
+        os.environ["MF_DGROUP"] = str(group)
+        try:
+            hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-2)
+            hf.set_reference(power)
+            hf.set_templates(H)
+            r = hf.run_series(ser, starts, ws, we, binsize=n, threshold=0.0)
+            return r["index"].copy(), r["value"].copy()
+        finally:
+            if old is None: del os.environ["MF_DGROUP"]
+            else: os.environ["MF_DGROUP"] = old
+
+    bi, bv = go(1)
+    for group in (2, 3, 8, 16):
+        gi, gv = go(group)
+        np.testing.assert_array_equal(gi, bi)
+        np.testing.assert_array_equal(gv, bv)
 
 
 @pytest.mark.xfail(

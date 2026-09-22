@@ -68,6 +68,7 @@ struct ap_hmf_plan {
   float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
   const float **dspec;        /* [nd]       caller's full spectra, ingested lazily */
   char *dready;               /* [nd]       1 once ingested into the full plan  */
+  int dgroup;                 /* data segments filtered together; see create */
   float *ct0, *ct1;           /* [nt][2m]   coarse templates: even, half-shifted*/
   float *fpow;                /* [nt]       band power fraction per template    */
   /* Reference SNR distribution, or ref_on=0 to measure per template.  The
@@ -86,7 +87,7 @@ struct ap_hmf_plan {
      per template, produced alongside the even pass; ilo/ihi bound its ratio to
      the true combined maximum.  See docs/hierarchical.md. */
   float *ihlo, *ihhi;         /* [2*(2*IK+1)] complex taps, the two offsets */
-  float *ibuf;                /* [nt] */
+  float *ibuf;                /* [nd*nt] */
   /* The interpolation taps are designed against the spectral shape of the
      product the coarse pass forms, |D|^2 |T|^2.  Neither factor may be
      assumed: the reference supplies the first and the caller's templates the
@@ -94,7 +95,7 @@ struct ap_hmf_plan {
   float *refpow, *tpow; int ntpow, taps_stale;
   float ilo, ihi; int ibrk, incand;
   float *tcbuf,*rawbuf,*evenbuf; /* [nt] per-template gates, derived once a run */
-  ap_peak *cebuf;             /* [nt] even coarse maxima for one data segment */
+  ap_peak *cebuf;             /* [nd*nt] even coarse maxima, whole batch */
   int *firebuf;               /* [nt] which templates fired, for one segment */
   long pairs, trig;
   /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
@@ -177,16 +178,38 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   ap_hmf_plan *p=calloc(1,sizeof(*p));
   if(!p) return NULL;
   p->n=n; p->m=band; p->U=oversample; p->K=taps;
-  p->nd=ndata; p->nt=ntmpl; p->snr=snr; p->fd=fd;
-  p->full  =ap_mf_create(n,ndata,ntmpl);
-  p->coarse=ap_mf_create(band,ndata,2*ntmpl);
+  /* How many data segments to filter together.
+   *
+   * D x T is symmetric and the pair loop tiles both axes, so what matters is
+   * the SHAPE of a batch, not its size.  One data segment against a large bank
+   * is the worst shape there is: the coarse bank is streamed once per segment,
+   * and at 418 templates that is 6.8 MB for 418 pairs.  Filtering several
+   * segments together amortises it -- measured 1.52 to 1.30 us a pair, 1.17x,
+   * at that shape, and flat below ~128 templates where the bank stays in
+   * cache.  Eight is where it stops improving; sixteen is never better and
+   * costs more spectra to hold.
+   *
+   * It is a plain win at every shape measured, so there is no size rule: the
+   * only bound is what the extra spectra cost, which matters at long
+   * transforms.  The caller should not have to know any of this, which is why
+   * it is here and not in the API -- hand the filter as much data as is
+   * available and let it choose the arrangement. */
+  int grp = 8;
+  { const char *e=getenv("MF_DGROUP"); if(e){ int v=atoi(e); if(v>0) grp=v; } }
+  while(grp>1 && (size_t)grp*2*n*sizeof(float) > (size_t)4*1024*1024) grp>>=1;
+  p->dgroup=grp;
+  const int ndi = ndata>grp ? ndata : grp;
+  p->dgroup=grp;
+  p->nd=ndi; p->nt=ntmpl; p->snr=snr; p->fd=fd;
+  p->full  =ap_mf_create(n,ndi,ntmpl);
+  p->coarse=ap_mf_create(band,ndi,2*ntmpl);
   p->cf      =ap_create(band);
   p->full_fft=ap_create(n);
   p->fwd =ap_alloc64(2*n*sizeof(float));
   p->spec=ap_alloc64(2*n*sizeof(float));
-  p->cd  =ap_alloc64((size_t)ndata*2*band*sizeof(float));
-  p->dspec=calloc((size_t)ndata,sizeof(*p->dspec));
-  p->dready=calloc((size_t)ndata,1);
+  p->cd  =ap_alloc64((size_t)ndi*2*band*sizeof(float));
+  p->dspec=calloc((size_t)ndi,sizeof(*p->dspec));
+  p->dready=calloc((size_t)ndi,1);
   p->ct0 =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
   p->ct1 =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
   p->fpow=calloc((size_t)ntmpl,sizeof(float));
@@ -202,11 +225,11 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->tcbuf=calloc((size_t)ntmpl,sizeof(float));
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
-  p->cebuf=calloc((size_t)ntmpl,sizeof(ap_peak));
+  p->cebuf=calloc((size_t)ndi*ntmpl,sizeof(ap_peak));
   p->firebuf=calloc((size_t)ntmpl,sizeof(int));
   p->ihlo=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
   p->ihhi=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
-  p->ibuf=calloc((size_t)ntmpl,sizeof(float));
+  p->ibuf=calloc((size_t)ndi*ntmpl,sizeof(float));
   p->refpow=calloc(band?band:1,sizeof(float));
   p->tpow=calloc(band?band:1,sizeof(float));
   p->taps_stale=1;
@@ -729,26 +752,36 @@ int ap_hmf_run_series(ap_hmf_plan *p,
   if(t0<0||t0+nt>p->nt) return -1;
   const size_t n=p->n;
   int total=0;
-  for(int b=0;b<nblocks;b++){
-    /* Forward transform this block.  Short tails are zero-padded, which is what
-       the caller's layout already assumes for the final block of a segment. */
-    const size_t s0=start[b];
-    size_t have = s0<nseries ? nseries-s0 : 0;
-    if(have>n) have=n;
-    if(have) memcpy(p->fwd,series+2*s0,2*have*sizeof(float));
-    if(have<n) memset(p->fwd+2*have,0,2*(n-have)*sizeof(float));
-    ap_fft(p->full_fft,p->fwd,p->spec,AP_FORWARD);
-    /* pycbc's inverse is unnormalised and so is matchedfilter's, so the caller's
-       convention of pre-dividing the block spectrum by n is preserved here. */
-    { const float inv=1.0f/(float)n;
-      for(size_t k=0;k<2*n;k++) p->spec[k]*=inv; }
-    if(ap_hmf_set_data(p,0,p->spec)) return -1;
-    size_t nb=ap_mf_nbins(p->full,binsize,win_start[b],win_end[b]);
-    int r=ap_hmf_run(p,0,1,t0,nt,binsize,threshold,
-                     peaks+(size_t)b*nt*nb,counts?counts+(size_t)b*nt:NULL,
-                     win_start[b],win_end[b]);
+  /* Filter several blocks together where they share a window.  Blocks differ
+     only at a segment's edges, so runs of equal windows are long. */
+  for(int b0=0;b0<nblocks;){
+    int g=1;
+    while(g<p->dgroup && b0+g<nblocks
+          && win_start[b0+g]==win_start[b0] && win_end[b0+g]==win_end[b0]) g++;
+    for(int j=0;j<g;j++){
+      const size_t s0=start[b0+j];
+      size_t have = s0<nseries ? nseries-s0 : 0;
+      if(have>n) have=n;
+      if(have) memcpy(p->fwd,series+2*s0,2*have*sizeof(float));
+      if(have<n) memset(p->fwd+2*have,0,2*(n-have)*sizeof(float));
+      ap_fft(p->full_fft,p->fwd,p->spec,AP_FORWARD);
+      /* pycbc's inverse is unnormalised and so is matchedfilter's, so the
+         caller's convention of pre-dividing the block spectrum by n is kept. */
+      { const float inv=1.0f/(float)n;
+        for(size_t k=0;k<2*n;k++) p->spec[k]*=inv; }
+      if(ap_hmf_set_data(p,j,p->spec)) return -1;
+      /* set_data keeps the caller's pointer, but p->spec is reused for the
+         next block, so the full spectrum has to be ingested now. */
+      if(ap_mf_set_data(p->full,j,p->spec)) return -1;
+      p->dready[j]=1;
+    }
+    size_t nb=ap_mf_nbins(p->full,binsize,win_start[b0],win_end[b0]);
+    int r=ap_hmf_run(p,0,g,t0,nt,binsize,threshold,
+                     peaks+(size_t)b0*nt*nb,counts?counts+(size_t)b0*nt:NULL,
+                     win_start[b0],win_end[b0]);
     if(r<0) return -1;
     total+=r;
+    b0+=g;
   }
   return total;
 }
@@ -824,12 +857,12 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   float minev=eveng[0];
   for(int t=1;t<nt;t++) if(eveng[t]<minev) minev=eveng[t];
   int total=0;
+  { unsigned long long _eb = p->prof ? ap_ticks() : 0;
+    if(ap_mf_run(p->coarse,d0,nd,t0,nt,cspan,minev,p->cebuf,NULL,
+                 cstart,cend)<0) return -1;
+    if(p->prof) p->c_even += ap_ticks()-_eb; } /* batched: charged to the batch */
   for(int d=0;d<nd;d++){
     const float *Dc=p->cd+(size_t)(d0+d)*2*m;
-    unsigned long long _eb = p->prof ? ap_ticks() : 0;
-    if(ap_mf_run(p->coarse,d0+d,1,t0,nt,cspan,minev,p->cebuf,NULL,
-                 cstart,cend)<0) return -1;
-    if(p->prof) p->c_even += ap_ticks()-_eb;   /* batched: charged to the segment */
     int nfire=0;
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
@@ -855,7 +888,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * odd half would have found. */
       const float even_gate = eveng[t];
       unsigned long long _t0 = p->prof ? ap_ticks() : 0;
-      ce = p->cebuf[t];
+      ce = p->cebuf[(size_t)d*nt+t];
       if(ce.index>=0 && ce.magnitude<even_gate) ce.index=-1;   /* per-template gate */
       if(ce.index<0){
         if(getenv("MF_HMF_TRACE") && p->pairs<6)
@@ -871,7 +904,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
          pair it cannot settle still gets the transform, so the reported
          triggers are unchanged. */
       if(p->ibrk && U>1){
-        const float S=p->ibuf[t];
+        const float S=p->ibuf[(size_t)d*nt+t];
         float lower=S/p->ihi;
         if(ce.magnitude>lower) lower=ce.magnitude;   /* exact, and free */
         if(lower>=gate){ fire=1; p->nbrk_fire++; goto verdict; }

@@ -432,3 +432,42 @@ Per-pair only; nothing here relates one template to another.
   each residue class of lags for free once stage A is done, but that sums one
   signal lag against N1 noise lags: it rejects 20% of noise pairs and saves
   only stage B on those.
+
+## Batch shape
+
+D data segments against T templates is a symmetric product: the pair loop
+tiles both axes, so a 24x16 batch and a 16x24 one cost the same to within a
+percent, and the two axes are interchangeable in every measurement. What is
+*not* symmetric is a degenerate shape. One data segment against a large bank
+makes the kernel stream the whole bank once for T pairs, and nothing is reused
+across the call:
+
+| templates | 1 segment | 8 segments |
+|---|---|---|
+| 37  | 1.245 us/pair | 1.196 |
+| 128 | 1.195 | 1.224 |
+| 418 | 1.588 | 1.304 |
+
+Below ~128 templates the coarse bank stays in cache and the shape does not
+matter. At 418 it is worth 1.17x. Eight is where the curve flattens; sixteen is
+never better and costs more spectra to hold.
+
+So `run_series` groups blocks itself rather than asking the caller for a batch
+size: consecutive blocks that share a window are filtered in one call, the
+group breaking at the ragged windows at a segment's edges. The size comes from
+the transform length alone (bounded so the held spectra stay under 4 MB) and is
+overridable with `MF_DGROUP` for measurement. `tests/test_api.py` pins the
+result to be identical across group sizes, which is the only guarantee that
+matters here -- this is an arrangement decision, not an approximation.
+
+Two things deliberately stay per-segment. The odd coarse transform runs on one
+pair at a time because only ~27% of pairs reach it, and the full reconstruction
+because only ~1.5% do: both are sparse scatters over the D x T rectangle, and
+batching a rectangle around a sparse set would run the transform for every
+`(d, t)` in its hull. The even pass, which every pair pays for, is the one that
+is batched.
+
+The pair-loop tile is a separate knob (`MF_MFTILE`, default 8). A sweep over
+4/8/16/32/64 at five shapes put 8 within 5% of the best everywhere and found no
+rule that beat it -- the optimum wanders between 8, 16 and 64 with no monotone
+dependence on either axis -- so it is left fixed rather than fitted to noise.
