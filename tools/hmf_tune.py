@@ -60,6 +60,24 @@ the input: different problems have genuinely different curves, and the
 accumulated power at each candidate edge is the characterisation, not a scalar
 summary of it.
 
+WHAT THE TABLE SHOULD BE KEYED ON.  The bands do not need a joint model of
+the whole curve -- each can be trained on its own -- but the features for band
+m are the accumulated powers at m AND at every candidate edge below it, not at
+m alone.  At band 512 the captures and a synthetic can agree on f(512) and
+still differ threefold in dismissal, because they put 85.2% and 94.7% of their
+IN-BAND power below 256 respectively, and that is what sets the correlation
+peak width, hence the scalloping, hence g.  So:
+
+    band  256 -> keyed on f(256)
+    band  512 -> keyed on f(256), f(512)
+    band 1024 -> keyed on f(256), f(512), f(1024)
+    band 2048 -> and so on
+
+which is a two- or three-dimensional fit per band, not a functional on curves,
+and every feature is something the caller's reference states directly.  At run
+time each candidate is evaluated at its own features and the cheapest
+admissible one wins.
+
 So the grid has to be built from references that reproduce real ones -- either
 captured references directly, or a family validated against them -- not from
 make_template.  Generating from make_template would hardcode a table that
