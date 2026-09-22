@@ -101,7 +101,7 @@ def test_snr_below_the_range_refuses():
     """A lower threshold is a HARDER problem and nothing measured bounds it."""
     rows, why = mf._snr_rows_for(4.5, [5.0, 5.5, 6.0])
     assert rows is None
-    assert "below" in why
+    assert "below the lowest measured" in why
 
 
 def test_the_fallback_is_not_nearest_neighbour():

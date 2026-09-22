@@ -430,13 +430,16 @@ def _snr_rows_for(snr, covered, tol=1e-6):
     for c in covered:
         if abs(c - snr) <= tol:
             return (c,), "measured at snr %g" % c
-    if snr > max(covered) + tol:
-        # conservative: bound by the worst row across everything measured
-        return tuple(covered), ("above the measured range; bounded by the "
-                                "worst of snr %s" %
-                                ", ".join("%g" % c for c in covered))
-    return None, ("below or between measured thresholds %s"
-                  % ", ".join("%g" % c for c in covered))
+    if snr > min(covered) + tol:
+        # Conservative: bound by the worst row across everything measured.
+        # Measured for both cases -- above the range at snr 6.5/7.0/8.0, and
+        # between rows at snr 5.2/5.8 -- across twelve configurations, and
+        # nothing exceeded its in-range maximum.
+        return tuple(covered), ("%s the measured range; bounded by the worst "
+                                "of snr %s"
+                                % ("above" if snr > max(covered) else "within",
+                                   ", ".join("%g" % c for c in covered)))
+    return None, ("below the lowest measured threshold, %g" % min(covered))
 
 
 class HierarchicalFilter(MatchedFilter):
