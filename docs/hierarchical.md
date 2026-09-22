@@ -297,3 +297,51 @@ against a synthetic realisation with an arbitrary noise level, so the number it
 produced was not a bound at all.  Together they took the trigger rate from 0.8%
 to 25% and the kernel 2.4x slower at the band actually in use.  A real fix has
 to model the realisation spread from the data, not from a chosen constant.
+
+## Why the odd transform is not replaceable by interpolation
+
+The odd pass exists only to find the peak between even samples, and it costs a
+full m-point transform to do it. Interpolating instead looks obviously
+cheaper, and it is not.
+
+The coarse series is `E(x) = sum_{k<m} P_k exp(2i pi k x / m)`, with the even
+pass giving `E(j)` and the odd pass `E(j - 1/2)`. The interpolator whose DFT
+is 1 on bins 0..m-1 is
+
+    K(y) = exp(i pi y (m-1)/m) * sin(pi y) / (m sin(pi y / m))
+
+Two things about it matter. The band is one-sided, so the kernel carries the
+carrier phase -- a plain sinc is the wrong kernel here and gives 65% error
+even at full length, while passing any check made at integer samples. And the
+band is a sharp rectangle, so the kernel decays as 1/y and truncation error
+falls only as 1/K: 22% at 5 taps, 8.7% at 17, 3.9% at 33, 2.4% at 65, 0.9% at
+257.
+
+That fixes the arithmetic. One exactly interpolated point costs m complex
+multiply-adds, about 8200 flops at m=1024. The odd transform costs
+(m/2) log2(m) butterflies, about 51000 flops, and returns all m odd samples.
+The transform pays for itself at roughly six evaluation points, and more than
+six are needed because the peak's location is not known in advance --
+interpolating around the largest even sample alone leaves the worst case at
+0.85 of the true peak, against the 0.897 the even gate needs, and adding
+candidate locations saturates there.
+
+So the FFT is the efficient way to get many samples of a band-limited series,
+which is what finding an unknown peak requires. The design is right.
+
+## Other structural routes measured and rejected
+
+Per-pair only; nothing here relates one template to another.
+
+- **A third rung on band.** A band-512 statistic, biased up by its worst-case
+  ratio to the band-1024 one (0.792, so a 1.26 bias), rejects 52% of pairs at
+  0.45 of the cost: net 1.08x at the operating point. At a 1% trigger rate it
+  would be 1.44x, so it is a function of where the gate sits rather than a
+  property of the method.
+- **A pre-test with no transform at all.** The only O(m) bound available from
+  the spectrum is Parseval, `max <= sqrt(m) ||P||`, which is loose by
+  `sqrt(m / ln m)`, about 12x at m=1024. Nothing to gate on.
+- **Stage-A partial results.** Parseval along the k1 axis gives the energy of
+  each residue class of lags for free once stage A is done, but that sums one
+  signal lag against N1 noise lags: it rejects 20% of noise pairs and saves
+  only stage B on those.
