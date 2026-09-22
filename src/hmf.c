@@ -38,7 +38,7 @@
 #include "transform.h"
 #include "hmf_table.h"
 
-#define HMF_IK 4            /* half-width of the bracket taps: 9 in all */
+#define HMF_IK 6            /* half-width of the bracket taps: 13 in all */
 static void design_taps(const float *w, size_t m, int K, double delta, float *h);
 static float interp_abs(const float *ev,const float *od,size_t m,int U,
                         const float *w,int K,int i,long j);
@@ -237,14 +237,24 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      Derived on six captured segments and checked on six others, which violated
      at 0.19%, so they carry a margin -- only the lower one can lose a trigger;
      an over-report merely fires the coarse gate for nothing. */
-  /* The bracket is on.  It was off for a long time because it measured 5x
-     SLOWER, which turned out to be a dead-code bug and not a property of the
-     method: the vectorised interp_max in the kernel was fully plumbed through
-     dispatch.c and never called, while the call site used a scalar scan of
-     every lag compiled at the baseline ISA.  See docs/hierarchical.md.
-     ilo is the reject side and is the one that can cost a trigger; 0.90 is
-     the tightest value that does not (0.93 costs 3 of 842, 0.97 costs 20). */
-  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=1; p->incand=16;
+  /* The bracket is OFF, and the reason is worth stating precisely because the
+     obvious measurement says it should be on.
+     
+     It used to be off because it measured 5x slower, which was a dead-code bug
+     (see docs/hierarchical.md); fixed, it looks like a 4-5% win. That win is
+     not real. The reject side is sound only while
+         ilo <= min(S/true) / graw,
+     and min(S/true) over real triggers is MEASURED, not assumed: 0.8384 at
+     HMF_IK=4 and 0.8855 at 6, over 56650 pairs from the twelve captures. With
+     graw ~ 0.971 that caps ilo at 0.8635 and 0.9120. Set soundly the bracket
+     is break-even -- 11.00-11.08 ms against 11.08-11.14 with it off -- because
+     the statistic costs about what the odd transforms it saves cost.
+     
+     The apparent win came from ilo=0.90 at K=4, which is past 0.8635. It costs
+     nothing on these 842 triggers, but "no trigger lost on the fixtures" is not
+     the guarantee this filter makes. K is 6 rather than 4 so that a caller who
+     turns it on with the default ilo gets a sound configuration. */
+  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=0; p->incand=16;   /* MF_BRACKET=1 */
   { const char *e;
     if((e=getenv("MF_BRACKET"))) p->ibrk=atoi(e);
     if((e=getenv("MF_BRACKET_LO"))) p->ilo=(float)atof(e);
@@ -910,7 +920,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
          the gate settles the pair without paying for the transform.  Every
          pair it cannot settle still gets the transform, so the reported
          triggers are unchanged. */
-      if(p->ibrk && U>1){
+      if(p->ibrk==1 && U>1){
         const float S=p->ibuf[(size_t)d*nt+t];
         float lower=S/p->ihi;
         if(ce.magnitude>lower) lower=ce.magnitude;   /* exact, and free */
@@ -926,7 +936,8 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       }
       if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
-      if(p->dump){ float rec[3]={ce.magnitude,bestmag,gate};
+      if(p->dump){ float rec[4]={ce.magnitude,bestmag,gate,
+                                 p->ibrk?p->ibuf[(size_t)d*nt+t]:0.f};
                    fwrite(rec,sizeof rec,1,p->dump); }
       if(getenv("MF_HMF_TRACE") && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld gate=%.3f even_gate=%.3f "

@@ -467,6 +467,37 @@ Measured per pair, at band 1024:
 | bracket on, scalar scan | 10410 | 420 | +8350 |
 | bracket on, vectorised | 2188 | 294 | -172 |
 
+With that fixed the bracket looks like a 4-5% win. It is not one, and the
+reason is the point of this section.
+
+The reject branch fires when `S/ilo < raw_gate`. A wrong rejection only loses a
+trigger when it happens above the gate, and `raw_gate = graw * gate`, so the
+condition for the branch to be sound is
+
+    ilo <= min(S / true) / graw
+
+where the minimum runs over pairs that are real triggers. That minimum is
+measurable, and `MF_BRACKET=2` computes the statistic without acting on it so
+it can be measured on every pair rather than on the ones the bracket happened
+to leave behind. Over 56650 pairs from the twelve captures:
+
+| taps | min S/true, all pairs | min over real triggers | sound `ilo` |
+|---|---:|---:|---:|
+| 9 (`HMF_IK=4`) | 0.8384 | 0.8384 | 0.8635 |
+| 13 (`HMF_IK=6`) | 0.8604 | 0.8855 | 0.9120 |
+
+Set soundly the bracket is break-even -- 11.00-11.08 ms/segment at
+`HMF_IK=6, ilo=0.90` against 11.08-11.14 with it off -- because the statistic
+costs about what the odd transforms it saves cost. The apparent win came from
+running `ilo=0.90` with 9 taps, which is past 0.8635. That configuration loses
+no trigger on these 842, but "no trigger lost on the fixtures" is not the
+guarantee this filter makes, and the knob does not survive being tuned: at 9
+taps, 0.93 costs 3 triggers and 0.97 costs 20.
+
+So the bracket stays off. What the exercise bought is a correct implementation
+behind `MF_BRACKET=1`, a derived soundness criterion rather than a fitted
+constant, and the disposal of a five-diagnosis mystery.
+
 Two knobs matter and they are not symmetric:
 
 - **`MF_IFRAC`** (0.95) is the candidate cut, as a fraction of the grid maximum.
@@ -481,9 +512,8 @@ Two knobs matter and they are not symmetric:
   (`MF_BRACKET_HI`, 1.10) is safe in the other direction and barely matters,
   since fires are 0.9% of pairs against 11.4% rejects.
 
-At the default gate this is 11.03 -> 10.58 ms/segment (3.37x -> 3.49x) and at
-the zero-loss gate 14.78 -> 13.92 (2.52x -> 2.67x), with 31/842 and 0/842
-unchanged respectively.
+`HMF_IK` is 6 rather than 4 so that a caller who enables the bracket with the
+default `ilo` gets a sound configuration rather than a fast one.
 
 ## Batch shape
 
