@@ -95,7 +95,46 @@ structure with no shuffles loses far more to cache behaviour than it gains.
 In the structure that wins, transposes, twiddle loads and the max scan do not
 halve with the element type, which is why int16 lands at 1.3x rather than 2x.
 
-## Plan
+## Phase 1 result: no-go
+
+Measured. Each kernel does one radix-2 twiddle butterfly over the same element
+count and leaves the result in its own input format, so the repack counts.
+Nanoseconds per complex element per level:
+
+| kernel | AVX-512 | vs (1) | AVX2 | vs (1) |
+|---|---:|---:|---:|---:|
+| 1 split i16 Q15 (`vpmulhrsw`) | 0.0594 | 1.00x | 0.0713 | 1.00x |
+| 2 interleaved i16 (`vpmaddwd`) | 0.0824 | 0.72x | 0.1451 | 0.49x |
+| 3 interleaved i8 (`vpmaddubsw`) | 0.0499 | 1.19x | 0.0780 | 0.91x |
+| 4 i8 radix-4 (`vpdpbusd`) | 0.0361 | 1.64x | 0.1300 | 0.55x |
+
+Nothing clears the 1.5x threshold on both targets, and the reason is not the
+repack. With the pack back to the input format removed entirely -- the ceiling
+Phase 2 was meant to chase -- the twiddle multiply alone costs:
+
+| | AVX-512 | AVX2 |
+|---|---:|---:|
+| 1 split i16 Q15 | 0.0232 | 0.0378 |
+| 3 interleaved i8 | 0.0430 (**0.54x**) | 0.0588 (**0.64x**) |
+
+int8 is slower than int16 on the arithmetic by itself. The instruction count
+argument was right and irrelevant: `vpmaddubsw` does two multiplies, an add and
+a saturation per output lane, and issues at about half the rate of
+`vpmulhrsw`. Two instructions instead of six buys the same multiply
+throughput, and the interleaving is then pure loss.
+
+The generalisation is worth keeping: these instructions are built for dense
+matrix products, where every output needs every input times a distinct
+coefficient. An FFT is the opposite -- its twiddles are sparse, structured and
+mostly trivial. Kernel 4 flatters itself for exactly this reason, computing a
+dense four-term dot where a real radix-4 butterfly needs three twiddle
+multiplies and some sign flips; on AVX2, where it cannot hide the twiddle
+traffic, it drops to 0.55x.
+
+So the narrow-arithmetic route caps out at int16's measured 1.2-1.4x in the
+real structure, about 1.25x overall. Not worth a second kernel.
+
+## The plan that was tested
 
 **Phase 1 -- primitive economics.** Microbenchmark four inner kernels at equal
 element counts, each *including* the repack back to its own input format,
@@ -126,10 +165,18 @@ zero by construction, so the fixtures should show 842/842 unchanged.
 **Phase 4 -- integrate**, with `tools/hier_all.sh` as the gate: 12 captured
 segments, 842 triggers, zero missed, and the ms/segment must fall.
 
-## Expected payoff, bounded honestly
+Phases 2 to 4 were not run: Phase 1's ceiling measurement removed their
+premise.
 
-If Phase 1 shows the dot-product kernels net 2x over Q15 including repack,
-the coarse pass goes from 84% of the time to about 30% and the filter goes
-from 2.51x to roughly 4.5x. If the repack eats the advantage and only int16's
-1.3x survives, it is 3.1x. The spread between those is the reason Phase 1
-exists and is cheap.
+## What survives
+
+The safety argument. Biasing the coarse statistic up by its worst-case
+under-report makes lost triggers impossible at any width, and that is worth
+keeping whatever the arithmetic ends up being -- it converts a correctness
+risk into a trigger-rate cost, which is the cheap axis here.
+
+The precision hierarchy in Phase 3 is also untouched by this result, since it
+does not depend on narrow arithmetic being fast: a cheap reject pass followed
+by an accurate one works with any two representations, including two float
+ones at different transform sizes. That is the same idea as the existing
+even/odd split and would have to be justified against it.
