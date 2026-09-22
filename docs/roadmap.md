@@ -108,6 +108,77 @@ dense gets the current path.
 Returning fired peaks plus a count instead would remove it. Worth 1%, and it
 changes the API.
 
+## The coarse pass, examined directly
+
+It is 75-90% of the cost, so it gets its own section. Everything below was
+measured with the baseline and the variant rebuilt and run **interleaved** in
+the same session -- this machine's baseline drifts ~9% between mornings, and
+two conclusions on this page had to be withdrawn after being drawn across that
+gap.
+
+### Nothing cheaper can precede it
+The even gate sits at only **1.064x the median even maximum** (CV 0.091), which
+is a steeper cliff than the final gate's 1.19x. A pre-filter placed before the
+even pass rejects:
+
+| worst-case recovery | 0.70 | 0.80 | 0.85 | 0.90 | 0.95 |
+|---|---:|---:|---:|---:|---:|
+| fraction rejected | 0.0% | 1.8% | 11.4% | 31.0% | 53.3% |
+
+It needs **0.90 just to reject a third**. The best cheap statistic ever
+measured here is 0.67. The coarse pass cannot be avoided for any useful
+fraction of pairs.
+
+### Folding instead of truncating -- exact, and worse
+The coarse pass keeps the first m bins of the product. The decimation identity
+says the stride-R correlation is *exactly* the m-point transform of the
+**folded** product, `P_fold[k] = sum_r P[k+r*m]`, and that is confirmed to
+float64 round-off (4.2e-16) where truncation's worst case against the same
+target is 0.9092.
+
+It still loses, because the two errors are coupled. Band-limiting discards
+energy but **widens** the correlation peak, and that width is what makes the
+coarse lag grid adequate. Folding returns the sharp full-band peak onto the
+same grid, so scalloping gets worse. Against the true continuous peak:
+
+| | median | p1 | **worst** |
+|---|---:|---:|---:|
+| truncate (current) | 0.9772 | 0.9192 | **0.9116** |
+| fold (exact in frequency) | 0.9879 | 0.9034 | **0.8915** |
+
+The gate is set by the worst case, so folding makes it worse. Truncation is not
+a cost-saving approximation that happens to work -- it is load-bearing, and it
+is why the band has a real optimum rather than being "as wide as affordable".
+
+### Codelet radix
+The 32-point element transform uses split-radix (`fftsr32`); radix [8,4]
+(`fft32_84`) is also generated. Swapped and measured: 2300 against 2319 median
+ticks. Split-radix stays.
+
+### binmax is 10-11%, and three attempts to reduce it all failed
+Ablating the magnitude, compare, select and mask-test out of the lag loop saves
+**231-255 ticks a pair, 10-11% of the coarse pass** (interleaved, two rounds).
+Splitting that further: ablating *only* the magnitude saves nothing -- the
+`FMA+MUL` overlaps with the transform entirely. The cost is the compare and
+mask-test, and it is plain op count, not a stall:
+
+- **Branchless** (always select, no `V_MASK_ANY`): 2389 against 2366. No.
+- **Compare against the fixed threshold** rather than the running maximum, to
+  break the loop-carried dependency -- exact, since anything that can raise the
+  maximum must already exceed the threshold: 0.987 / 1.012 interleaved. No.
+- **Hoisting the window test** out of the loop by solving for the interior run
+  of lags: 0.987 / 0.977 / 0.940. Worse -- the second loop body costs more in
+  code size and scheduling than the hoisted test saves.
+
+The loop is already at its tuned shape. What has *not* been tried is a
+**grouped reduction**: compute `m2` for four vectors, `V_MAX` them together and
+do one compare and one mask-test instead of four of each, with a rare fixup to
+identify which vector won. That trades 3 compares and 3 mask-tests for 3 maxes
+per group of four -- about 37% of the compare cost, so ~3% of the total. It is
+the only untried idea for this loop, and at 3% it sits close to this machine's
+±1% measurement noise, so it needs interleaved A/B over several rounds to
+settle.
+
 ## Closed, with evidence
 
 ### Parallelism
