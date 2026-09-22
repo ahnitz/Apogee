@@ -153,6 +153,42 @@ The decision itself is cheap and reusable, which is the point of taking a
 reference: clean, noise-free information supplied once, one optimisation, then
 reused for every run against it.
 
+### Finishing it: what is actually left
+
+The runtime plumbing is done and tested -- probe, cost model, rebuild,
+invariance. What is missing is the accuracy constraint, and the right place for
+it is offline, because resolving a 1e-4 dismissal rate needs far more trials
+than a plan setup can afford.
+
+`tools/hmf_design.py:design()` already takes `want_f`, the power fraction below
+the n/8 reference edge, which is precisely the scalar a reference supplies. Run
+over a grid it behaves correctly -- the band narrows as the reference
+concentrates and widens as `fd` tightens, and 1e-4 is already in its grid:
+
+| want_f | fd=1e-2 | fd=1e-3 | fd=1e-4 |
+|---|---|---|---|
+| 0.30 | 2048 | 2048 | 2048 |
+| 0.85 | 512 | 2048 | 2048 |
+| 0.95 | 256 | 256 | 512 |
+| 0.99 | 256 | 256 | 256 |
+
+So the remaining work is:
+
+1. **Key the pick table on `want_f`** as well as (snr, fd). Today `hmf_picks`
+   is keyed on (n, snr, fd) and cannot see the reference at all.
+2. **Validate every cell with `validate(..., ntrial=40000)` and keep only picks
+   whose MEASURED dismissal meets fd.** This is the step that matters and the
+   one the current table skips: `design()` reports m=256 as optimal at
+   want_f=0.95, fd=1e-3 with `trig`=0.094, where band 256 measured on the
+   captures triggers 60% of the time and costs 23 ms. The integrated model is
+   optimistic in the same way the runtime recovery factors are -- which is the
+   root of the 31/842 and of the 34-trigger pycbc loss -- so a table built from
+   it unvalidated would inherit the fault.
+3. **Look it up in `set_reference`**: compute the reference's `want_f`, select,
+   rebuild. That plumbing exists and is under test.
+4. Manual override already works -- `band`/`oversample`/`taps` at construction
+   bypass selection entirely.
+
 The lifetime part is already done: `alloc_band_state`/`free_band_state` own
 everything sized by the band, and `set_reference` rebuilds through them.
 
