@@ -218,3 +218,26 @@ def emit(rows, path, trials):
     lines += ["};", "#define HMF_NTUNED %d" % kept, "", "#endif", ""]
     open(path, "w").write("\n".join(lines))
     return kept
+
+
+def f_min(n, band, U, K, snr, fd, trials=4000, lo=0.50, hi=0.999, tol=0.01):
+    """Least accumulated fraction AT THIS BAND for which the configuration
+    meets the target.
+
+    A single global number cannot key the table: two references agreeing on
+    how much SNR sits below one edge disagree everywhere else, and the
+    captures' reference (0.9335 below 512) needs a wider band than a synthetic
+    one at 0.95 does.  Judging each candidate on the accumulation at ITS OWN
+    edge removes that -- the threshold simply sits between the two.
+
+    Bisects on f, building a reference with that much power below `band`.
+    """
+    while hi - lo > tol:
+        mid = 0.5 * (lo + hi)
+        ref = (np.abs(D_design.make_template(n, band, mid)) ** 2).astype(np.float32)
+        dm, det, _ = measure(n, band, U, K, snr, trials, power=ref)
+        if det and dm <= fd:
+            hi = mid          # this much accumulation is enough
+        else:
+            lo = mid
+    return hi

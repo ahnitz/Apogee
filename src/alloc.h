@@ -16,8 +16,12 @@ static inline void *ap_alloc64_raw(size_t bytes) {
   if (!bytes) bytes = AP_ALIGN;
   size_t r = bytes % AP_ALIGN;
   if (r) bytes += AP_ALIGN - r;
-#if defined(__cplusplus) || defined(_ISOC11_SOURCE) \
-    || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
+/* aligned_alloc arrived in macOS 10.15, and wheels are built against a 10.13
+   deployment target, so on Apple take posix_memalign -- which has always been
+   there -- rather than emit an availability warning and risk the symbol. */
+#if (defined(__cplusplus) || defined(_ISOC11_SOURCE) \
+     || (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)) \
+    && !defined(__APPLE__)
   return aligned_alloc(AP_ALIGN, bytes);
 #else
   void *p = NULL;

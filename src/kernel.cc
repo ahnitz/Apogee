@@ -56,6 +56,15 @@ static void apply_env(void) {
   isa_failed = true;
 }
 
+/* The dispatch call must be made from INSIDE namespace ap.  With more than
+   one target Highway routes through the export table and either spelling
+   works, but a single-target build (macOS arm64 has only NEON) falls back to
+   HWY_STATIC_DISPATCH, which expands to HWY_STATIC_NAMESPACE::FUNC -- so
+   HWY_DYNAMIC_DISPATCH(ap::Backend) becomes N_NEON::ap::Backend where the
+   function is ap::N_NEON::Backend, and the build fails on an undeclared
+   N_NEON.  Calling it unqualified from in here resolves both ways. */
+static const ap_backend *active(void) { return HWY_DYNAMIC_DISPATCH(Backend)(); }
+
 }  // namespace ap
 
 /* The targets this build contains that this CPU can also run, widest first.
@@ -94,6 +103,6 @@ extern "C" const ap_backend *ap_backend_active(void) {
   static const bool once = (ap::apply_env(), true);
   (void)once;
   if (ap::isa_failed) return NULL;
-  return HWY_DYNAMIC_DISPATCH(ap::Backend)();
+  return ap::active();
 }
 #endif

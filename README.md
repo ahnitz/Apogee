@@ -1,6 +1,6 @@
 # matchedfilter
 
-A fast single-threaded matched filter for x86. You give it a batch of data
+A fast single-threaded matched filter. You give it a batch of data
 segments and a batch of templates; it correlates every pair and hands back only
 the peaks.
 
