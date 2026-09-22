@@ -111,10 +111,15 @@ static int HMF_init(HMFObject *self,PyObject *args,PyObject *kw){
   Py_ssize_t n; int nd,nt; double snr,fd; (void)kw;
   Py_ssize_t band=0; int u=0,k=0;
   if(!PyArg_ParseTuple(args,"niidd|nii",&n,&nd,&nt,&snr,&fd,&band,&u,&k)) return -1;
-  self->p = band ? ap_hmf_create_ex((size_t)n,nd,nt,(float)snr,(float)fd,(size_t)band,u,k)
-                 : ap_hmf_create((size_t)n,nd,nt,(float)snr,(float)fd);
+  /* band/oversample/taps are required: the choice belongs to the measured
+     tuning tables, which the Python class reads and which refuse rather than
+     guess outside their coverage. */
+  if(!band){ PyErr_SetString(PyExc_ValueError,
+      "band, oversample and taps are required; HierarchicalFilter picks them "
+      "from the tuning tables"); return -1; }
+  self->p = ap_hmf_create_ex((size_t)n,nd,nt,(float)snr,(float)fd,(size_t)band,u,k);
   if(!self->p){ PyErr_Format(PyExc_ValueError,
-      "no hierarchical design for n=%zd snr=%g fd=%g",n,snr,fd); return -1; }
+      "no hierarchical plan for n=%zd band=%zd u=%d k=%d",n,band,u,k); return -1; }
   self->n=n; self->nd=nd; self->nt=nt; return 0;
 }
 static void HMF_dealloc(HMFObject *self){

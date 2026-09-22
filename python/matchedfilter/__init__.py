@@ -226,21 +226,17 @@ _TUNING = None
 _warned_uncovered = False
 
 
-def _warn_uncovered(n, snr, fd):
-    """Say when the tuning table has nothing for this case."""
-    global _warned_uncovered
-    _warned_uncovered = True
+def _uncovered_message(n, snr, fd):
+    """Why autotuning refused, and what to do about it."""
     t = _load_tuning()
     ns = sorted({r[0] for r in t["fdr"]})
     snrs = sorted({r[4] for r in t["fdr"]})
-    warnings.warn(
-        "matchedfilter: the tuning table has no rows for n=%d snr=%.2f "
-        "fd=%.0e (it covers n=%s, snr=%s). Falling back to the compiled "
-        "design table, which is a model rather than a measurement and does "
-        "not promise the false-dismissal budget. Generate coverage with "
-        "tools/hmf_tune.py and point MF_TUNING at it; see "
-        "docs/hierarchical.md." % (n, snr, fd, ns, snrs),
-        RuntimeWarning, stacklevel=3)
+    return ("no measured tuning for n=%d snr=%.2f fd=%.0e -- the tables cover "
+            "n=%s, snr=%s. Autotuning will not guess outside what has been "
+            "measured. Either pass band/oversample/taps explicitly, or "
+            "generate coverage with tools/hmf_tune.py and point MF_ACCURACY "
+            "and MF_COST at it. See docs/hierarchical.md."
+            % (n, snr, fd, ns, snrs))
 
 
 def _load_tuning(path=None):
@@ -435,20 +431,16 @@ class HierarchicalFilter(MatchedFilter):
             except Exception:
                 cfg = None       # a missing or unreadable table is not fatal
         if cfg is None:
-            # Nothing measured for this case. Fall back to the compiled design
-            # table -- what the library did before there was a tuning file --
-            # but say so. That table is a model, not a measurement, and it does
-            # not promise the fd budget: on the twelve captures it misses 3.7%
-            # against a 0.1% target. Falling back silently would let a caller
-            # believe they had a guarantee they do not have.
-            if self._pending_ref is not None and not _warned_uncovered:
-                _warn_uncovered(self.n, self.snr, self.fd)
-            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
-                                 self.snr, self.fd)
-        else:
-            b, u, k = cfg
-            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
-                                 self.snr, self.fd, int(b), int(u), int(k))
+            # Autotuning is a promise, so it refuses rather than guesses.
+            # There used to be a compiled design table to fall back on; it was
+            # a model, it did not promise the budget -- 3.7% missed against
+            # 0.1% on the captures -- and having it made the library quietly
+            # answer a question it had no measurement for. A caller who wants
+            # a configuration the tables do not cover states it directly.
+            raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
+        b, u, k = cfg
+        self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
+                             self.snr, self.fd, int(b), int(u), int(k))
         if self._pending_ref is not None:
             self._mf.set_reference(self._pending_ref)
         return self._mf

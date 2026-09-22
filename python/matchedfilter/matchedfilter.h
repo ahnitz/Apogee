@@ -113,7 +113,6 @@ void ap_mf_interp_pause(ap_mf_plan *p, int on);
  */
 typedef struct ap_hmf_plan ap_hmf_plan;
 
-ap_hmf_plan *ap_hmf_create(size_t n, int ndata, int ntmpl, float snr, float fd);
 ap_hmf_plan *ap_hmf_create_ex(size_t n, int ndata, int ntmpl, float snr, float fd,
                               size_t band, int oversample, int taps);
 void         ap_hmf_destroy(ap_hmf_plan *p);

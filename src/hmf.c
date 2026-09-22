@@ -318,11 +318,12 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   return p;
 }
 
-ap_hmf_plan *ap_hmf_create(size_t n,int ndata,int ntmpl,float snr,float fd){
-  size_t band; int U,K;
-  if(!hmf_choose(n,snr,fd,&band,&U,&K)) return NULL;
-  return ap_hmf_create_ex(n,ndata,ntmpl,snr,fd,band,U,K);
-}
+/* There is no band-free constructor.  Choosing band, oversample and taps is
+   the tuning tables' job, and they are measured; a compiled model that
+   answered the same question was a second source of truth that could not be
+   checked and did not promise the false-dismissal budget.  Callers either
+   state the configuration or let the Python class read it from the tables,
+   which refuses rather than guesses outside its coverage. */
 
 void ap_hmf_destroy(ap_hmf_plan *p){
   if(!p) return;
