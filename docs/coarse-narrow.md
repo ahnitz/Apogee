@@ -195,6 +195,46 @@ buys cheaper arithmetic by demanding a different operand layout has to pay for
 that layout once per stage, ten times per transform, on data that is unique to
 the pair.
 
+## Settled: the two-minute experiment nobody ran
+
+Everything above argues about int16 from isolated kernels, and lands on
+"1.2-1.4x in the real structure, about 1.25x overall". The premise underneath
+all of it is that int16 is worth something because it doubles the lanes. That
+premise is directly testable in the real fused kernel on the real workload, by
+asking what the LAST doubling of lanes bought.
+
+Controlled -- same ISA (AVX-512), same build, only `AP_W` varying, three reps,
+even coarse pass at band 1024 in TSC ticks per pair:
+
+| `AP_W` | ticks/pair |
+|---|---|
+| 8 | 2032, 2055, 2044 |
+| 16 | 2020, 2026, 2151 |
+
+Halving the vector width costs nothing. Across ISAs the same thing shows with
+the saturation visible: SSE4 (4 lanes) 4677, AVX2 (8) 2274, AVX-512 (16) 2017 --
+2.06x for the first doubling and 1.13x for the second.
+
+So the even pass is already width-insensitive at 16 lanes. Doubling again to 32
+int16 lanes buys nothing, and would make the corner turn worse, since the
+transpose becomes 32x32 instead of 16x16. Blocking knobs (`MF_GBLK`, `MF_BBLK`)
+move it by nothing either, and the four-step factorisation for m=1024 is already
+at its optimum (32x32 = 2013-2048 ticks, against 2260 at 16 and 2301 at 64).
+
+Precision was never the obstacle, which is worth stating because it is where
+the effort naturally goes. Modelled end to end on 456 real captured pairs --
+data and template each quantised to Q15, product formed exactly in int32 and
+renormalised by one shift, then a Q15 transform with an unconditional `>>1` per
+stage and no block-floating-point reduction at all -- the error band on the
+coarse maximum is **1.0125x**, against a gate that sits 1.19x above the median.
+Zero saturation. `tools/coarse_fixed.py` has the models; the product, not the
+transform, carries the error, because a Q15 multiply rounds each partial
+product before the subtract and pins the output scale to two operand maxima
+that occur at different bins.
+
+The route is closed, and not for a precision reason: int16's entire value is
+lane count, and lane count is not what this kernel is short of.
+
 ## What survives
 
 The safety argument. Biasing the coarse statistic up by its worst-case
