@@ -549,3 +549,64 @@ def _tc_cell(job):
     except Exception as e:
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, fd=fd,
                     error=str(e))
+
+
+#: Configuration every inner loop includes, so ratios from different
+#: references share a scale.  It must be re-measured in each loop rather than
+#: once and reused, or its own drift comes back as a common-mode term.
+COST_PIVOT = (1024, 2, 8, 1.00)
+
+
+def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
+                             nt=16, pairs=6000, seed=11):
+    """Time every configuration on ONE reference, and return relative costs.
+
+    This is the whole point of the restructure.  Timing each configuration
+    against a reference built to match its own key -- which is what the first
+    version did -- means band 512 and band 1024 are measured on different
+    signals and ranked against each other anyway.  That is not a noisy
+    comparison, it is not a comparison.
+
+    Holding the reference fixed makes the inner loop mutually comparable by
+    construction, and dividing by a pivot measured in the same loop cancels
+    everything common: clock and turbo state, contention, cache temperature,
+    allocator luck, the machine itself.  Only the configuration's relative
+    cost survives, which is the only thing selection needs -- it never
+    compares across references.
+
+    Configurations are cycled `reps` times rather than each run to completion,
+    so slow drift spreads over all of them instead of landing on whichever
+    went last.  The pivot's own spread across those passes is reported: it is
+    the residual noise after cancellation, and says what the ratios are worth.
+    """
+    rng = np.random.default_rng(seed)
+    power = np.ascontiguousarray(power, dtype=np.float32)
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+    plans = {}
+    for cfg in configs:
+        band, U, K, gate = cfg
+        hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=nt, snr=snr,
+                                   fd=1e-3, band=band, oversample=U, taps=K)
+        hf.set_reference(power)
+        if gate != 1.0:
+            hf._ensure().set_gate_margin(float(gate))
+        hf.set_templates(H)
+        plans[cfg] = hf
+    per = int(np.clip(pairs // (nt * batch), 2, 60))
+    acc = {c: [] for c in configs}
+    data = [noise((batch, n), rng) for _ in range(per)]
+    for _ in range(reps):
+        for cfg in configs:                      # cycle, do not run to completion
+            hf = plans[cfg]
+            t0 = time.perf_counter()
+            for d in data:
+                hf.set_data(d)
+                hf.run(binsize=n, threshold=snr, raw=True)
+            acc[cfg].append((time.perf_counter() - t0) / (per * nt * batch))
+    med = {c: float(np.median(v)) for c, v in acc.items()}
+    piv = med.get(COST_PIVOT)
+    if not piv:
+        piv = min(med.values())
+    pv = acc.get(COST_PIVOT) or list(acc.values())[0]
+    resid = float(max(pv) / min(pv) - 1.0)       # what the ratios are worth
+    return {c: v / piv for c, v in med.items()}, resid
