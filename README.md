@@ -35,6 +35,8 @@ Every release so far is an alpha, and pip installs a pre-release when that is
 all a project has. Once a stable version exists, getting an alpha will need
 `pip install --pre matchedfilter`.
 
+Full documentation, built by CI: **https://ahnitz.github.io/matchedfilter/**
+
 The hierarchical filter chooses its first-stage configuration from a measured
 tuning table shipped with the package. It is keyed on the caller's reference
 and can be regenerated for your own hardware without rebuilding -- see

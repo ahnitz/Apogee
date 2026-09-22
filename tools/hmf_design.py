@@ -313,28 +313,7 @@ def validate(n, R, U, K, T, ntrial=40000, seed=5):
         print(f"  {t_c:>6.3f} {a:>10.2e} {np.mean(rc < t_c):>12.2e}")
 
 
-CHOOSE_C = """
-static int hmf_choose(size_t n, float snr, float fd, size_t *band, int *u, int *k)
-{
-  const hmf_pick *best = 0; float bd = 1e30f;
-  for (int i = 0; i < HMF_NPICK; i++) {
-    if (hmf_picks[i].n != (unsigned)n) continue;
-    /* nearest design point; snr is weighted because the gate moves with it far
-       faster than it moves with fd */
-    float ds = hmf_picks[i].snr - snr;
-    float rf = hmf_picks[i].fd > fd ? hmf_picks[i].fd / fd : fd / hmf_picks[i].fd;
-    float d = 4.0f * ds * ds + (rf - 1.0f);
-    if (d < bd) { bd = d; best = &hmf_picks[i]; }
-  }
-  if (!best) return 0;
-  if (band) *band = best->band;
-  if (u) *u = best->u;
-  if (k) *k = best->k;
-  return 1;
-}
-
-
-
+THRESHOLD_C = """
 static float hmf_threshold(float f_eff, float snr, float fd)
 {
   int ai = 0; float bd = 1e30f;
@@ -417,21 +396,12 @@ def emit_table(path):
         w("  },")
     w("};")
     w("")
-    w("/* Per size and design point: band, oversampling, taps, recovery factor. */")
-    w("typedef struct { unsigned n; float snr, fd; unsigned band; int u, k;\n               } hmf_pick;   /* hmf_choose reads all of it */")
-    w("static const hmf_pick hmf_picks[] = {")
-    for n in TABLE_N:
-        for T in TABLE_SNR:
-            for a in TABLE_FD:
-                b = chosen.get((n, T, a))
-                if b is None: continue
-                # g/graw/graw1 inform the choice above but are not emitted:
-                # the library measures recovery per plan in measure_recovery(),
-                # and the table's copies were read by nothing.
-                w(f"  {{ {n}u, {T:.2f}f, {a:.1e}f, {b['m']}u, {b['U']}, {b['K']} }},")
-    w("};")
-    w("#define HMF_NPICK ((int)(sizeof hmf_picks / sizeof hmf_picks[0]))")
-    w(CHOOSE_C)
+    # No picks table. Which band, oversample and taps to use is decided by
+    # the measured tuning tables that ship with the package; a compiled model
+    # answering the same question was a second, uncheckable source of truth
+    # and was removed. What stays is the gate: t_c for a given effective band
+    # fraction, which is a different object.
+    w(THRESHOLD_C)
     open(path, "w").write("\n".join(L) + "\n")
     print(f"  wrote {path}", flush=True)
 

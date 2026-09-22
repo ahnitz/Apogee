@@ -94,6 +94,9 @@ class MatchedFilter:
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
         self._buf = None
+        # Arrays the plan holds pointers into. The C side keeps the caller's
+        # spectrum rather than copying it, so the wrapper must keep it alive.
+        self._held = {}
         self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
 
     # ---- ingest -------------------------------------------------------------
@@ -108,11 +111,19 @@ class MatchedFilter:
         segment, natural order.
         """
         if index is not None:
-            self._ensure().set_data(int(index), _as_c64(spectra, self.n, "spectrum"))
+            a = _as_c64(spectra, self.n, "spectrum")
+            # The plan keeps this pointer -- the coarse band is read straight
+            # out of it during run(), and the full spectrum is ingested lazily
+            # only if a pair fires. A caller passing a temporary would have it
+            # freed before either happens, which is a use-after-free that only
+            # shows when the refine path runs. Hold a reference.
+            self._held[int(index)] = a
+            self._ensure().set_data(int(index), a)
             return
         a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ndata, self.n):
             raise ValueError(f"expected shape ({self.ndata}, {self.n}), got {a.shape}")
+        self._held[-1] = a                      # see the note above
         for i in range(self.ndata):
             self._ensure().set_data(i, a[i])
 
@@ -402,6 +413,7 @@ class HierarchicalFilter(MatchedFilter):
         self.fd = float(fd)
         self._buf = None
         self._sbuf = None
+        self._held = {}
         self._pending_ref = None
         if band is None:
             # Defer: the band should be chosen from the reference, and the

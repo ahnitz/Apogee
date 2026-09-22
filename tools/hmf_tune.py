@@ -456,47 +456,64 @@ def _fdr_cell(job):
                     beff_act=beff_of(ref, m), dismissal=dm, detected=det, sec=sec)
     except Exception as e:
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
-                    error=str(e))
+                    nt=locals().get("nt"), nd=locals().get("nd"), error=str(e))
 
 
-def measure_cost(n, band, U, K, snr, trials, power, batch=64, gate=1.0):
-    """Seconds per pair on NOISE at the operating threshold.
+def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,
+                 pairs_target=20000, gate=1.0, seed=7):
+    """Median us/pair for one configuration and batch shape.
 
-    Cost is dominated by how often the gate opens, and on real data that is a
-    percent or two -- so it has to be timed on noise.  Timing it on the FDR
-    harness, which injects into every trial so half the pairs fire, made every
-    band look alike at 9-13 us/pair where the captures separate band 256 from
-    1024 by 23 ms/segment against 10.  Same reference as the FDR cell, because
-    the reference sets the gate and the gate sets the rate.
+    Three things matter here and none of them did in the first version.
+
+    Batch shape is a cost column and not an accuracy one: D x T batching
+    changes throughput by up to 1.94x and cannot change a single reported
+    peak, which tests/test_api.py pins. So it belongs here and would be noise
+    in the accuracy table.
+
+    Noise is redrawn for every batch, so the trigger rate -- which is most of
+    the cost, and is set by the gate and the reference -- is averaged rather
+    than sampled once.
+
+    The time is a median over `reps`, not a mean or a minimum. A mean lets one
+    descheduled run dominate; a minimum reports an idle machine, which is the
+    wrong target when the deployment condition is every core busy.
     """
-    rng = np.random.default_rng(7)
+    rng = np.random.default_rng(seed)
     power = np.ascontiguousarray(power, dtype=np.float32)
-    H = template_with_power(n, power)
-    hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+    hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=1e-3,
                                band=band, oversample=U, taps=K)
     hf.set_reference(power)
     if gate != 1.0:
         hf._ensure().set_gate_margin(float(gate))
-    hf.set_templates(H[None, :])
-    sec, npair, fired = 0.0, 0, 0
-    for _ in range((trials + batch - 1) // batch):
-        D = noise((batch, n), rng)            # no injection: this is the point
-        hf.set_data(D)
-        t0 = time.perf_counter()
-        b = hf.run(binsize=n, threshold=snr, raw=True)
-        sec += time.perf_counter() - t0
-        npair += batch
-        fired += int((np.array(b[0])[:, 0, 0] >= 0).sum())
-    return sec / npair, fired / npair
+    hf.set_templates(H)
+    # Cap the call count. A 1x1 shape would otherwise need `pairs_target`
+    # separate run() calls per repeat -- 40000 of them, each paying full
+    # Python call overhead, which is minutes for one cell and measures the
+    # binding rather than the kernel. Small shapes are intrinsically slow per
+    # pair; that is the thing being measured, and 200 calls shows it.
+    per = int(np.clip(pairs_target // max(1, nt * nd), 5, 200))
+    times, fired, npair = [], 0, 0
+    for _ in range(reps):
+        t = 0.0
+        for _ in range(per):
+            hf.set_data(noise((nd, n), rng))     # fresh realisation each batch
+            t0 = time.perf_counter()
+            b = hf.run(binsize=n, threshold=snr, raw=True)
+            t += time.perf_counter() - t0
+            fired += int((np.array(b[0])[:, :, 0] >= 0).sum())
+            npair += nt * nd
+        times.append(t / (per * nt * nd))
+    return float(np.median(times)), fired / max(npair, 1)
 
 
 def _cost_cell(job):
-    n, m, U, K, snr, f, be, trials, gate = job
+    n, m, U, K, snr, f, be, gate, nt, nd = job
     try:
         ref = make_ref(n, m, f, be)
-        sec, rate = measure_cost(n, m, U, K, snr, trials, ref, gate=gate)
+        sec, rate = measure_cost(n, m, U, K, snr, ref, nt=nt, nd=nd, gate=gate)
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
-                    beff_act=beff_of(ref, m), sec=sec, rate=rate)
+                    nt=nt, nd=nd, beff_act=beff_of(ref, m), sec=sec, rate=rate)
     except Exception as e:
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, gate=gate,
-                    error=str(e))
+                    nt=locals().get("nt"), nd=locals().get("nd"), error=str(e))
