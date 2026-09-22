@@ -64,7 +64,37 @@ If it moved `min(S/true)` from 0.893 to 0.95, `ilo` could rise from 0.912 to
 0.978, and the measured `ilo` sweep says that roughly halves the odd pass again.
 Worth up to ~10% overall. This is the best-posed live item on the page.
 
-### 2. Template support pruning -- small here, real for the flat filter
+### 2. Key the tables on the decimation ratio, not on n and band separately
+
+The tables cover `n=4096` and nothing else, so four of the five transform
+lengths the benchmark exercises get no answer at all. Measuring every length
+outright is the brute-force fix and it is what is running; the interesting
+question is whether most of that grid is redundant.
+
+The hypothesis: given the reference's own `f(m)` and `B_eff(m)` at the band --
+which the tables already key on, and which absorb the spectral difference
+between lengths -- dismissal depends on the DECIMATION RATIO `R = n/m` rather
+than on `n` and `m` separately. The coarse pass folds R bins into one and
+searches a lag grid R times coarser, and R is what sets how much the
+correlation peak is smeared; n on its own mostly sets the lag count, which
+bears on the noise maximum rather than on whether the signal's own peak clears
+the threshold.
+
+There is already evidence that R is the axis that bites. Forcing bands at
+snr 5.0 lost 34 triggers at band 1024 (R=4) against 8 at band 512 (R=8), which
+is not how a merely-strict threshold behaves -- it is the deterministic `g` and
+`graw` running optimistic at small R.
+
+If it holds, a row measured at `n=4096, m=1024` speaks for `n=16384, m=4096`,
+and the table collapses from one grid per length to one grid in R. That is the
+difference between retuning for a new transform length and not having to.
+
+This is testable against the sweep now running without any new measurement:
+it covers five lengths with overlapping ratios, so the same R appears at
+several n. If dismissal at fixed (R, f, B_eff) agrees across n, the axis is
+real; if it does not, the tables stay per-length and this item closes.
+
+### 3. Template support pruning -- small here, real for the flat filter
 
 Measured on the captures: templates are **exactly zero in 2047 of 4096 bins**.
 The product is therefore zero above n/2, and half the full filter's product
@@ -82,7 +112,7 @@ is 6% of the hierarchical cost, so **0.7% here** -- but 12% for anyone using
 Detect the support at ingest (measure it, do not assume it); a filter that is
 dense gets the current path.
 
-### 3. Output protocol
+### 4. Output protocol
 
 `fill` writes zeroed peak records for the 98.5% of pairs that report nothing.
 Returning fired peaks plus a count instead would remove it. Worth 1%, and it

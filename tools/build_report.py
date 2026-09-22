@@ -623,7 +623,11 @@ def bench_speedup(runs, names):
                  'the library refuses rather than guessing a configuration it '
                  'cannot stand behind. These combinations reported no result '
                  'for that reason, which is a gap in the shipped tables and '
-                 'not a failure of the build.</div>')
+                 'not a failure of the build. Coverage extends along the '
+                 'threshold axis -- anything at or above the lowest measured '
+                 'threshold is answered conservatively -- but not across '
+                 'transform lengths, where nothing measured yet bounds the '
+                 'answer.</div>')
         o.append(table(["runner", "n", "snr"],
                        [[html.escape(l), h["n"], "%g" % h["snr"]]
                         for l, h in gaps]))

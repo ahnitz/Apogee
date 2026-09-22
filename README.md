@@ -149,12 +149,16 @@ falls toward 1x on data where most pairs trigger.
 
 ## Caveats
 
-- **The library refuses configurations its tables do not cover.** Band,
-  oversampling, taps and margin are chosen from two measured tables shipped with
-  the package, keyed on the reference you supply. Outside their coverage --
-  currently `n=4096` at snr 5.0/5.5/6.0 -- construction raises rather than
-  guessing. Extend it by running `tools/hmf_tune.py`, or state the
-  configuration yourself at construction, which always works.
+- **The tuning tables cover one transform length.** Band, oversampling, taps
+  and the coarse margin are chosen from measured tables keyed on the reference
+  you supply, and those tables currently hold `n=4096` only. A threshold at or
+  above the lowest measured one is answered conservatively, so any `snr >= 5`
+  works at that length; other lengths raise rather than guess. Extend it with
+  `tools/hmf_tune.py`, or state the configuration yourself at construction,
+  which always works.
+- **A conservative answer is safe, not optimal.** Outside an exactly measured
+  threshold the choice is bounded by the worst row across the whole measured
+  range, which can pick a wider first pass than the threshold really needs.
 - **A hand-specified configuration does not get a tuned margin.** Passing
   `band`/`oversample`/`taps` bypasses selection, and the coarse threshold then comes from
   the compiled model in `src/hmf_table.h`, whose recovery factors are derived
