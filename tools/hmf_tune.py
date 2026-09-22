@@ -87,7 +87,21 @@ real reference is at 190.2 -- ten to twenty-seven times broader, a different
 regime, and exactly the direction that explains its 3.4e-3 dismissal against
 their 5.3e-4 to 1.2e-3.  A training family has to span B_eff from about 1 to
 m; this one spans a twentieth of that at the top end and none of it at the
-bottom.  At run
+bottom.
+
+VALIDATED.  Holding f(512) at the captures' 0.9335 and varying only the
+in-band profile -- exponential with the decay constant sweeping B_eff --
+dismissal rises with B_eff as the mechanism says it must:
+
+    B_eff      10     40    160    190*    343    452
+    dismiss  4.8e-4 1.7e-4 9.1e-4 1.5e-3 2.7e-3 3.8e-3     * the real reference
+
+Interpolating the synthetic points to B_eff = 190 predicts ~1.2e-3 where the
+real reference measures 1.5e-3, agreement to ~25% at these trial counts.  So
+the real curve is not special: it sits on the surface, and the earlier
+mismatch was entirely that make_template could not reach its bandwidth.  A
+family of exponential in-band profiles spans the axis and can carry the
+training.  At run
 time each candidate is evaluated at its own features and the cheapest
 admissible one wins.
 
