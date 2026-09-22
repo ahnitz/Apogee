@@ -176,7 +176,8 @@ def replay(mf, path, reps, a):
     # the flat filter is the reference in that case.
     thr = a.snr or float(z["threshold"])
     replayed = a.snr and abs(a.snr - float(z["threshold"])) > 1e-6
-    band = a.band or int(z["band"])
+    # --band -1 means "let the library choose from the reference"
+    band = None if (a.band is not None and a.band < 0) else (a.band or int(z["band"]))
     fs = a.first_stage or float(z["first_stage"])
     nb = int(z["nbatch"])
     series = z["series"]
@@ -185,7 +186,7 @@ def replay(mf, path, reps, a):
 
     p = mf.HierarchicalFilter(n, ndata=1, ntemplates=nb, snr=thr,
                               fd=float(z["fd"]),
-                              band=band or None,
+                              band=band,
                               oversample=a.oversample if band else None,
                               taps=a.filter_taps if band else None)
     if len(z["reference"]):
@@ -240,8 +241,9 @@ def replay(mf, path, reps, a):
 
     print("matchedfilter %s  target=%s" % (mf.__version__, mf.backend()))
     print("captured from pycbc_inspiral_fir: %s" % os.path.basename(path))
-    print("n=%d  threshold=%.2f  band=%d bins (%.0f Hz)  first stage %s  fd=%g"
-          % (n, thr, band, float(z["band_hz"]),
+    print("n=%d  threshold=%.2f  band=%s  first stage %s  fd=%g"
+          % (n, thr, ("auto" if band is None else "%d bins (%.0f Hz)"
+                      % (band, float(z["band_hz"]))),
              ("%.2f" % fs) if fs > 0 else "derived", float(z["fd"])))
     print("%d blocks x %d templates = %d pairs, band/oversample/taps %s\n"
           % (len(st), nb, len(st) * nb, p.config))

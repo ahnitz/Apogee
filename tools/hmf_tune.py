@@ -392,3 +392,43 @@ def _fdr_cell(job):
                     beff_act=beff_of(ref, m), dismissal=dm, detected=det, sec=sec)
     except Exception as e:
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, error=str(e))
+
+
+def measure_cost(n, band, U, K, snr, trials, power, batch=64):
+    """Seconds per pair on NOISE at the operating threshold.
+
+    Cost is dominated by how often the gate opens, and on real data that is a
+    percent or two -- so it has to be timed on noise.  Timing it on the FDR
+    harness, which injects into every trial so half the pairs fire, made every
+    band look alike at 9-13 us/pair where the captures separate band 256 from
+    1024 by 23 ms/segment against 10.  Same reference as the FDR cell, because
+    the reference sets the gate and the gate sets the rate.
+    """
+    rng = np.random.default_rng(7)
+    power = np.ascontiguousarray(power, dtype=np.float32)
+    H = template_with_power(n, power)
+    hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
+                               band=band, oversample=U, taps=K)
+    hf.set_reference(power)
+    hf.set_templates(H[None, :])
+    sec, npair, fired = 0.0, 0, 0
+    for _ in range((trials + batch - 1) // batch):
+        D = noise((batch, n), rng)            # no injection: this is the point
+        hf.set_data(D)
+        t0 = time.perf_counter()
+        b = hf.run(binsize=n, threshold=snr, raw=True)
+        sec += time.perf_counter() - t0
+        npair += batch
+        fired += int((np.array(b[0])[:, 0, 0] >= 0).sum())
+    return sec / npair, fired / npair
+
+
+def _cost_cell(job):
+    n, m, U, K, snr, f, be, trials = job
+    try:
+        ref = make_ref(n, m, f, be)
+        sec, rate = measure_cost(n, m, U, K, snr, trials, ref)
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be,
+                    beff_act=beff_of(ref, m), sec=sec, rate=rate)
+    except Exception as e:
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, error=str(e))

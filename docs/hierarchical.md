@@ -583,3 +583,57 @@ The pair-loop tile is a separate knob (`MF_MFTILE`, default 8). A sweep over
 4/8/16/32/64 at five shapes put 8 within 5% of the best everywhere and found no
 rule that beat it -- the optimum wanders between 8, 16 and 64 with no monotone
 dependence on either axis -- so it is left fixed rather than fitted to noise.
+
+## The tuning table
+
+The band, oversample and tap count used to come from `hmf_choose`, a
+nearest-neighbour lookup on `(n, snr, fd)` that never saw the signal. They now
+come from a measured table, `python/matchedfilter/tuning.txt`, shipped as
+package data and read once when the plan is built.
+
+**What it is keyed on.** Two numbers per candidate band, both computed from
+the caller's reference:
+
+- **f(m)** -- the accumulated power below that band edge, how much signal the
+  band keeps;
+- **B_eff(m)** -- the effective bandwidth of the power *inside* it, as the
+  participation ratio `(sum p)^2 / sum p^2` in bins, which sets how sharp the
+  correlation peak is and therefore how badly the coarse lag grid scallops it.
+
+One number does not suffice: two references agreeing on f(512) to four figures
+differ threefold in dismissal when their in-band power is distributed
+differently -- 85% below bin 256 against 95%. The extremes make the mechanism
+plain: all the power in one bin is `B_eff = 1`, a maximally wide peak the grid
+resolves perfectly; flat across the band is `B_eff = m` and a peak one sample
+wide. Both features move dismissal the same way, so the row that speaks for a
+reference is one measured at least as high in both.
+
+**How it was measured.** By running the real filter, not a model -- an earlier
+attempt re-derived the statistic in numpy and reported a dismissal of 0.0 for a
+configuration that triggers 60% of the time. The two halves need *different*
+workloads, which is the subtlety:
+
+| | workload | why |
+|---|---|---|
+| FDR rows | injections at the threshold | you cannot count dismissals without signals |
+| COST rows | pure noise at the threshold | cost is set by how often the gate opens, which on real data is ~1% |
+
+Timing on the injected harness made every band read 9-13 us/pair, because
+injections force half the pairs to fire whatever the band. On noise the same
+cells separate 12.7 us/pair from 1.8.
+
+**What it delivers.** Asked for `fd=1e-3` on the twelve captures it picks band
+2048 and returns **0 of 842**, against the old default's 31 of 842 -- which is
+3.7% missed on a 0.1% budget. It costs 16.07 ms/segment where the default ran
+10.05. The guarantee is the thing being bought.
+
+It is not yet optimal. Hand-tuning band 1024 with `gate_margin=0.94` also
+reaches 0/842, at 13.2 ms -- 22% cheaper. The tuner cannot find that because
+its candidate space is `(band, oversample, taps)` and does not include the
+gate scaling. Adding that dimension is the next step.
+
+**Regenerating.** `tools/hmf_tune.py`. The two halves go stale independently:
+COST on any kernel or machine change, FDR on any change to the gate or the
+interpolation. The file carries its CPU, commit, trial count and resolution
+floor, and `MF_TUNING` points at a different one -- so retuning needs no
+rebuild.

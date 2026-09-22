@@ -95,6 +95,10 @@ class MatchedFilter:
         self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
 
     # ---- ingest -------------------------------------------------------------
+    def _ensure(self):
+        """The live plan. Always built here; HierarchicalFilter defers."""
+        return self._mf
+
     def set_data(self, spectra, index=None):
         """Set one data spectrum (with ``index``) or all from a (ndata, n) array.
 
@@ -102,13 +106,13 @@ class MatchedFilter:
         segment, natural order.
         """
         if index is not None:
-            self._mf.set_data(int(index), _as_c64(spectra, self.n, "spectrum"))
+            self._ensure().set_data(int(index), _as_c64(spectra, self.n, "spectrum"))
             return
         a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ndata, self.n):
             raise ValueError(f"expected shape ({self.ndata}, {self.n}), got {a.shape}")
         for i in range(self.ndata):
-            self._mf.set_data(i, a[i])
+            self._ensure().set_data(i, a[i])
 
     def set_templates(self, spectra, index=None):
         """Set one template spectrum (with ``index``) or all from a (ntemplates, n) array.
@@ -116,18 +120,18 @@ class MatchedFilter:
         Conjugation happens here, once, rather than in the pair loop.
         """
         if index is not None:
-            self._mf.set_template(int(index), _as_c64(spectra, self.n, "spectrum"))
+            self._ensure().set_template(int(index), _as_c64(spectra, self.n, "spectrum"))
             return
         a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ntemplates, self.n):
             raise ValueError(f"expected shape ({self.ntemplates}, {self.n}), got {a.shape}")
         for i in range(self.ntemplates):
-            self._mf.set_template(i, a[i])
+            self._ensure().set_template(i, a[i])
 
     # ---- run ----------------------------------------------------------------
     def nbins(self, binsize, window=None):
         start, end = self._window(window)
-        return self._mf.nbins(int(binsize), start, end)
+        return self._ensure().nbins(int(binsize), start, end)
 
     def _window(self, window):
         if window is None:
@@ -172,7 +176,7 @@ class MatchedFilter:
         if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
            or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
             raise ValueError("data/templates sub-range out of bounds")
-        nb = self._mf.nbins(binsize, start, end)
+        nb = self._ensure().nbins(binsize, start, end)
         rows = nd * nt
         # Reuse the output buffers.  Six allocations per call is nothing beside
         # a 2^20 transform, but a caller driving small batches in a tight loop
@@ -187,7 +191,7 @@ class MatchedFilter:
             peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
             buf = self._buf = ((rows, nb), idx, val, mag, cnt, peaks)
         _, idx, val, mag, cnt, peaks = buf
-        self._mf.run(d0, nd, t0, nt, binsize, float(threshold), start, end,
+        self._ensure().run(d0, nd, t0, nt, binsize, float(threshold), start, end,
                      idx, val, mag, cnt)
         if raw:
             r = (idx.reshape(nd, nt, nb), val.reshape(nd, nt, nb),
@@ -251,7 +255,9 @@ def _load_tuning(path=None):
                 fdr.append((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
                             float(f[5]), float(f[6]), float(f[7]), float(f[8])))
             elif f[0] == "COST":
-                cost[(int(f[1]), int(f[2]), int(f[3]), int(f[4]))] = float(f[5])
+                cost.setdefault((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
+                                 float(f[5])), []).append(
+                                     (float(f[6]), float(f[7]), float(f[8])))
     t = {"fdr": fdr, "cost": cost, "meta": meta, "path": path}
     if path is None or _TUNING is None:
         _TUNING = t
@@ -328,8 +334,12 @@ def choose_config(power, n, snr, fd, tuning=None):
         cover = [dm for (tf, tbe, dm) in rows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
         if not cover or max(cover) > fd:
             continue
-        c = t["cost"].get((n, band, U, K))
-        if c is not None and c < bcost:
+        crows = t["cost"].get((n, band, U, K, round(snr, 2)))
+        if not crows:
+            continue
+        cf = [c for (tf, tbe, c) in crows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
+        c = max(cf) if cf else max(c for (_, _, c) in crows)
+        if c < bcost:
             best, bcost = (band, U, K), c
     return best
 
@@ -372,11 +382,47 @@ class HierarchicalFilter(MatchedFilter):
         self.fd = float(fd)
         self._buf = None
         self._sbuf = None
+        self._pending_ref = None
         if band is None:
-            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd)
+            # Defer: the band should be chosen from the reference, and the
+            # reference arrives after construction in every caller we have.
+            # Building the plan on first use instead of here means the choice
+            # can see it, with no rebuild and no re-ingest of templates.
+            self._mf = None
+            self._defer = True
         else:
+            self._defer = False
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd,
                                  int(band), int(oversample or 2), int(taps or 8))
+
+    def _ensure(self):
+        """Build the plan, choosing its configuration if that was deferred.
+
+        The band should be chosen from the reference, and every caller sets
+        the reference after construction -- so the plan is built on first use
+        instead of in __init__.  That lets the choice see the reference with
+        no rebuild and no re-ingest of templates.
+        """
+        if self._mf is not None:
+            return self._mf
+        cfg = None
+        if self._pending_ref is not None:
+            try:
+                cfg = choose_config(self._pending_ref, self.n, self.snr, self.fd)
+            except Exception:
+                cfg = None       # a missing or unreadable table is not fatal
+        if cfg is None:
+            # nothing measured for this case: fall back to the compiled design
+            # table, which is what the library did before the tuning file
+            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
+                                 self.snr, self.fd)
+        else:
+            b, u, k = cfg
+            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
+                                 self.snr, self.fd, int(b), int(u), int(k))
+        if self._pending_ref is not None:
+            self._mf.set_reference(self._pending_ref)
+        return self._mf
 
     def set_first_stage(self, snr):
         """Calibrate the first stage against `snr` rather than the threshold.
@@ -400,7 +446,7 @@ class HierarchicalFilter(MatchedFilter):
 
         Pass ``None`` or a non-positive value to go back to deriving it.
         """
-        self._mf.set_first_stage(0.0 if snr is None else float(snr))
+        self._ensure().set_first_stage(0.0 if snr is None else float(snr))
 
     def set_reference(self, power):
         """Set the reference SNR distribution.
@@ -423,12 +469,16 @@ class HierarchicalFilter(MatchedFilter):
         template.
         """
         if power is None:
-            self._mf.set_reference(None)
+            self._pending_ref = None
+            if self._mf is not None:
+                self._mf.set_reference(None)
             return
         p = np.ascontiguousarray(power, dtype=np.float32)
         if p.size != self.n:
             raise ValueError(f"reference must have {self.n} values, got {p.size}")
-        self._mf.set_reference(p)
+        self._pending_ref = p
+        if self._mf is not None:
+            self._mf.set_reference(p)
 
     def run_series(self, series, starts, win_start, win_end,
                    binsize=None, threshold=0.0, templates=None, raw=False):
@@ -470,7 +520,7 @@ class HierarchicalFilter(MatchedFilter):
         t0, nt = (0, self.ntemplates) if templates is None else (
             int(templates[0]), int(templates[1]))
         binsize = self.n if binsize is None else int(binsize)
-        nb = self._mf.nbins(binsize, int(ws[0]), int(we[0]))
+        nb = self._ensure().nbins(binsize, int(ws[0]), int(we[0]))
         need = nblk * nt * nb
         # Reuse the buffers, as run() does.  Re-allocated per call they are a
         # small cost here -- one call per segment rather than per block -- but
@@ -483,7 +533,7 @@ class HierarchicalFilter(MatchedFilter):
                                np.empty(need, dtype=np.float32),
                                np.empty(nblk * nt, dtype=np.int32))
         _, idx, val, mag, cnt = sb
-        self._mf.run_series(ser, st, ws, we, t0, nt, binsize, float(threshold),
+        self._ensure().run_series(ser, st, ws, we, t0, nt, binsize, float(threshold),
                             idx, val, mag, cnt)
         if raw:
             return (idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb),
@@ -497,13 +547,13 @@ class HierarchicalFilter(MatchedFilter):
     @property
     def config(self):
         """``(band, oversample, taps)`` the design table selected."""
-        band, u, k = self._mf.config()
+        band, u, k = self._ensure().config()
         return band, u, k
 
     @property
     def stats(self):
         """``(pairs, triggers)`` accumulated since construction."""
-        return self._mf.stats()
+        return self._ensure().stats()
 
     @property
     def trigger_rate(self):
@@ -517,5 +567,5 @@ class HierarchicalFilter(MatchedFilter):
         Counted over the plan's whole lifetime, not per run.  To measure one
         workload, filter it with a plan that has seen nothing else.
         """
-        pairs, trig = self._mf.stats()
+        pairs, trig = self._ensure().stats()
         return trig / pairs if pairs else 0.0
