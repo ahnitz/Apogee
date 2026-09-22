@@ -117,11 +117,16 @@ Phase 2 was meant to chase -- the twiddle multiply alone costs:
 | 1 split i16 Q15 | 0.0232 | 0.0378 |
 | 3 interleaved i8 | 0.0430 (**0.54x**) | 0.0588 (**0.64x**) |
 
-int8 is slower than int16 on the arithmetic by itself. The instruction count
-argument was right and irrelevant: `vpmaddubsw` does two multiplies, an add and
-a saturation per output lane, and issues at about half the rate of
-`vpmulhrsw`. Two instructions instead of six buys the same multiply
-throughput, and the interleaving is then pure loss.
+int8 is slower than int16 on the arithmetic by itself, in a comparison where
+both kernels do the same work in the same structure and neither packs back.
+The instruction-count argument was right and did not matter.
+
+Why it does not matter is not established here. Attempts to measure the issue
+rate of these instructions in isolation produced numbers that contradict each
+other across targets, so the mechanism is inferred rather than shown: most
+likely `vpmaddubsw`, which performs two multiplies, an add and a saturation
+per output lane, does not issue fast enough for two of them to beat four
+`vpmulhrsw`. What is measured is the outcome, not the cause.
 
 The generalisation is worth keeping: these instructions are built for dense
 matrix products, where every output needs every input times a distinct
@@ -167,6 +172,28 @@ segments, 842 triggers, zero missed, and the ms/segment must fall.
 
 Phases 2 to 4 were not run: Phase 1's ceiling measurement removed their
 premise.
+
+## Why banking the rearrangement does not rescue it
+
+In an N templates by M data batch, anything that can be rearranged once is
+free against N*M pair transforms, and the library already leans on that: the
+template and data spectra are stored group-major at ingest so every pair
+transform reads sequentially, which is the whole reason preprocessing being
+free matters.
+
+That principle does not apply to the cost measured here. The format churn is
+not at ingest, it is **per butterfly stage**: the dot-product instructions
+consume interleaved operands and produce split results, so every stage inside
+the transform has to put its output back into the form the next stage's
+multiply wants. The data being transformed is the product, which is per-pair,
+so nothing about it can be banked.
+
+Seen that way the current representation is already the answer to the
+question. `vpmulhrsw` takes split and produces split, so the kernel never
+changes format at all, from ingest to the final magnitude. Any scheme that
+buys cheaper arithmetic by demanding a different operand layout has to pay for
+that layout once per stage, ten times per transform, on data that is unique to
+the pair.
 
 ## What survives
 
