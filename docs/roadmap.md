@@ -128,11 +128,27 @@ probe driven by the reference alone sets a gate far too high there, predicts
 almost no triggers, and picks it -- the run then triggers 8.75% and loses
 110/842 instead of 31.
 
-The templates cannot be consulted at `set_reference`, because they are stored
-as coarse spectra *at the chosen band*. Completing this needs either the
-caller's template power passed alongside the reference, or deferring selection
-to the first run while keeping full-band template power to re-ingest from.
-Both are API changes, and that is the remaining decision.
+The reference is *deliberately* not the filter's power -- that is the whole
+reason `set_reference` exists. pycbc's `_set_engine_reference` builds it from
+the reference SNR series' own spectrum and says why: "0.30 of the filter's own
+power sits below 256 Hz against 0.927 of the SNR it produces". The gate needs
+the signal distribution and the noise needs the filter distribution, and for a
+FIR ratio filter those are different objects.
+
+**This does not need an API change.** The filter distribution is already inside
+the library: `p->full` stores every template at full length. What is missing is
+only that `tpow` accumulates over the band (`for k<m`) rather than over n, and
+that selection happens before any template is seen. The complete fix is:
+
+1. accumulate template power over the full n at ingest -- band-independent, one
+   n-float array;
+2. defer the joint selection to the first run, when both distributions are
+   known;
+3. on a band change, re-derive `ct0`/`ct1` from the templates the full plan
+   already holds, so the caller never re-uploads. pycbc caches its uploads
+   (`_ap_loaded`), so a rebuild that demanded re-ingest would be wrong.
+
+That closes it entirely within `hmf.c` plus an accessor on the full plan.
 
 **Also missing.** The cost -- band-dependent allocation
 (`ap_mf_create(band,...)`, `cf`, `ct0/ct1`, `cd`, the scratch buffers) has to

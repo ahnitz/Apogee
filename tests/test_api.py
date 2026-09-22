@@ -459,6 +459,10 @@ def test_run_series_grouping_is_invisible():
            "See docs/hierarchical.md.",
     strict=False)
 def test_ratio_filter_shaped_workload():
+    _ratio_filter_shaped_workload()
+
+
+def _ratio_filter_shaped_workload():
     """The shape a ratio/FIR search actually uses.
 
     What makes it different from every other test here:
@@ -564,6 +568,72 @@ def test_ratio_filter_shaped_workload():
     assert invented == 0, f"invented {invented} peaks"
     assert differ == 0, f"{differ} recovered peaks differ from the ungated filter"
     assert omitted / detected <= 3e-2, f"omitted {omitted}/{detected}"
+
+
+def test_autotuned_calibration_meets_the_budget_where_the_default_does_not():
+    """`MF_GCAL=1` is what makes the false-dismissal budget hold.
+
+    `test_ratio_filter_shaped_workload` above is xfail for exactly one reason:
+    g and graw are derived from a noiseless autocorrelation of the reference's
+    MEAN spectrum, which is not a bound on any individual realisation, so the
+    gate sits too high and the omission rate runs ~5% against a 1% budget.
+    The autotune re-measures both over realisations and the budget then holds.
+
+    Pinning that here does two things. It stops the autotune silently ceasing
+    to work -- nothing else in the suite exercises it. And it makes the xfail
+    above a statement about the DEFAULT rather than about the method: the
+    calibration is capable of meeting the budget, it is simply not on, because
+    it also over-corrects and costs ~9% more than tuning the gate by hand
+    (14.43 against 13.29 ms/segment on the captures, both at zero loss).
+    """
+    old = os.environ.get("MF_GCAL")
+    os.environ["MF_GCAL"] = "1"
+    try:
+        _ratio_filter_shaped_workload()
+    finally:
+        if old is None: del os.environ["MF_GCAL"]
+        else: os.environ["MF_GCAL"] = old
+
+
+def test_band_autoselect_is_off_and_the_default_band_is_used():
+    """The power-driven band choice must stay off until it can decide.
+
+    `select_band` probes every candidate band against the caller's reference
+    and rebuilds the plan around the cheapest. The mechanism works; the
+    decision does not, because the gate is calibrated on the SIGNAL's band
+    fraction while the coarse statistic's noise comes from the FILTER's, and
+    those diverge (0.9335 against 0.4517 at band 512 on the captures). Driven
+    by the reference alone it picks too narrow and loses triggers -- 110 of
+    842 against 31.
+
+    So this asserts the default is untouched by a reference, and that the
+    machinery is still reachable behind the flag. When the missing term lands,
+    this test is what says the default has changed.
+    """
+    n, nt = 4096, 4
+    power = inspiral_power(n)
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+
+    def band_after_reference(env):
+        old = os.environ.get("MF_AUTOBAND")
+        if env is None: os.environ.pop("MF_AUTOBAND", None)
+        else: os.environ["MF_AUTOBAND"] = env
+        try:
+            hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=5.0, fd=1e-3)
+            before = hf.config[0]
+            hf.set_reference(power)
+            hf.set_templates(H)
+            return before, hf.config[0]
+        finally:
+            if old is None: os.environ.pop("MF_AUTOBAND", None)
+            else: os.environ["MF_AUTOBAND"] = old
+
+    before, after = band_after_reference(None)
+    assert after == before, (
+        f"set_reference changed the band {before} -> {after} with the "
+        "autoselect off; it must not")
+    _, picked = band_after_reference("1")
+    assert picked > 0
 
 
 def test_python_overhead_stays_off_the_hot_path():
