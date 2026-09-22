@@ -325,8 +325,35 @@ of 0.926, against the 0.897 the even gate already achieves for free. The
 candidate set cannot be narrowed, so nearly everything must be evaluated, and
 an FFT is the efficient way to evaluate everything.
 
-That is the argument. Two earlier attempts to settle this reached the same
-conclusion for wrong reasons, and both are worth recording as traps:
+The other half of the argument is that no kernel can close the gap either,
+and this is worth stating because designing one is not the same as truncating
+one. Solving directly for the best K-tap filter -- weighted least squares over
+the measured spectral weight, which is available because m and the weighting
+are both known -- beats truncating the ideal kernel by about a factor of two
+at every length:
+
+| taps | truncated ideal | least squares |
+|---:|---:|---:|
+| 5 | 1.9e-01 | 8.8e-02 |
+| 9 | 9.5e-02 | 5.6e-02 |
+| 17 | 8.3e-02 | 3.2e-02 |
+| 33 | 4.2e-02 | 2.6e-02 |
+
+(worst error relative to the peak.) It is not enough. Computing all m
+half-sample points with a K-tap filter costs m*K*8 flops against the
+transform's 51000, so the transform's effective budget is fewer than 6.2 taps
+per point, and the best possible five-tap filter still carries 8.8% error.
+Fractional delay on a critically sampled signal needs length, and the coarse
+series occupies every one of its m bins by construction -- the band IS the
+transform size, so there is no oversampling headroom for a short delay filter
+to live in.
+
+So the transform is not merely convenient here, it is close to optimal: it
+produces every half-sample point at an effective six taps each, which no
+filter can match.
+
+Two earlier attempts to settle this reached the same conclusion for wrong
+reasons, and both are worth recording as traps:
 
 - **A plain sinc is the wrong kernel here.** The coarse band is one-sided, so
   the exact interpolator carries a carrier phase,
