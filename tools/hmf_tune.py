@@ -18,6 +18,29 @@ call, not a formula.
 The consequence worth having: after any change to the kernel or the gate, this
 can be re-run and will say whether the compiled choices still hold.
 
+What decides the answer is how the SNR accumulates with frequency, which is
+exactly what the reference states -- so the tuner is parameterised by it.  A
+template whose own power equals the reference reproduces that accumulation,
+and therefore stands in for any bank sharing the profile, including a ratio
+filter whose own spectrum looks nothing like its output.  The filter's shape
+does not need reconstructing; the rest is how that accumulation interacts with
+noise, which is what the simulation is for.
+
+Given the captures' own reference (0.9335 of the SNR below band 512, 0.9875
+below 1024) it reproduces reality: band 512 dismisses 1.97e-3 and band 1024
+2.81e-3 against a 1e-3 target, both rejected, and band 2048 dismisses none.
+2048 is what the compiled table picks and the only one of the three returning
+all 893 triggers through pycbc.
+
+Run instead against `inspiral_power`, whose accumulation is 0.9999 below bin
+512, it picks band 512 at U=1 -- correctly for that profile, and uselessly,
+since nothing real has it.  The profile is the input that matters, and getting
+it wrong is how a tuner validates itself and still ships a configuration that
+loses 244 of 842 triggers.
+
+Still short of a table: 6000 trials resolve ~3e-4, enough for a 1e-3 target
+but not the 1e-4 one, which needs roughly ten times more.
+
     python tools/hmf_tune.py --n 4096 --snr 5.0 --fd 1e-3 --trials 4000
 """
 import argparse
