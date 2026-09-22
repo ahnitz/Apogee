@@ -52,6 +52,9 @@ int ap_has_fused_prod(const ap_plan *p);
    caller can examine lags the peak scan discards.  NULL if unsupported. */
 float *ap_series_buf(ap_plan *p, int on);
 size_t ap_series_stride(ap_plan *p);
+float ap_interp_max(ap_plan *p, size_t ws, size_t we, float evmax,
+                    const float *hlo, const float *hhi, int K, int ncand,
+                    float frac);
 
 int ap_binmax_prod(ap_plan *p, const float *dr, const float *di,
                    const float *tr, const float *ti,

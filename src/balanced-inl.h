@@ -63,7 +63,7 @@ typedef struct {
   vf *TLr,*TLi;
   float *w1r,*w1i,*w2r,*w2i;
   float *hr,*hi,*lr,*li;
-  float *ser; size_t serstride;   /* the output series, split by lag */
+  float *ser; size_t serstride; int nostore;
   float *scg;          /* [g][k2] scalar part of the stage-A twiddle, precomputed */
   int fuse;     /* fused product in stage A; resolved once at plan build,
                    never per transform -- getenv in stageA_prod_gm cost a
@@ -541,22 +541,15 @@ static int bins_reserve(BP*p,size_t nb){
   p->nbcap=nb; return 0;
 }
 
-static void binmax_core(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
-                            size_t ws,size_t we){
+template <bool STORE>
+static void binmax_one(BP*p,float thr,ap_peak*out,int conj,size_t ws,size_t we){
   const int N1=p->N1,N2=p->N2;
-  const size_t nb=(we-ws+binsize-1)/binsize;
   const float t2 = thr>0.f ? thr*thr : -1.f;
   const vf NEG=V_SET1(-1.f);
-  const unsigned allm=(unsigned)((1ull<<AP_W)-1ull);  /* all lanes in window */
-  /* Bin index is (k - ws)/binsize, and a runtime divide is ~20 cycles in a loop
-     whose whole body is three instructions.  Bin sizes are powers of two in every
-     realistic use, so shift instead and keep the divide only as a fallback. */
-  const int bpow = (binsize & (binsize-1)) ? -1 : (int)__builtin_ctzl(binsize);
-#define BINOF(k) (bpow>=0 ? (((k)-(long)ws)>>bpow) : (((k)-(long)ws)/(long)binsize))
+  const unsigned allm=(unsigned)((1ull<<AP_W)-1ull);
+  float *const ser=p->ser; const size_t sstr=p->serstride;
+  (void)ser; (void)sstr;
 
-  /* One bin over the whole window is the common case at the small sizes, and then
-     the accumulators live in registers. */
-  if(nb==1){
     vf am=V_SET1(t2), arr=V_ZERO(), aii=V_ZERO(); vi axx=VI_SET1(-1);
     const int NBK=N2/AP_W, BB=p->bblk;
     for(int b0=0;b0<NBK;b0+=BB){
@@ -582,10 +575,14 @@ static void binmax_core(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
           if(!inw) continue;
         }
         vf m2=V_FMADD(RR[e],RR[e],V_MUL(RI[e],RI[e]));
-        /* split and contiguous in the lag index, so a consumer indexes it
-           with ser[k] and ser[serstride+k] and no arithmetic per sample */
-        if(p->ser){ V_STOREU(p->ser+(size_t)k0,RR[e]);
-                    V_STOREU(p->ser+p->serstride+(size_t)k0,RI[e]); }
+        /* Keep the series, split and contiguous in the lag index, so a
+           consumer indexes it as ser[k] and ser[serstride+k].
+           STORE is a template parameter, not a test: as a branch on a plan
+           field inside this loop it cost 6950 cycles a pair for 128 stores,
+           because it stopped the compiler scheduling the loop rather than
+           because the stores are expensive. */
+        if(STORE){ V_STOREU(ser+(size_t)k0,RR[e]);
+                   V_STOREU(ser+sstr+(size_t)k0,RI[e]); }
         if(inw!=allm) m2=V_SEL(V_MASK_FROM_BITS(inw),NEG,m2);
         /* Compare once, select four times, never materialising a bitmask.
            On AVX-512 the mask register was already free; portably the round
@@ -610,6 +607,27 @@ static void binmax_core(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
     return;
   }
 
+static void binmax_core(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
+                            size_t ws,size_t we){
+  const int N1=p->N1,N2=p->N2;
+  const size_t nb=(we-ws+binsize-1)/binsize;
+  const float t2 = thr>0.f ? thr*thr : -1.f;
+  const vf NEG=V_SET1(-1.f);
+  const unsigned allm=(unsigned)((1ull<<AP_W)-1ull);  /* all lanes in window */
+  /* Bin index is (k - ws)/binsize, and a runtime divide is ~20 cycles in a loop
+     whose whole body is three instructions.  Bin sizes are powers of two in every
+     realistic use, so shift instead and keep the divide only as a fallback. */
+  const int bpow = (binsize & (binsize-1)) ? -1 : (int)__builtin_ctzl(binsize);
+#define BINOF(k) (bpow>=0 ? (((k)-(long)ws)>>bpow) : (((k)-(long)ws)/(long)binsize))
+
+  /* One bin over the whole window is the common case at the small sizes, and then
+     the accumulators live in registers. */
+  if(nb==1){
+    if(p->ser && !p->nostore) binmax_one<true>(p,thr,out,conj,ws,we);
+    else                      binmax_one<false>(p,thr,out,conj,ws,we);
+    return;
+  }
+  if(0){ }
   /* Many bins: keep only a SCALAR running maximum per bin and compare against a
      broadcast of it.  The obvious form - a vector accumulator per bin - has to
      load 64 bytes per block just to run the compare, which at 2^20 is 4 MiB of
@@ -697,12 +715,70 @@ int has_prod(void *vp){ (void)vp; return 1; }   /* every length here is fused */
    neighbourhood of consecutive lags is not available as a sliding window;
    this is what makes it available. */
 size_t series_stride(void *vp){ return ((BP*)vp)->serstride; }
+
+/* Interpolated maximum over the stored output series.
+ *
+ * The coarse pass samples the correlation on a stride-R lag grid; the peak
+ * between samples is what the second transform exists to find.  This bounds
+ * it instead, from the series the first transform already produced.
+ *
+ * Candidates are the grid samples within `frac` of the largest, which is a
+ * vector compare per AP_W lags and almost never hits.  Each survivor gets two
+ * short complex convolutions, for the two half-sample offsets.  It lives here
+ * rather than in matchfilt.c because this file is compiled once per SIMD
+ * target -- matchfilt.c is built at the baseline ISA so it can be loaded
+ * before the CPU is interrogated, and the scan ran scalar there, costing more
+ * than the transform it saves. */
+float interp_max(void *vp,size_t ws,size_t we,float evmax,
+                 const float *hlo,const float *hhi,int K,int ncand,float frac){
+  BP *p=(BP*)vp;
+  if(!p->ser||evmax<=0.f) return evmax;
+  const float *sr=p->ser, *si=p->ser+p->serstride;
+  const float lim=frac*evmax;
+  const vf vlim=V_SET1(lim*lim);
+  int cand[64]; int nc=0;
+  const size_t k0=ws&~(size_t)(AP_W-1);
+  for(size_t k=k0;k<we && nc<ncand;k+=AP_W){
+    const vf re=V_LOADU(sr+k), im=V_LOADU(si+k);
+    const vf m2=V_FMADD(re,re,V_MUL(im,im));
+    if(!V_MASK_ANY(V_CMP_GT(m2,vlim))) continue;
+    for(int l=0;l<AP_W && nc<ncand;l++){
+      const size_t kk=k+l;
+      if(kk<ws||kk>=we) continue;
+      const float a=sr[kk],b=si[kk];
+      if(a*a+b*b>lim*lim) cand[nc++]=(int)kk;
+    }
+  }
+  float best=evmax*evmax;
+  for(int i=0;i<nc;i++){
+    const long j=cand[i];
+    float ar=0,ai=0,br=0,bi=0;
+    for(int t=-K;t<=K;t++){
+      const long kk=j+t;
+      if(kk<0||(size_t)kk>=p->serstride) continue;
+      const float re=sr[kk],im=si[kk];
+      const float lr=hlo[2*(t+K)],li=hlo[2*(t+K)+1];
+      const float hr=hhi[2*(t+K)],hi2=hhi[2*(t+K)+1];
+      ar+=re*lr-im*li; ai+=re*li+im*lr;
+      br+=re*hr-im*hi2; bi+=re*hi2+im*hr;
+    }
+    const float m1=ar*ar+ai*ai, m2=br*br+bi*bi;
+    if(m1>best) best=m1;
+    if(m2>best) best=m2;
+  }
+  return sqrtf(best);
+}
 float *series_buf(void *vp,int on){
   BP *p=(BP*)vp;
   if(!on){ p->ser=NULL; return NULL; }
+  if(getenv("MF_NOSTORE")) p->nostore=1;
   if(!p->ser){
-    p->serstride=(size_t)p->N+2*AP_W;
-    p->ser=(float*)ap_alloc64(p->serstride*2*sizeof(float));
+    /* Offset the two halves off a power of two.  Landing them a multiple of
+       4 KiB apart, or apart from the intermediate, makes every store collide
+       with a stage-B load in the store-forwarding logic. */
+    p->serstride=(size_t)p->N+2*AP_W+16;
+    { const char *e=getenv("MF_SERPAD"); if(e) p->serstride=(size_t)p->N+2*AP_W+(size_t)atoi(e); }
+    p->ser=(float*)ap_alloc64(p->serstride*2*sizeof(float)+4096);
     if(p->ser) memset(p->ser,0,p->serstride*2*sizeof(float));
   }
   return p->ser;
@@ -743,7 +819,7 @@ const ap_backend *Backend(void){
   static const ap_backend be = {
     hwy::TargetName(HWY_TARGET), AP_W,
     create, destroy, fft, supported,
-    binmax, binmax_split, has_prod, split, binmax_prod, series_buf, series_stride
+    binmax, binmax_split, has_prod, split, binmax_prod, series_buf, series_stride, interp_max
   };
   return &be;
 }

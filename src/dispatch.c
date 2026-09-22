@@ -98,6 +98,12 @@ int ap_binmax_prod(ap_plan *p,const float *dr,const float *di,
   return c;
 }
 
+float ap_interp_max(ap_plan *p,size_t ws,size_t we,float evmax,
+                    const float *hlo,const float *hhi,int K,int ncand,float frac){
+  if(!p||!p->be->interp) return evmax;
+  return p->be->interp(p->h,ws,we,evmax,hlo,hhi,K,ncand,frac);
+}
+
 size_t ap_series_stride(ap_plan *p){
   if(!p||!p->be->series_stride) return 0;
   return p->be->series_stride(p->h);

@@ -35,6 +35,12 @@ typedef struct {
      discards.  NULL turns it off; returns the buffer. */
   float *(*series)(void *, int on);
   size_t (*series_stride)(void *);
+  /* Interpolated maximum from the stored series: bounds the peak between grid
+     samples without a second transform.  Compiled per target, so its scan
+     vectorises. */
+  float (*interp)(void *, size_t ws, size_t we, float evmax,
+                  const float *hlo, const float *hhi, int K, int ncand,
+                  float frac);
 } ap_backend;
 
 /* The kernel for the target Highway's runtime dispatch selected, or NULL if
