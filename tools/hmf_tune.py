@@ -38,7 +38,24 @@ since nothing real has it.  The profile is the input that matters, and getting
 it wrong is how a tuner validates itself and still ships a configuration that
 loses 244 of 842 triggers.
 
-Still short of a shippable table, for two reasons.  6000 trials resolve ~3e-4,
+THE SYNTHETIC REFERENCE FAMILY DOES NOT REPRODUCE THE REAL ONE, and until it
+does no table generated from it is safe.  A 240-cell parallel sweep at 20000
+trials a cell (tools/sweep-n4096-fd1e-3.json) says band 512 at U=2, K=8
+dismisses 5.5e-4 to 6.7e-4 for synthetic references with 0.90 to 0.95 of their
+power below the edge -- comfortably inside a 1e-3 target.  The captures' real
+reference sits at 0.9335, squarely in that range, and measures 1.97e-3: it
+fails where the synthetic passes.  The two agree on f(512) to four figures and
+disagree on g (0.9979 against 1.0000) and so on the gate (4.237 against
+4.266), and the Rayleigh tail is steep enough there that 0.7% of gate
+straddles the target.
+
+So the grid has to be built from references that reproduce real ones -- either
+captured references directly, or a family validated against them -- not from
+make_template.  Generating from make_template would hardcode a table that
+passes its own validation and loses triggers on real data, which is the same
+failure this tool exists to prevent.
+
+Still short of a shippable table, for two further reasons.  6000 trials resolve ~3e-4,
 enough for a 1e-3 target but not the 1e-4 one.  And a single scalar `want_f`
 does not determine the answer: a synthetic profile with 0.95 of its SNR below
 the band edge picks band 256, where the captures' real reference -- 0.9335
@@ -241,3 +258,31 @@ def f_min(n, band, U, K, snr, fd, trials=4000, lo=0.50, hi=0.999, tol=0.01):
         else:
             lo = mid
     return hi
+
+
+def _cell(job):
+    """One (n, band, U, K, snr, fd, want_f) measurement. Top level for pickling."""
+    n, band, U, K, snr, fd, wf, trials = job
+    try:
+        ref = (np.abs(D_design.make_template(n, band, wf)) ** 2).astype(np.float32)
+        dm, det, sec = measure(n, band, U, K, snr, trials, power=ref)
+        return dict(n=n, band=band, U=U, K=K, snr=snr, fd=fd, want_f=wf,
+                    dismissal=dm, detected=det, sec=sec, ok=(det > 0 and dm <= fd))
+    except Exception as e:
+        return dict(n=n, band=band, U=U, K=K, snr=snr, fd=fd, want_f=wf,
+                    error=str(e), ok=False)
+
+
+def sweep(ns, bands, Us, Ks, snrs, fds, want_fs, trials, jobs):
+    """Run every cell in parallel. Returns the raw rows."""
+    import multiprocessing as mp
+    work = [(n, b, U, K, T, fd, wf, trials)
+            for n in ns for b in bands if b <= n // 2
+            for U in Us for K in Ks for T in snrs for fd in fds for wf in want_fs]
+    with mp.Pool(jobs) as pool:
+        out = []
+        for i, r in enumerate(pool.imap_unordered(_cell, work, chunksize=1)):
+            out.append(r)
+            if (i + 1) % 25 == 0:
+                print("  %d/%d" % (i + 1, len(work)), flush=True)
+    return out
