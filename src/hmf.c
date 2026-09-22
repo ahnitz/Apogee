@@ -62,7 +62,7 @@ struct ap_hmf_plan {
      templates instead of striding through 32 KiB. */
   ap_mf_plan *coarse;
   ap_plan   *full_fft;        /* n-point plan for the forward transform of a block */
-  float     *fwd,*spec;       /* [2n] block staging and its spectrum            */
+  float     *fwd,*spec;       /* [2n] block staging; spec is [dgroup][2n]        */
   ap_plan   *cf;              /* explicit m-point plan, for the rare interpolation
                                  path that needs the series materialised        */
   float *cd;                  /* [nd][2m]   coarse data spectra, interleaved    */
@@ -181,43 +181,39 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   /* How many data segments to filter together.
    *
    * D x T is symmetric and the pair loop tiles both axes, so what matters is
-   * the SHAPE of a batch, not its size.  One data segment against a large bank
-   * is the worst shape there is: the even coarse pass, which every pair pays
-   * for, streams the whole coarse bank once per segment and reuses none of it.
-   * Filtering several segments together amortises that.
+   * the SHAPE of a batch, not its size: one segment against a large bank makes
+   * the even coarse pass stream the whole coarse bank for T pairs and reuse
+   * none of it.
    *
-   * Whether it is worth anything depends on one thing -- whether the coarse
-   * bank stays in L2 between segments.  While it does, grouping buys nothing
-   * and a large group only costs spectra to hold; once it does not, the bank
-   * is re-streamed per segment and grouping is the only thing that amortises
-   * it.  Measured, us/pair, best marked:
+   * This used to be chosen from whether the coarse bank still fitted L2 -- 32
+   * above, 4 below -- and that was right for the code it was measured on,
+   * where every block also paid to ingest a full spectrum it almost never
+   * used. Once that became lazy the cache effect went with it, and a large
+   * group is now only a cost:
    *
-   *     templates   coarse bank    g1      g4      g8     g16     g32
-   *        37          296 KiB   1.200   1.197*  1.199   1.216   1.260
-   *        74          592 KiB   1.183   1.158*  1.170   1.205   1.207
-   *       128         1024 KiB   1.227   1.193*  1.239   1.238   1.217
-   *       256         2048 KiB   1.312   1.358   1.292   1.270   1.237*
-   *       418         3344 KiB   1.501   1.426   1.329   1.321   1.305*
+   *     templates     g1      g4      g8     g16     g32
+   *        37       1.149   1.136   1.126*  1.134   1.142
+   *        74       1.133   1.087*  1.092   1.126   1.119
+   *       128       1.104   1.056   1.049*  1.131   1.132
+   *       256       1.209   1.146   1.117*  1.125   1.120
+   *       418       1.180   1.119*  1.153   1.165   1.190
    *
-   * The turn is exactly at L2, so that is the rule rather than a fitted
-   * threshold.  The caller should not have to know any of this, which is why
-   * it is here and not in the API -- hand the filter as much data as is
-   * available and let it choose the arrangement. */
-  const size_t cbank = (size_t)ntmpl * 2 * band * sizeof(float);
-  int grp = cbank > (size_t)1024*1024 ? 32 : 4;
+   * 8 is best or within a percent of it at every size, so it is a constant
+   * again. The caller should not have to know any of this, which is why it is
+   * here and not in the API. */
+  int grp = 8;
   { const char *e=getenv("MF_DGROUP"); if(e){ int v=atoi(e); if(v>0) grp=v; } }
   /* bounded by what the held spectra cost, which is what bites at long n */
   while(grp>1 && (size_t)grp*2*n*sizeof(float) > (size_t)4*1024*1024) grp>>=1;
   p->dgroup=grp;
   const int ndi = ndata>grp ? ndata : grp;
-  p->dgroup=grp;
   p->nd=ndi; p->nt=ntmpl; p->snr=snr; p->fd=fd;
   p->full  =ap_mf_create(n,ndi,ntmpl);
   p->coarse=ap_mf_create(band,ndi,2*ntmpl);
   p->cf      =ap_create(band);
   p->full_fft=ap_create(n);
   p->fwd =ap_alloc64(2*n*sizeof(float));
-  p->spec=ap_alloc64(2*n*sizeof(float));
+  p->spec=ap_alloc64((size_t)grp*2*n*sizeof(float));
   p->cd  =ap_alloc64((size_t)ndi*2*band*sizeof(float));
   p->dspec=calloc((size_t)ndi,sizeof(*p->dspec));
   p->dready=calloc((size_t)ndi,1);
@@ -802,12 +798,17 @@ int ap_hmf_run_series(ap_hmf_plan *p,
         const float *src=series+2*s0;
         for(size_t k=0;k<2*have;k++) p->fwd[k]=src[k]*inv; }
       if(have<n) memset(p->fwd+2*have,0,2*(n-have)*sizeof(float));
-      ap_fft(p->full_fft,p->fwd,p->spec,AP_FORWARD);
-      if(ap_hmf_set_data(p,j,p->spec)) return -1;
-      /* set_data keeps the caller's pointer, but p->spec is reused for the
-         next block, so the full spectrum has to be ingested now. */
-      if(ap_mf_set_data(p->full,j,p->spec)) return -1;
-      p->dready[j]=1;
+      float *const sp=p->spec+(size_t)j*2*n;
+      ap_fft(p->full_fft,p->fwd,sp,AP_FORWARD);
+      if(ap_hmf_set_data(p,j,sp)) return -1;
+      /* The full spectrum is NOT ingested here.  Only the coarse band is read
+         by every pair; the full one is read only when a pair fires, which at
+         threshold 5.5 is 0.1% of pairs and so about 4% of blocks.  Ingesting
+         it eagerly costs 0.4-1.0 us a block for nothing on the rest.  What
+         forced it was that one staging buffer was reused by the next block,
+         so set_data's retained pointer went stale; giving the group a buffer
+         per slot removes that and lets ap_hmf_run's existing lazy path do it
+         on demand.  dready stays 0 to say so. */
     }
     size_t nb=ap_mf_nbins(p->full,binsize,win_start[b0],win_end[b0]);
     int r=ap_hmf_run(p,0,g,t0,nt,binsize,threshold,

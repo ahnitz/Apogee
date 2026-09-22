@@ -519,34 +519,48 @@ default `ilo` gets a sound configuration rather than a fast one.
 
 D data segments against T templates is a symmetric product: the pair loop
 tiles both axes, so a 24x16 batch and a 16x24 one cost the same to within a
-percent, and the two axes are interchangeable in every measurement. What is
-*not* symmetric is a degenerate shape. One data segment against a large bank
-makes the even coarse pass -- the one every pair pays for -- stream the whole
-coarse bank once for T pairs, reusing none of it.
+percent. What is *not* symmetric is a degenerate shape -- one segment against a
+large bank makes the even coarse pass stream the whole coarse bank for T pairs
+and reuse none of it. `run_series` therefore groups blocks that share a window,
+the group breaking at the ragged windows at a segment's edges.
 
-Whether grouping segments is worth anything turns on one thing: whether that
-bank stays in L2 between segments. While it does, grouping buys nothing and a
-large group only costs spectra to hold. Once it does not, the bank is
-re-streamed per segment and grouping is the only thing that amortises it.
-Measured, us/pair, best marked:
+The group size was briefly chosen from whether the coarse bank still fitted L2
+(32 above, 4 below). That was right for the code it was measured on, where
+every block also paid to ingest a full spectrum it almost never used, and
+grouping was amortising that. Once the ingest became lazy the cache effect went
+with it and a large group is now only a cost:
 
-| templates | coarse bank | g1 | g4 | g8 | g16 | g32 |
-|---|---:|---:|---:|---:|---:|---:|
-| 37 | 296 KiB | 1.200 | **1.197** | 1.199 | 1.216 | 1.260 |
-| 74 | 592 KiB | 1.183 | **1.158** | 1.170 | 1.205 | 1.207 |
-| 128 | 1024 KiB | 1.227 | **1.193** | 1.239 | 1.238 | 1.217 |
-| 256 | 2048 KiB | 1.312 | 1.358 | 1.292 | 1.270 | **1.237** |
-| 418 | 3344 KiB | 1.501 | 1.426 | 1.329 | 1.321 | **1.305** |
+| templates | g1 | g4 | g8 | g16 | g32 |
+|---|---:|---:|---:|---:|---:|
+| 37 | 1.149 | 1.136 | **1.126** | 1.134 | 1.142 |
+| 74 | 1.133 | **1.087** | 1.092 | 1.126 | 1.119 |
+| 128 | 1.104 | 1.056 | **1.049** | 1.131 | 1.132 |
+| 256 | 1.209 | 1.146 | **1.117** | 1.125 | 1.120 |
+| 418 | 1.180 | **1.119** | 1.153 | 1.165 | 1.190 |
 
-The turn is exactly at L2, so that is the rule rather than a fitted threshold:
-group 32 when the coarse bank exceeds it, 4 when it does not. Worth 1.15x at
-418 templates against the degenerate shape and nothing at 37, which is why it
-is chosen internally and not asked of the caller.
+8 is best or within a percent of it everywhere, so it is a constant.
+`MF_DGROUP` overrides it, and `tests/test_api.py` pins the result to be
+identical across group sizes -- this is an arrangement decision, not an
+approximation.
 
-`run_series` groups blocks that share a window, the group breaking at the
-ragged windows at a segment's edges, and `MF_DGROUP` overrides it for
-measurement. `tests/test_api.py` pins the result to be identical across group
-sizes -- this is an arrangement decision, not an approximation.
+## The spectrum a block almost never needs
+
+Every pair reads the coarse band. The *full* spectrum is read only when a pair
+fires -- 1.5% of pairs at threshold 5.0 and 0.11% at 5.5, so roughly 42% and 4%
+of blocks. `run_series` nonetheless ingested it into the full plan for every
+block, splitting 2n interleaved floats into the kernel's SoA layout.
+
+Nothing needed it to be eager. `ap_hmf_run` has always had a lazy path guarded
+by `dready`, used when a caller supplies spectra directly. What forced the eager
+call was a single staging buffer: `set_data` retains the caller's pointer, and
+the next block overwrote it. Giving the group one buffer per slot -- `dgroup *
+2n` floats, 256 KiB at n=4096 -- removes the aliasing and lets the lazy path do
+the work only for blocks that fire.
+
+Worth 43.84 -> 41.79 us/block at threshold 5.0 and 34.89 -> 33.61 at 5.5. End
+to end that is 11.05 -> 10.50 ms/segment (3.38x -> 3.56x) at the default gate
+and 14.77 -> 13.75 (2.54x -> 2.67x) at the zero-loss gate, with 31/842 and
+0/842 unchanged.
 
 Two things deliberately stay per-segment. The odd coarse transform runs on one
 pair at a time because only ~27% of pairs reach it, and the full reconstruction
