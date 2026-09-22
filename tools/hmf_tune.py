@@ -342,3 +342,53 @@ def sweep(ns, bands, Us, Ks, snrs, fds, want_fs, trials, jobs):
             if (i + 1) % 25 == 0:
                 print("  %d/%d" % (i + 1, len(work)), flush=True)
     return out
+
+
+def beff_of(p, m):
+    """Effective bandwidth of the in-band power, in bins (participation ratio)."""
+    q = np.asarray(p[:m], float)
+    s = q.sum()
+    if s <= 0:
+        return 1.0
+    q = q / s
+    return float(1.0 / np.sum(q ** 2))
+
+
+def make_ref(n, m, f, beff, tol=0.02):
+    """A reference with in-band fraction `f` at band m and bandwidth `beff`.
+
+    Exponential in-band, decay solved for the bandwidth; the family the real
+    captures were shown to lie on.  B_eff runs 1 (all power in one bin, a
+    maximally wide correlation peak) to m (flat, a peak one sample wide), and
+    a training set has to span it -- make_template only reaches a twentieth.
+    """
+    lo, hi = 0.3, float(4 * m)
+    k = np.arange(m)
+    for _ in range(60):
+        tau = 0.5 * (lo + hi)
+        b = beff_of(np.exp(-k / tau), m)
+        if abs(b - beff) < tol * beff:
+            break
+        if b < beff:
+            lo = tau
+        else:
+            hi = tau
+    p = np.zeros(n)
+    p[:m] = np.exp(-k / tau)
+    p[:m] *= f / p[:m].sum()
+    out = np.arange(m, n // 2)
+    if len(out):
+        p[m:n // 2] = np.exp(-(out - m) / max(400.0, m / 4.0))
+        p[m:n // 2] *= (1.0 - f) / p[m:n // 2].sum()
+    return p.astype(np.float32)
+
+
+def _fdr_cell(job):
+    n, m, U, K, snr, f, be, trials = job
+    try:
+        ref = make_ref(n, m, f, be)
+        dm, det, sec = measure(n, m, U, K, snr, trials, power=ref)
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be,
+                    beff_act=beff_of(ref, m), dismissal=dm, detected=det, sec=sec)
+    except Exception as e:
+        return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, error=str(e))
