@@ -169,7 +169,13 @@ def replay(mf, path, reps, a):
     """
     z = np.load(path)
     n = int(z["n_fft"])
-    thr = float(z["threshold"])
+    # The capture's data, bank and reference do not depend on the threshold,
+    # only the gate and the trigger set do -- so a different threshold can be
+    # replayed on the same capture.  What cannot be replayed is the comparison
+    # against pycbc's own triggers, which were taken at the captured value;
+    # the flat filter is the reference in that case.
+    thr = a.snr or float(z["threshold"])
+    replayed = a.snr and abs(a.snr - float(z["threshold"])) > 1e-6
     band = a.band or int(z["band"])
     fs = a.first_stage or float(z["first_stage"])
     nb = int(z["nbatch"])
@@ -247,13 +253,16 @@ def replay(mf, path, reps, a):
     print("  %-24s %10d" % ("the flat filter finds", int(truth.sum())))
 
     bad = []
-    if lost_c.any():
+    if replayed:
+        print("  (replayed at %.2f, captured at %.2f: pycbc's triggers are not "
+              "comparable)" % (thr, float(z["threshold"])))
+    if lost_c.any() and not replayed:
         bad.append("%d of pycbc's triggers not reproduced" % int(lost_c.sum()))
-    if moved.any():
+    if moved.any() and not replayed:
         bad.append("%d triggers at a different lag" % int(moved.sum()))
-    if dv.max() > 1e-5:
+    if dv.max() > 1e-5 and not replayed:
         bad.append("SNR differs by %.2e, beyond fp32" % dv.max())
-    if (ci >= 0).sum() == 0:
+    if (ci >= 0).sum() == 0 and not replayed:
         bad.append("the capture holds no triggers, so nothing is proved")
     if bad:
         print("\n  proof: *** FAILED ***")
@@ -262,7 +271,7 @@ def replay(mf, path, reps, a):
     else:
         print("\n  proof: all %d of pycbc's triggers reproduced, same lags,"
               " SNR within %.1e" % (int((ci >= 0).sum()), dv.max()))
-    if extra_c.any():
+    if extra_c.any() and not replayed:
         print("         %d MORE than pycbc got, which the flat filter confirms"
               % int(extra_c.sum()))
     print("  against the flat filter: %d of %d missed (%.2e, budget 1.0e-03)"
@@ -299,6 +308,11 @@ def main(argv=None):
     ap.add_argument("--isa", default="", help="force one SIMD target")
     ap.add_argument("--fixture", default="",
                     help="replay a call captured from pycbc_inspiral_fir")
+    ap.add_argument("--snr", type=float, default=0.0,
+                    help="replay the capture at a different SNR threshold; the "
+                         "data and bank are unchanged, so only the gate and the "
+                         "trigger set move.  pycbc's own triggers are then not "
+                         "comparable and the flat filter is the only reference.")
     ap.add_argument("--no-profile", action="store_true")
     a = ap.parse_args(argv)
     if a.quick:
