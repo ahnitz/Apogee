@@ -46,37 +46,43 @@ avenues below is so long.
 
 ## Live
 
-### 1. Calibration -- the only large one left
+### 1. A minimax interpolation kernel for the bracket
 
-The recovery factors `g`, `graw`, `graw1` are derived from the reference's
-*mean* frequency series. A mean is not a bound on an individual realisation, so
-the gate is set optimistically and the filter misses 31/842 triggers at the
-default gate against a stated budget of 1e-3. Buying those back costs a 6% gate
-cut and 24% of the speed: 3.60x becomes 2.74x.
+The bracket is now on and winning, and its ceiling is the whole odd pass: 19%
+of the cost at threshold 5.0, 8% at 5.5. What limits it is the worst-case
+accuracy of the interpolated statistic, which sets the sound reject bound
+`ilo <= min(S/true)/graw`.
 
-The diagnostic states the gap directly: `g` measured from realisations is
-**0.7022** where the code uses the noiseless **0.9995**.
+That accuracy **saturates with tap count** -- 0.8384 at 9 taps, 0.8855 at 13,
+0.8931 at 17, and 0.8931 again at 21. Two lengths giving the identical worst
+case says the limit is the design criterion, not the length: the taps come from
+a weighted least-squares fit, which minimises mean-squared error and does
+nothing about the tail. A minimax (Chebyshev) design optimises exactly the
+quantity the bound depends on.
 
-Closing it is worth **1.31x at the zero-loss operating point** -- more than
-every other live item combined. It is not a tuning exercise; it means replacing
-a global constant with a per-pair quantity. The obvious candidate is a bound
-derived from the out-of-band energy of the actual product, which is computable
-(`sum |D_k|^2 |H_k|^2` outside the band) but costs ~20% of the even pass to
-evaluate, so the work is in finding a cheaper sufficient statistic or in
-computing it once per block rather than per pair.
+If it moved `min(S/true)` from 0.893 to 0.95, `ilo` could rise from 0.912 to
+0.978, and the measured `ilo` sweep says that roughly halves the odd pass again.
+Worth up to ~10% overall. This is the best-posed live item on the page.
 
-Deliberately parked by the user until the hierarchy itself is exhausted. It now
-effectively is.
+### 2. Calibration -- worth correctness, not speed
 
-### 2. Parallelism -- structurally the largest, currently out of scope
+The recovery factor `g` is derived from a noiseless autocorrelation and is
+0.9995, where the honest quantity is the ratio of the coarse statistic to the
+**full filter's** statistic on the same realisation. Measured on 4440 real
+pairs: median 0.9761, p1 0.9125, p0.1 0.8837, min 0.8660.
 
-The library is single-threaded by design. The D x T pair loop is embarrassingly
-parallel with no shared mutable state except the output array, which is already
-indexed per pair. On a 16-core machine this is a ~10-14x wall-clock win, an
-order of magnitude more than anything else on this page.
+So a principled `g` lands near 0.88-0.91. Applied through
+`hmf_threshold(fpow*g^2, ...)` that is a ~9% cut in the gate, against the 6%
+that `gate_margin=0.94` already applies by hand. **It would reproduce the
+existing zero-loss operating point, not beat it.** The value is that the point
+becomes automatic instead of user-tuned, and that the fitted `gscale=1.40`
+disappears.
 
-Not planned because single-threaded is the current contract (callers run one
-process per core). Worth revisiting only if that contract changes.
+A *per-template* `g` looked like the speed win -- per-template worst cases
+spread 0.866 to 0.928 -- but that spread is sampling noise: splitting each
+template's samples in half and correlating the two halves' p10 gives
+**r = 0.218**. The templates genuinely have the same recovery. A global
+constant is the right model.
 
 ### 3. Template support pruning -- small here, real for the flat filter
 
@@ -113,6 +119,41 @@ Returning fired peaks plus a count instead would remove it. Worth 1%, and it
 changes the API.
 
 ## Closed, with evidence
+
+### Parallelism
+**Ruled out by the contract**, not by measurement. Single-threaded is the
+design; callers run one process per core.
+
+### Non-power-of-two transform sizes
+**Closed twice over.**
+
+*Block size.* Cost per useful output sample is `n log n / (n - ntaps + 1)`:
+14.10 at 2048, **13.48 at 4096**, 13.76 at 8192, 14.40 at 16384. 4096 is the
+optimum and the curve is flat around it, so an intermediate size gains nothing
+even before the mixed-radix penalty.
+
+*Band.* The zero-loss cost against band is 20.97 ms at 512, 13.18 at 1024,
+15.92 at 2048. A parabola through those has its minimum at band **1209**, worth
+12.88 ms -- a **2.3% ceiling**, which is less than radix-3/5 codelets cost
+relative to radix-2/4/8. Also checked that band 2048 does not tolerate a higher
+gate to compensate: at gate 1.06 it misses 638/842.
+
+### Finer oversampling (U=4)
+**Closed.** U improves only the lag-grid scalloping loss, and that factor is
+already accurate. Measured recovery of the U-fold grid against the continuous
+maximum on 624 real pairs: U=1 worst 0.7908, U=2 **0.8963**, U=4 0.9820, U=8
+0.9958, tracking the `sinc(1/2U)` bound. U=4 would move a factor from 0.90 to
+0.98 -- but the factor that actually binds the gate is `g`, which is 0.88-0.91
+and is about band-limiting, not scalloping. The kernel hard-limits U to {1,2};
+U=1 misses 244/842, so the odd pass is not optional.
+
+### A more conservative even gate
+**Closed.** Sweeping `even_margin` *downward* -- 0.92, 0.88, 0.84, 0.80 -- the
+miss count stays at exactly 31/842 while the cost rises 41% (10.12 to 14.26
+ms/segment). **None of the misses come from the even gate.** All of them come
+from the main gate, i.e. from `g`. Upward it breaks immediately (0.96 costs 3),
+so 0.92 is both correct and tight.
+
 
 ### Narrow types (int16, int8)
 **Closed.** int16's entire value is doubling the lanes, and the even pass is
