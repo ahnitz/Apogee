@@ -21,6 +21,7 @@ sides are stored in the layout the correlation loop walks - which measures at
 
 Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 """
+import os
 import numpy as np
 from . import _core
 
@@ -212,6 +213,125 @@ def include_dir():
     """
     import os
     return os.path.dirname(os.path.abspath(__file__))
+
+
+
+_TUNING = None
+
+
+def _load_tuning(path=None):
+    """Read the tuning table: measured dismissal and cost per configuration.
+
+    Shipped as package data and overridable with MF_TUNING or the `tuning`
+    argument, so a user can retune for their own CPU without rebuilding --
+    which they will need to, since the COST rows are measurements of one
+    machine and the FDR rows of one build.  Read once and cached; the lookup
+    is a handful of sums over the reference, so it costs nothing against a
+    plan that then filters millions of pairs.
+    """
+    global _TUNING
+    if _TUNING is not None and path is None:
+        return _TUNING
+    if path is None:
+        path = os.environ.get("MF_TUNING") or os.path.join(
+            os.path.dirname(__file__), "tuning.txt")
+    fdr, cost, meta = [], {}, {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line.startswith("#"):
+                bits = line[1:].split(None, 1)
+                if len(bits) == 2 and bits[0] in ("cpu", "commit", "trials"):
+                    meta[bits[0]] = bits[1]
+                continue
+            if not line:
+                continue
+            f = line.split()
+            if f[0] == "FDR":
+                fdr.append((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
+                            float(f[5]), float(f[6]), float(f[7]), float(f[8])))
+            elif f[0] == "COST":
+                cost[(int(f[1]), int(f[2]), int(f[3]), int(f[4]))] = float(f[5])
+    t = {"fdr": fdr, "cost": cost, "meta": meta, "path": path}
+    if path is None or _TUNING is None:
+        _TUNING = t
+    return t
+
+
+def _band_features(power, m):
+    """(in-band fraction, effective bandwidth in bins) at band m.
+
+    These two determine the statistic: the fraction says how much signal the
+    band keeps, the bandwidth how sharp the resulting correlation peak is --
+    and the peak's width against the lag spacing is what the gate has to
+    survive.  Both come straight from the reference.
+    """
+    p = np.asarray(power, dtype=np.float64)
+    p = np.where(p > 0, p, 0.0)
+    tot = p.sum()
+    if tot <= 0:
+        return 0.0, 1.0
+    inb = p[:m]
+    s = inb.sum()
+    if s <= 0:
+        return 0.0, 1.0
+    q = inb / s
+    return float(s / tot), float(1.0 / np.sum(q ** 2))
+
+
+def choose_config(power, n, snr, fd, tuning=None):
+    """Cheapest (band, oversample, taps) whose measured dismissal meets `fd`.
+
+    Each candidate is judged on the accumulation at its OWN band edge, since
+    two references agreeing elsewhere disagree there.  The two features move
+    the answer the same way -- measured, not assumed: at band 512 dismissal
+    runs 2.9e-4 to 1.6e-2 as the in-band fraction goes 0.80 to 0.99, and
+    2.9e-4 to 6.9e-3 as the effective bandwidth goes 10 bins to 463.  A higher
+    fraction raises the gate; a broader in-band spread sharpens the peak the
+    lag grid has to catch.  So the row that speaks for a reference is one
+    measured at least as high in both, and the worst such row is the one to
+    believe.
+
+    NOT WIRED IN, and must not be until the COST rows are remeasured. They
+    currently come from the same harness as the FDR rows, which injects at the
+    threshold so that roughly half of all pairs trigger whatever the band is.
+    That is right for counting dismissals and wrong for cost: it makes every
+    band look the same (9-13 us/pair) where the captures separate band 256 and
+    band 1024 by 23 ms/segment against 10. Cost is dominated by how often the
+    gate opens on NOISE at the operating point, so it needs a pure-noise run at
+    the search threshold -- a different workload from the FDR one, not a
+    different column of the same one.
+
+    With the present table this picks band 256, which measurement says
+    triggers 60% of the time on the captures. The FDR half is sound; the
+    ranking it feeds is not.
+
+    Returns None when the table says nothing, which leaves the caller on the
+    compiled-in design table rather than guessing.
+    """
+    t = _load_tuning() if tuning is None else tuning
+    feats, byconf = {}, {}
+    for (tn, band, U, K, tsnr, tf, tbe, dm) in t["fdr"]:
+        if tn != n or abs(tsnr - snr) > 1e-6 or band >= n:
+            continue
+        if band not in feats:
+            feats[band] = _band_features(power, band)
+        byconf.setdefault((band, U, K), []).append((tf, tbe, dm))
+    best, bcost = None, float("inf")
+    for (band, U, K), rows in byconf.items():
+        f, be = feats[band]
+        # clamp to the grid: past its edge the most pessimistic row is the
+        # best evidence there is, and saying so beats extrapolating
+        fmax = max(r[0] for r in rows)
+        bmax = max(r[1] for r in rows)
+        fq, bq = min(f, fmax), min(be, bmax)
+        cover = [dm for (tf, tbe, dm) in rows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
+        if not cover or max(cover) > fd:
+            continue
+        c = t["cost"].get((n, band, U, K))
+        if c is not None and c < bcost:
+            best, bcost = (band, U, K), c
+    return best
 
 
 class HierarchicalFilter(MatchedFilter):
