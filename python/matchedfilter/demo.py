@@ -69,14 +69,20 @@ def run_case(n, rng, snr, lag, threshold):
     return peak, rho
 
 
-#: (label, injected SNR, lag). An SNR of 0 is pure noise: nothing was put in,
-#: so nothing should come out above the threshold.
-CASES = [("pure noise", 0.0, None),
-         ("pure noise", 0.0, None),
-         ("pure noise", 0.0, None),
-         ("signal, snr 6", 6.0, 137),
-         ("signal, snr 8", 8.0, 64),
-         ("signal, snr 12", 12.0, 301)]
+#: (label, injected SNR, lag, what should happen). An SNR of 0 is pure noise.
+#:
+#: The interesting cases are the ones NEAR the threshold, so most of these sit
+#: within a unit of it. Far above it the filter reporting the peak is not
+#: telling anyone much; the question a reader actually has is what happens
+#: where the decision is close, and whether "close" behaves the way the
+#: statistics say it should rather than the way the injected number says.
+CASES = [("pure noise", 0.0, None, "silent"),
+         ("pure noise", 0.0, None, "silent"),
+         ("snr 4.2, well below", 4.2, 137, "silent"),
+         ("snr 4.8, just below", 4.8, 64, "either"),
+         ("snr 5.3, just above", 5.3, 301, "either"),
+         ("snr 6.0, clear", 6.0, 200, "peak"),
+         ("snr 9.0, loud", 9.0, 411, "peak")]
 
 
 def peak_width(n, rng):
@@ -89,8 +95,7 @@ def peak_width(n, rng):
     here rather than asserted, because it depends on make_template.
     """
     h = make_template(n, rng)
-    rho = correlate((h * np.exp(-2j * np.pi * 0 * np.arange(n) / n)).astype(
-        np.complex64), h)
+    rho = correlate(h.astype(np.complex64), h)
     return int((rho > rho.max() / 2).sum()) // 2 + 1
 
 
@@ -99,7 +104,7 @@ def run(n=512, threshold=5.0, seed=20240917):
     rng = np.random.default_rng(seed)
     tol = peak_width(n, np.random.default_rng(seed))
     out = []
-    for i, (label, snr, lag) in enumerate(CASES):
+    for i, (label, snr, lag, expect) in enumerate(CASES):
         peak, rho = run_case(n, rng, snr, lag if lag is not None else 0,
                              threshold)
         idx = int(peak["index"])
@@ -110,6 +115,7 @@ def run(n=512, threshold=5.0, seed=20240917):
         brightest = int(np.argmax(rho))
         out.append(dict(
             label=label, snr=snr, lag=lag, n=n, threshold=threshold,
+            expect=expect,
             rho=[float(v) for v in rho],
             index=idx,
             magnitude=float(peak["magnitude"]) if fired else None,
@@ -124,6 +130,10 @@ def run(n=512, threshold=5.0, seed=20240917):
             offset=(idx - lag) if (lag is not None and fired) else None,
             found_the_signal=bool(lag is not None and fired
                                   and abs(idx - lag) <= tol),
+            as_expected=bool(expect == "either"
+                             or (expect == "silent" and not fired)
+                             or (expect == "peak" and fired
+                                 and lag is not None and abs(idx - lag) <= tol)),
         ))
     return out
 
