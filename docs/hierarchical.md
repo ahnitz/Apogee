@@ -298,6 +298,54 @@ produced was not a bound at all.  Together they took the trigger rate from 0.8%
 to 25% and the kernel 2.4x slower at the band actually in use.  A real fix has
 to model the realisation spread from the data, not from a chosen constant.
 
+## Bracketing the odd transform
+
+The odd pass costs a full m-point transform and runs on about half of all
+pairs, for 28% of the filter's time.  It cannot be *replaced* -- see the next
+section -- but it can be *avoided* most of the time, without changing a single
+reported trigger.
+
+The idea is to bound the combined maximum rather than compute it. An
+interpolated statistic S, built from the even series alone, satisfies
+`lo <= S/comb <= hi` for measured bounds. Then
+
+    max(ev_max, S/hi) >= tc   ->  fire; the odd pass cannot change the verdict
+    S/lo              <  tc   ->  reject; likewise
+    otherwise                 ->  run the odd transform and decide exactly
+
+Output is bit-identical because every case the bracket cannot settle is still
+settled by the transform.  `ev_max <= comb` holds exactly, so it tightens the
+lower bound for free; the current code does not use it.
+
+S is the largest of the even maximum and a least-squares interpolation
+evaluated at half-sample offsets around the top C even samples.  Two
+measurements set C and the kernel length:
+
+- **C=32 suffices.** The rank of the odd maximum's best even neighbour is 0 at
+  the median, 13 at the 99th percentile and 26 at worst over 1150 pairs. C=16
+  covers 99.3%, C=32 covers all of them. An earlier attempt stopped at C=16
+  and concluded the route was closed.
+- **9 taps is the optimum**, not because it is accurate but because the total
+  cost is interpolation plus the ambiguous fraction, and longer kernels buy
+  less bracket than they cost. Measured at the operating point:
+
+| taps | cands | interp | ambiguous | total | odd pass |
+|---:|---:|---:|---:|---:|---|
+| 5 | 16 | 0.025 | 0.233 | 0.258 | 3.87x cheaper |
+| **9** | **16** | **0.045** | **0.141** | **0.186** | **5.37x cheaper** |
+| 17 | 16 | 0.085 | 0.114 | 0.199 | 5.02x cheaper |
+| 17 | 32 | 0.171 | 0.085 | 0.256 | 3.91x cheaper |
+| 33 | 32 | 0.331 | 0.076 | 0.407 | 2.45x cheaper |
+
+Bounds derived on six captured segments and tested on the other six violate at
+0.188%, so they need a safety margin and fixture validation, exactly as the
+even gate's does. Only the lower bound is dangerous: an over-report fires the
+coarse gate spuriously, which costs a reconstruction and cannot invent a
+trigger, while an under-report past the bound loses one.
+
+Projected: the odd pass falls to 0.18 of its cost, the filter from 14.77 to
+11.4 ms per segment and 2.51x to 3.25x, with the same triggers.
+
 ## Why the odd transform is not replaceable by evaluating a few points
 
 The odd pass exists only to find the peak between even samples, and it costs a
