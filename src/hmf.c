@@ -242,24 +242,33 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      Derived on six captured segments and checked on six others, which violated
      at 0.19%, so they carry a margin -- only the lower one can lose a trigger;
      an over-report merely fires the coarse gate for nothing. */
-  /* The bracket is OFF, and the reason is worth stating precisely because the
-     obvious measurement says it should be on.
+  /* The bracket is ON, at a reject bound that is derived rather than tuned.
      
-     It used to be off because it measured 5x slower, which was a dead-code bug
-     (see docs/hierarchical.md); fixed, it looks like a 4-5% win. That win is
-     not real. The reject side is sound only while
-         ilo <= min(S/true) / graw,
-     and min(S/true) over real triggers is MEASURED, not assumed: 0.8384 at
-     HMF_IK=4 and 0.8855 at 6, over 56650 pairs from the twelve captures. With
-     graw ~ 0.971 that caps ilo at 0.8635 and 0.9120. Set soundly the bracket
-     is break-even -- 11.00-11.08 ms against 11.08-11.14 with it off -- because
-     the statistic costs about what the odd transforms it saves cost.
+     It settles a pair without the odd coarse transform when the interpolated
+     statistic's two-sided bound does not straddle the gate. The reject side is
+     sound only while
+         ilo <= min(S/true) / graw
+     over real triggers. MF_BRACKET=2 computes the statistic without acting on
+     it so that minimum can be measured on every pair rather than on the ones
+     the bracket left behind. Measured over the twelve captures it saturates
+     with tap count -- 0.8384 at 9 taps, 0.8855 at 13, 0.8931 at 17 and 21 --
+     so HMF_IK=6 sits at the knee and the bound is 0.8855/0.9709 = 0.9121.
      
-     The apparent win came from ilo=0.90 at K=4, which is past 0.8635. It costs
-     nothing on these 842 triggers, but "no trigger lost on the fixtures" is not
-     the guarantee this filter makes. K is 6 rather than 4 so that a caller who
-     turns it on with the default ilo gets a sound configuration. */
-  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=0; p->incand=16;   /* MF_BRACKET=1 */
+     ilo is 0.90, below that bound, so it keeps margin against a future pair
+     whose ratio is slightly worse than anything in 3192 observed triggers.
+     It does not tolerate being pushed past the bound: at 9 taps, where the
+     bound is 0.8636, running 0.93 costs 3 triggers of 842 and 0.97 costs 20.
+     
+     This was off for a long time on two separate wrong readings. First it
+     measured 5x slower, which was a dead-code bug -- the vectorised
+     interp_max was plumbed through dispatch.c and never called. Then, fixed,
+     it measured break-even at ilo=0.90, because 0.90 was the old default and
+     nobody had derived what the bound actually permitted; and because the
+     per-block cost was higher then, which made the odd-pass saving a smaller
+     share. Both are now resolved and it is a plain win at every operating
+     point: 10.14 -> 9.97 ms/segment at the default gate, 13.44 -> 12.91 at
+     the zero-loss gate, and 4.42x -> 4.52x at threshold 5.5. */
+  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=1; p->incand=16;   /* MF_BRACKET=0 disables */
   { const char *e;
     if((e=getenv("MF_BRACKET"))) p->ibrk=atoi(e);
     if((e=getenv("MF_BRACKET_LO"))) p->ilo=(float)atof(e);

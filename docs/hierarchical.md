@@ -467,38 +467,47 @@ Measured per pair, at band 1024:
 | bracket on, scalar scan | 10410 | 420 | +8350 |
 | bracket on, vectorised | 2188 | 294 | -172 |
 
-With that fixed the bracket looks like a 4-5% win. It is not one, and the
-reason is the point of this section.
+With that fixed the bracket still measured break-even, and it was left off for
+a second time on a second wrong reading. Two things were wrong with it.
 
 The reject branch fires when `S/ilo < raw_gate`. A wrong rejection only loses a
 trigger when it happens above the gate, and `raw_gate = graw * gate`, so the
-condition for the branch to be sound is
+branch is sound while
 
     ilo <= min(S / true) / graw
 
-where the minimum runs over pairs that are real triggers. That minimum is
-measurable, and `MF_BRACKET=2` computes the statistic without acting on it so
-it can be measured on every pair rather than on the ones the bracket happened
-to leave behind. Over 56650 pairs from the twelve captures:
+over real triggers. `MF_BRACKET=2` computes the statistic without acting on it,
+so that minimum can be measured on every pair rather than on the ones the
+bracket happened to leave behind. It saturates with tap count:
 
-| taps | min S/true, all pairs | min over real triggers | sound `ilo` |
-|---|---:|---:|---:|
-| 9 (`HMF_IK=4`) | 0.8384 | 0.8384 | 0.8635 |
-| 13 (`HMF_IK=6`) | 0.8604 | 0.8855 | 0.9120 |
+| taps | `HMF_IK` | min S/true over real triggers | sound `ilo` |
+|---|---|---:|---:|
+| 9 | 4 | 0.8384 | 0.8636 |
+| 13 | 6 | 0.8855 | **0.9121** |
+| 17 | 8 | 0.8931 | 0.9199 |
+| 21 | 10 | 0.8931 | 0.9199 |
 
-Set soundly the bracket is break-even -- 11.00-11.08 ms/segment at
-`HMF_IK=6, ilo=0.90` against 11.08-11.14 with it off -- because the statistic
-costs about what the odd transforms it saves cost. The apparent win came from
-running `ilo=0.90` with 9 taps, which is past 0.8635. That configuration loses
-no trigger on these 842, but "no trigger lost on the fixtures" is not the
-guarantee this filter makes, and the knob does not survive being tuned: at 9
-taps, 0.93 costs 3 triggers and 0.97 costs 20.
+17 and 21 taps give the identical worst case, which says the limit is the
+design criterion and not the length -- the taps are a weighted least-squares
+fit, which minimises mean error, not the worst case. 13 taps sits at the knee.
 
-So the bracket stays off. What the exercise bought is a correct implementation
-behind `MF_BRACKET=1`, a derived soundness criterion rather than a fitted
-constant, and the disposal of a five-diagnosis mystery.
+The first wrong reading was running `ilo=0.90` because it was the old default,
+without deriving what the bound permitted: 0.9121. The second was that the
+per-block cost was higher then, so the odd-pass saving was a smaller share of
+the total. With both fixed the bracket is a plain win at every operating point,
+at a reject bound with margin still in hand:
 
-Two knobs matter and they are not symmetric:
+| | bracket off | bracket on |
+|---|---|---|
+| default gate | 10.14 ms/seg, 3.61x | **9.97 ms/seg, 3.66x** |
+| zero-loss gate | 13.44 ms, 2.76x | **12.90 ms, 2.81x** |
+| threshold 5.5 | 8.06 ms, 4.42x | **8.01 ms, 4.52x** |
+
+with 31/842 and 0/842 unchanged. The knob does not tolerate being pushed past
+its bound: at 9 taps, where the bound is 0.8636, `ilo=0.93` costs 3 triggers of
+842 and 0.97 costs 20.
+
+Two knobs matter and they are not symmetric:Two knobs matter and they are not symmetric:
 
 - **`MF_IFRAC`** (0.95) is the candidate cut, as a fraction of the grid maximum.
   Below ~0.79, the band's worst-case recovery, the cut is provably free. 0.95
