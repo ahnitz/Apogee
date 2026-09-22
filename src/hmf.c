@@ -394,9 +394,144 @@ int ap_hmf_set_first_stage(ap_hmf_plan *p,float snr){
   return 0;
 }
 
+/* Choose the band from the caller's reference.
+ *
+ * The gate has always been power-aware -- t_c is tabulated against the
+ * effective band fraction f*g^2 -- but the band was not: hmf_choose is a
+ * nearest-neighbour lookup on (n, snr, fd) that never sees where the power
+ * actually is.  For a bank whose power sits entirely below n/8 it still asked
+ * for n/2, and paid 1.7x for bandwidth it did not need.  They cannot be fixed
+ * separately: narrowing the band without lowering the gate loses triggers, and
+ * lowering the gate without narrowing the band leaves the saving behind.
+ *
+ * So both are chosen together here, against the measured cost of each:
+ *
+ *   cost(m,U) = coarse(m) * (1 + p_odd*(U-1)) + recon * rate(m,U)
+ *
+ * in units of one full n-point pair transform.  coarse() is fitted to the
+ * measured even-pass cost -- m*log2(m) plus a fixed term, because a small
+ * transform cannot amortise the per-pass overhead -- and `recon` is what a
+ * reconstruction costs in those same units.  rate() is how often the gate
+ * lets one through, which is the whole point of widening the band.
+ *
+ * See tools/band_select.py, where the model was fitted to the twelve captures
+ * and then checked out of sample on a narrow-band bank, reproducing its
+ * measured ordering. */
+#define HMF_COARSE_A 1.7422e-5   /* per m*log2(m), full-transform units */
+#define HMF_COARSE_B 0.04012     /* fixed cost of a coarse pass          */
+#define HMF_RECON    2.75        /* a reconstruction, in coarse-pass units */
+#define HMF_PODD     0.25        /* pairs reaching the odd transform     */
+
+static double coarse_units(size_t m,size_t n){
+  const double lm=log2((double)m), ln=log2((double)n);
+  const double cm=HMF_COARSE_A*(double)m*lm+HMF_COARSE_B;
+  /* the fit is in units of a full n=4096 pair; rescale if n differs */
+  return cm*((4096.0*12.0)/((double)n*ln));
+}
+
+/* Probe the recovery factors at a candidate band without building the
+   template storage or the coarse matched-filter plan, neither of which
+   measure_recovery touches. */
+static int probe_recovery(ap_hmf_plan *p,const float *power,size_t m,int U,int K,
+                          float *g,float *graw,float *graw1){
+  const size_t n=p->n;
+  size_t m0=p->m; int U0=p->U,K0=p->K;
+  ap_plan *cf0=p->cf; float *sh0=p->shift,*s20=p->shift2,*pr0=p->prod,
+        *ce0=p->cev,*co0=p->cod,*tp0=p->taps;
+  int rc=-1;
+  p->m=m; p->U=U; p->K=K;
+  p->cf    =ap_create(m);
+  p->shift =ap_alloc64(2*m*sizeof(float));
+  p->shift2=ap_alloc64(4*m*sizeof(float));
+  p->prod  =ap_alloc64(2*m*sizeof(float));
+  p->cev   =ap_alloc64(2*m*sizeof(float));
+  p->cod   =ap_alloc64(2*m*sizeof(float));
+  p->taps  =ap_alloc64((size_t)2*HMF_NSUB*K*sizeof(float));
+  if(p->cf&&p->shift&&p->shift2&&p->prod&&p->cev&&p->cod&&p->taps){
+    build_taps(p->taps,K,U);
+    double tot=0,lo=0;
+    for(size_t k=0;k<n;k++){ double e=power[k]>0?power[k]:0; tot+=e; if(k<m) lo+=e; }
+    if(tot>0&&lo>0){
+      float *a0=p->shift2,*a1=p->shift2+2*m;
+      const double sc=1.0/sqrt(lo/tot);
+      for(size_t k=0;k<m;k++){
+        double re=sqrt(power[k]>0?power[k]:0)*sc;
+        a0[2*k]=(float)re; a0[2*k+1]=0.f;
+        double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
+        a1[2*k]=(float)(re*c); a1[2*k+1]=(float)(re*sn);
+      }
+      measure_recovery(p,0,a0,a1,g,graw,graw1);
+      rc=0;
+    }
+  }
+  if(p->cf) ap_destroy(p->cf);
+  free(p->shift);free(p->shift2);free(p->prod);free(p->cev);free(p->cod);free(p->taps);
+  p->m=m0; p->U=U0; p->K=K0; p->cf=cf0; p->shift=sh0; p->shift2=s20;
+  p->prod=pr0; p->cev=ce0; p->cod=co0; p->taps=tp0;
+  return rc;
+}
+
+static int select_band(ap_hmf_plan *p,const float *power,size_t *bm,int *bu){
+  const size_t n=p->n;
+  const float T = p->fs_snr>0.f ? p->fs_snr : p->snr;
+  double tot=0; for(size_t k=0;k<n;k++) tot+= power[k]>0?power[k]:0;
+  if(tot<=0) return -1;
+  double best=1e30; int found=0;
+  for(size_t m=256;m<=n/2;m<<=1){
+    if(!ap_supported(m)) continue;
+    double lo=0; for(size_t k=0;k<m;k++) lo+= power[k]>0?power[k]:0;
+    const double f=lo/tot;
+    if(f<=0.0) continue;
+    for(int U=1;U<=2;U++){
+      float g,graw,graw1;
+      if(probe_recovery(p,power,m,U,p->K,&g,&graw,&graw1)) continue;
+      const double feff=f*(double)g*(double)g;
+      const double tc=hmf_threshold((float)feff,T,p->fd);
+      /* how often the gate lets a pair through, on noise: the coarse
+         statistic keeps a fraction f of a unit-variance band, and the maximum
+         over the lag grid is the usual extreme-value form */
+      double p1=exp(-(tc*tc)/(2.0*f));
+      if(p1>1.0) p1=1.0;
+      double rate=1.0-pow(1.0-p1,(double)(m*(size_t)U));
+      if(rate<0) rate=0; if(rate>1) rate=1;
+      const double cu=coarse_units(m,n);
+      const double cost=cu*(1.0+HMF_PODD*(U-1))+HMF_RECON*rate;
+      if(cost<best){ best=cost; *bm=m; *bu=U; found=1; }
+      if(getenv("MF_BAND_DIAG"))
+        fprintf(stderr,"    [band] m=%-5zu U=%d  f=%.4f g=%.4f tc=%.3f "
+                "rate=%.3e cost=%.4f\n",m,U,f,(double)g,tc,rate,cost);
+    }
+  }
+  return found?0:-1;
+}
+
 int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
   if(!p) return -1;
   if(!power){ p->ref_on=0; return 0; }
+  /* Pick the band from this reference, now that we can see where the power
+     is.  Only before any template has been ingested: templates are stored as
+     coarse spectra at the current band, so re-choosing would invalidate them.
+     Every caller sets the reference first, which is also the documented
+     order. */
+  /* OFF by default: the mechanism is right and the cost model is not yet.
+     The rate term mis-orders bands against measurement -- it predicts
+     2.9%/13.9%/1.6% at m=512/1024/2048 where the captures measure
+     8.75%/1.46%/0.82%. The reason is visible in MF_BAND_DIAG: measure_recovery
+     returns g=1.000 at m=512, correctly, because a narrower band widens the
+     correlation peak and the lag grid then resolves it perfectly. So f*g^2
+     comes out near-identical at 512 and 1024 (0.9335 against 0.9216), the
+     table hands back almost the same gate, and the model sees no reason to
+     prefer the wider band -- while measurement says it triggers six times
+     less. Something real is missing from the rate, most likely that the
+     band-limiting loss degrades the statistic in a way g does not capture.
+     Enable with MF_AUTOBAND=1 to experiment. */
+  { const char *e=getenv("MF_AUTOBAND");
+    if(p->ntpow==0 && e && atoi(e)!=0){
+      size_t bm=p->m; int bu=p->U;
+      if(select_band(p,power,&bm,&bu)==0 && (bm!=p->m||bu!=p->U)){
+        free_band_state(p);
+        if(alloc_band_state(p,bm,bu,p->K,p->nd,p->nt)) return -1;
+      } } }
   const size_t n=p->n,m=p->m;
   double tot=0,lo=0;
   for(size_t k=0;k<n;k++){ double e=power[k]>0?power[k]:0; tot+=e; if(k<m) lo+=e; }
