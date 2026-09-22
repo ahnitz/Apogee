@@ -298,36 +298,48 @@ produced was not a bound at all.  Together they took the trigger rate from 0.8%
 to 25% and the kernel 2.4x slower at the band actually in use.  A real fix has
 to model the realisation spread from the data, not from a chosen constant.
 
-## Why the odd transform is not replaceable by interpolation
+## Why the odd transform is not replaceable by evaluating a few points
 
 The odd pass exists only to find the peak between even samples, and it costs a
-full m-point transform to do it. Interpolating instead looks obviously
-cheaper, and it is not.
+full m-point transform. Evaluating a handful of points instead looks obviously
+cheaper. It is not, and the reason is not what it first appears.
 
-The coarse series is `E(x) = sum_{k<m} P_k exp(2i pi k x / m)`, with the even
-pass giving `E(j)` and the odd pass `E(j - 1/2)`. The interpolator whose DFT
-is 1 on bins 0..m-1 is
-
-    K(y) = exp(i pi y (m-1)/m) * sin(pi y) / (m sin(pi y / m))
-
-Two things about it matter. The band is one-sided, so the kernel carries the
-carrier phase -- a plain sinc is the wrong kernel here and gives 65% error
-even at full length, while passing any check made at integer samples. And the
-band is a sharp rectangle, so the kernel decays as 1/y and truncation error
-falls only as 1/K: 22% at 5 taps, 8.7% at 17, 3.9% at 33, 2.4% at 65, 0.9% at
-257.
-
-That fixes the arithmetic. One exactly interpolated point costs m complex
+An exact value at a half-sample offset is one Goertzel evaluation: m complex
 multiply-adds, about 8200 flops at m=1024. The odd transform costs
-(m/2) log2(m) butterflies, about 51000 flops, and returns all m odd samples.
-The transform pays for itself at roughly six evaluation points, and more than
-six are needed because the peak's location is not known in advance --
-interpolating around the largest even sample alone leaves the worst case at
-0.85 of the true peak, against the 0.897 the even gate needs, and adding
-candidate locations saturates there.
+(m/2) log2(m) butterflies, about 51000, and returns all m values. So sparse
+evaluation wins below roughly six points, and the whole question is how few
+candidate locations suffice.
 
-So the FFT is the efficient way to get many samples of a band-limited series,
-which is what finding an unknown peak requires. The design is right.
+Measured with exact values and no interpolation kernel at all, over 2280 real
+pairs, taking the odd samples adjacent to the largest even samples:
+
+| candidates | median | 1st pct | worst |
+|---:|---:|---:|---:|
+| 3 (break-even) | 1.0000 | 0.9171 | 0.7903 |
+| 8 | 1.0000 | 0.9639 | 0.8675 |
+| 16 | 1.0000 | 1.0000 | 0.9258 |
+
+The odd maximum is not located near the large even samples. Sixteen exact
+evaluations cost five times the whole transform and still leave a worst case
+of 0.926, against the 0.897 the even gate already achieves for free. The
+candidate set cannot be narrowed, so nearly everything must be evaluated, and
+an FFT is the efficient way to evaluate everything.
+
+That is the argument. Two earlier attempts to settle this reached the same
+conclusion for wrong reasons, and both are worth recording as traps:
+
+- **A plain sinc is the wrong kernel here.** The coarse band is one-sided, so
+  the exact interpolator carries a carrier phase,
+  `K(y) = exp(i pi y (m-1)/m) sin(pi y) / (m sin(pi y/m))`. A plain sinc gives
+  65% error even at full length while passing every check made at integer
+  samples.
+- **A short truncation of that kernel is not interpolation.** The band is a
+  rectangle, so the kernel decays as 1/y and truncation error falls only as
+  1/K. A nine-tap version appeared to work well -- worst case 0.946 on one
+  segment -- because it overshoots rather than because it is accurate; its
+  median recovery is 1.02, above the true grid maximum. Across all twelve
+  captured segments its worst case is 0.919, needing a 1.088 bias, and the
+  apparent accuracy was an artifact.
 
 ## Other structural routes measured and rejected
 
