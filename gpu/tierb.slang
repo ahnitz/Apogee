@@ -126,7 +126,13 @@ void exchange(inout float2 r[16], uint want[16], uint lgLen, uint lgSpan)
     // Written as / and % they were integer divisions -- 16 of them per
     // thread per chunk -- and cost n=4096 a third of its throughput
     // against the hand-specialised kernel.
+    // Explicitly initialised. Every register index falls in exactly one
+    // chunk, so these are always written -- but the compiler cannot prove
+    // it and warns, and a backend that leaves an unwritten register as
+    // garbage rather than zero would turn that warning into a wrong
+    // answer. Cheap insurance against a compiler we have not met.
     float2 out[16];
+    [unroll] for (uint z = 0; z < R; ++z) out[z] = float2(0.0f, 0.0f);
     uint spanMask = (1u << lgSpan) - 1u;
     uint lenMask  = (1u << lgLen) - 1u;
     [unroll] for (uint c = 0; c < R / CH; ++c) {
@@ -161,8 +167,8 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     }
 
     [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
-        uint want[16];                       // scoped per level: three
-                                             // live copies blew the budget
+        uint want[16];                       // scoped per level
+        [unroll] for (uint z = 0; z < R; ++z) want[z] = 0u;
         // lvl is an unrolled constant, so all of these are constants
         const uint TB   = WG >> (4 * lvl);
         const uint len  = N  >> (4 * lvl);

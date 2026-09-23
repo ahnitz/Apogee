@@ -28,6 +28,16 @@ budgeted to 32 KB. The current one uses 9 KB, so this costs nothing today,
 but it becomes a hard constraint when the larger transform lengths arrive
 and it is cheaper to honour from the start than to retrofit.
 
+**Register pressure is device-dependent and must be asked about, not
+assumed.** RDNA gives 256 VGPRs a thread, NVIDIA 255, Apple and Intel
+differ, and occupancy falls away differently on each, so a kernel that
+fits here proves nothing about elsewhere. Vulkan reports register counts,
+spills and occupancy per pipeline through
+VK_KHR_pipeline_executable_properties; CUDA through cudaFuncGetAttributes;
+Metal through pipeline reflection. The backend queries it at pipeline
+creation, beside the subgroup-width query, and a variant that spills is
+rejected in favour of one that does not.
+
 **The rule stays the same as the CPU's.** Where a device does not meet a
 requirement the library refuses and says which, rather than running
 something it cannot vouch for.

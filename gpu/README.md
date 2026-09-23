@@ -654,3 +654,34 @@ chunks so the buffer is a fixed 8 KB whatever the length. That makes 16384
 possible and brings 4096 and 8192 back under Apple's 32 KB at the same
 time. It is the next piece of work, and it is a change to `scatter` and
 `gather` alone.
+
+
+## A retraction: it was not the register budget
+
+An earlier version of these notes said that three live copies of `want[]`
+plus three inlined `out[16]` "blew the register budget and crashed the
+driver". That was a guess dressed as a diagnosis, and it is wrong.
+
+The symptom was a core dump. The fix that followed -- scoping `want` per
+level and assigning it unconditionally -- worked, and the explanation was
+attached to it afterwards without being checked. Rebuilding that exact
+version and running it: the pipeline is created, the dispatch completes,
+and nothing crashes. Whatever the original failure was, it was not this
+kernel running out of registers.
+
+Which matters beyond one wrong sentence. Register pressure IS
+device-dependent -- RDNA gives 256 VGPRs a thread, NVIDIA 255, Apple and
+Intel differ, and occupancy falls off differently on each -- so "it fits
+here" would never have been evidence that it fits elsewhere. The way to
+know is to ask the device: Vulkan reports register counts, spills and
+occupancy per pipeline through VK_KHR_pipeline_executable_properties,
+CUDA through cudaFuncGetAttributes, Metal through pipeline reflection.
+That check belongs in the backend at pipeline creation, next to the
+subgroup-width query, and is in the integration plan.
+
+The real defect the compiler was pointing at is now fixed: `out[]` and
+`want[]` are explicitly initialised. Every register index provably falls
+in exactly one chunk so they were always written here, but the compiler
+cannot prove it, and a backend that leaves an unwritten register as
+garbage rather than zero would turn that warning into a wrong answer. The
+kernel now compiles with no warnings at all.
