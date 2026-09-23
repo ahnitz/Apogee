@@ -409,6 +409,56 @@ The next idea worth trying is splitting the transform so a workgroup holds
 less than the whole of it -- which is the four-step again, one level
 further down, trading a barrier for occupancy.
 
+## Chunking the transpose: 2.71x, and 43x a CPU core
+
+The elimination argument said latency at 25% occupancy, forced by holding
+the whole 4096-point transform in threadgroup memory. But the transform
+does not LIVE there -- each thread holds its 16 points in registers, and
+shared memory is only ever a transpose buffer. So stage the transposes in
+chunks of four k2 at a time: 1024 complex = 8 KB, for both the outer
+exchange and the sixteen inner ones.
+
+    n=4096, 2048 pairs, measured in the SAME run so the box's drift
+    cancels:
+      32 KB, whole transform      1.565 ms    354 GFLOP/s
+       8 KB, chunked exchange     0.577 ms    959 GFLOP/s    2.71x
+
+Identical accuracy, 3.26e-07. On a quieter measurement the same kernel
+reaches 0.232 ms:
+
+                          GFLOP/s   % of 8953 ceiling   vs 1 CPU core
+      before                 931          10.4%              16.9x
+      after                 2385          26.6%              43x
+
+which is the target, and above the CPU's own 22.9% of its ceiling.
+
+The same change applied to the COARSE pass made it slower -- 0.127 ms
+against 0.104 -- because a 256-point transform pays eight barriers for the
+chunked exchange where the direct transpose pays one, and at that size the
+barriers cost more than the occupancy buys. Opposite trade, same knob. The
+coarse pass keeps the direct transpose.
+
+## The bottleneck now is the coarse pass
+
+    hierarchical at n=4096, band 256, 3.1% escalating
+      flat            0.232 ms
+      hierarchical    0.104 ms     2.41x
+        of which refine (64 pairs)  ~0.007 ms
+        of which coarse             ~0.097 ms   against an ideal of 0.010
+
+The coarse pass is 10x its own ideal and now dominates completely. It is
+LDS-bound in a way the chunked exchange cannot fix: sixteen concurrent
+256-point transforms each want a 16x16 transpose, 256 complex per slot, so
+32 KB per workgroup -- 128 bytes per thread, where full occupancy allows
+32. Chunking trades that for barriers and loses.
+
+The way out is a transpose that uses no threadgroup memory at all. A slot
+is sixteen threads, which sits inside one wave on any width this runs on,
+so the 16x16 exchange can be done with wave shuffles -- four butterfly
+steps with static register indices, no LDS and no barriers. That would
+take the coarse pass off the occupancy cliff entirely, and it is the next
+thing to build.
+
 ## Measurement conditions have made further work pointless for now
 
 The same kernel on the same data measured 0.595 ms earlier and 1.603 ms
