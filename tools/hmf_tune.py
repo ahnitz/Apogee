@@ -466,9 +466,15 @@ def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,
     Three things matter here and none of them did in the first version.
 
     Batch shape is a cost column and not an accuracy one: D x T batching
-    changes throughput by up to 1.94x and cannot change a single reported
-    peak, which tests/test_api.py pins. So it belongs here and would be noise
-    in the accuracy table.
+    changes throughput and cannot change a single reported peak, which
+    tests/test_api.py pins. So it belongs here and would be noise in the
+    accuracy table.
+
+    This docstring used to claim "up to 1.94x". Do not reinstate that number
+    without re-measuring: pairs_target below holds TOTAL PAIRS fixed, so a
+    1x1 shape runs 200 tiny calls and a 64x64 shape runs 5 large ones, and
+    most of what separated them was per-call overhead rather than throughput.
+    A clean comparison has to hold work per call fixed, not pairs.
 
     Noise is redrawn for every batch, so the trigger rate -- which is most of
     the cost, and is set by the coarse threshold and the reference -- is averaged rather

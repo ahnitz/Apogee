@@ -94,7 +94,46 @@ it covers five lengths with overlapping ratios, so the same R appears at
 several n. If dismissal at fixed (R, f, B_eff) agrees across n, the axis is
 real; if it does not, the tables stay per-length and this item closes.
 
-### 3. Template support pruning -- small here, real for the flat filter
+### 3. Choose the batch tiling, instead of streaming the whole bank
+
+**What exists.** The hierarchical `run_series` groups data blocks internally:
+`dgroup = 8`, measured rather than assumed, and the table that settled it is
+in `src/hmf.c` -- 8 is best or within a percent at 37, 74, 128, 256 and 418
+templates. It is capped by a 4 MB staging bound at long `n` and overridable
+with `MF_DGROUP`. The caller never sees it, which is the point.
+
+**What does not exist.** Nothing tiles the TEMPLATE axis. For each group of
+data blocks the whole bank streams past, so a bank that does not fit in cache
+is re-read once per group. `run(templates=(t0, nt))` lets a caller slice the
+bank by hand, but the library makes no decision about it, and the flat
+`MatchedFilter` makes none at all -- it uses whatever `(ndata, ntemplates)` it
+was given.
+
+**Why a tile should win.** D x T is a symmetric product, and the operand
+traffic is not symmetric with the shape. A `d x t` tile reads `d + t` operands
+to produce `d * t` products: a 16x1 tile reads 17 operands for 16 products,
+while 4x4 reads 8 for the same 16. Squarer tiles move half the memory per
+product, and once the working set stops fitting in L2 that is the term that
+decides. This is the ordinary blocking argument from dense linear algebra and
+there is no reason it should not apply here.
+
+**Why it is not done.** The measurement to justify a specific tiling has not
+been made cleanly. `measure_cost` already takes `nt` and `nd`, and the cost
+table's schema has room for them, but `pairs_target` holds TOTAL PAIRS fixed:
+a 1x1 shape then runs 200 tiny calls against 5 large ones at 64x64, so most of
+what separates them is per-call overhead rather than throughput. A docstring
+here claimed "up to 1.94x" on the strength of that harness and the number
+reached the benchmark page before anyone asked where it came from. It has been
+removed rather than defended.
+
+**What it needs.** Hold work per call fixed rather than pairs; sweep `(nd, nt)`
+on a log grid at several `n` and bank sizes; check whether the shape factor is
+separable from the configuration, because if it is, it is one extra column
+rather than a cross product with every existing axis. Then the same
+refuse-or-measure rule the band and margin already follow can pick the tiling,
+and the caller can go on handing over everything it has.
+
+### 4. Template support pruning -- small here, real for the flat filter
 
 Measured on the captures: templates are **exactly zero in 2047 of 4096 bins**.
 The product is therefore zero above n/2, and half the full filter's product
@@ -112,7 +151,7 @@ is 6% of the hierarchical cost, so **0.7% here** -- but 12% for anyone using
 Detect the support at ingest (measure it, do not assume it); a filter that is
 dense gets the current path.
 
-### 4. Output protocol
+### 5. Output protocol
 
 `fill` writes zeroed peak records for the 98.5% of pairs that report nothing.
 Returning fired peaks plus a count instead would remove it. Worth 1%, and it

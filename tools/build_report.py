@@ -561,8 +561,12 @@ def workload_note(runs, kind):
     """State the batch shape the numbers were taken at.
 
     Throughput depends strongly on how many data segments and templates are
-    filtered together -- measured, up to 1.94x between shapes -- so a time per
-    pair means nothing without it. The page used to omit it entirely.
+    filtered together, so a time per pair means nothing without it. The page
+    used to omit it entirely. It does NOT quantify the effect here: the one
+    number this originally carried, "up to 1.94x", came from a harness that
+    held total pairs fixed rather than work per call, so the small shapes it
+    compared against were measuring call overhead. The factor is real; the
+    size of it is not yet measured cleanly.
     """
     rows = [f for r in runs for f in r.get(kind, [])]
     shapes = sorted({(f.get("data"), f.get("templates")) for f in rows
