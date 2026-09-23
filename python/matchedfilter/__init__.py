@@ -1053,3 +1053,22 @@ class HierarchicalFilter(MatchedFilter):
         """
         pairs, trig = self._ensure().stats()
         return trig / pairs if pairs else 0.0
+
+
+# Read and index the tuning tables at IMPORT, not at the first plan build.
+#
+# Doing it lazily meant the cost landed wherever a caller first constructed a
+# HierarchicalFilter, and callers construct those inside their hot loop:
+# pycbc_inspiral_fir builds its plan inside the timed kernel, so a 10 ms load
+# showed up as 10 ms of filtering on the first segment and nothing thereafter.
+# Import is the one place that is unambiguously not in anyone's measurement,
+# and it already costs ~70 ms for numpy and the extension, so this is ~14% of
+# something already paid.
+#
+# Guarded, because a missing or unreadable table must not break `import
+# matchedfilter` -- only the hierarchical mode needs it, and _ensure()
+# diagnoses its absence properly with a message about coverage.
+try:
+    _load_tuning()
+except Exception:
+    pass
