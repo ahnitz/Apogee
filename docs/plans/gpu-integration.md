@@ -42,6 +42,36 @@ rejected in favour of one that does not.
 requirement the library refuses and says which, rather than running
 something it cannot vouch for.
 
+## 1b. One API, and constants fixed at pipeline creation
+
+**Specialization constants, not a blob per configuration.** Slang's
+`[SpecializationConstant]` survives to both targets that matter:
+
+    SPIR-V   OpDecorate %CHUNK SpecId 1
+             %CHUNK = OpSpecConstant %uint 4
+             %45 = OpSpecConstantOp %uint UDiv %uint_16 %CHUNK
+    Metal    constant uint fc_LANES [[function_constant(0)]];
+
+Derived expressions fold as well, so subgroup width, chunk size and level
+count are all set from what the device reports, at pipeline creation, from
+ONE embedded blob. CUDA has no equivalent and would need a variant per
+configuration, which is free there because the driver JITs PTX anyway.
+(HLSL rejects them for an unrelated Slang reason; we do not target it.)
+
+**Vulkan only, to start.** Vulkan is native on AMD, NVIDIA, Intel and
+Android, and reaches Apple through MoltenVK. Everything these kernels use
+-- storage buffers, workgroup memory, barriers, subgroup ops,
+specialization constants -- maps onto Metal, so the translation should
+carry it. That buys one RHI, one blob format, one code path and one set of
+bugs, against a vendored MoltenVK dylib in the macOS wheel and Apple
+performance going through a translation layer.
+
+This is a cheap bet precisely because the Slang source already compiles to
+native Metal and CUDA, verified. If Apple through MoltenVK disappoints
+when it can be measured, moving that platform to native Metal is a build
+change rather than a rewrite. That is the payoff from the authoring layer
+-- not using every target today, but making the choice reversible.
+
 ## 2. Every supported length, in three tiers
 
 The library supports 1024 and the powers of two to 1048576. One kernel
