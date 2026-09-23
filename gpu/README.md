@@ -467,3 +467,81 @@ with a 29% CV. The box carries another user's 32-process job and this
 repository's own table regeneration on 30 of 32 cores, and the 8060S
 shares power and memory with both. Differences below about 2x cannot be
 attributed to anything.
+
+## Saturation, and what other GPUs will need
+
+The flat kernel reaches its plateau at about 410 pairs per compute unit
+and holds it out to 6554 per CU:
+
+    pairs     nd x nt     mem     ms       GFLOP/s   pairs/CU
+     2048     16x128      4.7 MB  0.134     4129        51
+    16384     64x256     10.5 MB  0.893     4975       410
+    32768     64x512     18.9 MB  1.759     5036       819
+   131072    128x1024    37.7 MB  7.064     5016      3277
+   262144    256x1024    41.9 MB 13.717     5166      6554
+
+So the rule for other devices is ~400 pairs per CU/SM:
+
+    Radeon 8060S (40 CU)        ~16400 pairs
+    RTX 5060 desktop (34 SM)    ~14000
+    RTX 4090 (128 SM)           ~52000
+    MI300X (304 CU)            ~125000
+
+The pycbc FIR search reports ~100k pair-calls per segment, so the real
+workload already saturates everything up to a very large card.
+
+## Clean numbers, on an idle machine
+
+Every earlier comparison here was taken while this repository's own table
+regeneration held 30 of 32 cores. With that finished:
+
+                      achieved   ceiling   % of peak
+      CPU, 1 core        102       322       31.7%
+      GPU               5036     27270       18.5%
+                                  49x a CPU core
+
+The GPU ceiling is 27270 GFLOP/s, not the 14850 the spec sheets quote:
+that figure is single-issue, and RDNA3 dual-issues FP32. The probe finds
+the dual-issue path.
+
+49x a single core meets the target. The CPU is still the better-fitted
+implementation -- 31.7% of its ceiling against 18.5% -- so there is
+another 1.7x in the GPU before the two are equally tuned.
+
+    hierarchical at 32768 pairs, 3.1% escalating
+      flat          1.772 ms
+      hierarchical  0.270 ms      6.57x, 48% of its 13.79x ideal
+
+## Portability: what would break on a non-AMD GPU
+
+Nothing here uses a vendor extension, vendor syntax, or a hardcoded wave
+width, and all five kernels compile to SPIR-V, Metal, CUDA and HLSL. But
+two things would go wrong, and one of them silently.
+
+**A 16-lane slot is assumed to sit inside one wave.** Five sites compute
+`WaveGetLaneIndex() - lane` for a slot base, or shuffle to
+`WaveGetLaneIndex() + st`. That holds at wave32 and wave64 (AMD), warp 32
+(NVIDIA) and SIMD group 32 (Apple). It does NOT hold on Intel, whose
+subgroup may be SIMD8 -- a 16-lane slot then straddles two subgroups, the
+shuffles read lanes that are not there, and the answer is quietly wrong.
+No crash, no validation error.
+
+The shipped library must query the subgroup size at device init --
+`VkPhysicalDeviceSubgroupProperties::subgroupSize`, or Metal's
+`threadExecutionWidth` -- and pick a variant, not assume. A slot size of
+`min(16, subgroupSize)` works everywhere at the cost of a different
+factorisation below 16.
+
+**Threadgroup memory limits differ.** Apple allows 32 KB per threadgroup
+where AMD and NVIDIA allow 64 KB. Declared by each kernel here:
+
+    fourstep_4096.slang        9.0 KB    fine everywhere
+    fourstep.slang            32.0 KB    at Apple's limit
+    hierarchical_fused.slang  34.1 KB    over
+    hierarchical.slang        66.1 KB    over
+    spike.slang               66.0 KB    over
+
+The three over the line are the early versions. The chunked exchange that
+bought 2.71x also brought the current kernel to 9 KB, so the fastest path
+is also the portable one -- which is a happy accident worth not relying
+on next time.

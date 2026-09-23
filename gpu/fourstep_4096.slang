@@ -55,6 +55,35 @@ void dft16(inout float2 a[16])
     t=a[11]; a[11]=a[14]; a[14]=t;
 }
 
+
+// 16x16 transpose across the 16 lanes of one slot, in wave shuffles.
+//
+// No threadgroup memory and no barrier. This is the only way off the
+// occupancy cliff for the coarse pass: a 256-point transform needs a
+// 256-complex transpose buffer per 16 threads, which is 128 bytes per
+// thread however the workgroup is shaped, where full occupancy allows 32.
+// Batching more or fewer transforms per workgroup cannot change that
+// ratio -- only not using the memory can.
+//
+// Four butterfly steps. At step s a lane exchanges with lane^s, and the
+// REGISTER index swaps with it: out[lane][i] takes cur[lane^s][i^s]
+// exactly when (lane & s) and (i & s) differ. Every index is static, so
+// the registers stay registers. Verified against a reference transpose
+// before being written here.
+//
+// A slot is 16 lanes and never straddles a wave, on wave32 or wave64.
+void transpose16(inout float2 v[16], uint lane)
+{
+    uint base = WaveGetLaneIndex() - lane;     // this slot's first wave lane
+    [unroll] for (uint s = 1; s < 16; s <<= 1) {
+        float2 recv[16];
+        [unroll] for (uint i = 0; i < 16; ++i)
+            recv[i] = WaveShuffle(v[i ^ s], base + (lane ^ s));
+        [unroll] for (uint i = 0; i < 16; ++i)
+            if (((lane & s) != 0) != ((i & s) != 0)) v[i] = recv[i];
+    }
+}
+
 // Round 1 -> round 2 exchange, chunked.
 //
 // Thread tid holds A[n1=tid][k2] for k2 = 0..15. Thread tid needs, for its
@@ -234,3 +263,52 @@ void coarseOcc(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
         else peakMag[pair] = 0.0f;
     }
 }
+
+
+[shader("compute")][numthreads(256,1,1)]
+void coarseShuf(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
+                StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                RWStructuredBuffer<float> peakMag,
+                RWStructuredBuffer<uint> worklist, RWStructuredBuffer<uint> counter,
+                uniform uint ntmpl, uniform uint nfull, uniform uint npairs,
+                uniform float tcoarse)
+{
+    uint tid = lid.x, slot = tid / R, lane = tid % R;
+    uint pair = gid.x * R + slot;
+    float2 r[16];
+    if (pair < npairs) {
+        uint d = pair / ntmpl, t = pair % ntmpl;
+        [unroll] for (uint n2 = 0; n2 < R; ++n2) {
+            uint idx = lane + R * n2;
+            r[n2] = cmulConj(data[d * nfull + idx], tmpl[t * nfull + idx]);
+        }
+    } else {
+        [unroll] for (uint i = 0; i < R; ++i) r[i] = float2(0.0f, 0.0f);
+    }
+    dft16(r);
+    [unroll] for (uint k2 = 0; k2 < R; ++k2) {
+        float ang = 2.0f * 3.14159265358979f * float(lane * k2) / float(NSUB);
+        r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
+    }
+    transpose16(r, lane);
+    dft16(r);
+
+    float best = -1.0f;
+    [unroll] for (uint i = 0; i < R; ++i) best = max(best, r[i].x*r[i].x + r[i].y*r[i].y);
+    [unroll] for (uint st = R / 2; st > 0; st >>= 1) {
+        float o = WaveShuffle(best, WaveGetLaneIndex() + st);
+        if (lane < st) best = max(best, o);
+    }
+    if (lane == 0 && pair < npairs) {
+        if (sqrt(best) > tcoarse) { uint s2; InterlockedAdd(counter[0], 1u, s2); worklist[s2] = pair; }
+        else peakMag[pair] = 0.0f;
+    }
+}
+
+
+// Clearing the worklist counter from the HOST cost 0.0125 ms per call --
+// more than the coarse pass's actual GPU work at 2048 pairs. Do it on the
+// device instead. A real caller would fold this into the previous
+// dispatch; kept separate here so the benchmark can attribute it.
+[shader("compute")][numthreads(1,1,1)]
+void clearCounter(RWStructuredBuffer<uint> counter) { counter[0] = 0u; }
