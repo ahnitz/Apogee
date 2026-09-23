@@ -352,3 +352,68 @@ is not worth measured accuracy, so it is reverted, and `noise.py` is here
 to make the same judgement quickly next time.
 
 The coarse-pass work is the next thing, and it needs a quiet machine.
+
+## The target is 50x a CPU core, and we are at 17x
+
+Peaks, both measured the same way -- a dependent-free FMA chain, on the
+device:
+
+                          measured    conditions          spec
+      1 CPU core           240.6      3.76 GHz, loaded     332 at 5.19 GHz
+      GPU                 8953        1.75 GHz, throttled  14850 at 2.9 GHz
+
+The GPU measurement is 60% of spec and the clock back-solves to 60% of
+spec, so the probe reaches essentially 100% of peak FOR THE CLOCK IT GETS.
+The shortfall is an APU sharing one power budget with a busy CPU, not the
+kernel. The published 14.85 TFLOPS matches 40 CU x 64 lanes x 2 flops x
+2.9 GHz exactly.
+
+So the peak ratio is 44.7x, and that is the target: if the GPU
+implementation were as well fitted to its hardware as the CPU one is to
+its, the filter would run about 45-50x a single core.
+
+      flat matched filter, n=4096      achieved   ceiling   % of peak
+        CPU, 1 core                        55       240.6      22.9%
+        GPU                               931      8953        10.4%
+                                                   ratio       16.9x
+
+17x against a 45x target. The GPU implementation is at roughly half the
+CPU's efficiency, and closing that is worth more than everything else on
+this list.
+
+## What binds it, by elimination
+
+At n=4096, 2048 pairs, 0.595 ms:
+
+      FMA          930 of 8953 GFLOP/s        10%
+      LDS          677 of 8960 GB/s            8%
+      global       226 GB/s, cache-served     -- and collapsing the
+                                                 working set to one slice
+                                                 buys 1.18x, so not this
+
+None of the three is the wall. What is left is latency at 25% occupancy:
+a 4096-point transform needs 4096 complex in threadgroup memory, which is
+32 KB, which fits two workgroups in a CU's 64 KB, which is 512 of about
+2048 thread slots. LDS capacity at this transform length sets occupancy,
+and occupancy sets latency hiding.
+
+Two things that did NOT help, both measured:
+
+- replacing the four-stage radix-2 dft16 (a temporary and 64 register
+  moves per call) with radix-4 x radix-4 in place: identical throughput.
+  The compiler was already eliminating the moves under SSA.
+- walking twiddles incrementally instead of sixteen sin/cos: identical
+  throughput, and 5x worse accuracy. Reverted.
+
+The next idea worth trying is splitting the transform so a workgroup holds
+less than the whole of it -- which is the four-step again, one level
+further down, trading a barrier for occupancy.
+
+## Measurement conditions have made further work pointless for now
+
+The same kernel on the same data measured 0.595 ms earlier and 1.603 ms
+later in the same session, and fifteen consecutive timings spanned 2.41x
+with a 29% CV. The box carries another user's 32-process job and this
+repository's own table regeneration on 30 of 32 cores, and the 8060S
+shares power and memory with both. Differences below about 2x cannot be
+attributed to anything.

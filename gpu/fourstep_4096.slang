@@ -20,21 +20,55 @@ groupshared float  red[WG];
 float2 cmul(float2 a, float2 b) { return float2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
 float2 cmulConj(float2 a, float2 b) { return float2(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
 
+// 16-point inverse DFT in registers, radix-4 x radix-4.
+//
+// The previous version was four radix-2 Stockham stages through a
+// temporary, which costs 4 x 16 = 64 register moves per call on top of the
+// arithmetic -- and this is called three times per 4096-point transform,
+// per thread. Radix-4 twice has no temporary, two stages instead of four,
+// and the twiddles are compile-time constants rather than sin/cos calls.
+//
+// Layout verified against numpy before being written here: step 1 does
+// four length-4 DFTs over stride 4, the twiddle is W16^(n1*k2), step 2
+// does four over contiguous groups, and the result lands at r[k1 + 4*k2]
+// for X[k1][k2] -- a 4x4 transpose away from natural order, which is six
+// swaps rather than sixteen moves.
+void r4(inout float2 a, inout float2 b, inout float2 c, inout float2 d)
+{
+    float2 t0 = a + c, t1 = a - c, t2 = b + d, t3 = b - d;
+    float2 jt3 = float2(-t3.y, t3.x);        // * +i, for the inverse
+    a = t0 + t2; b = t1 + jt3; c = t0 - t2; d = t1 - jt3;
+}
+
 void dft16(inout float2 a[16])
 {
-    float2 b[16];
-    [unroll] for (uint s = 1; s < 16; s <<= 1) {
-        [unroll] for (uint j = 0; j < 8; ++j) {
-            uint k = j & (s - 1);
-            uint base = (j - k) << 1;
-            float ang = 3.14159265358979f * float(k) / float(s);
-            float2 w = float2(cos(ang), sin(ang));
-            float2 u = a[j], v = a[j + 8];
-            float2 t = cmul(w, v);
-            b[base + k] = u + t; b[base + k + s] = u - t;
-        }
-        [unroll] for (uint i = 0; i < 16; ++i) a[i] = b[i];
-    }
+    // W16^p = exp(+2*pi*i*p/16)
+    const float2 W1 = float2( 0.92387953f,  0.38268343f);
+    const float2 W2 = float2( 0.70710678f,  0.70710678f);
+    const float2 W3 = float2( 0.38268343f,  0.92387953f);
+    const float2 W4 = float2( 0.0f,         1.0f       );
+    const float2 W6 = float2(-0.70710678f,  0.70710678f);
+    const float2 W9 = float2(-0.92387953f, -0.38268343f);
+
+    [unroll] for (uint n1 = 0; n1 < 4; ++n1)
+        r4(a[n1], a[n1 + 4], a[n1 + 8], a[n1 + 12]);
+
+    // A[n1][k2] *= W16^(n1*k2); n1=0 and k2=0 are identity
+    a[1 + 4] = cmul(a[1 + 4], W1);  a[1 + 8] = cmul(a[1 + 8], W2);  a[1 + 12] = cmul(a[1 + 12], W3);
+    a[2 + 4] = cmul(a[2 + 4], W2);  a[2 + 8] = cmul(a[2 + 8], W4);  a[2 + 12] = cmul(a[2 + 12], W6);
+    a[3 + 4] = cmul(a[3 + 4], W3);  a[3 + 8] = cmul(a[3 + 8], W6);  a[3 + 12] = cmul(a[3 + 12], W9);
+
+    [unroll] for (uint k2 = 0; k2 < 4; ++k2)
+        r4(a[4*k2], a[4*k2 + 1], a[4*k2 + 2], a[4*k2 + 3]);
+
+    // r[k1 + 4*k2] -> natural order r[k1*4 + k2]: a 4x4 transpose
+    float2 t;
+    t = a[1]; a[1] = a[4]; a[4] = t;
+    t = a[2]; a[2] = a[8]; a[8] = t;
+    t = a[3]; a[3] = a[12]; a[12] = t;
+    t = a[6]; a[6] = a[9]; a[9] = t;
+    t = a[7]; a[7] = a[13]; a[13] = t;
+    t = a[11]; a[11] = a[14]; a[14] = t;
 }
 
 // length-256 inverse transform of sh[off ..], 16 threads, one transpose
