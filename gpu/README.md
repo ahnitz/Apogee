@@ -129,6 +129,37 @@ also prints how many peak indices match the float64 reference, and it said
 9 of 8192. Every timing here is paired with that check for exactly this
 reason.
 
+## It is not bandwidth, and the arithmetic said it was
+
+The coarse pass reads 33.6 MB per dispatch for 8192 pairs and ran at 186.4
+GB/s against a device ceiling of 186.8 -- apparently saturated, and
+apparently 57x redundant, since the algorithm only needs the 0.59 MB of
+distinct low-band spectra.
+
+Both numbers are true and the conclusion drawn from them was wrong.
+`cache_probe.py` rewrites the pair indices so every pair reads the SAME two
+slices: identical arithmetic, identical barriers, but a working set of two
+lines that certainly sits in cache.
+
+    normal, 57x redundant reads     0.2597 ms
+    every pair reads one slice      0.2241 ms     1.16x
+
+Removing ALL redundant traffic buys 16%. If bandwidth were the wall it
+would buy something near 57x. The 576 KB of distinct spectra were already
+being served out of a 32 MB Infinity Cache, and 186 GB/s was a coincidence
+of the arithmetic rather than evidence of saturation.
+
+This is the algorithm working as designed. Batching means each spectrum is
+read by many pairs, and peak-only output means the D x T x n correlation is
+never written -- so by construction the filter should not be near the
+bandwidth wall, and it is not. What remains is LDS traffic, barriers and
+occupancy, which is a different problem with different fixes.
+
+The lesson worth keeping: an achieved bandwidth that matches the ceiling is
+not evidence of being bandwidth-bound. It can be a coincidence, and here it
+was. The cheap way to tell is to collapse the working set and see whether
+anything changes.
+
 ## Where the remaining performance is
 
 Both phases carry about 2x of overhead against their own ideal:
@@ -139,15 +170,17 @@ Both phases carry about 2x of overhead against their own ideal:
 
 Three things to try, in the order they look worth it:
 
-1. **Register-resident coarse transforms.** 256 points over 32 threads is 8
-   points per thread -- a radix-8 butterfly in registers with ONE trip
-   through LDS, instead of four stages each reading and writing it. This is
-   the CPU's four-step idea (independent transforms in the lanes) applied
-   to the small pass.
-2. **Data and template reuse across a tile.** Every pair currently reloads
-   both spectra from global memory. A (d_tile x t_tile) tile reads
-   d_tile + t_tile spectra to do d_tile * t_tile pairs; the roofline work
-   in docs/plans/gpu.md puts the span of that choice at 7x.
+1. **Bigger radix, fewer LDS exchanges.** This is now the main lever, since
+   fetching is not. A radix-4 stage reads four complex and writes four for
+   about 34 flops; at 256 points that is four stages and four barriers.
+   Radix-16 with 16 points per thread is two stages and two barriers for
+   the same transform, at 32 VGPRs of register pressure. Same idea as the
+   CPU's four-step: hold an independent sub-transform in the lane and only
+   go through the shared memory to transpose.
+2. **Data and template reuse across a tile** -- worth at most 1.16x on the
+   coarse pass, measured, so it is now a low priority rather than the 7x
+   the roofline suggested for an unfused design. Keep it in mind for the
+   full-length pass, where the traffic per pair is four times larger.
 3. **Load balance in phase 2.** Survivors are Poisson across tiles, so a
    tile with three costs three times one with none, and the dispatch waits
    for the worst. A global worklist with a second dispatch balances
