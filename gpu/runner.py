@@ -21,66 +21,46 @@ HERE = pathlib.Path(__file__).resolve().parent
 _SPY = None
 
 
-def _icd_candidates():
-    """ICD files to try, in preference order.
-
-    A real GPU first, then lavapipe -- software Vulkan, far too slow to
-    benchmark and entirely adequate to prove correctness, which is what
-    lets the GPU kernels be tested on a runner with no GPU at all.
-    """
-    if os.environ.get("VK_ICD_FILENAMES"):
-        return [os.environ["VK_ICD_FILENAMES"]]
-    d = pathlib.Path("/usr/share/vulkan/icd.d")
-    if not d.is_dir():
-        return [None]
-    # Order matters: trying an ICD for hardware that is not here can leave
-    # the loader unable to create an instance at all, so the later
-    # candidates fail too. Ask for the likely ones by name, then the
-    # software rasteriser, then let the loader decide.
-    likely = ("radeon", "amdgpu", "nvidia", "intel")
-    out = [str(p) for name in likely for p in sorted(d.glob("%s*_icd.*.json" % name))]
-    out += [str(p) for p in sorted(d.glob("lvp_icd.*.json"))]
-    return out + [None]
-
-
 def available():
-    """(ok, reason). Never raises."""
+    """(ok, reason). Never raises.
+
+    No ICD is forced.  An earlier version walked /usr/share/vulkan/icd.d
+    setting VK_ICD_FILENAMES to each candidate in turn, on the theory that
+    probing an ICD for absent hardware poisons the loader for the later
+    candidates.  That theory was wrong: setting the variable was itself the
+    failure.  With it pointing at the radeon ICD, vkCreateInstance returns
+    VK_ERROR_INCOMPATIBLE_DRIVER on a machine whose radeon driver works
+    perfectly when the loader is left to its own discovery.
+
+    The failures that motivated the probing were a shadowed libstdc++ --
+    see matchedfilter._vulkan._shadowing_hint, which reports it as a cause
+    instead of leaving it to be misread as absent hardware.
+    """
     global _SPY
     try:
         import slangpy
         _SPY = slangpy
     except Exception as e:
         return False, "slangpy not installed (%s)" % type(e).__name__
-    for icd in _icd_candidates():
-        old = os.environ.get("VK_ICD_FILENAMES")
-        if icd:
-            os.environ["VK_ICD_FILENAMES"] = icd
+    try:
+        dev = _SPY.Device(type=_SPY.DeviceType.vulkan)
+        return True, dev.info.adapter_name
+    except Exception as e:
+        import sys
+        sys.path.insert(0, str(HERE.parent / "python"))
         try:
-            dev = _SPY.Device(type=_SPY.DeviceType.vulkan)
-            return True, dev.info.adapter_name
+            from matchedfilter._vulkan import enumerate_devices
+            _, why = enumerate_devices()
         except Exception:
-            pass
-        finally:
-            if icd:
-                if old is None:
-                    os.environ.pop("VK_ICD_FILENAMES", None)
-                else:
-                    os.environ["VK_ICD_FILENAMES"] = old
-    return False, "no Vulkan device (tried %d ICDs)" % len(_icd_candidates())
+            why = None
+        return False, why or "no Vulkan device (%s)" % type(e).__name__
 
 
 def device():
     ok, why = available()
     if not ok:
         raise RuntimeError(why)
-    for icd in _icd_candidates():
-        if icd:
-            os.environ["VK_ICD_FILENAMES"] = icd
-        try:
-            return _SPY.Device(type=_SPY.DeviceType.vulkan)
-        except Exception:
-            continue
-    raise RuntimeError(why)
+    return _SPY.Device(type=_SPY.DeviceType.vulkan)
 
 
 def peaks(dev, n, data, tmpl, kernel="tierb.slang", entry="fusedTierB"):

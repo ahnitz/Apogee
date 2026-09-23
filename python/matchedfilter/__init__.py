@@ -38,7 +38,7 @@ except (ImportError, PackageNotFoundError):  # running from a source tree
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
 
 __all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "backend",
-           "targets", "set_target", "__version__"]
+           "targets", "set_target", "devices", "Device", "__version__"]
 
 
 def backend():
@@ -70,8 +70,56 @@ def set_target(name):
     _core.set_target(name)
 
 
+#: DLPack device types we can read without a copy across a bus.
+#: kDLCPU is 1; kDLCUDAHost (3) and kDLROCMHost (11) are pinned host memory,
+#: which is still host memory.
+_DLPACK_HOST = {1, 3, 11}
+
+_DLPACK_NAMES = {2: "CUDA", 4: "OpenCL", 7: "Vulkan", 8: "Metal", 10: "ROCm",
+                 13: "CUDA managed", 14: "one-API"}
+
+
+def _from_any(a):
+    """Accept any array that speaks DLPack, not just numpy's.
+
+    DLPack is the cross-library standard for handing over a buffer -- numpy 2,
+    torch, cupy and jax all implement ``__dlpack__`` -- so keying off it means
+    this works with arrays from libraries matchedfilter has never heard of and
+    does not depend on.  Anything older falls through to numpy's own coercion,
+    which covers the buffer protocol and ``__array__``.
+
+    Data that already lives on an accelerator is REFUSED rather than copied.
+    A silent device-to-host transfer here would be invisible in the API and
+    would dominate the runtime of the very kernel the caller came for; a GPU
+    tensor reaching the CPU backend is a mistake worth reporting, not
+    absorbing.
+    """
+    if hasattr(a, "__dlpack_device__"):
+        try:
+            kind = int(a.__dlpack_device__()[0])
+        except Exception:
+            kind = 1                      # unreadable: let numpy try
+        if kind not in _DLPACK_HOST:
+            raise TypeError(
+                "array is on a %s device; matchedfilter will not copy it to "
+                "the host implicitly -- move it yourself (e.g. .cpu()) or "
+                "build the filter with the matching device="
+                % _DLPACK_NAMES.get(kind, "non-host"))
+        try:
+            return np.from_dlpack(a)
+        except Exception:
+            pass                          # e.g. read-only producer; coerce below
+    return a
+
+
+def devices():
+    """Every device this build can dispatch to.  See :mod:`matchedfilter.device`."""
+    from .device import devices as _devices
+    return _devices()
+
+
 def _as_c64(a, n, what):
-    a = np.ascontiguousarray(a, dtype=np.complex64)
+    a = np.ascontiguousarray(_from_any(a), dtype=np.complex64)
     if a.ndim != 1 or a.size != n:
         raise ValueError(f"{what} must be a 1-D complex array of {n} samples, got shape {a.shape}")
     return a
@@ -90,7 +138,15 @@ class MatchedFilter:
     correlation loop wants, so that cost is paid once rather than per pair.
     """
 
-    def __init__(self, n, ndata=1, ntemplates=1):
+    def __init__(self, n, ndata=1, ntemplates=1, device=None):
+        from .device import parse as _parse_device
+        self.device = _parse_device(device)
+        if self.device.kind != "cpu":
+            raise NotImplementedError(
+                "the %s backend is not wired up yet; this release runs on "
+                "device='cpu'. Selection and enumeration are in place so "
+                "that when it lands nothing about the call changes."
+                % self.device.backend)
         self.n = int(n)
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
@@ -1362,3 +1418,16 @@ try:
     _load_tuning()
 except Exception:
     pass
+
+
+def __getattr__(name):
+    """Expose ``Device`` without enumerating hardware at import time.
+
+    Listing devices creates a Vulkan instance, which is far too much work to
+    do on ``import matchedfilter`` for the majority of callers who will only
+    ever use the CPU.
+    """
+    if name == "Device":
+        from .device import Device
+        return Device
+    raise AttributeError(name)

@@ -114,21 +114,25 @@ def test_large_batch(dev):
 
 
 def test_cpu_large_batch():
-    """The same shape on the CPU, which must also cope with it.
+    """The SAME shape on the CPU, which must also cope with it.
 
-    Not skipped: this runs everywhere. A batch sized for a GPU is a
-    legitimate thing to hand the CPU filter, and it exercises the plan and
-    buffer paths at a size the other tests never reach.
+    Not skipped: this runs everywhere. A batch sized for a GPU is not a
+    GPU-only shape -- 32768 pairs at n=4096 costs the CPU backend 0.12s,
+    so it is an ordinary call, and matching the GPU test's shape exactly
+    makes the two directly comparable instead of merely adjacent.
+
+    It also exercises the plan and buffer paths at a size no other test in
+    the suite reaches.
     """
     import matchedfilter as mf
-    n, nd, nt = 4096, 32, 256                  # 8192 pairs
+    n, nd, nt = 4096, 64, 512                  # 32768 pairs
     d, h = spectra(n, nd, nt, seed=5)
     filt = mf.MatchedFilter(n, ndata=nd, ntemplates=nt)
     filt.set_data(d)
     filt.set_templates(h)
     peaks = filt.run(binsize=n, threshold=0.0)
     assert peaks.shape == (nd, nt, 1)
-    idx = [(0, 0), (3, 31), (31, 255)]
+    idx = [(0, 0), (3, 31), (17, 255), (63, 511)]
     sub_d = np.array([d[i] for i, _ in idx])
     sub_h = np.array([h[j] for _, j in idx])
     want = reference_peaks(sub_d, sub_h)
