@@ -304,11 +304,24 @@ def _load_tuning(path=None):
                                      (float(f[6]), float(f[7]), float(f[9])))
     # Index the accuracy rows by (n, snr) once, here, instead of scanning all
     # of them on every selection. choose_config used to walk the whole list,
-    # which cost 4.9 ms once the tables covered eight transform lengths --
-    # 10704 rows. pycbc builds a plan per segment and each one selects, so on
-    # a 13-segment run that was 64 ms of Python against a 186 ms kernel: a 28%
-    # slowdown that arrived purely from measuring MORE, with no code change and
-    # the same configuration chosen.
+    # which cost 4.9 ms once the tables covered eight transform lengths.
+    # 4.9 ms -> 0.22 ms.
+    #
+    # This is NOT what made pycbc_inspiral_fir look 28% slower, though the
+    # commit that introduced it said so. Plans are cached by (nbatch, ndata)
+    # and that run builds one, so selection happens ONCE, not once per
+    # segment; the 64 ms figure came from multiplying by a segment count
+    # without checking. Per-segment timings put the whole difference in the
+    # first segment -- 48 ms against 15 ms, with every steady-state segment
+    # identical at 7.0 ms -- and that is _load_tuning below, parsing tables
+    # that grew from 1920 rows to over 30000. Fixed 50 ms of startup, not a
+    # throughput cost: +55% on a 13-segment smoke test, +0.7% at 1000.
+    #
+    # Two attempts to speed the parse up both made it slower (np.array on
+    # split rows 74 ms, np.fromstring 64 ms, against 50). The cost is building
+    # 11264 tuples and 2048 dict entries in Python, not converting floats, so
+    # parsing in C and handing the result back through tolist() moves the work
+    # rather than removing it. Recorded so the next attempt starts elsewhere.
     by_ns = {}
     for r in fdr:
         by_ns.setdefault((r[0], r[4]), []).append(r)
