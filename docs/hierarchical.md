@@ -270,60 +270,75 @@ more conservative -- lost four times as many as the default.  A lower
 threshold cannot lose more triggers; a different configuration can.  The
 override is monotonic by construction, which `tests/test_api.py` checks.
 
-## The low-B_eff rows are right and cannot be used yet
+## The table is keyed on what the measurements say matters
 
-The accuracy grid samples B_eff as a fraction of the band, so its floor sits
-near band/10 and never reaches small ABSOLUTE B_eff. Real references live
-there: the FIR-search reference is at 1.1 and the tests' inspiral reference
-at 1.9, at every band. 2592 rows were measured to fill that in -- an
-absolute ladder at 1.2 and 3.5 for all 54 (n, band) pairs, 95 minutes -- and
-the branch they revealed is real and reproducible:
+The key used to be (n, band, U, K, snr, f, B_eff, margin), with B_eff
+sampled as a FRACTION of the band. Two of those were wrong, and the
+measurements say so directly.
 
-    B_eff       1.1    1.5    2.0    3.0    5.2     12   25.6   76.4
-    dismissal  6.4e-2 5.3e-2 4.2e-2 3.4e-2 2.4e-2 9.3e-3 7.2e-4    0
+**Band is not in the key.** At n=8192, f=0.99, B_eff=16, dismissal across
+bands 256, 512, 1024 and 2048 -- band/B_eff from 16 to 128 -- is 1.64,
+1.88, 1.77 and 1.75e-2. A 1.14x spread, inside the +-9% error bars. A
+candidate band enters only through the (f, B_eff) at its own edge, which
+selection computes from the reference anyway.
 
-at n=4096 band 256 f=0.99 margin 1.00, with the same shape at n=65536 band
-256 (4.7e-2) and n=262144 band 1024 (6.7e-2). Dismissal is U-shaped in
-B_eff, not monotonic, and the rising branch this file describes elsewhere is
-only half the curve.
+**n is, weakly.** Holding f, B_eff and band/B_eff fixed and moving only n,
+1024 to 8192 gives 4.9x and 4.5x at the two well-measured cells. So it
+cannot be factored out, but four lengths is cheap to carry.
 
-**They are not in the shipped table.** Adding them destabilised selection in
-two ways, and the second one is the interesting one.
+**B_eff is sampled absolutely.** The fractional ladder tied the grid to the
+variable that does not matter, and left a floor near band/10 that never
+reached the values real references have.
 
-The first was mechanical. `fq` clamps to the largest f present, so which
-rows qualify depends on which rows exist. Adding a ladder at f=0.99 raised
-that clamp from 0.97 to 0.9702 at n=65536 band 16384 and thereby EXCLUDED
-the f=0.97 rows that were speaking for the query -- by two parts in ten
-thousand. Selection moved to band 32768 and lost 63% of its speedup, while
-the configuration it abandoned measures 2.4e-3 against a 1e-2 budget. Adding
-measurements made the answer worse. Restricting the covering set to a B_eff
-neighbourhood first fixes it, by keeping the clamp local.
+Sensitivities on one scale, which is what sets where the measurement budget
+belongs:
 
-The second is not mechanical, and it is why none of this shipped. With the
-neighbourhood in place the table prices band 256 at 1.45e-3 for the
-FIR-search reference, selection takes it, and the workload loses 6.4% --
-9 peaks of 140 against a 3% budget. The reference sits at f=0.9999,
-B_eff=1.11 and the row that speaks for it was measured at f=0.99,
-B_eff=1.2. Nearly the same key, 44x apart in outcome.
+    margin  0.97 -> 1.00              ~90x
+    f, B_eff across the grid        10-100x
+    n       4096 -> 65536 (16x)       1.58x
+    band    256 -> 1024               1.06x
 
-That is not a new problem and the answer is already written down, in the
-header of `tools/hmf_tune.py`: two references agreeing on f(512) to four
-figures differ THREEFOLD in dismissal, because they put 85.2% and 94.7% of
-their in-band power below 256, "and that is what sets the correlation peak
-width, hence the scalloping". The conclusion recorded there is that the
-features for band m must be the accumulated powers at m AND at every
-candidate edge below it, not a scalar summary.
+## What the rule is now
 
-So (f, B_eff) does not determine dismissal, low B_eff is where that stops
-being a threefold error and becomes a 44x one, and the rows are correct
-measurements of references the key cannot distinguish from the one being
-asked about. The measurements are kept and reproducible --
-`tools/regen/accuracy_low_beff.py` -- and what they are waiting on is a
-richer key, not more data.
+One rule, applied the same way to both tables. Interpolate at the
+reference's own (f, B_eff) -- inverse distance, in log for dismissal --
+place the margin that meets the budget, price the result, take the
+cheapest. Refuse when the reference has no localised peak.
 
-Until then the shipped table stands, with the understanding that its
-apparent safety at low B_eff comes from the covering rule pricing band 256
-too high to be selected rather than from the accuracy side vouching for it.
+The covering sets, the bracketing, the decade guard and the cost tie-break
+are gone. All of them existed to make a lookup behave like a BOUND, and a
+bound is not what this needs: it needs an estimate that is roughly right,
+which is what the caller asked for.
+
+## What it achieves, measured
+
+`tools/score_fdr.py` asks the only question that matters: request a budget,
+take whatever selection returns, and measure what that configuration really
+dismisses. Three reference families, four lengths, two thresholds, two
+budgets, 20000 trials each:
+
+    budget    over budget   worst
+    fd = 1e-2    2 of 24     1.23x
+    fd = 1e-3   13 of 24     3.06x
+
+At 1e-2 that is inside 25%. At 1e-3 it runs 2-3x, and the reason is in
+`tools/uncertainty.py`: the cells that decide a 1e-3 budget carry +-35%
+Poisson error at 6000 trials, and the (f, B_eff) interpolation error --
+1.44x median, 3.04x p90 -- is statistically indistinguishable from that
+noise. The rule is doing about as well as its inputs allow.
+
+The obvious fix, fewer cells and more trials each, was tried: 1920 cells at
+18000 trials against 5600 at 6000, the same wall clock. Cell noise improved
+(+-18% from +-35%) and margin placement improved (p90 1.33x from 2.85x),
+but the interpolation error grew (1.89x median, 5.03x p90) and the
+end-to-end result got WORSE -- 17 of 48 over budget against 15. The finer
+grid is shipped. What would actually help is more trials at the SAME
+density, which is simply more machine time.
+
+Undershoots are mostly not errors. Where the measured rate is far below the
+budget the margin is already 1.000, the loosest setting there is, which
+means no cheaper configuration was admissible rather than that the estimate
+was wrong.
 
 ## Interpolating cost works and is still not switched on
 

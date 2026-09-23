@@ -246,6 +246,19 @@ _TUNING = None
 _warned_uncovered = False
 
 
+def _uncovered_reference(power, n, t):
+    """True when no candidate band has a localised peak to work with.
+
+    A reference whose in-band power sits in a bin or two gives a
+    correlation of nearly constant magnitude -- there is no peak to find
+    coarsely and refine, so the method does not apply. See `_BEFF_MIN`.
+    """
+    bands = {cb for (cn, cb, _U, _K, _s, _m) in t["cost"] if cn == n and cb < n}
+    if not bands:
+        return False
+    return all(_band_features(power, b)[1] < _BEFF_MIN for b in bands)
+
+
 def _uncovered_message(n, snr, fd):
     """Why autotuning refused, and what to do about it.
 
@@ -256,8 +269,8 @@ def _uncovered_message(n, snr, fd):
     oversampling, taps and margin to pair it with.
     """
     t = _load_tuning()
-    ns = sorted({r[0] for r in t["fdr"]})
-    snrs = _complete_snrs(t, n)
+    ns = sorted(set(t.get("acc2_snrs", {})) | {r[0] for r in t["fdr"]})
+    snrs = t.get("acc2_snrs", {}).get(n) or _complete_snrs(t, n)
     floor = _dismissal_floor(t)
     if not snrs:
         where = "n=%d is not in the tables" % n
@@ -384,7 +397,7 @@ def _load_tuning(path=None):
         if path is None:
             _TUNING = cached
         return cached
-    fdr, cost, meta = [], {}, {}
+    fdr, cost, acc2, meta = [], {}, {}, {}
     for one in paths:
       with open(one) as fh:
         for line in fh:
@@ -401,6 +414,25 @@ def _load_tuning(path=None):
                 fdr.append((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
                             float(f[5]), float(f[6]), float(f[7]),
                             float(f[8]), float(f[9])))
+            elif f[0] == "ACC2":
+                # ACC2 n K snr f beff margin dismissal
+                #
+                # Band is NOT in this key, and that is the point. Measured
+                # at n=8192, f=0.99, B_eff=16, dismissal across bands 256,
+                # 512, 1024 and 2048 is 1.64, 1.88, 1.77 and 1.75e-2 -- a
+                # 1.14x spread inside the error bars, over band/B_eff from
+                # 16 to 128. A candidate band enters only through the
+                # (f, B_eff) its own edge produces, which selection computes
+                # from the reference anyway.
+                #
+                # B_eff is sampled ABSOLUTELY here. The old grid sampled it
+                # as a fraction of the band, which tied it to the variable
+                # that does not matter and never reached the small values
+                # real references have -- the FIR-search reference sits at
+                # B_eff 1.1 at every band.
+                acc2.setdefault((int(f[1]), int(f[2]), round(float(f[3]), 2),
+                                 round(float(f[6]), 3)), []).append(
+                                     (float(f[4]), float(f[5]), float(f[7])))
             elif f[0] == "COST":
                 cost.setdefault((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
                                  float(f[5]), float(f[8])), []).append(
@@ -436,7 +468,12 @@ def _load_tuning(path=None):
     cost_cfg = {}
     for (kn, kb, kU, kK, s, km) in cost:
         cost_cfg.setdefault((kn, kb, kU, kK, km), []).append(s)
+    acc2_snrs = {}
+    for (an, aK, asnr, amg) in acc2:
+        acc2_snrs.setdefault(an, set()).add(asnr)
     t = {"fdr": fdr, "cost": cost, "meta": meta, "paths": paths,
+         "acc2": acc2,
+         "acc2_snrs": {k: sorted(v) for k, v in acc2_snrs.items()},
          "by_ns": by_ns, "snrs_at": snrs_at,
          "cost_cfg": {k: sorted(v) for k, v in cost_cfg.items()}}
     _store_tuning(t, tuple(paths))
@@ -592,6 +629,141 @@ def _complete_snrs(t, n):
     return sorted(s_ for s_, v in bands.items() if len(v) == full)
 
 
+#: Below this effective bandwidth the reference has no localised
+#: correlation peak and the method has nothing to exploit.
+#:
+#: B_eff is the participation ratio of the in-band power, so B_eff = 1 means
+#: one frequency bin, whose inverse transform has CONSTANT magnitude across
+#: every lag. There is no peak to find coarsely and refine. What the coarse
+#: pass loses there is not scalloping at all: it is that the full search
+#: takes its maximum over more samples of the same flat field, measured at
+#: 0.879 against a predicted sqrt(ln band / ln n) = 0.866 -- a 12% systematic
+#: under-read that the recovery factors do not model, because they model
+#: peak shape.
+#:
+#: Every real reference measured sits at B_eff 130-225; the degenerate ones
+#: at 1-2. So the cut is loose on purpose and anything in 4 to 32 gives the
+#: same answer for every reference seen. It is a statement about when the
+#: algorithm applies, not a tuned threshold.
+_BEFF_MIN = 8.0
+
+#: Multiplier on the estimated dismissal before it is compared to the
+#: budget. The lookup is an ESTIMATE -- an interpolation between measured
+#: cells -- and a budget wants a bound, so the gap is covered by a factor
+#: measured on cells the interpolation did not see. Set from
+#: tools/score_fdr.py; 1.0 means "not yet measured", which is honest rather
+#: than safe.
+_FDR_SAFETY = 1.0
+
+
+def _spread(v):
+    """Scale for one feature axis: its standard deviation, never zero."""
+    if len(v) < 2:
+        return 1.0
+    m = sum(v) / len(v)
+    sd = (sum((x - m) ** 2 for x in v) / len(v)) ** 0.5
+    return sd if sd > 1e-9 else 1.0
+
+
+def _idw(rows, f, be, k=4, power=2.0, log=False, floor=1e-12):
+    """Inverse-distance interpolation of `rows` = (f, B_eff, value).
+
+    A convex combination of measured cells, so it can never return a value
+    outside them. That is why it is inverse distance and not a fitted
+    surface: a least-squares plane over the same scattered rows extrapolates
+    past the edge of the data, and when it was scored it picked band 256 at
+    n=8192 and n=16384 where the measured best is 4096 and 2048 -- 41-50% of
+    the available speedup, against 98.3% for this.
+
+    Distances are in units of each feature's spread across the rows, so
+    neither axis dominates through its units: f runs 0 to 1 and B_eff runs
+    to hundreds of bins.
+
+    `log=True` interpolates the logarithm, which is what dismissal needs --
+    it moves by orders of magnitude across the grid while the features move
+    by factors.
+    """
+    if not rows:
+        return None
+    sf, sb = _spread([r[0] for r in rows]), _spread([r[1] for r in rows])
+    d2 = sorted((((tf - f) / sf) ** 2 + ((tb - be) / sb) ** 2, v)
+                for (tf, tb, v) in rows)
+    near = d2[:max(k, 1)]
+    if near[0][0] < 1e-18:
+        return near[0][1]
+    if log:
+        ws = [(d ** (-0.5 * power), math.log10(max(v, floor))) for d, v in near]
+        return 10.0 ** (sum(w * v for w, v in ws) / sum(w for w, _ in ws))
+    ws = [(d ** (-0.5 * power), v) for d, v in near]
+    return sum(w * v for w, v in ws) / sum(w for w, _ in ws)
+
+
+def _choose_v2(power, n, snr, fd, t):
+    """Cheapest configuration whose ESTIMATED dismissal meets the budget.
+
+    One rule, applied the same way to both tables: interpolate at the
+    reference's own (f, B_eff), place the margin to hit the budget, price
+    the result, take the cheapest. No covering sets, no bracketing, no
+    special cases -- those all existed to make a lookup behave like a bound,
+    and a bound is not what this needs. What it needs is an estimate plus a
+    measured safety factor.
+    """
+    snrs = t["acc2_snrs"].get(n)
+    if not snrs:
+        return None
+    use, _why = _snr_rows_for(snr, snrs)
+    if use is None:
+        return None
+    floor = _dismissal_floor(t)
+
+    bands, kus = set(), set()
+    for (cn, cb, cU, cK, _cs, _cm) in t["cost"]:
+        if cn == n and cb < n:
+            bands.add(cb)
+            kus.add((cU, cK))
+
+    best, bcost, bcfg = None, float("inf"), None
+    for band in sorted(bands):
+        f, be = _band_features(power, band)
+        if be < _BEFF_MIN:
+            continue                       # no peak to localise; see _BEFF_MIN
+        for (U, K) in sorted(kus):
+            margins = sorted({m for (an, aK, asnr, m) in t["acc2"]
+                              if an == n and aK == K and asnr in use})
+            curve = []
+            for mg in margins:
+                # worst over the SNR rows that speak for this threshold
+                est = [x for x in
+                       (_idw(t["acc2"].get((n, K, s_, mg)) or [], f, be,
+                             log=True, floor=floor) for s_ in use)
+                       if x is not None]
+                if est:
+                    curve.append((mg, max(est)))
+            if not curve:
+                continue
+            mg = _margin_at_budget(curve, fd / _FDR_SAFETY, floor)
+            if mg is None:
+                continue
+            crows = []
+            for cs in _cost_snrs(t, n, band, U, K, mg, use):
+                crows += t["cost"].get((n, band, U, K, round(cs, 2), mg)) or []
+            if not crows:
+                # the cost grid is coarser in margin than the accuracy grid;
+                # price at the nearest measured margin rather than skipping
+                have = t["cost_cfg"].get((n, band, U, K)) or []
+                near = min((abs(m2 - mg), m2) for m2 in
+                           {m3 for (c1, c2, c3, c4, _s, m3) in t["cost"]
+                            if (c1, c2, c3, c4) == (n, band, U, K)} or {1.0})[1]
+                for cs in _cost_snrs(t, n, band, U, K, near, use):
+                    crows += t["cost"].get((n, band, U, K, round(cs, 2), near)) or []
+            if not crows:
+                continue
+            c = _idw(crows, f, be)
+            if c is not None and c < bcost:
+                best, bcost, bcfg = (band, U, K), c, (band, U, K, round(mg, 4))
+    return bcfg
+
+
 def choose_config(power, n, snr, fd, tuning=None):
     """Cheapest (band, oversample, taps) whose measured dismissal meets `fd`.
 
@@ -629,6 +801,12 @@ def choose_config(power, n, snr, fd, tuning=None):
     answer in the budget's name.
     """
     t = _load_tuning() if tuning is None else tuning
+    if t.get("acc2_snrs", {}).get(n):
+        return _choose_v2(power, n, snr, fd, t)
+    # --- everything below is the OLD key, kept only for lengths the
+    # re-keyed table does not cover yet. Delete it once ACC2 covers every
+    # supported length; nothing here is worth preserving on its merits.
+    #
     # Only thresholds whose band coverage matches the fullest available at
     # this length. A partially measured threshold is worse than an absent one:
     # it looks like an exact hit, so the bracketing rule never fires, and
@@ -832,74 +1010,48 @@ def _snr_rows_for(snr, covered, tol=1e-6):
 def margin_for_config(power, n, snr, fd, band, oversample, taps, tuning=None):
     """Measured coarse margin for a configuration the CALLER chose.
 
-    `choose_config` resolves a margin as part of picking a configuration, but
-    a caller who pins band/oversample/taps skips it entirely and used to get
-    no margin at all -- an implicit 1.00, with the coarse threshold left to
-    the compiled model in src/hmf_table.h.  That model's recovery factors come
-    from the reference's MEAN spectrum, which is not a bound on any single
-    realisation: a real peak is sharper, the threshold sits too high, and
-    peaks go missing.  On the FIR-search-shaped workload in the tests it cost
-    8 of 140 peaks against a 3% budget, while the same pinned configuration
-    with its measured 0.97 loses none.
+    `choose_config` resolves a margin as part of picking a configuration, so
+    a caller who pins band/oversample/taps used to get none at all -- an
+    implicit 1.00, leaving the coarse threshold to the compiled model in
+    src/hmf_table.h, whose recovery factors come from the reference's MEAN
+    spectrum and bound no single realisation. On the FIR-shaped workload
+    that cost 8 of 140 peaks against a 3% budget.
 
-    Pinning is meant to bypass the CHOICE, not the evidence.  Where the table
-    has rows for the pinned configuration they are the same rows selection
-    would have used, so they are used here too.
+    Pinning bypasses the CHOICE, not the evidence, so this uses the same
+    rows and the same interpolation selection does.
 
-    Returns None when nothing covers it, and the caller then keeps 1.00 --
-    still the compiled model, but now only where there is genuinely no
-    measurement, which is the one place a model belongs.
+    Returns None when the table cannot speak -- no rows at this length, or
+    a reference with no localised peak (see `_BEFF_MIN`) -- and the caller
+    keeps 1.00.
     """
     t = _load_tuning() if tuning is None else tuning
-    tsnrs = t["snrs_at"].get(n) if t else None
-    if not tsnrs:
+    snrs = t.get("acc2_snrs", {}).get(n)
+    if not snrs:
         return None
-    use, _why = _snr_rows_for(snr, tsnrs)
+    use, _why = _snr_rows_for(snr, snrs)
     if use is None:
         return None
-    exact = [s_ for s_ in tsnrs if abs(s_ - snr) <= 1e-6]
-
-    have = set()
-    for s_ in tsnrs:
-        for r in t["by_ns"].get((n, s_), ()):
-            if (r[1], r[2], r[3]) == (band, oversample, taps):
-                have.add(s_)
-    if not have:
-        return None
-    pick = exact if (exact and exact[0] in have) else [u for u in use if u in have]
-    if not pick:
-        pick = sorted(have)
-
-    bymargin = {}
-    for s_ in pick:
-        for r in t["by_ns"].get((n, s_), ()):
-            if (r[1], r[2], r[3]) == (band, oversample, taps):
-                bymargin.setdefault(r[7], []).append((r[5], r[6], r[8]))
-    if not bymargin:
-        return None
-
     f, be = _band_features(power, band)
+    if be < _BEFF_MIN:
+        return None
+    floor = _dismissal_floor(t)
+    margins = sorted({m for (an, aK, asnr, m) in t["acc2"]
+                      if an == n and aK == taps and asnr in use})
     curve = []
-    for margin, rows in bymargin.items():
-        # the same covering rule selection uses: the worst row measured at
-        # least as high in both features as this reference
-        fq = min(f, max(r[0] for r in rows))
-        bq = min(be, max(r[1] for r in rows))
-        cover = [dm for (tf, tbe, dm) in rows
-                 if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
-        if cover:
-            curve.append((margin, max(cover)))
+    for mg in margins:
+        est = [x for x in
+               (_idw(t["acc2"].get((n, taps, s_, mg)) or [], f, be,
+                     log=True, floor=floor) for s_ in use)
+               if x is not None]
+        if est:
+            curve.append((mg, max(est)))
     if not curve:
         return None
-    m = _margin_at_budget(curve, fd, _dismissal_floor(t))
+    m = _margin_at_budget(curve, fd / _FDR_SAFETY, floor)
     if m is None:
-        # Rows exist but none meets the budget.  `choose_config` reads that as
-        # "inadmissible" and drops the configuration, which is right when
-        # there are others to pick from.  Here there are not -- the caller
-        # named this one and pinning has to keep working -- so hand back the
-        # tightest margin that was measured.  Falling through to 1.00 would
-        # give the STRICTEST budget the LOOSEST threshold, which is backwards:
-        # at fd=1e-4 that returned 1.00 where 0.90 was on the table.
+        # rows exist but none meets the budget; hand back the tightest
+        # measured margin rather than falling through to 1.00, which would
+        # give the strictest budget the loosest threshold
         return min(mg for mg, _ in curve)
     return m
 
@@ -982,6 +1134,25 @@ class HierarchicalFilter(MatchedFilter):
             # 0.1% on the captures -- and having it made the library quietly
             # answer a question it had no measurement for. A caller who wants
             # a configuration the tables do not cover states it directly.
+            if self._pending_ref is not None:
+                try:
+                    bad_ref = _uncovered_reference(self._pending_ref, self.n,
+                                                   _load_tuning())
+                except Exception:
+                    bad_ref = False
+                if bad_ref:
+                    raise ValueError(
+                        "the reference has no localised correlation peak at "
+                        "n=%d: every candidate band has an effective "
+                        "bandwidth below %.0f bins, which means its in-band "
+                        "power sits in a bin or two and the correlation "
+                        "magnitude is nearly constant across every lag. "
+                        "There is nothing for a coarse pass to localise, so "
+                        "the hierarchical mode does not apply -- use "
+                        "MatchedFilter. A reference that looks like this is "
+                        "usually |h|^2 without the 1/S(f), or a spectrum "
+                        "with no low-frequency cutoff."
+                        % (self.n, _BEFF_MIN))
             raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
         b, u, k, margin = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
