@@ -11,3 +11,6 @@ __pycache__/
 
 # FFTW plan caches, dropped by benchmark runs
 *.wisdom
+
+# parsed-table cache, built on first use from the shipped .txt
+python/matchedfilter/tuning-*.pkl
