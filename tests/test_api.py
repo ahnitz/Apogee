@@ -492,12 +492,57 @@ def test_pinning_reads_the_margin_from_the_table():
     assert mf.margin_for_config(power, n, 5.0, 1e-3, 333, 2, 8) is None
 
     # and the plan actually applies it
+    want = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8)
     hf = mf.HierarchicalFilter(n, 1, 2, snr=5.0, fd=1e-3,
                                band=512, oversample=2, taps=8)
     hf.set_reference(power)
     hf._ensure()
-    assert hf._margin == pytest.approx(
-        mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8))
+    assert hf._margin == pytest.approx(want)
+
+
+def test_an_explicit_margin_beats_the_table_on_a_pinned_plan():
+    """set_coarse_margin after set_reference must win, including at 1.0.
+
+    The table margin is applied as the reference arrives, precisely so it
+    lands BEFORE anything the caller does. Resolving it at first run instead
+    put it after, which silently overwrote an explicit setting -- and the
+    cost tuner sweeps the margin as an independent variable, skipping the
+    call when it wants 1.0, so every 1.0 cell of a regenerated table would
+    have been measured at the table's margin rather than at 1.0.
+    """
+    n = 4096
+    k = np.arange(1, n // 2)
+    power = np.zeros(n, np.float32)
+    power[1:n // 2] = k ** (-7 / 3.0) / ((0.015 * n / k) ** 4 + 1.0)
+    power /= power.sum()
+
+    auto = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8)
+    assert auto is not None and abs(auto - 1.0) > 1e-3, auto
+
+    rng = np.random.default_rng(5)
+    h = template_with_power(n, power)
+    h = np.repeat(h[None, :], 4, axis=0)
+    d = noise((8, n), rng)
+    for i in range(0, 8, 2):
+        d[i] += (6.0 * np.fft.fft(np.roll(np.fft.ifft(h[0]), i * 53))
+                 ).astype(np.complex64)
+
+    rates = {}
+    for explicit in (None, 1.0, 0.90):
+        hf = mf.HierarchicalFilter(n, 8, 4, snr=5.0, fd=1e-3,
+                                   band=512, oversample=2, taps=8)
+        hf.set_reference(power)
+        if explicit is not None:
+            hf._mf.set_coarse_margin(explicit)
+        hf.set_templates(h)
+        hf.set_data(d)
+        hf.run(binsize=n, threshold=5.0)
+        rates[explicit] = hf.refine_rate
+
+    # 1.0 is the loosest threshold, so it must escalate least -- and it must
+    # differ from the auto margin, or the explicit call did nothing
+    assert rates[1.0] < rates[None], rates
+    assert rates[0.90] >= rates[None], rates
 
 
 def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():

@@ -159,8 +159,11 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None,
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
                                band=band, oversample=U, taps=K)
     hf.set_reference(power)
-    if margin != 1.0:
-        hf._ensure().set_coarse_margin(float(margin))
+    # Always, including 1.0. The margin is an independent variable of this
+    # sweep, and a pinned plan now takes one from the table when the caller
+    # does not state one -- so skipping the call at 1.0 would measure the
+    # table's margin and label it 1.0.
+    hf._ensure().set_coarse_margin(float(margin))
     flat.set_templates(H[None, :])
     hf.set_templates(H[None, :])
 
@@ -419,6 +422,21 @@ def beff_of(p, m):
     return float(1.0 / np.sum(q ** 2))
 
 
+def bank_with_power(n, power, nt, seed=5):
+    """`nt` DISTINCT unit-norm templates sharing one power spectrum.
+
+    template_with_power has zero phase, so nt copies of it are one template
+    repeated -- every pair in the batch then does identical work, which is
+    not a bank. Random phase per template keeps the power profile the
+    reference describes while making the correlations independent, which is
+    what a real bank looks like to the coarse pass.
+    """
+    rng = np.random.default_rng(seed)
+    amp = np.sqrt(np.asarray(power, float))
+    h = (amp * np.exp(2j * np.pi * rng.random((nt, n)))).astype(np.complex64)
+    return h / np.sqrt((np.abs(h) ** 2).sum(axis=1, keepdims=True))
+
+
 def bands_for(n, count=6):
     """Candidate first-stage bands at transform length `n`.
 
@@ -516,8 +534,11 @@ def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,
     hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=1e-3,
                                band=band, oversample=U, taps=K)
     hf.set_reference(power)
-    if margin != 1.0:
-        hf._ensure().set_coarse_margin(float(margin))
+    # Always, including 1.0. The margin is an independent variable of this
+    # sweep, and a pinned plan now takes one from the table when the caller
+    # does not state one -- so skipping the call at 1.0 would measure the
+    # table's margin and label it 1.0.
+    hf._ensure().set_coarse_margin(float(margin))
     hf.set_templates(H)
     # Cap the call count. A 1x1 shape would otherwise need `pairs_target`
     # separate run() calls per repeat -- 40000 of them, each paying full
@@ -613,7 +634,16 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
     lengths, where a plan is 50 MB, pay anything.
     """
     rng = np.random.default_rng(seed)
-    H = template_with_power(n, power)
+    # A real BANK, not one template counted nt times.
+    #
+    # The plans were built with ntemplates=1 and the time then divided by nt
+    # as though a batch had been filtered. That measured the UNBATCHED regime
+    # and labelled it batched, and it is the largest known error in
+    # selection: with a single template there is nothing for the coarse pass
+    # to amortise against, so K=4's cheaper interpolation never shows its
+    # advantage and the table ranked K=8 ahead of it where measurement has
+    # K=4 10.6% faster.
+    H = bank_with_power(n, power, nt, seed=seed)
     per = int(np.clip(pairs // (nt * batch), 2, 60))
     data = [noise((batch, n), rng) for _ in range(per)]
 
@@ -621,7 +651,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
     if group is None:
         # (data + template) split buffers, re and im, plus the hierarchical
         # band state; rounded up generously rather than modelled exactly.
-        per_plan = 3.0 * (batch + 1) * n * 4 * 2
+        per_plan = 3.0 * (batch + nt) * n * 4 * 2
         group = int(max(4, min(len(cfgs), mem_budget // max(per_plan, 1))))
     pivot = COST_PIVOT if COST_PIVOT in cfgs else cfgs[0]
     others = [c for c in cfgs if c != pivot]
@@ -631,12 +661,12 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
         plans = {}
         for cfg in chunk:
             band, U, K, margin = cfg
-            hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr,
+            hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=nt, snr=snr,
                                        fd=1e-3, band=band, oversample=U, taps=K)
             hf.set_reference(power)
-            if margin != 1.0:
-                hf._ensure().set_coarse_margin(float(margin))
-            hf.set_templates(H[None, :])
+            # always, including 1.0 -- see the note at the top of the file
+            hf._ensure().set_coarse_margin(float(margin))
+            hf.set_templates(H)
             plans[cfg] = hf
         acc = {c: [] for c in chunk}
         for _ in range(reps):

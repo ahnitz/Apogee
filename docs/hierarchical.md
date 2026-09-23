@@ -270,6 +270,54 @@ more conservative -- lost four times as many as the default.  A lower
 threshold cannot lose more triggers; a different configuration can.  The
 override is monotonic by construction, which `tests/test_api.py` checks.
 
+## The cost table is right about its rows and wrong about the query
+
+Selection scores 90-93% of the measured best, and the obvious reading is
+that the ratios are noisy.  They are not: the ratio CV is 2.4% median, 3.7%
+at p90, and a regeneration that halved nothing and changed no rule scored
+96.2% against the shipped table's 96.9% -- a trade, not an improvement.
+
+At n=4096, snr 6.0 the two tables disagree about one pair, and the
+disagreement is worth following because it is not noise.  Both price these
+two from the same row:
+
+    reference                                 measured K8/m0.9 : K4/m1.0
+    the row they are priced from  f=0.950 beff=205.5        0.972
+      what the table claims for that row                    0.960 (new)
+                                                            0.985 (shipped)
+    the reference actually being asked about
+                                  f=0.895 beff=180.8        1.091
+    a SYNTHETIC reference matched to it
+                                  f=0.895 beff=183.1        1.105
+
+So the table measures its own reference correctly, to within the CV.  What
+fails is the covering rule reaching 0.027 in `f` to find a row that speaks
+for the query.  Escalation runs 2.9% at f=0.895 and 1.1% at f=0.950, and
+escalation is the entire cost difference between these two configurations --
+across that gap the ranking inverts, and selection takes a 10% loss acting
+on it.
+
+Two things this rules out.  It is not synthetic-versus-real: make_ref at
+matched features reproduces the real reference (1.105 against 1.091), so the
+reference family is sound.  And it is not the cross-reference comparison the
+harness restructure was built to eliminate -- both configurations here take
+their cost from the same row, checked, not assumed.
+
+The covering rule is inherited from the accuracy half, where it is right:
+dismissal rises with `f`, so a row measured at least as high in both features
+is the conservative one.  Cost moves the OTHER way -- more power in band
+raises the coarse threshold, fewer pairs escalate, the configuration is
+cheaper -- so the covering row systematically describes an easier problem
+than the query.  Near a crossover between two configurations that is enough
+to swap them.
+
+Three replacements have been measured and all scored worse; see the comment
+in `choose_config`.  But they were all rules over the SAME rows, and the f
+ladder there is (0.713, 0.783, 0.850, 0.875, 0.922, 0.950, 0.974, 0.993) --
+the cost regeneration sweeps only f in (0.85, 0.95).  The next thing to try
+is a denser ladder where real references actually live, not another rule
+over a grid whose nearest row is 0.027 away.
+
 ## Recovery factors from a mean frequency series are not a bound at coarse grids
 
 graw1 is measured over noise realisations at a low quantile, because the

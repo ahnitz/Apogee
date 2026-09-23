@@ -968,20 +968,6 @@ class HierarchicalFilter(MatchedFilter):
         no rebuild and no re-ingest of templates.
         """
         if self._mf is not None:
-            # A pinned configuration still gets the measured margin, but only
-            # once the reference is here: the margin depends on the
-            # reference's in-band fraction and effective bandwidth, and the
-            # plan is built in __init__, before set_reference is called.
-            if (self._pinned is not None and self._margin is None
-                    and self._pending_ref is not None):
-                try:
-                    m = margin_for_config(self._pending_ref, self.n, self.snr,
-                                          self.fd, *self._pinned)
-                except Exception:
-                    m = None     # a missing or unreadable table is not fatal
-                self._margin = 1.0 if m is None else float(m)
-                if abs(self._margin - 1.0) > 1e-9:
-                    self._mf.set_coarse_margin(self._margin)
             return self._mf
         cfg = None
         if self._pending_ref is not None:
@@ -1064,6 +1050,30 @@ class HierarchicalFilter(MatchedFilter):
         self._pending_ref = p
         if self._mf is not None:
             self._mf.set_reference(p)
+            self._apply_pinned_margin()
+
+    def _apply_pinned_margin(self):
+        """Give a caller-pinned configuration its measured coarse margin.
+
+        Done HERE, not in `_ensure`, and the ordering is the whole point.  The
+        margin depends on the reference, so it cannot be resolved in
+        __init__; but resolving it at first run would land AFTER an explicit
+        `set_coarse_margin` and silently overwrite it.  Applying it as the
+        reference arrives puts it before anything the caller does, so an
+        explicit setting still wins -- which is what a caller pinning a
+        configuration expects, and what the cost tuner relies on to sweep the
+        margin as an independent variable.
+        """
+        if self._pinned is None or self._margin is not None:
+            return
+        try:
+            m = margin_for_config(self._pending_ref, self.n, self.snr,
+                                  self.fd, *self._pinned)
+        except Exception:
+            m = None            # a missing or unreadable table is not fatal
+        self._margin = 1.0 if m is None else float(m)
+        if abs(self._margin - 1.0) > 1e-9:
+            self._mf.set_coarse_margin(self._margin)
 
     def run_series(self, series, starts, win_start, win_end,
                    binsize=None, threshold=0.0, templates=None, raw=False):
