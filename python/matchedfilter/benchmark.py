@@ -48,6 +48,13 @@ FFTW_PLAN = {"estimate": "FFTW_ESTIMATE", "measure": "FFTW_MEASURE",
 _plan_seconds = {}
 _plan_used = {}
 
+#: False-dismissal budgets swept. 1e-4 is below what the shipped accuracy
+#: table can resolve -- 4000 trials gives a floor near 7.5e-4 -- so it is
+#: expected to refuse, and that refusal is the useful result: it says where
+#: the measurement stops, rather than quietly answering anyway.
+FD_SWEEP = (1e-2, 1e-3, 1e-4)
+
+
 #: Largest transform planned with FFTW_PATIENT under --fftw-plan auto.
 #: Zero means measure everywhere, which is the default.
 #:
@@ -645,28 +652,29 @@ def main(argv=None):
     if not a.no_hier:
         print(f"\n\nHierarchical vs flat filter, pure noise, "
               f"false dismissal {a.fd:g}")
-        print(f"  {'n':>8} {'snr':>5} {'flat':>11} {'hierarchical':>11} "
+        print(f"  {'n':>8} {'fd':>7} {'snr':>5} {'flat':>11} {'hierarchical':>11} "
               f"{'speedup':>9} {'triggered':>10} {'chosen':>14}")
         for n in a.n:
+          for fd in FD_SWEEP:
             for snr in (5.0, 5.5, 5.75, 6.0, 6.5):
                 try:
                     tf, th, rate, cfg, speed = _bench_hier(
-                        n, a.data, a.templates, snr, a.fd, a.reps)
+                        n, a.data, a.templates, snr, fd, a.reps)
                 except (ValueError, RuntimeError) as e:
                     # An uncovered (n, snr, fd) is a refusal, not a failure:
                     # the tables are measured and the library will not answer
                     # outside them. Report it as a gap in coverage.
                     first = str(e).strip().split("\n")[0]
-                    print(f"  {n:>8} {snr:>5.1f}   not tuned: {first}")
-                    hier_rows.append({"n": n, "snr": snr, "fd": a.fd,
+                    print(f"  {n:>8} {fd:>7.0e} {snr:>5.1f}   not tuned: {first}")
+                    hier_rows.append({"n": n, "snr": snr, "fd": fd,
                                       "data": a.data, "templates": a.templates,
                                       "uncovered": first})
                     continue
                 tag = "%d/%d/%d" % cfg
-                print(f"  {n:>8} {snr:>5.1f} {tf * 1e3:>10.2f}ms "
+                print(f"  {n:>8} {fd:>7.0e} {snr:>5.1f} {tf * 1e3:>10.2f}ms "
                       f"{th * 1e3:>10.2f}ms {speed:>8.2f}x {rate:>9.1%} "
                       f"{tag:>14}")
-                hier_rows.append({"n": n, "snr": snr, "fd": a.fd,
+                hier_rows.append({"n": n, "snr": snr, "fd": fd,
                                   "data": a.data, "templates": a.templates,
                                   "flat_ms": tf * 1e3, "hier_ms": th * 1e3,
                                   "speedup": speed, "refine_rate": rate,

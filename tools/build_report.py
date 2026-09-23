@@ -829,32 +829,57 @@ def reference_note(runs):
 
 
 def bench_speedup(runs, names):
-    """Speedup against the flat filter, one panel per transform length."""
-    snrs = sorted({h["snr"] for r in runs for h in r.get("hierarchical", [])})
-    sizes = sorted({h["n"] for r in runs for h in r.get("hierarchical", [])})
+    """Speedup against the flat filter: one panel per length, a line per budget.
+
+    The false-dismissal budget is the caller's main lever and it moves the
+    answer more than anything else here, so it is the series rather than a
+    footnote. Runners stay out of the chart -- a speedup is a ratio of two
+    machine-dependent times and does not compare across them -- and the
+    per-runner numbers are in the table below.
+    """
+    runs = _bench_runs(runs)
+    ref = next((r for r in runs if r["host"]["label"] == "linux-x86_64"), runs[0])
+    hier = [h for h in ref.get("hierarchical", [])]
+    snrs = sorted({h["snr"] for h in hier})
+    sizes = sorted({h["n"] for h in hier})
+    fds = sorted({h.get("fd") for h in hier if h.get("fd")}, reverse=True)
     panels = []
     for n in sizes:
         groups = []
         for snr in snrs:
             vs = []
-            for r in runs:
-                m = [h for h in r.get("hierarchical", [])
-                     if h["n"] == n and h["snr"] == snr and "speedup" in h]
+            for fd in fds:
+                m = [h for h in hier if h["n"] == n and h["snr"] == snr
+                     and h.get("fd") == fd and "speedup" in h]
                 vs.append(m[0]["speedup"] if m else None)
             groups.append(("snr %g" % snr, vs))
         if any(v is not None for _, vs in groups for v in vs):
             panels.append(("n = %d" % n,
-                           bar_chart(groups, names,
-                                     "Hierarchical vs flat, n=%d" % n,
+                           bar_chart(groups, ["fd = %g" % f for f in fds],
+                                     "Hierarchical vs flat, n=%d (%s)"
+                                     % (n, html.escape(ref["host"]["label"])),
                                      "speedup")))
     if not panels:
         return "<p>No hierarchical results were available.</p>"
+    gone = [f for f in fds
+            if not any(h.get("fd") == f and "speedup" in h for h in hier)]
+    note = ""
+    if gone:
+        note = ('<div class="note warn">No bar for %s at any length: the '
+                'shipped accuracy table cannot resolve a budget that small. '
+                'It is measured at a few thousand trials a cell, so a rate '
+                'below roughly 3/trials is a floor rather than a result, and '
+                'the library refuses rather than answering from one. That is '
+                'a limit of the measurement, not of the method -- more trials '
+                'would open it.</div>'
+                % ", ".join("fd = %g" % f for f in gone))
     return ('<p>The first pass correlates against a low-frequency slice of '
             'each template and pays for the full correlation only where that '
             'slice leaves a peak possible. The dashed line marks 1x, where it '
-            'has bought nothing. Within a panel the bars should climb with the '
-            'threshold, because a higher threshold admits a narrower first '
-            'pass.</p>' + tabs(panels, "transform length"))
+            'has bought nothing. Bars should climb with the threshold, because '
+            'a higher threshold admits a narrower first pass -- and with a '
+            'looser false-dismissal budget, which admits a tighter coarse '
+            'threshold.</p>' + tabs(panels, "transform length") + note)
 
 
 def bench_pair(runs):
@@ -1061,7 +1086,8 @@ def coverage_and_escalation(runs):
 
 
 def bench_hier_raw(runs):
-    rows = [[html.escape(r["host"]["label"]), h["n"], "%g" % h["snr"],
+    rows = [[html.escape(r["host"]["label"]), h["n"], "%g" % h.get("fd", 0),
+             "%g" % h["snr"],
              ("%d/%d/%d" % (h["band"], h["oversample"], h["taps"])
               if "band" in h else "-"),
              "%.3f" % h["flat_ms"], "%.3f" % h["hier_ms"],
@@ -1069,7 +1095,7 @@ def bench_hier_raw(runs):
             for r in runs for h in r.get("hierarchical", []) if "speedup" in h]
     if not rows:
         return ""
-    return table(["runner", "n", "snr", "chosen b/U/K", "flat (ms)",
+    return table(["runner", "n", "fd", "snr", "chosen b/U/K", "flat (ms)",
                   "hierarchical (ms)", "speedup", "triggered"], rows)
 
 

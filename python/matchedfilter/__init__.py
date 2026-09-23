@@ -249,11 +249,26 @@ def _uncovered_message(n, snr, fd):
     """
     t = _load_tuning()
     ns = sorted({r[0] for r in t["fdr"]})
-    snrs = sorted({r[4] for r in t["fdr"] if r[0] == n})
-    where = ("snr %.2f is below the lowest measured, %g" % (snr, min(snrs))
-             if snrs and snr < min(snrs) else
-             "snr %.2f falls between measured thresholds" % snr
-             if snrs else "n=%d is not in the tables" % n)
+    snrs = _complete_snrs(t, n)
+    floor = _dismissal_floor(t)
+    if not snrs:
+        where = "n=%d is not in the tables" % n
+    elif fd < floor:
+        # The commonest reason, and the one the old message mis-attributed to
+        # the threshold: the budget is below what the trial count can resolve.
+        # Saying "not measured at this threshold" there sends the reader to
+        # the wrong axis entirely.
+        where = ("fd=%.0e is below the %.1e this table can resolve -- it was "
+                 "measured at %s trials a cell, and a rate under about "
+                 "3/trials is a floor rather than a result" % (fd, floor,
+                 t["meta"].get("trials", "an unrecorded number of")))
+    elif snr < min(snrs):
+        where = "snr %.2f is below the lowest measured, %g" % (snr, min(snrs))
+    elif snr > max(snrs):
+        where = "snr %.2f is above the highest measured, %g" % (snr, max(snrs))
+    else:
+        where = ("no measured configuration at snr %.2f meets fd=%.0e" 
+                 % (snr, fd))
     return ("no measured tuning for n=%d snr=%.2f fd=%.0e -- %s. The tables "
             "cover n=%s, snr=%s, and a threshold ABOVE that range is answered "
             "conservatively; below or between it is not, because a lower "
