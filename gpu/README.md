@@ -602,13 +602,42 @@ The index arithmetic was written with / and % at first, which are integer
 divisions -- sixteen per thread per chunk. Every divisor is a power of
 two, so they are shifts and masks now. That bought n=16384 about 20%.
 
-**Generality costs about a third.** The hand-specialised 4096 kernel
-reaches 2385 GFLOP/s where this one reaches 1499. The difference is the
-per-value index computation the general kernel has to do and the
-specialised one folds at compile time. Both are worth keeping: the
-specialised path for the length the search actually uses, the general one
-for everything else. Which to run is a lookup, and belongs in the device
-table alongside the tile shape.
+**Generality cost about a third, and now costs 12%.** The gap was mostly
+that the kernel was only half specialised. NLEN is a `#define`, so WG and
+CH folded -- but the LEVEL LOOP was a runtime `while`, so len, TB and the
+shifts changed per iteration and none of the index arithmetic folded.
+
+The number of levels follows from NLEN, so it unrolls:
+
+    static const uint NLEVELS = (WG <= 16) ? 1 : ((WG <= 256) ? 2 : 3);
+    [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
+        const uint TB  = WG >> (4 * lvl);
+        const uint len = N  >> (4 * lvl);
+        ...
+
+With lvl an unrolled constant every one of those is a constant, and the
+divisions and shifts disappear into the instruction stream.
+
+    n        runtime loop   unrolled
+    1024         1589         1547     tie
+    2048         2311         2103
+    4096         2000         2106
+    8192         1078         1481     +37%
+    16384         843          936     +11%
+
+Unrolling pays where there are levels to fold and is a wash at 1024, which
+has the fewest. At n=4096 the general kernel now reaches 2106 GFLOP/s
+against the hand-specialised 2385 -- 12% apart rather than a third, and
+the rest is the specialised kernel's hardcoded twiddles.
+
+Two measurement notes. The earlier "1499" for the general kernel was taken
+on a busy box; on a quiet one the same code gives 2000. And a single-shot
+timing put n=1024 at 596 GFLOP/s, where min-of-eleven gives 1547 -- short
+kernels need repeats, and one number is not a measurement.
+
+Keeping both variants is still right, but the reason is now smaller: 12%
+at the length the search uses. Which to run remains a lookup that belongs
+in the device table beside the tile shape.
 
 ## What the earlier n=16384 failure needed
 

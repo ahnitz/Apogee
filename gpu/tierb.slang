@@ -34,6 +34,12 @@ static const uint CH  = (CAP / WG > 0) ? (CAP / WG) : 1;
 groupshared float2 stg[CH * WG];
 static uint _tid;
 
+//: Levels until a block fits in one thread's registers. Known from NLEN,
+//: so the level loop unrolls and every len/TB/shift below folds to a
+//: constant -- which is the whole difference between this and the
+//: hand-specialised kernel.
+static const uint NLEVELS = (WG <= 16) ? 1 : ((WG <= 256) ? 2 : 3);
+
 float2 cmul(float2 a, float2 b) { return float2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
 float2 cmulConj(float2 a, float2 b) { return float2(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
 
@@ -154,32 +160,36 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
         r[n2] = cmulConj(data[d*N + idx], tmpl[t*N + idx]);
     }
 
-    uint TB = WG, len = N, blk = 0, lane = tid;
-    uint lgLen = firstbithigh(N), lgTB = firstbithigh(WG);
-    uint want[16];
-    while (true) {
+    [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
+        uint want[16];                       // scoped per level: three
+                                             // live copies blew the budget
+        // lvl is an unrolled constant, so all of these are constants
+        const uint TB   = WG >> (4 * lvl);
+        const uint len  = N  >> (4 * lvl);
+        const uint lgTB = firstbithigh(TB);
+        const uint lgLn = firstbithigh(len);
+        uint blk  = tid >> lgTB;
+        uint lane = tid & (TB - 1);
+
         dft16(r);
         [unroll] for (uint k2 = 0; k2 < R; ++k2) {
             float ang = 2.0f * PI * float(lane * k2) / float(len);
             r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
         }
-        if (TB <= R) {
-            uint per = R / TB;
-            [unroll] for (uint d = 0; d < R; ++d) {
-                uint j = d / TB, m = d % TB;
-                want[d] = blk * len + (lane * per + j) * TB + m;
-            }
-            exchange(r, want, lgLen, lgTB);
-            break;
-        }
-        uint len2 = TB, TB2 = TB / R;
+
+        // one assignment of want[], then one call: the branchy version
+        // left the compiler unsure it was initialised on every path
+        const uint per  = R / max(TB, 1u);
+        const uint TB2  = max(TB >> 4, 1u), len2 = TB;
         uint blk2 = tid / TB2, lane2 = tid % TB2;
-        [unroll] for (uint d = 0; d < R; ++d)
-            want[d] = blk2 * len2 + lane2 + TB2 * d;
-        exchange(r, want, lgLen, lgTB);
-        len = len2; TB = TB2; blk = blk2; lane = lane2;
-        lgLen = firstbithigh(len); lgTB = firstbithigh(TB);
+        [unroll] for (uint d = 0; d < R; ++d) {
+            uint j = d / max(TB, 1u), m = d % max(TB, 1u);
+            want[d] = (TB <= R) ? (blk * len + (lane * per + j) * TB + m)
+                                : (blk2 * len2 + lane2 + TB2 * d);
+        }
+        exchange(r, want, lgLn, lgTB);
     }
+    const uint INNER_TB = WG >> (4 * (NLEVELS - 1));
     innermost(r);
 
     float best = -1.0f;
