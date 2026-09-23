@@ -2,23 +2,27 @@
 
 ### » [Read the documentation](https://ahnitz.github.io/matchedfilter/) «
 
-**For running a lot of matched filters.** Single precision, batched, and it
-hands back only the peaks -- one record per output window, not the whole
-correlation.
+**matchedfilter** correlates a batch of data segments against a batch of
+templates and hands back only the peaks -- one record per output window, not
+the whole correlation. It is single precision throughout: there is no
+double-precision path, and none is planned.
 
-Most searches threshold the filter output and throw the rest away. Say so up
-front and the filter can skip work that could not have produced a peak
-anyway. That is the whole idea, and everything else follows from it:
+Most searches threshold the filter output and discard the rest. Saying so up
+front lets the filter skip work that could not have produced a peak.
 
-- **Peak-only output.** One record per bin rather than n samples per pair. Set
-  `binsize` and you get the loudest sample in every window; set `window` and
-  you bound which lags are searched at all, so an overlap-save caller never
-  pays for the wrap-around region it would discard.
+- **Peak-only output.** One record per bin rather than n samples per pair.
+  `binsize` sets the output resolution; `window` bounds which lags are
+  searched at all, so an overlap-save caller never pays for the wrap-around
+  region it would discard.
 - **Batched.** D data segments against T templates is a symmetric product.
   Hand over as much of both as you have; one pair at a time forfeits most of
   the throughput.
-- **Single precision, frequency domain.** You bring the forward transforms in
-  whatever you already use; this owns the correlation and the peak scan.
+- **Frequency domain in, single precision throughout.** You bring the forward
+  transforms from whatever you already use; this owns the correlation and the
+  peak scan. Inputs and outputs are `complex64`.
+- **Optional hierarchical mode.** A cheap decimated pass first, the full
+  correlation only where that pass could not rule a peak out, with a budget
+  for how often it may miss one.
 - **Measured, not modelled.** Every tuning choice comes from a measurement of
   the real code path, and where there is no measurement the library refuses
   rather than guessing.

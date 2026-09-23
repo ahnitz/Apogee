@@ -50,6 +50,40 @@ def test_tables_still_render():
     assert "<table>" in out and "<th>a</th>" in out and "<td>2</td>" in out
 
 
+def test_wrapped_list_items_stay_in_the_list():
+    """A bullet that wraps is one item, not an item plus a paragraph.
+
+    Every bullet in the README wraps.  Rendered without this the second line
+    of each fell out of the <ul> as its own paragraph, which read as prose
+    interleaved between the bullets.
+    """
+    out = build_report.md("- **A.** one\n  two three\n- **B.** four\n\nafter\n")
+    assert out.count("<li>") == 2
+    assert "<li><strong>A.</strong> one two three</li>" in out
+    assert out.endswith("<p>after</p>")
+    # a wrapped item must not swallow what comes after the list
+    assert "<p>after</p>" not in out[:out.index("</ul>")]
+
+
+def test_pre_rename_hier_ms_spelling():
+    """Artifacts written before the rename spell the time "gated_ms"."""
+    assert build_report._hier_ms({"gated_ms": 1.5}) == 1.5
+    assert build_report._hier_ms({"hier_ms": 2.5}) == 2.5
+
+
+def test_examples_on_the_using_it_page_are_executed():
+    """Every marker in docs/usage.md is filled by a real run.
+
+    The snippets are run at build time precisely so they cannot drift; if a
+    marker survives into the HTML, one silently did not run.
+    """
+    with open(os.path.join(ROOT, "docs", "usage.md")) as fh:
+        prose = fh.read()
+    page = build_report.tutorial_page(build_report.md(prose))
+    assert "[[example:" not in page
+    assert page.count('class="outlbl"') >= 8
+
+
 def test_site_pages_are_linked_and_complete():
     """Build the whole site from one synthetic run and check it hangs together."""
     run = {"host": {"label": "test-host", "system": "Linux", "machine": "x86_64",

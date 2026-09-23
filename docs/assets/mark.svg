@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="sqBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090d16" />
+      <stop offset="100%" stop-color="#111827" />
+    </linearGradient>
+    <linearGradient id="sqWave" x1="0%" y1="50%" x2="100%" y2="50%">
+      <stop offset="0%" stop-color="#00f2fe" stop-opacity="0.4" />
+      <stop offset="70%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#a855f7" />
+    </linearGradient>
+    <filter id="glowSq">
+      <feGaussianBlur stdDeviation="3" result="b" />
+      <feComposite in="SourceGraphic" in2="b" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background tile -->
+  <rect width="128" height="128" rx="28" fill="url(#sqBg)" stroke="#1e293b" stroke-width="2" />
+
+  <!-- Bounded Window / Bin Column -->
+  <rect x="52" y="18" width="24" height="92" rx="4" fill="#00f2fe" fill-opacity="0.08" stroke="#00f2fe" stroke-opacity="0.25" stroke-dasharray="2 2" />
+
+  <!-- Chirp waveform with centered peak -->
+  <path d="M 18,74
+           C 26,67  31,81  37,74
+           C 42,63  47,85  52,74
+           C 56,58  60,90  64,24
+           C 68,90  72,58  76,74
+           C 81,85  86,63  91,74
+           C 97,81 102,67 110,74"
+        fill="none"
+        stroke="url(#sqWave)"
+        stroke-width="3.5"
+        stroke-linecap="round"
+        stroke-linejoin="round" />
+
+  <!-- Peak Detection Dot -->
+  <circle cx="64" cy="24" r="4.5" fill="#ffffff" filter="url(#glowSq)" />
+  <circle cx="64" cy="24" r="2" fill="#00f2fe" />
+</svg>

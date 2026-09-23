@@ -15,10 +15,14 @@ import math
 import numpy as np
 import json
 import os
+import shutil
 
 # Colour-blind-safe, and distinguishable in greyscale by order.
-PALETTE = ["#0072b2", "#d55e00", "#009e73", "#cc79a7", "#e69f00", "#56b4e9",
-           "#8c564b", "#333333"]
+#: Okabe-Ito, lifted a little.  The chart strokes are baked into the SVG
+#: rather than themed, so each colour has to carry on the dark default and on
+#: the light variant; the published hues are too dark against #0b0f19.
+PALETTE = ["#38bdf8", "#f0883e", "#34d399", "#e291c4", "#eab308", "#93c5fd",
+           "#c08552", "#94a3b8"]
 
 
 def load(paths):
@@ -518,114 +522,184 @@ def bar_chart(groups, series_names, title, ylabel, width=760, height=380):
 
 
 CSS = """
-:root{--fg:#1c1c1e;--mut:#6b6b70;--bd:#e0e0e4;--bg:#fff;--panel:#f7f7f9;
-      --accent:#0072b2;--code:#f0f0f3}
-@media (prefers-color-scheme:dark){:root{--fg:#e9e9ec;--mut:#9a9aa2;--bd:#32323a;
-      --bg:#141417;--panel:#1c1c21;--accent:#4da3dd;--code:#1f1f25}}
-:root[data-theme="light"]{--fg:#1c1c1e;--mut:#6b6b70;--bd:#e0e0e4;--bg:#fff;
-      --panel:#f7f7f9;--accent:#0072b2;--code:#f0f0f3}
-:root[data-theme="dark"]{--fg:#e9e9ec;--mut:#9a9aa2;--bd:#32323a;--bg:#141417;
-      --panel:#1c1c21;--accent:#4da3dd;--code:#1f1f25}
+/* Editorial rather than dashboard: a serif text face, hairline rules instead
+   of filled cards, and square corners.  Dark by default, on the logo's own
+   ink; the light variant is the same design on paper. */
+:root{--fg:#e2e8f0;--mut:#8f9bad;--bd:#1e293b;--bg:#0b0f19;--panel:#111827;
+      --accent:#38bdf8;--code:#0f1729;--rule:#334155}
+@media (prefers-color-scheme:light){:root{--fg:#0f172a;--mut:#5b6779;
+      --bd:#dde3ea;--bg:#fbfcfd;--panel:#f1f5f9;--accent:#0369a1;
+      --code:#f1f5f9;--rule:#0f172a}}
+:root[data-theme="dark"]{--fg:#e2e8f0;--mut:#8f9bad;--bd:#1e293b;--bg:#0b0f19;
+      --panel:#111827;--accent:#38bdf8;--code:#0f1729;--rule:#334155}
+:root[data-theme="light"]{--fg:#0f172a;--mut:#5b6779;--bd:#dde3ea;--bg:#fbfcfd;
+      --panel:#f1f5f9;--accent:#0369a1;--code:#f1f5f9;--rule:#0f172a}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;scroll-padding-top:1rem}
-body{margin:0;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-     color:var(--fg);background:var(--bg)}
-.wrap{display:grid;grid-template-columns:232px minmax(0,1fr);gap:2.5rem;
-      max-width:1180px;margin:0 auto;padding:0 1.25rem}
+body{margin:0;color:var(--fg);background:var(--bg);
+     font:17px/1.6 Charter,"Bitstream Charter","Iowan Old Style","Source Serif 4",
+          "Source Serif Pro",Palatino,Georgia,serif;
+     -webkit-font-smoothing:antialiased}
+.ui{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,sans-serif}
+.wrap{display:grid;grid-template-columns:225px minmax(0,1fr);gap:3.25rem;
+      max-width:1140px;margin:0 auto;padding:0 1.4rem}
+
 nav{position:sticky;top:0;align-self:start;max-height:100vh;overflow-y:auto;
-    padding:2rem 0 3rem}
-nav .brand{font-weight:700;font-size:1.05rem;margin-bottom:.15rem}
-nav .ver{color:var(--mut);font-size:12.5px;margin-bottom:1.25rem}
-nav a{display:block;padding:.3rem .6rem;margin:.1rem 0;color:var(--mut);
-      text-decoration:none;font-size:14px;border-radius:5px;border-left:2px solid transparent}
-nav a:hover{color:var(--fg);background:var(--panel)}
-nav a.sub{padding-left:1.4rem;font-size:13px}
-main{min-width:0;padding:2rem 0 5rem}
-h1{font-size:2rem;margin:0 0 .3rem;letter-spacing:-.02em}
-h2{font-size:1.4rem;margin:3rem 0 .75rem;padding-bottom:.4rem;
-   border-bottom:1px solid var(--bd);letter-spacing:-.01em}
-h3{font-size:1.08rem;margin:1.9rem 0 .5rem}
-h4{font-size:.95rem;margin:1.4rem 0 .4rem;color:var(--mut);font-weight:600}
-p{margin:.7rem 0}
-.lede{font-size:1.08rem;color:var(--mut);margin-bottom:1.5rem}
-.chart{width:100%;height:auto;margin:.5rem 0 1.25rem;overflow:visible;
-       background:var(--panel);border:1px solid var(--bd);border-radius:8px;padding:.4rem}
-.title{font-size:14px;font-weight:600;fill:var(--fg)}
+    padding:2.2rem 1.4rem 3rem 0;border-right:1px solid var(--bd);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+nav .brand{font-family:Charter,"Bitstream Charter",Georgia,serif;font-weight:700;
+    font-size:1.2rem;letter-spacing:-.01em}
+nav .ver{color:var(--mut);font-size:11.5px;margin:.1rem 0 1.6rem;
+    font-variant-numeric:tabular-nums}
+nav .navgrp{font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--mut);margin:1.5rem 0 .45rem}
+nav .navgrp:first-of-type{margin-top:0}
+nav a{display:block;padding:.2rem 0 .2rem .7rem;color:var(--mut);
+    text-decoration:none;font-size:13.5px;line-height:1.45;
+    border-left:2px solid var(--bd)}
+nav a:hover{color:var(--fg);border-left-color:var(--mut)}
+nav a.on{color:var(--fg);font-weight:600;border-left-color:var(--accent)}
+nav a.sub{padding-left:1.5rem;font-size:12.5px}
+
+main{min-width:0;padding:2.2rem 0 5rem;max-width:44rem}
+.hero{margin:0 0 2rem}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;
+    clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+.hero svg{display:block;width:100%;height:auto}
+nav .brandmark{display:flex;align-items:center;gap:.55rem;margin-bottom:.1rem;
+    text-decoration:none;color:inherit}
+nav .brandmark svg{width:26px;height:26px;flex:none}
+h1{font-size:2.3rem;line-height:1.15;margin:0 0 .9rem;letter-spacing:-.022em;
+   font-weight:700}
+h2{font-size:1.05rem;margin:3.2rem 0 .9rem;letter-spacing:.1em;
+   text-transform:uppercase;font-weight:600;color:var(--fg);
+   font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
+   border-top:1px solid var(--rule);padding-top:.7rem}
+h3{font-size:1.2rem;margin:2.1rem 0 .45rem;font-weight:600;letter-spacing:-.01em}
+h4{font-size:.85rem;margin:1.5rem 0 .4rem;color:var(--mut);font-weight:600;
+   letter-spacing:.06em;text-transform:uppercase;
+   font-family:ui-sans-serif,system-ui,sans-serif}
+p{margin:.85rem 0}
+a{color:var(--accent)}
+.lede{font-size:1.15rem;color:var(--mut);margin-bottom:1.6rem;line-height:1.5}
+ul,ol{padding-left:1.15rem}
+li{margin:.35rem 0}
+
+.chart{width:100%;height:auto;margin:1rem 0 1.6rem;overflow:visible;
+       background:none;border:0;border-top:1px solid var(--bd);
+       border-bottom:1px solid var(--bd);padding:.9rem 0}
+.title{font-size:13px;font-weight:600;fill:var(--fg)}
 .tick{font-size:11px;fill:var(--mut)}
 .ty{text-anchor:end}.tx{text-anchor:middle}
-.axis{font-size:12px;fill:var(--mut)}
-.legend{font-size:12px;fill:var(--fg)}
-.grid{stroke:var(--bd);stroke-width:1;stroke-dasharray:2 3}
-.unity{stroke:var(--mut);stroke-width:1.5;stroke-dasharray:5 4}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:.5rem 0 1rem}
-table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:520px}
-th,td{padding:.45rem .65rem;border-bottom:1px solid var(--bd);text-align:right;white-space:nowrap}
-th:first-child,td:first-child{text-align:left}
-thead th{color:var(--mut);font-weight:600;border-bottom:2px solid var(--bd)}
+.axis{font-size:11.5px;fill:var(--mut)}
+.legend{font-size:11.5px;fill:var(--fg)}
+.grid{stroke:var(--bd);stroke-width:1}
+.unity{stroke:var(--mut);stroke-width:1.2;stroke-dasharray:4 4}
+
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:.9rem 0 1.4rem}
+table{border-collapse:collapse;width:100%;min-width:520px;font-size:13px;
+      font-variant-numeric:tabular-nums;
+      font-family:ui-sans-serif,system-ui,-apple-system,sans-serif}
+th,td{padding:.4rem .7rem;border-bottom:1px solid var(--bd);text-align:right;
+      white-space:nowrap}
+th:first-child,td:first-child{text-align:left;padding-left:0}
+thead th{color:var(--mut);font-weight:600;font-size:11px;letter-spacing:.06em;
+      text-transform:uppercase;border-bottom:1px solid var(--rule)}
+tbody tr:last-child td{border-bottom:1px solid var(--rule)}
 tbody tr:hover{background:var(--panel)}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;
-     background:var(--code);padding:.12em .36em;border-radius:4px}
-pre{background:var(--code);border:1px solid var(--bd);border-radius:8px;
-    padding:.85rem 1rem;overflow-x:auto;margin:.8rem 0}
-pre code{background:none;padding:0;font-size:13px;line-height:1.55}
-details{border:1px solid var(--bd);border-radius:8px;margin:1rem 0;background:var(--panel)}
-details[open]{background:transparent}
-summary{cursor:pointer;padding:.7rem 1rem;font-size:14.5px;font-weight:600;
-        list-style:none;user-select:none}
+
+code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+     font-size:.85em;background:var(--code);padding:.08em .3em}
+pre{background:var(--code);border:0;border-left:2px solid var(--bd);
+    padding:.9rem 1.1rem;overflow-x:auto;margin:1rem 0}
+pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+.outlbl{font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+        color:var(--mut);margin:1rem 0 .25rem;
+        font-family:ui-sans-serif,system-ui,sans-serif}
+pre.out{background:none;border-left:2px solid var(--accent);color:var(--mut)}
+
+details{border:0;border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);
+        margin:1.4rem 0;background:none}
+summary{cursor:pointer;padding:.7rem 0;font-size:13px;font-weight:600;
+        letter-spacing:.04em;text-transform:uppercase;color:var(--mut);
+        list-style:none;user-select:none;
+        font-family:ui-sans-serif,system-ui,sans-serif}
 summary::-webkit-details-marker{display:none}
-summary::before{content:"\\25B8";display:inline-block;margin-right:.55rem;
-        color:var(--mut);transition:transform .15s}
-details[open]>summary::before{transform:rotate(90deg)}
-summary:hover{color:var(--accent)}
-details>*:not(summary){margin-left:1rem;margin-right:1rem}
-details>.scroll{margin-bottom:1rem}
-.note{border-left:3px solid var(--accent);background:var(--panel);
-      padding:.7rem 1rem;margin:1.1rem 0;color:var(--mut);font-size:14.5px;
-      border-radius:0 6px 6px 0}
-.warn{border-left-color:#d55e00}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-       gap:.8rem;margin:1.2rem 0}
-.card{background:var(--panel);border:1px solid var(--bd);border-radius:8px;padding:.8rem .9rem}
-.card .k{font-size:1.5rem;font-weight:700;letter-spacing:-.02em}
-.card .l{font-size:12.5px;color:var(--mut);margin-top:.15rem}
-.tabs{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;
-      margin:1.4rem 0 0;border-bottom:1px solid var(--bd);padding-bottom:.6rem}
-.tabs .cap{font-size:12.5px;color:var(--mut);margin-right:.35rem}
-.tab{cursor:pointer;font:inherit;font-size:13.5px;padding:.32rem .8rem;
-     border:1px solid var(--bd);background:var(--panel);color:var(--mut);
-     border-radius:6px;transition:background .12s,color .12s}
-.tab:hover{color:var(--fg);border-color:var(--mut)}
-.tab.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+summary::before{content:"+";display:inline-block;width:1.1rem;color:var(--accent);
+        font-weight:700}
+details[open]>summary::before{content:"\2212"}
+summary:hover{color:var(--fg)}
+details>*:not(summary){margin-left:0;margin-right:0}
+details>.scroll{margin-bottom:1.1rem}
+
+.note{border-left:2px solid var(--accent);background:none;
+      padding:.2rem 0 .2rem 1rem;margin:1.3rem 0;color:var(--mut);
+      font-size:15px;border-radius:0}
+.warn{border-left-color:#d55e00;color:var(--fg)}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+       gap:0;margin:1.4rem 0;border-top:1px solid var(--rule);
+       border-bottom:1px solid var(--bd)}
+.card{background:none;border:0;border-right:1px solid var(--bd);padding:.8rem 1rem .8rem 0}
+.card:last-child{border-right:0}
+.card .k{font-size:1.7rem;font-weight:700;letter-spacing:-.03em;
+         font-variant-numeric:tabular-nums}
+.card .l{font-size:11px;color:var(--mut);margin-top:.1rem;letter-spacing:.05em;
+         text-transform:uppercase;font-family:ui-sans-serif,system-ui,sans-serif}
+
+.tabs{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:baseline;
+      margin:1.8rem 0 0;border-bottom:1px solid var(--bd);
+      font-family:ui-sans-serif,system-ui,sans-serif}
+.tabs .cap{font-size:11px;color:var(--mut);margin-right:.2rem;
+      letter-spacing:.08em;text-transform:uppercase}
+.tab{cursor:pointer;font:inherit;font-size:13px;padding:.4rem 0 .5rem;
+     border:0;border-bottom:2px solid transparent;background:none;
+     color:var(--mut);margin-bottom:-1px}
+.tab:hover{color:var(--fg)}
+.tab.on{color:var(--fg);border-bottom-color:var(--accent);font-weight:600}
 .panels>[hidden]{display:none}
-.pagenav{display:flex;justify-content:space-between;gap:1rem;margin-top:3rem;
-         padding-top:1.2rem;border-top:1px solid var(--bd);font-size:14px}
+
+.pagenav{display:flex;justify-content:space-between;gap:1rem;margin-top:3.5rem;
+         padding-top:1.1rem;border-top:1px solid var(--rule);font-size:14px;
+         font-family:ui-sans-serif,system-ui,sans-serif}
 .pagenav a{color:var(--accent);text-decoration:none}
 .pagenav a:hover{text-decoration:underline}
-.toc{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
-     gap:.8rem;margin:1.4rem 0}
-.toc a{display:block;padding:.85rem 1rem;border:1px solid var(--bd);
-       border-radius:8px;background:var(--panel);text-decoration:none;color:var(--fg)}
-.toc a:hover{border-color:var(--accent)}
-.toc .t{font-weight:600;font-size:14.5px}
-.toc .d{color:var(--mut);font-size:13px;margin-top:.2rem}
-nav a.on{color:var(--fg);background:var(--panel);border-left-color:var(--accent);font-weight:600}
+
+.toc{display:grid;grid-template-columns:1fr;gap:0;margin:1.4rem 0;
+     border-top:1px solid var(--rule)}
+.toc a{display:grid;grid-template-columns:11rem minmax(0,1fr);gap:1.2rem;
+       padding:.85rem 0;border-bottom:1px solid var(--bd);background:none;
+       text-decoration:none;color:var(--fg)}
+.toc a:hover .t{color:var(--accent)}
+.toc .t{font-weight:600;font-size:15px}
+.toc .d{color:var(--mut);font-size:14px;margin-top:0;line-height:1.45}
+
 table.spec{min-width:0}
 table.spec th{text-align:left;width:11rem;vertical-align:top;color:var(--mut);
-     font-weight:600;white-space:normal}
+     font-weight:600;white-space:normal;text-transform:none;letter-spacing:0;
+     font-size:13px}
 table.spec td{text-align:left;white-space:normal}
 
-.ghlinks{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--bd)}
-.ghlinks a{font-size:13px;color:var(--mut);padding:.25rem .6rem}
+.ghlinks{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--bd)}
+.ghlinks a{display:block;font-size:12.5px;color:var(--mut);padding:.18rem 0 .18rem .7rem;
+     border-left:2px solid transparent;text-decoration:none}
 .ghlinks a:hover{color:var(--accent)}
-footer{margin-top:4rem;padding-top:1.2rem;border-top:1px solid var(--bd);
-       color:var(--mut);font-size:13px}
+footer{margin-top:4rem;padding-top:1.1rem;border-top:1px solid var(--bd);
+       color:var(--mut);font-size:12.5px;line-height:1.55;
+       font-family:ui-sans-serif,system-ui,sans-serif}
 @media (max-width:820px){
   .wrap{grid-template-columns:1fr;gap:0}
-  nav{position:static;max-height:none;padding:1.5rem 0 .5rem;
-      border-bottom:1px solid var(--bd)}
-  nav .links{display:flex;flex-wrap:wrap;gap:.2rem}
+  nav{position:static;max-height:none;padding:1.5rem 0 .6rem;border-right:0;
+      border-bottom:1px solid var(--rule)}
+  nav .links{display:flex;flex-wrap:wrap;gap:.1rem .9rem}
+  nav .navgrp{width:100%;margin:.7rem 0 .1rem}
+  nav a{border-left:0;padding:.2rem 0}
+  nav a.on{border-left:0;text-decoration:underline;text-decoration-color:var(--accent);
+      text-underline-offset:4px;text-decoration-thickness:2px}
   nav a.sub{display:none}
-  main{padding-top:1.5rem}
+  .ghlinks{display:none}
+  main{padding-top:1.6rem}
+  .toc a{grid-template-columns:1fr;gap:.15rem}
 }
 """
 
@@ -662,12 +736,28 @@ def md(text):
         m = _re.match(r"^(#{1,4})\s+(.*)", ln)
         if m:
             lvl = len(m.group(1))
-            out.append("<h%d>%s</h%d>" % (lvl + 1, inline(m.group(2)), lvl + 1))
+            # "#" is the document title and becomes the page's <h1>.  It
+            # used to shift down a level, which left every page but the
+            # Overview headless and made each "###" subhead outrank the
+            # "##" section it sat under, because the section style is a
+            # small uppercase rule and the subhead is a serif line.
+            out.append("<h%d>%s</h%d>" % (lvl, inline(m.group(2)), lvl))
             i += 1; continue
         if _re.match(r"^\s*[-*]\s+", ln):
+            # An item continues onto any following indented, non-blank line
+            # that does not start a new one.  Without this a wrapped bullet
+            # broke in two: the first line stayed in the list and the rest
+            # fell out as a paragraph underneath it, which is what the README
+            # looked like on the site until the bullets were read on a narrow
+            # screen where the wrap points moved.
             items = []
             while i < len(lines) and _re.match(r"^\s*[-*]\s+", lines[i]):
-                items.append(inline(_re.sub(r"^\s*[-*]\s+", "", lines[i]))); i += 1
+                buf = [_re.sub(r"^\s*[-*]\s+", "", lines[i])]; i += 1
+                while i < len(lines) and lines[i].strip() \
+                        and not _re.match(r"^\s*[-*]\s+", lines[i]) \
+                        and not lines[i].startswith(("#", "|", "```", ">")):
+                    buf.append(lines[i].strip()); i += 1
+                items.append(inline(" ".join(buf)))
             out.append("<ul>%s</ul>" % "".join("<li>%s</li>" % x for x in items))
             continue
         if ln.startswith(">"):
@@ -843,6 +933,16 @@ def _rate(h):
     """
     v = h.get("refine_rate", h.get("trigger_rate"))
     return 0.0 if v is None else float(v)
+
+
+def _hier_ms(h):
+    """Milliseconds the hierarchical filter took.
+
+    Same tolerance as `_rate`, for the same reason: artifacts written before
+    the rename spell this "gated_ms", and a page built from them should still
+    build rather than crash on a key.
+    """
+    return float(h.get("hier_ms", h.get("gated_ms", 0.0)))
 
 
 def bench_what(runs):
@@ -1207,7 +1307,7 @@ def bench_hier_raw(runs):
              "%g" % h["snr"],
              ("%d/%d/%d" % (h["band"], h["oversample"], h["taps"])
               if "band" in h else "-"),
-             "%.3f" % h["flat_ms"], "%.3f" % h["hier_ms"],
+             "%.3f" % h["flat_ms"], "%.3f" % _hier_ms(h),
              "<b>%.2fx</b>" % h["speedup"], "%.2f%%" % (_rate(h) * 100)]
             for r in runs for h in r.get("hierarchical", []) if "speedup" in h]
     if not rows:
@@ -1258,15 +1358,44 @@ NOTES = [("docs/hierarchical.md", "The hierarchical filter",
           "Three live avenues, what shipped, and the many that measurement "
           "ruled out.")]
 
-PAGES = [("index.html", "Overview", "readme", ["_intro"]),
-         ("demo.html", "See it work", "demo", None),
-         ("using-it.html", "Using it", "file", "docs/usage.md"),
-         ("precision.html", "Numerical accuracy", "precision", None),
-         ("benchmarks.html", "Benchmarks: matched filter", "bench-flat", None),
-         ("hierarchical-benchmarks.html", "Benchmarks: hierarchical", "bench-hier", None),
-         ("notes.html", "Design notes", "notes-index", None),
+#: (file, nav label, page kind, argument, nav group).  The groups answer the
+#: four questions a reader arrives with, in the order they arrive with them:
+#: how do I use it, does it give the right answer, how fast is it, and why is
+#: it built this way.
+PAGES = [("index.html", "Overview", "overview", None, "Start here"),
+         ("using-it.html", "Using it", "tutorial", "docs/usage.md", "Start here"),
+         ("demo.html", "See it work", "demo", None, "Does it work"),
+         ("precision.html", "Numerical accuracy", "precision", None,
+          "Does it work"),
+         ("benchmarks.html", "Matched filter", "bench-flat", None, "How fast"),
+         ("hierarchical-benchmarks.html", "Hierarchical filter", "bench-hier",
+          None, "How fast"),
+         ("notes.html", "Design notes", "notes-index", None, "Why it is built this way"),
          ("caveats.html", "Caveats & contributing", "readme",
-          ["Status", "Contributing"])]
+          ["Status", "Contributing"], "Why it is built this way")]
+
+
+#: (page, one-line reason to go there) for the Overview signpost.
+SIGNPOSTS = [
+    ("using-it.html", "Using it",
+     "Worked examples, run when this page is built: inputs, binning, "
+     "thresholds, windows, and the hierarchical mode."),
+    ("demo.html", "See it work",
+     "Noise and injections through the real filter, plotted from a script "
+     "that runs in CI."),
+    ("precision.html", "Numerical accuracy",
+     "Error against a float64 reference across injected SNR, with the "
+     "distribution and not just the mean."),
+    ("benchmarks.html", "Benchmarks",
+     "Against numpy, FFTW and MKL on the transform they all do, plus what "
+     "the hierarchical mode saves."),
+    ("notes.html", "Design notes",
+     "Why the tables are measured rather than modelled, and which ideas "
+     "measurement ruled out."),
+    ("caveats.html", "Caveats",
+     "What is untested, what it will refuse to do, and where it is still "
+     "alpha."),
+]
 
 
 #: README links written for a single page, and where they live on the site now.
@@ -1274,6 +1403,138 @@ ANCHORS = {"#caveats": "caveats.html", "#install": "index.html",
            "#how-it-works": "using-it.html",
            "#hierarchical-filtering": "index.html",
            "#development": "caveats.html"}
+
+
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "docs", "assets")
+
+
+def asset(name):
+    """Inline an SVG from docs/assets, stripped of its XML prologue.
+
+    Inlined rather than linked so a page is one request and the mark still
+    renders from a file:// copy of the site.
+    """
+    try:
+        with open(os.path.join(ASSETS, name)) as fh:
+            return fh.read().split("?>")[-1].strip()
+    except OSError:
+        return ""
+
+
+def schematic(width=760, height=228):
+    """What the library does and does not produce, in one picture.
+
+    The greyed middle block is the point: D*T*n complex samples is the thing a
+    straightforward implementation writes out and the caller then throws away.
+    Nothing here allocates it.
+    """
+    b, m, ac = "var(--bd)", "var(--mut)", "var(--accent)"
+    o = ['<svg viewBox="0 0 %d %d" width="100%%" role="img" '
+         'aria-label="D data spectra and T template spectra go in; the full '
+         'D by T by n correlation is never materialised; D by T by nbins peak '
+         'records come out." class="chart">' % (width, height)]
+
+    def box(x, y, w, h, fill, stroke, dash=""):
+        o.append('<rect x="%.0f" y="%.0f" width="%.0f" height="%.0f" rx="4" '
+                 'fill="%s" stroke="%s" stroke-width="1.2"%s/>'
+                 % (x, y, w, h, fill, stroke,
+                    ' stroke-dasharray="5 4"' if dash else ""))
+
+    def txt(x, y, t, cls="tick", fill="var(--fg)", anchor="middle", size=None):
+        o.append('<text x="%.0f" y="%.0f" text-anchor="%s" class="%s" '
+                 'fill="%s"%s>%s</text>'
+                 % (x, y, anchor, cls, fill,
+                    ' font-size="%d"' % size if size else "", html.escape(t)))
+
+    # stacked inputs
+    for i in range(3):
+        box(24 + 4 * i, 44 + 4 * i, 120, 46, "var(--panel)", b)
+    txt(88, 72, "D data spectra")
+    txt(88, 112, "complex64", "tick tx", m)
+    for i in range(3):
+        box(24 + 4 * i, 150 + 4 * i, 120, 46, "var(--panel)", b)
+    txt(88, 178, "T templates")
+    txt(88, 218, "complex64", "tick tx", m)
+
+    # the thing that is never built
+    box(250, 56, 250, 140, "none", m, dash=True)
+    txt(375, 96, "full correlation")
+    txt(375, 122, "D x T x n samples", "tick tx", m)
+    txt(375, 152, "never materialised", "tick tx", m)
+
+    # output
+    box(580, 86, 156, 80, "var(--panel)", ac)
+    txt(658, 118, "peaks")
+    txt(658, 142, "D x T x nbins", "tick tx", m)
+    txt(658, 190, "index, value, magnitude", "tick tx", m)
+
+    o.append('<defs><marker id="ah" markerWidth="8" markerHeight="8" refX="7" '
+             'refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="%s"/>'
+             '</marker></defs>' % m)
+    for y0, y1 in ((70, 100), (176, 152)):
+        o.append('<path d="M156 %d L242 %d" fill="none" stroke="%s" '
+                 'stroke-width="1.2" marker-end="url(#ah)"/>' % (y0, y1, m))
+    o.append('<path d="M508 126 L572 126" fill="none" stroke="%s" '
+             'stroke-width="1.6" marker-end="url(#ah)"/>' % ac)
+    o.append("</svg>")
+    return "".join(o)
+
+
+def _snippet(src, out):
+    """One executed example: the source, then what it printed."""
+    return ('<pre><code>%s</code></pre>'
+            '<div class="outlbl">output</div><pre class="out"><code>%s</code></pre>'
+            % (html.escape(src), html.escape(out)))
+
+
+def overview_page(readme):
+    """The landing page: what it is, one example, and where to go next."""
+    from matchedfilter import tutorial as tut
+    src, out = tut.run_teaser()
+    sign = "".join('<a href="%s"><div class="t">%s</div><div class="d">%s</div>'
+                   "</a>" % (f, html.escape(t), html.escape(d))
+                   for f, t, d in SIGNPOSTS)
+    logo = asset("logo.svg")
+    # The wordmark is in the logo, so the page's <h1> is there for screen
+    # readers and for anything that outlines the document.
+    hero = ('<h1 class="sr">matchedfilter</h1><div class="hero">%s</div>' % logo) \
+        if logo else "<h1>matchedfilter</h1>"
+    return (hero
+            + md(readme.get("_intro", ""))
+            + schematic()
+            + "<h2>What it looks like</h2>"
+            + "<p>Run when this page was built, not transcribed:</p>"
+            + _snippet(src, out)
+            + '<p class="note">The inputs are spectra you already have. '
+              "matchedfilter owns the correlation and the peak scan, not the "
+              "forward transform.</p>"
+            + "<h2>Where to go next</h2>"
+            + '<div class="toc">%s</div>' % sign)
+
+
+def tutorial_page(prose):
+    """`docs/usage.md`, with the executed examples spliced in at its markers.
+
+    The examples live in ``matchedfilter.tutorial`` and are run here, so a
+    snippet that stops working stops the build.  The page this replaced had
+    one code fence on it, for ``pip install``.
+    """
+    from matchedfilter import tutorial as tut
+    blocks = {}
+    for title, src, out in tut.run_all():
+        blocks[title] = ("<h3>%s</h3>" % html.escape(title)) + _snippet(src, out)
+    body = prose
+    for title, chunk in blocks.items():
+        marker = "<p>[[example:%s]]</p>" % html.escape(title)
+        if marker in body:
+            body = body.replace(marker, chunk)
+        else:
+            body += chunk
+    left = [t for t in blocks if ("[[example:%s]]" % t) in prose
+            and blocks[t] not in body]
+    assert not left, left
+    return body
 
 
 def retarget_anchors(text):
@@ -1314,10 +1575,15 @@ def note_page_name(path):
 
 def shell(active, title, body, version, sub=None, prev_next=None):
     """Wrap one page's content in the shared nav and chrome."""
-    nav = ['<nav><div class="brand"><a href="index.html" '
-           'style="color:inherit;text-decoration:none">matchedfilter</a></div>'
-           '<div class="ver">%s</div><div class="links">' % html.escape(version or "docs")]
-    for fn, label, _, _ in PAGES:
+    nav = ['<nav><a class="brandmark" href="index.html">%s'
+           '<span class="brand">matchedfilter</span></a>'
+           '<div class="ver">%s</div><div class="links">'
+           % (asset("mark.svg"), html.escape(version or "docs"))]
+    group = None
+    for fn, label, _, _, grp in PAGES:
+        if grp != group:
+            nav.append('<div class="navgrp">%s</div>' % html.escape(grp))
+            group = grp
         nav.append('<a href="%s"%s>%s</a>'
                    % (fn, ' class="on"' if fn == active else "", html.escape(label)))
         if fn == "notes.html" and (active == fn or (sub and sub[0] == "note")):
@@ -1349,49 +1615,11 @@ def shell(active, title, body, version, sub=None, prev_next=None):
             'report an issue</a></footer>')
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<link rel="icon" href="assets/mark.svg" type="image/svg+xml">'
             '<title>%s</title><style>%s</style></head><body>'
             '<div class="wrap">%s<main>%s%s%s</main></div>'
             '<script>%s</script></body></html>'
             % (html.escape(title), CSS, "".join(nav), body, pn, foot, TABJS))
-
-
-#: README links written for a single page, and where they live on the site now.
-ANCHORS = {"#caveats": "caveats.html", "#install": "index.html",
-           "#how-it-works": "using-it.html",
-           "#hierarchical-filtering": "how-it-works.html",
-           "#development": "caveats.html"}
-
-
-def retarget_anchors(text):
-    """Point the README's in-page anchors at the pages that now hold them.
-
-    The README is written for GitHub, where it is one document and "#caveats"
-    resolves. Split across pages, those links land nowhere.
-    """
-    for frag, page in ANCHORS.items():
-        text = text.replace("](%s)" % frag, "](%s)" % page)
-    return text
-
-
-def strip_self_reference(text):
-    """Drop the README's own title and its banner linking to this site.
-
-    The README leads with a link to the documentation because a reader on
-    GitHub needs one.  A reader who is already here does not, and the page
-    supplies its own h1, so both would be duplicates.  Whole paragraphs go,
-    not lines: the banner wraps, and dropping its first line alone left the
-    remainder stranded as a sentence fragment.
-    """
-    keep = []
-    for para in text.split("\n\n"):
-        body = "\n".join(l for l in para.split("\n") if not l.startswith("# "))
-        if not body.strip():
-            continue
-        if ("ahnitz.github.io/matchedfilter" in body
-                or body.lstrip().startswith("Built by CI")):
-            continue
-        keep.append(body)
-    return "\n\n".join(keep).strip()
 
 
 def build(runs, root=".", require_demo=False):
@@ -1400,11 +1628,11 @@ def build(runs, root=".", require_demo=False):
     readme = {k: retarget_anchors(v) for k, v in readme.items()}
     readme["_intro"] = strip_self_reference(readme.get("_intro", ""))
     version = next((r["host"].get("version") for r in runs if r.get("host")), "")
-    order = [(fn, label) for fn, label, _, _ in PAGES]
+    order = [(fn, label) for fn, label, _, _, _ in PAGES]
     out = {}
-    for i, (fn, label, kind, arg) in enumerate(PAGES):
+    for i, (fn, label, kind, arg, _grp) in enumerate(PAGES):
         if kind == "readme":
-            parts = []
+            parts = ["<h1>%s</h1>" % html.escape(label)]
             for j, key in enumerate(arg):
                 text = readme.get(key, "")
                 if not text:
@@ -1414,20 +1642,24 @@ def build(runs, root=".", require_demo=False):
                 parts.append(md(text))
             body = "".join(parts)
         elif kind == "bench-flat":
-            body = ("<h2>Benchmarks: the matched filter</h2>"
+            body = ("<h1>Benchmarks: the matched filter</h1>"
                     + filter_benchmarks_page(runs))
         elif kind == "bench-hier":
-            body = ("<h2>Benchmarks: the hierarchical filter</h2>"
+            body = ("<h1>Benchmarks: the hierarchical filter</h1>"
                     + hier_benchmarks_page(runs))
         elif kind == "file":
             body = md(read(os.path.join(root, arg)))
+        elif kind == "tutorial":
+            body = tutorial_page(md(read(os.path.join(root, arg))))
+        elif kind == "overview":
+            body = overview_page(readme)
         elif kind == "demo":
-            body = "<h2>See it work</h2>" + demo_page(require_demo)
+            body = "<h1>See it work</h1>" + demo_page(require_demo)
         elif kind == "precision":
-            body = ("<h2>Numerical accuracy</h2>"
+            body = ("<h1>Numerical accuracy</h1>"
                     + precision_page(require_demo))
         else:
-            body = ('<h2>Design notes</h2><p>Working notes on why the library is '
+            body = ('<h1>Design notes</h1><p>Working notes on why the library is '
                     'built the way it is. Each records what was measured, '
                     'including the approaches that measurement ruled out.</p>'
                     '<div class="toc">%s</div>'
@@ -1435,10 +1667,6 @@ def build(runs, root=".", require_demo=False):
                               '<div class="d">%s</div></a>'
                               % (note_page_name(f), html.escape(t), html.escape(d))
                               for f, t, d in NOTES if read(os.path.join(root, f))))
-        if fn == "index.html":
-            body = ('<h1>matchedfilter</h1><p class="lede">A fast single-threaded '
-                    'matched filter for x86, arm64 and macOS, with peak-only output '
-                    'and an optional hierarchical mode.</p>') + body
         out[fn] = shell(fn, "matchedfilter — %s" % label, body, version,
                         prev_next=(order[i - 1] if i else None,
                                    order[i + 1] if i + 1 < len(order) else None))
@@ -1482,6 +1710,15 @@ def main():
     for fn, page in pages.items():
         with open(os.path.join(outdir, fn), "w") as fh:
             fh.write(page)
+
+    # The mark is inlined into every page, but the favicon link needs a file.
+    src = os.path.join(a.root, "docs", "assets")
+    if os.path.isdir(src):
+        dst = os.path.join(outdir, "assets")
+        os.makedirs(dst, exist_ok=True)
+        for f in sorted(os.listdir(src)):
+            if f.endswith(".svg"):
+                shutil.copyfile(os.path.join(src, f), os.path.join(dst, f))
     print("wrote %d pages to %s/ from %d run(s): %s"
           % (len(pages), outdir, len(runs),
              ", ".join(r["host"]["label"] for r in runs)))

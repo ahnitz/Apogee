@@ -1,9 +1,15 @@
 # Using matchedfilter
 
-Day-to-day reference: what goes in, what comes back, and how the hierarchical
-mode is driven. Measured numbers are on the benchmark pages, not here -- a
-performance table copied into prose goes stale the moment the code moves, and
-this one did.
+What goes in, what comes back, and how the hierarchical mode is driven.
+
+Every example below is executed when this page is built, and the block
+underneath it is what it printed. None of it is transcribed. That matters
+more than it sounds: the page this replaced carried a hand-written table
+claiming 31x over numpy, which turned out to be measuring Python loop
+overhead in double precision, and it sat there until a reader questioned it.
+Run them yourself with `python -m matchedfilter.tutorial`.
+
+Measured performance lives on the benchmark pages, not here.
 
 ## Install
 
@@ -24,35 +30,73 @@ where it builds and passes but no wheel is published yet.
 
 Inputs are **frequency domain**: the unnormalised forward transform of each
 segment, in natural order. Produce them with whatever you already use (numpy,
-MKL, FFTW); matchedfilter does not need to own that step.
+MKL, FFTW); matchedfilter does not own that step. Everything is
+**complex64**, and there is no double-precision path.
 
-The filter is built once and reused. Ingest conjugates the templates and
-stores both sides in the layout the correlation loop walks, which costs a few
-percent of a run and less as the batch grows.
+`ndata` and `ntemplates` are declared to the constructor rather than inferred
+from the first call, because the plan, the twiddles and the working buffers
+all depend on them. Declaring them once means a run does no allocation and no
+planning.
 
-`run` returns a structured array of shape `(ndata, ntemplates, nbins)` with
-fields `index`, `value` and `magnitude`. Bins whose peak fell below the
-threshold carry `index == -1`.
+[[example:A complete example]]
 
-### Bounding the output
+With unit-norm templates and unit-variance noise, `magnitude` reads directly
+as a signal-to-noise ratio, which is why the examples are built that way.
 
-`binsize` sets how many lags share one reported peak: one record per bin, so
+[[example:What comes back]]
+
+## Bounding the output
+
+`binsize` sets how many lags share one reported peak. One record per bin, so
 `binsize=n` gives a single peak per pair and `binsize=1024` gives `n/1024`.
 
+[[example:One peak per window]]
+
+A bin whose peak did not exceed the threshold still occupies its slot, with
+`index == -1`, so `peaks[d, t, j]` is bin `j` without searching.
+
+[[example:Thresholding]]
+
 `window=(start, end)` bounds which lags are searched at all. An overlap-save
-caller should use it -- the wrap-around region of each block is invalid and
-searching it is not free, particularly for the hierarchical mode, where every
-extra lag is another chance for noise to force a reconstruction.
+caller should use it: the wrap-around region of each block is invalid, and
+searching it is not free -- particularly in the hierarchical mode, where
+every extra lag is another chance for noise to force a reconstruction.
+
+[[example:Bounding the lags searched]]
 
 `run_series` takes a whole time series plus the block layout (`starts`,
 `win_start`, `win_end`) and executes it in one call, which removes the
 per-block round trip and lets the library group blocks internally.
 
+## One thing to watch
+
+[[example:The output buffer is reused]]
+
+## The hierarchical mode
+
+`HierarchicalFilter` runs a cheap decimated pass first and only reconstructs
+the full correlation where that pass could not rule a peak out. It reports
+the same peaks as the flat filter, minus a controlled fraction it is allowed
+to miss: `fd` is that budget, and `snr` is the peak strength the budget is
+quoted at.
+
+It needs `set_reference(power)`: the expected power of the filter **output**,
+bin by bin. Not the template's own power -- the two differ whenever the data
+is coloured, and the configuration is chosen from this, so getting it wrong
+gets the configuration wrong.
+
+[[example:The hierarchical mode]]
+
+Where the shipped tables have no measurement covering the request, it raises
+instead of guessing.
+
+[[example:When it refuses]]
+
 ## Choosing a transform length
 
-Supported lengths are the powers of two from 1024 to 1048576. The hierarchical
-mode additionally needs measured tuning coverage at that length; where it has
-none it raises rather than guessing, and `tools/hmf_tune.py` generates more.
+Supported lengths are the powers of two from 1024 to 1048576. The
+hierarchical mode additionally needs measured tuning coverage at that length;
+`tools/hmf_tune.py` generates more.
 
 ## Platforms
 
@@ -67,7 +111,7 @@ that is AVX3, AVX2 and SSE4; on arm64 it is NEON.
 | macOS arm64 | every push |
 | macOS x86-64 | no |
 
-macOS on Intel is untested rather than known-broken: hosted runners for it are
-being retired, so nothing measures it. `matchedfilter.targets()` lists what a
-build holds that the CPU can run, `matchedfilter.backend()` reports which one
-was selected, and `set_target()` or `MF_ISA` forces one.
+macOS on Intel is untested rather than known-broken: hosted runners for it
+are being retired, so nothing measures it. `matchedfilter.targets()` lists
+what a build holds that the CPU can run, `matchedfilter.backend()` reports
+which one was selected, and `set_target()` or `MF_ISA` forces one.

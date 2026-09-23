@@ -179,8 +179,16 @@ class MatchedFilter:
         structured array.  A caller driving small batches in a tight loop pays
         for that assembly on every call -- three field copies here and a
         structured-array slice at the other end -- which can exceed the filter
-        work itself.  The arrays are views on buffers reused between calls, so
-        copy anything that must outlive the next ``run``.
+        work itself.
+
+        THE RESULT IS A REUSED BUFFER, on both paths.  The next ``run`` on this
+        filter overwrites it in place; ``.copy()`` anything that must outlive
+        that call.  Six allocations are nothing beside a 2^20 transform, but a
+        caller driving small batches pays them every time -- at 37 templates
+        they were 15 of the 21 us a call took -- so the buffer is kept.  The
+        trap is real enough that it caught the first draft of the worked
+        example in ``matchedfilter.tutorial``, which compared a full run
+        against a windowed one and printed the windowed answer twice.
         """
         n = self.n
         binsize = n if binsize is None else int(binsize)
