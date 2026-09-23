@@ -433,6 +433,11 @@ details>.scroll{margin-bottom:1rem}
 .toc .t{font-weight:600;font-size:14.5px}
 .toc .d{color:var(--mut);font-size:13px;margin-top:.2rem}
 nav a.on{color:var(--fg);background:var(--panel);border-left-color:var(--accent);font-weight:600}
+table.spec{min-width:0}
+table.spec th{text-align:left;width:11rem;vertical-align:top;color:var(--mut);
+     font-weight:600;white-space:normal}
+table.spec td{text-align:left;white-space:normal}
+
 .ghlinks{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--bd)}
 .ghlinks a{font-size:13px;color:var(--mut);padding:.25rem .6rem}
 .ghlinks a:hover{color:var(--accent)}
@@ -559,16 +564,7 @@ _TABSEQ = [0]
 
 
 def workload_note(runs, kind):
-    """State the batch shape the numbers were taken at.
-
-    Throughput depends strongly on how many data segments and templates are
-    filtered together, so a time per pair means nothing without it. The page
-    used to omit it entirely. It does NOT quantify the effect here: the one
-    number this originally carried, "up to 1.94x", came from a harness that
-    held total pairs fixed rather than work per call, so the small shapes it
-    compared against were measuring call overhead. The factor is real; the
-    size of it is not yet measured cleanly.
-    """
+    """Batch shape, as a spec row rather than an alert box."""
     rows = [f for r in runs for f in r.get(kind, [])]
     shapes = sorted({(f.get("data"), f.get("templates")) for f in rows
                      if f.get("data") and f.get("templates")})
@@ -576,24 +572,38 @@ def workload_note(runs, kind):
         return ""
     txt = ", ".join("%d data segments x %d templates = %d pairs"
                     % (d, t, d * t) for d, t in shapes)
-    lag = ('<div class="note"><strong>Lag window.</strong> Peaks are searched '
-           'over the middle 60% of lags, not all n. An overlap-save search '
-           'cannot use the wrap-around region, and searching it anyway is not '
-           'free here: every extra lag is another chance for a noise sample to '
-           'clear the coarse threshold and force a reconstruction no real '
-           'search would have asked for. Measured at n=4096, band 512, 18.8% '
-           'of pure-noise pairs escalated over all lags against 6.2% over a '
-           'realistic window. The flat filter always used a window; the '
-           'hierarchical one did not, which made the two halves of this '
-           'benchmark disagree about what the workload was.</div>')
-    return (lag + '<div class="note"><strong>Workload.</strong> %s, single-threaded, '
-            'complex64 throughout. Batch shape matters: filtering D segments '
-            'against T templates together is faster than the same pairs one '
-            'at a time -- a d-by-t tile reads d+t operands to produce d*t '
-            'products, so squarer tiles move less memory per product -- and a '
-            'per-pair figure is only meaningful alongside the shape it was '
-            'measured at. Choosing that shape is not yet automatic; see the '
-            'design notes. It cannot change any reported peak.</div>' % txt)
+    return spec_table([
+        ("Workload", "%s, single-threaded, complex64 throughout, peaks "
+                     "searched over the middle 60%% of lags." % txt),
+        ("Batch shape", "Filtering D segments against T templates together is "
+                        "faster than the same pairs one at a time -- a d-by-t "
+                        "tile reads d+t operands to produce d*t products, so "
+                        "squarer tiles move less memory per product. A "
+                        "per-pair figure is only meaningful alongside the "
+                        "shape it was measured at. Choosing that shape is not "
+                        "yet automatic. It cannot change any reported peak."),
+        ("References", "Each reference column times ONE INVERSE TRANSFORM and "
+                       "nothing else -- batched, single precision, one thread. "
+                       "This library's column covers the whole matched filter: "
+                       "the product, the transform and the peak scan. That "
+                       "asymmetry is the comparison: it is not an FFT library, "
+                       "and the question is whether computing only the binned "
+                       "maxima beats doing the transform at all."),
+    ])
+
+
+def spec_table(rows):
+    """Configuration as a property/value table, not a stack of alert boxes.
+
+    These pages had grown six consecutive note boxes before the reader reached
+    a chart. Notes are for the one thing that genuinely needs flagging; the
+    setup a reader checks a number against is reference material and belongs
+    in a table, below the plots, where it can be scanned.
+    """
+    body = "".join("<tr><th>%s</th><td>%s</td></tr>" % (html.escape(k), v)
+                   for k, v in rows if v)
+    return ('<div class="scroll"><table class="spec"><tbody>%s</tbody>'
+            "</table></div>" % body)
 
 
 def details(summary, body):
@@ -729,15 +739,9 @@ def reference_note(runs):
 
 
 def bench_speedup(runs, names):
-    """Gated vs flat, one panel per transform length."""
-    o = ["<p>The coarse pass runs first and pays for the full "
-         "correlation only where a detection is still possible. Speedup is "
-         "against the flat filter on the same pure-noise data. The dashed line "
-         "marks 1x, where the coarse pass has bought nothing.</p>"]
+    """Speedup against the flat filter, one panel per transform length."""
     snrs = sorted({h["snr"] for r in runs for h in r.get("hierarchical", [])})
     sizes = sorted({h["n"] for r in runs for h in r.get("hierarchical", [])})
-    gaps = [(r["host"]["label"], h) for r in runs
-            for h in r.get("hierarchical", []) if h.get("uncovered")]
     panels = []
     for n in sizes:
         groups = []
@@ -750,66 +754,17 @@ def bench_speedup(runs, names):
             groups.append(("snr %g" % snr, vs))
         if any(v is not None for _, vs in groups for v in vs):
             panels.append(("n = %d" % n,
-                           bar_chart(groups, names, "Gated vs flat, n=%d" % n, "speedup")))
-    o.append(tabs(panels, "transform length"))
-    o.append('<div class="note">The first stage is <em>not</em> set by this '
-             'benchmark. The library chooses band, oversampling and taps from '
-             'the reference and the threshold, and the chosen values are in '
-             '"All numbers". Within a panel the bars should climb with the SNR '
-             'threshold, because a higher threshold admits a narrower first '
-             'pass and a tighter margin. A flat profile means the choice is not '
-             'responding to the threshold.</div>')
-    if gaps:
-        # One fact per (n, snr), not one per runner. Coverage is a property of
-        # the shipped tables, so every runner reports the same gaps -- listing
-        # them per runner turned 12 facts into 120 rows of table on the page.
-        cells = sorted({(h["n"], h["snr"]) for _, h in gaps})
-        per_runner = collections.Counter(l for l, _ in gaps)
-        same = len(set(per_runner.values())) == 1
-        o.append('<div class="note warn"><strong>Not tuned.</strong> '
-                 'The tuning tables are measured, and outside their coverage '
-                 'the library refuses rather than guessing a configuration it '
-                 'cannot stand behind. %d combination%s reported no result for '
-                 'that reason%s, which is a gap in the shipped tables and not '
-                 'a failure of the build. Coverage extends along the threshold '
-                 'axis -- anything at or above the lowest measured threshold '
-                 'is answered conservatively -- but not across transform '
-                 'lengths, where nothing measured yet bounds the answer.</div>'
-                 % (len(cells), "" if len(cells) == 1 else "s",
-                    ", identically on every runner" if same else ""))
-        o.append('<p class="lede" style="font-size:14px">Uncovered: %s.</p>'
-                 % ", ".join("n=%d at snr %g" % c for c in cells))
-
-    # Same treatment: the escalation rate is a property of the algorithm and
-    # the data, not the machine, so it is identical on every runner. That it
-    # IS identical is the useful signal; ten copies of it are not.
-    fired = [(r["host"]["label"], h) for r in runs for h in r.get("hierarchical", [])
-             if _rate(h) > 0]
-    if fired:
-        by = collections.defaultdict(list)
-        for lab, h in fired:
-            by[(h["n"], h["snr"])].append(_rate(h))
-        rows = [[ "%d" % n, "%g" % snr, "%.2f%%" % (100 * min(v)),
-                  ("identical" if max(v) - min(v) < 1e-9
-                   else "%.2f-%.2f%%" % (100 * min(v), 100 * max(v))),
-                  "%d" % len(v)]
-                for (n, snr), v in sorted(by.items())]
-        o.append('<div class="note warn"><strong>Where the coarse pass '
-                 'escalated on noise.</strong> On pure noise almost nothing '
-                 'should reach the full correlation; where some does, the work '
-                 'is wasted rather than wrong and the speedup falls. This rate '
-                 'is set by the algorithm and the data, so agreement across '
-                 'runners is the check -- a machine-dependent rate would mean '
-                 'something was wrong.</div>')
-        o.append(table(["n", "snr", "escalated", "across runners", "runners"],
-                       rows))
-        o.append('<div class="note">This is the only rate reported here, and '
-                 'it is <em>not</em> what most of the variation rides on. '
-                 'Between snr 5.0 and 5.5 at n=4096 the configuration is the '
-                 'same band and the time falls by 28%, while this rate moves '
-                 'by 0.78 points -- worth about a fortieth of that. The rest '
-                 'is the odd coarse pass, whose rate is not yet exposed.</div>')
-    return "".join(o)
+                           bar_chart(groups, names,
+                                     "Hierarchical vs flat, n=%d" % n,
+                                     "speedup")))
+    if not panels:
+        return "<p>No hierarchical results were available.</p>"
+    return ('<p>The first pass correlates against a low-frequency slice of '
+            'each template and pays for the full correlation only where that '
+            'slice leaves a peak possible. The dashed line marks 1x, where it '
+            'has bought nothing. Within a panel the bars should climb with the '
+            'threshold, because a higher threshold admits a narrower first '
+            'pass.</p>' + tabs(panels, "transform length"))
 
 
 def bench_pair(runs):
@@ -900,11 +855,12 @@ def filter_benchmarks_page(runs):
          '<div class="card"><div class="k">%.2f</div><div class="l">fastest us per pair</div></div>'
          '<div class="card"><div class="k">%d</div><div class="l">transform lengths</div></div>'
          '</div>' % (len(runs), fastest,
-                     len({f["n"] for r in runs for f in r.get("flat", [])})),
-         workload_note(runs, "flat")]
+                     len({f["n"] for r in runs for f in r.get("flat", [])}))]
     o.append(tabs([("Cost per pair", bench_pair(runs)),
                    ("Against other FFTs", bench_refs(runs, engines))], "view"))
-    o.append(details("What was tested", bench_what(runs)))
+    o.append("<h3>What was tested</h3>")
+    o.append(workload_note(runs, "flat"))
+    o.append(bench_what(runs))
     o.append(details("All numbers (%d rows)"
                      % sum(len(r.get("flat", [])) for r in runs),
                      bench_flat_raw(runs, engines)))
@@ -918,47 +874,99 @@ def hier_benchmarks_page(runs):
         return "<p>No benchmark results were available when this page was built.</p>"
     names = [r["host"]["label"] for r in runs]
     hier = [h for r in runs for h in r.get("hierarchical", []) if "speedup" in h]
-    # Headline against ONE runner, named. A speedup is a ratio of two
-    # machine-dependent times and the two do not scale together: on the arm64
-    # runner the flat filter is 4.1x the x86 one while the coarse pass is only
-    # 2.7x, so the same algorithm reads 18.8x there against 12.2x on x86. A
-    # maximum across runners reports whichever machine has the weakest flat
-    # filter, which is not a property of this library.
-    ref = next((r for r in runs if r["host"]["label"] == "linux-x86_64"), runs[0])
-    rh = [h for h in ref.get("hierarchical", []) if "speedup" in h]
-    best = max((h["speedup"] for h in rh), default=0)
-    med = sorted(h["speedup"] for h in rh)
-    refname = ref["host"]["label"]
     o = ['<p>Every number here is a <strong>ratio against the flat filter on '
          'the same data</strong>, not a throughput. For what one correlation '
          'costs in absolute terms, see '
-         '<a href="benchmarks.html">the matched filter page</a>.</p>',
-         '<div class="cards">'
-         '<div class="card"><div class="k">%.1fx</div>'
-         '<div class="l">best speedup on %s</div></div>'
-         '<div class="card"><div class="k">%.1fx</div>'
-         '<div class="l">median on %s</div></div>'
-         '<div class="card"><div class="k">%d</div>'
-         '<div class="l">configurations, %d runners</div></div>'
-         '</div>' % (best, html.escape(refname),
-                     med[len(med) // 2] if med else 0, html.escape(refname),
-                     len(hier), len(runs)),
-         '<div class="note">Headlined against one runner on purpose. Compare '
-         'speedups within a runner, never between: the flat filter and the '
-         'coarse pass do not scale together across machines, so the arm64 '
-         'runner reads 18.8x where x86 reads 12.2x for the same algorithm, '
-         'and a maximum across runners would simply find the weakest flat '
-         'filter.</div>',
-         workload_note(runs, "hierarchical"),
-         '<div class="note">Timed interleaved: within each repeat the flat '
-         'and hierarchical filters run back to back on the same data, and the '
-         'speedup is the median of the per-repeat ratios. Timing one to '
-         'completion and then the other put drift between the two loops '
-         'straight into the ratio, which on a shared runner is the dominant '
-         'error.</div>']
+         '<a href="benchmarks.html">the matched filter page</a>. What was '
+         'tested is set out <a href="#setup">below the charts</a>.</p>']
     o.append(bench_speedup(runs, names))
-    o.append(reference_note(runs))
+    o.append(setup_section(runs, hier))
     o.append(details("All numbers (%d rows)" % len(hier), bench_hier_raw(runs)))
+    return "".join(o)
+
+
+def setup_section(runs, hier):
+    """Everything a reader needs to check these numbers against, in one place."""
+    shapes = sorted({(f.get("data"), f.get("templates"))
+                     for r in runs for f in r.get("hierarchical", [])
+                     if f.get("data") and f.get("templates")})
+    shape = ", ".join("%d data segments x %d templates = %d pairs"
+                      % (d, t, d * t) for d, t in shapes)
+    cfgs = sorted({(h["band"], h["oversample"], h["taps"])
+                   for h in hier if "band" in h})
+    rows = [
+        ("Workload", "%s. Pure noise -- the case the first pass is built for, "
+                     "where almost nothing survives and the skipped work is "
+                     "real. Single-threaded, complex64 throughout." % shape),
+        ("Lag window", "The middle 60% of lags, matching the flat filter's. An "
+                       "overlap-save search cannot use the wrap-around region, "
+                       "and searching it is not free here: every extra lag is "
+                       "another chance for a noise sample to clear the coarse "
+                       "threshold and force a reconstruction no real search "
+                       "would have asked for. At n=4096, band 512, that is "
+                       "18.8% of pairs escalating against 6.2%."),
+        ("Timing", "Interleaved: within each repeat the flat and hierarchical "
+                   "filters run back to back on the same data, and the speedup "
+                   "is the median of the per-repeat ratios. Each call repeats "
+                   "to a 20 ms floor. Timing one to completion and then the "
+                   "other puts drift between the two loops straight into the "
+                   "ratio."),
+        ("First stage", "Chosen by the library, not set here, from the "
+                        "reference and the threshold -- so it is a result of "
+                        "this benchmark rather than an input to it, and it "
+                        "should narrow as the threshold rises. Selected across "
+                        "these runs: %s."
+                        % ", ".join("%d/%d/%d" % c for c in cfgs)),
+        ("Comparing runners",
+         "Don't. A speedup is a ratio of two machine-dependent times and they "
+         "do not scale together: the arm64 runner's flat filter is 4.1x the "
+         "x86 one while its coarse pass is only 2.7x, so the same algorithm "
+         "reads 18.8x there against 12.2x. Compare within a runner."),
+    ]
+    o = ['<h3 id="setup">What was tested</h3>', spec_table(rows)]
+    o.append(reference_note(runs))
+    o.append(coverage_and_escalation(runs))
+    return "".join(o)
+
+
+def coverage_and_escalation(runs):
+    """Two facts that are properties of the tables and the algorithm, once each."""
+    o = []
+    gaps = [(r["host"]["label"], h) for r in runs
+            for h in r.get("hierarchical", []) if h.get("uncovered")]
+    if gaps:
+        cells = sorted({(h["n"], h["snr"]) for _, h in gaps})
+        o.append("<h3>Where it declined to answer</h3>")
+        o.append('<p>The tuning tables are measured, and outside their '
+                 'coverage the library refuses rather than guessing a '
+                 'configuration it cannot stand behind. %d combination%s '
+                 'reported no result for that reason, identically on every '
+                 'runner -- a gap in the shipped tables, not a failure of the '
+                 'build. Coverage extends along the threshold axis, where '
+                 'anything at or above the lowest measured threshold is '
+                 'answered conservatively, but not across transform lengths, '
+                 'where nothing measured yet bounds the answer.</p>'
+                 % (len(cells), "" if len(cells) == 1 else "s"))
+        o.append(spec_table([("Not covered",
+                              ", ".join("n=%d at snr %g" % c for c in cells))]))
+    fired = [h for r in runs for h in r.get("hierarchical", []) if _rate(h) > 0]
+    if fired:
+        by = collections.defaultdict(list)
+        for h in fired:
+            by[(h["n"], h["snr"])].append(_rate(h))
+        o.append("<h3>How often the first pass escalated</h3>")
+        o.append('<p>On pure noise almost nothing should reach the full '
+                 'correlation. Where some does the work is wasted rather than '
+                 'wrong, and the speedup falls -- this is the first number to '
+                 'look at when a row is slower than expected. It is set by the '
+                 'algorithm and the data, not the machine, so agreement across '
+                 'runners is the check.</p>')
+        o.append(table(["n", "snr", "escalated", "across runners", "runners"],
+                       [["%d" % n, "%g" % snr, "%.2f%%" % (100 * min(v)),
+                         ("identical" if max(v) - min(v) < 1e-9
+                          else "%.2f-%.2f%%" % (100 * min(v), 100 * max(v))),
+                         "%d" % len(v)]
+                        for (n, snr), v in sorted(by.items())]))
     return "".join(o)
 
 
@@ -1019,7 +1027,7 @@ NOTES = [("docs/hierarchical.md", "The hierarchical filter",
 
 PAGES = [("index.html", "Overview", "readme", ["_intro"]),
          ("demo.html", "See it work", "demo", None),
-         ("how-it-works.html", "How it works", "file", "docs/usage.md"),
+         ("using-it.html", "Using it", "file", "docs/usage.md"),
          ("benchmarks.html", "Benchmarks: matched filter", "bench-flat", None),
          ("hierarchical-benchmarks.html", "Benchmarks: hierarchical", "bench-hier", None),
          ("notes.html", "Design notes", "notes-index", None),
@@ -1029,7 +1037,7 @@ PAGES = [("index.html", "Overview", "readme", ["_intro"]),
 
 #: README links written for a single page, and where they live on the site now.
 ANCHORS = {"#caveats": "caveats.html", "#install": "index.html",
-           "#how-it-works": "how-it-works.html",
+           "#how-it-works": "using-it.html",
            "#hierarchical-filtering": "index.html",
            "#development": "caveats.html"}
 
@@ -1115,7 +1123,7 @@ def shell(active, title, body, version, sub=None, prev_next=None):
 
 #: README links written for a single page, and where they live on the site now.
 ANCHORS = {"#caveats": "caveats.html", "#install": "index.html",
-           "#how-it-works": "how-it-works.html",
+           "#how-it-works": "using-it.html",
            "#hierarchical-filtering": "how-it-works.html",
            "#development": "caveats.html"}
 

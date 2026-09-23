@@ -24,7 +24,13 @@ def test_autotuning_refuses_outside_its_measured_coverage():
     worth a test: a fallback reintroduced by accident would look like nothing
     at all from the outside.
     """
-    n = 8192                       # the shipped tables cover 4096
+    # A transform length the tables do not cover. Kept as a computed value
+    # rather than a constant: coverage grows as lengths are measured, and this
+    # test must keep testing refusal rather than quietly starting to pass for
+    # the wrong reason.
+    t = mf._load_tuning()
+    covered = {r[0] for r in t["fdr"]}
+    n = next(v for v in (3072, 6144, 12288, 24576) if v not in covered)
     power = inspiral_power(n)
     hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=2, snr=5.0, fd=1e-3)
     hf.set_reference(power)
@@ -118,19 +124,31 @@ def test_interior_thresholds_are_bounded_by_both_neighbours():
     assert "between measured" in why
 
 
-def test_a_higher_threshold_never_gets_a_slower_configuration():
-    """Asking for more SNR must not make the filter worse.
+def test_a_higher_threshold_never_gets_a_wider_first_pass():
+    """Asking for more SNR must not make the filter work harder.
 
-    The whole point of a higher threshold is that it admits a cheaper first
-    pass. If selection ever returns a more expensive configuration for a
-    stricter request, the fallback rule has gone backwards -- which it had.
+    The band is the invariant to check, not the tabulated cost: cost is
+    RELATIVE to a pivot measured at the same (n, snr), so two rows at
+    different thresholds are ratios against different denominators and cannot
+    be ordered against each other. The band can be -- a narrower first pass is
+    strictly less work -- and it is what a higher threshold is supposed to buy.
+
+    This failed once for a real reason: the fallback bounded out-of-range
+    thresholds by the worst row across the whole measured range, so snr 6.5
+    inherited snr 5.0's behaviour and got band 1024 where snr 6.0 got 256.
     """
     from matchedfilter.benchmark import _inspiral_power
-    p = _inspiral_power(4096)
-    top = mf.choose_config(p, 4096, 6.0, 1e-3)
-    assert top is not None
-    for snr in (6.5, 7.0, 9.0):
-        assert mf.choose_config(p, 4096, snr, 1e-3) == top, snr
+    n = 4096
+    p = _inspiral_power(n)
+    prev = None
+    seen = []
+    for snr in (5.0, 5.5, 6.0, 6.5, 9.0):
+        cfg = mf.choose_config(p, n, snr, 1e-3)
+        assert cfg is not None, snr
+        seen.append((snr, cfg[0]))
+        if prev is not None:
+            assert cfg[0] <= prev, seen
+        prev = cfg[0]
 
 
 def test_dismissal_is_not_monotone_in_snr_in_the_shipped_table():

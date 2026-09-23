@@ -329,6 +329,31 @@ def _band_features(power, m):
     return float(s / tot), float(1.0 / np.sum(q ** 2))
 
 
+def _cost_snrs(t, n, band, U, K, margin, want):
+    """Which cost rows to price a configuration with.
+
+    The two tables are allowed to disagree about coverage -- accuracy is a
+    property of the algorithm and cost of the machine, so they are regenerated
+    independently and one can be ahead of the other. Requiring the cost row at
+    exactly the accuracy row's threshold coupled them, and the moment accuracy
+    gained snr 6.5 at n=4096 before cost did, every candidate was rejected for
+    want of a price and autotuning refused outright.
+
+    Cost cannot break the budget -- it only ranks configurations that accuracy
+    has already admitted -- so it falls back to the nearest measured threshold
+    rather than refusing. A slightly mispriced ranking is a performance
+    question; no answer at all is a correctness one.
+    """
+    have = sorted({s for (kn, kb, kU, kK, s, km) in t["cost"]
+                   if (kn, kb, kU, kK, km) == (n, band, U, K, margin)})
+    if not have:
+        return ()
+    exact = [w for w in want if any(abs(w - h) < 1e-9 for h in have)]
+    if exact:
+        return tuple(exact)
+    return (min(have, key=lambda h: abs(h - max(want))),)
+
+
 def choose_config(power, n, snr, fd, tuning=None):
     """Cheapest (band, oversample, taps) whose measured dismissal meets `fd`.
 
@@ -392,7 +417,7 @@ def choose_config(power, n, snr, fd, tuning=None):
         if not cover or max(cover) > fd:
             continue
         crows = []
-        for cs in use:
+        for cs in _cost_snrs(t, n, band, U, K, margin, use):
             crows += t["cost"].get((n, band, U, K, round(cs, 2), margin)) or []
         if not crows:
             continue
