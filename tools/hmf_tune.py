@@ -418,6 +418,31 @@ def beff_of(p, m):
     return float(1.0 / np.sum(q ** 2))
 
 
+def bands_for(n, count=6):
+    """Candidate first-stage bands at transform length `n`.
+
+    A LADDER IN THE DECIMATION RATIO, n/band, not in absolute band size.
+
+    Two reasons, and the second is the one that bit. First, `n` sets the
+    duration of the block, not its frequency content: at a fixed sample rate a
+    band of `m` bins is a different FREQUENCY at every `n`, while `n/R` is the
+    same fraction of Nyquist at all of them. A caller choosing `n` for how much
+    data to analyse at once should not be changing which part of the spectrum
+    the first pass keeps.
+
+    Second, the grid this replaces took the six SMALLEST bands at or below
+    n/4. At n=262144 that made 8192 the widest first pass considered -- ratio
+    32 -- which loses so much signal that the coarse pass escalated 100% of
+    pairs at every threshold and the hierarchical filter measured SLOWER than
+    the flat one (0.84x at n=65536 snr 5.0). The n/4 cap also excluded band
+    2048 at n=4096, which is the best configuration there.
+
+    Ratios 2 to 64 at every length, floored at 256 bins.
+    """
+    return sorted([n >> k for k in range(1, count + 1) if (n >> k) >= 256],
+                  reverse=True)
+
+
 def make_ref(n, m, f, beff, tol=0.02):
     """A reference with in-band fraction `f` at band m and bandwidth `beff`.
 
