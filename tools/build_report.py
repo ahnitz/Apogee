@@ -432,6 +432,9 @@ details>.scroll{margin-bottom:1rem}
 .toc .t{font-weight:600;font-size:14.5px}
 .toc .d{color:var(--mut);font-size:13px;margin-top:.2rem}
 nav a.on{color:var(--fg);background:var(--panel);border-left-color:var(--accent);font-weight:600}
+.ghlinks{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--bd)}
+.ghlinks a{font-size:13px;color:var(--mut);padding:.25rem .6rem}
+.ghlinks a:hover{color:var(--accent)}
 footer{margin-top:4rem;padding-top:1.2rem;border-top:1px solid var(--bd);
        color:var(--mut);font-size:13px}
 @media (max-width:820px){
@@ -901,15 +904,14 @@ NOTES = [("docs/hierarchical.md", "The hierarchical filter",
           "Three live avenues, what shipped, and the many that measurement "
           "ruled out.")]
 
-PAGES = [("index.html", "Overview", "readme",
-          ["_intro", "Hierarchical filtering", "Install"]),
+PAGES = [("index.html", "Overview", "readme", ["_intro"]),
          ("demo.html", "See it work", "demo", None),
-         ("how-it-works.html", "How it works", "readme", ["How it works"]),
+         ("how-it-works.html", "How it works", "file", "docs/usage.md"),
          ("benchmarks.html", "Benchmarks: matched filter", "bench-flat", None),
          ("hierarchical-benchmarks.html", "Benchmarks: hierarchical", "bench-hier", None),
          ("notes.html", "Design notes", "notes-index", None),
-         ("caveats.html", "Caveats & development", "readme",
-          ["Caveats", "Development"])]
+         ("caveats.html", "Caveats & contributing", "readme",
+          ["Status", "Contributing"])]
 
 
 #: README links written for a single page, and where they live on the site now.
@@ -968,6 +970,11 @@ def shell(active, title, body, version, sub=None, prev_next=None):
                 f2 = note_page_name(np_)
                 nav.append('<a class="sub%s" href="%s">%s</a>'
                            % (" on" if f2 == active else "", f2, html.escape(ttl)))
+    nav.append('<div class="ghlinks">'
+               '<a href="https://github.com/ahnitz/matchedfilter">Source</a>'
+               '<a href="https://github.com/ahnitz/matchedfilter/fork">Fork</a>'
+               '<a href="https://github.com/ahnitz/matchedfilter/issues/new">'
+               'Report an issue</a></div>')
     nav.append("</div></nav>")
     pn = ""
     if prev_next:
@@ -978,7 +985,13 @@ def shell(active, title, body, version, sub=None, prev_next=None):
     foot = ('<footer>Built by <code>tools/build_report.py</code> from the README, '
             'the notes in <code>docs/</code>, and the artifacts of the Benchmark '
             'workflow. Benchmark numbers come from shared CI runners and are '
-            'comparisons, not hardware specifications.</footer>')
+            'comparisons, not hardware specifications. '
+            '<a href="https://github.com/ahnitz/matchedfilter">Source on '
+            'GitHub</a> &middot; '
+            '<a href="https://github.com/ahnitz/matchedfilter/fork">fork it'
+            '</a> &middot; '
+            '<a href="https://github.com/ahnitz/matchedfilter/issues/new">'
+            'report an issue</a></footer>')
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>%s</title><style>%s</style></head><body>'
@@ -1051,6 +1064,8 @@ def build(runs, root=".", require_demo=False):
         elif kind == "bench-hier":
             body = ("<h2>Benchmarks: the hierarchical filter</h2>"
                     + hier_benchmarks_page(runs))
+        elif kind == "file":
+            body = md(read(os.path.join(root, arg)))
         elif kind == "demo":
             body = "<h2>See it work</h2>" + demo_page(require_demo)
         else:
