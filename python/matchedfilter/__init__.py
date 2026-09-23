@@ -300,7 +300,7 @@ def _cache_path(paths):
     return None
 
 
-def _cached_tuning(path):
+def _cached_tuning(paths):
     """Load the parsed tables from a cache keyed on the text files' mtimes.
 
     Parsing the shipped tables is 54 ms of pure Python -- 30000 lines, nine
@@ -318,8 +318,6 @@ def _cached_tuning(path):
     modification times, so editing one or pointing MF_COST somewhere else
     misses the cache and reparses rather than serving something stale.
     """
-    global _CACHE_PATHS
-    paths = _CACHE_PATHS
     if not paths:
         return None
     cp = _cache_path(paths)
@@ -329,7 +327,7 @@ def _cached_tuning(path):
         import pickle
         with open(cp, "rb") as fh:
             t = pickle.load(fh)
-        t["paths"] = paths
+        t["paths"] = list(paths)
         return t
     except Exception:
         return None          # a corrupt or stale-format cache is not fatal
@@ -350,8 +348,6 @@ def _store_tuning(t, paths):
         pass
 
 
-_CACHE_PATHS = ()
-
 
 def _load_tuning(path=None):
     """Read the tuning table: measured dismissal and cost per configuration.
@@ -366,18 +362,20 @@ def _load_tuning(path=None):
     global _TUNING
     if _TUNING is not None and path is None:
         return _TUNING
-    cached = _cached_tuning(path)
-    if cached is not None:
-        if path is None:
-            _TUNING = cached
-        return cached
     here = os.path.dirname(__file__)
     paths = [os.environ.get("MF_ACCURACY") or os.path.join(here, "accuracy.txt"),
              os.environ.get("MF_COST") or os.path.join(here, "cost.txt")]
     if path is not None:
         paths = [path]
-    global _CACHE_PATHS
-    _CACHE_PATHS = tuple(paths)
+    # The cache is keyed on these paths, so it can only be consulted AFTER
+    # they are known. Looking it up first -- which an earlier version did --
+    # meant every fresh process missed, reparsed, and then rewrote the cache
+    # it had just failed to read: 59 ms instead of 50, worse than no cache.
+    cached = _cached_tuning(tuple(paths))
+    if cached is not None:
+        if path is None:
+            _TUNING = cached
+        return cached
     fdr, cost, meta = [], {}, {}
     for one in paths:
       with open(one) as fh:
