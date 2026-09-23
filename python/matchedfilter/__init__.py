@@ -647,13 +647,21 @@ def _complete_snrs(t, n):
 #: algorithm applies, not a tuned threshold.
 _BEFF_MIN = 8.0
 
-#: Multiplier on the estimated dismissal before it is compared to the
-#: budget. The lookup is an ESTIMATE -- an interpolation between measured
-#: cells -- and a budget wants a bound, so the gap is covered by a factor
-#: measured on cells the interpolation did not see. Set from
-#: tools/score_fdr.py; 1.0 means "not yet measured", which is honest rather
-#: than safe.
-_FDR_SAFETY = 1.0
+#: Divisor on the budget before the margin is placed. The lookup is an
+#: ESTIMATE -- an interpolation between measured cells -- and a budget
+#: wants a bound, so this is what stands between the two.
+#:
+#: Measured by tools/score_fdr.py, which requests a budget, takes whatever
+#: selection returns, and measures what that configuration really
+#: dismisses. Over 48 cases spanning three reference families, four
+#: lengths and two thresholds, realised/requested runs 0.43x at the
+#: median, 2.11x at p90 and 4.21x at worst.
+#:
+#: Left at 1.0 and overridable, because the right value is a policy rather
+#: than a measurement: half the cases are already twice as safe as asked,
+#: so a factor large enough to cover the tail makes the median far safer
+#: than requested and pays escalation for it.
+_FDR_SAFETY = float(os.environ.get("MF_FDR_SAFETY", "1.0"))
 
 
 def _spread(v):

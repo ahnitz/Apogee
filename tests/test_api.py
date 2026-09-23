@@ -500,11 +500,17 @@ def test_pinning_reads_the_margin_from_the_table():
     power[1:n // 2] = k ** (-7 / 3.0) / ((0.015 * n / k) ** 4 + 1.0)
     power /= power.sum()
 
-    # a tighter budget must not give a looser threshold
+    # A tighter budget must never give a LOOSER threshold. Not strictly
+    # tighter: where the whole margin curve sits near the table's
+    # resolution floor, the loosest setting already meets several budgets
+    # and the right answer is the same margin for each. At 24000 trials
+    # this cell reads 1.25e-4 flat to margin 0.98 and 9.35e-4 at 1.00, so
+    # 1e-2 and 1e-3 both admit 1.00 and only 1e-4 forces 0.90.
     ms = [mf.margin_for_config(power, n, 5.0, fd, 512, 2, 8)
-          for fd in (1e-2, 1e-3)]
+          for fd in (1e-2, 1e-3, 1e-4)]
     assert all(m is not None and 0.5 < m <= 1.0 for m in ms), ms
-    assert ms[1] < ms[0], ms
+    assert ms[0] >= ms[1] >= ms[2], ms
+    assert ms[2] < ms[0], ms            # somewhere in the range it must bite
 
     # below what the table resolves it saturates at the tightest measured
     # margin rather than falling back to 1.00, which would hand the

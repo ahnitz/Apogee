@@ -34,7 +34,13 @@ MARGINS = [0.90, 0.93, 0.96, 0.98, 1.00]
 #: error in (f, B_eff) measured 1.44x median on the 6000-trial grid, which
 #: is what the Poisson noise of the cells alone predicts -- so the grid was
 #: finer than the measurements justified and the spend belongs in trials.
-TRIALS = 6000
+#: Set by what callers ASK FOR, not by what is cheap. pycbc_inspiral_fir
+#: defaults to a 1e-3 budget; at 6000 trials the resolution floor is
+#: 3/6000 = 5e-4, so a 1e-3 request sat barely above the noise and the
+#: realised rate came out 8x high (7/893 triggers lost against 1e-3).
+#: 24000 puts the floor at 1.25e-4 and gives ~24 counts at a 1e-3
+#: boundary, which is +-20% -- the accuracy the budget is quoted to.
+TRIALS = 24000
 WORKERS = 30
 
 

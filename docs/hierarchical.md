@@ -270,6 +270,56 @@ more conservative -- lost four times as many as the default.  A lower
 threshold cannot lose more triggers; a different configuration can.  The
 override is monotonic by construction, which `tests/test_api.py` checks.
 
+## The table resolves further and the realised rate does not follow
+
+The accuracy grid was regenerated at 24000 trials a cell, four times the
+previous 6000, because pycbc_inspiral_fir asks for a 1e-3 budget and the
+old resolution floor was 3/6000 = 5e-4 -- a request sitting barely above
+the noise. The floor is now 1.25e-4 and fd=1e-4 is answerable.
+
+It did not help, and the way it did not help is the useful part.
+
+    tools/score_fdr.py, 48 cases        over budget   worst
+      6000 trials a cell                  15 of 48    3.06x
+      24000 trials a cell                 17 of 48    4.21x
+
+Better data scored WORSE. The old floor read every unresolved cell as
+5e-4, which overstated the safe configurations and made selection pick
+tighter margins than it needed. That padding was accidental, and it was
+covering an optimism in the rule. Removing it exposed the bias rather than
+creating it.
+
+    realised / requested, 48 cases
+      p50 0.43x   p90 2.11x   p95 3.31x   max 4.21x
+
+So the estimate is optimistic in the tail while being twice as safe as
+asked at the median. `_FDR_SAFETY` divides the budget before the margin is
+placed and is the knob for that; it is left at 1.0 and overridable,
+because the right value is a policy. A factor covering the tail makes the
+median far safer than requested and pays escalation for it.
+
+On the real workload it is not the tail that matters:
+
+    pycbc_inspiral_fir, snr 5.0, fd=1e-3
+      pycbc                893 triggers
+      matchedfilter        885 triggers, 8.7% escalating
+      safety 3             886 triggers, 10.2% escalating
+      safety 10            refuses -- 1e-4 is under the table's floor
+
+Eight triggers of 893 is 9.0e-3 against a requested 1e-3. The table
+estimates 9.39e-4 for that reference at margin 1.00, from measured
+neighbours at 5.4e-4 and 1.3e-3, so it is not interpolating badly between
+its cells -- the cells themselves do not describe this reference. A safety
+factor cannot fix a tenfold error without refusing, which is what safety
+10 does.
+
+This is the same finding recorded above in different clothes: (f, B_eff)
+does not determine dismissal, and `tools/hmf_tune.py` already says the
+features should be the accumulated powers at every candidate edge below
+the band, not two scalars. The deeper table is shipped because it is
+better data -- finer floor, fd=1e-4 answerable, same behaviour -- and the
+residual is a key problem, not a resolution problem.
+
 ## The table is keyed on what the measurements say matters
 
 The key used to be (n, band, U, K, snr, f, B_eff, margin), with B_eff
