@@ -122,6 +122,7 @@ the accumulation curve than one number, or be built from real references.
     python tools/hmf_tune.py --n 4096 --snr 5.0 --fd 1e-3 --trials 4000
 """
 import argparse
+import gc
 import os
 import sys
 import time
@@ -589,7 +590,8 @@ COST_PIVOT = (1024, 2, 8, 1.00)
 
 
 def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
-                             nt=16, pairs=6000, seed=11):
+                             nt=16, pairs=6000, seed=11, group=None,
+                             mem_budget=4e8):
     """Time every configuration on ONE reference, and return relative costs.
 
     This is the whole point of the restructure.  Timing each configuration
@@ -598,49 +600,104 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
     signals and ranked against each other anyway.  That is not a noisy
     comparison, it is not a comparison.
 
-    Holding the reference fixed makes the inner loop mutually comparable by
-    construction, and dividing by a pivot measured in the same loop cancels
-    everything common: clock and turbo state, contention, cache temperature,
-    allocator luck, the machine itself.  Only the configuration's relative
-    cost survives, which is the only thing selection needs -- it never
-    compares across references.
+    Configurations are swept in GROUPS, with the pivot in every one, rather
+    than all at once.  A plan holds (batch + ntemplates) * n complex64 buffers
+    -- 50 MB at n=262144 -- and holding all 48 alive came to 2.4 GB a worker,
+    77 GB across 32, which is what killed the first regeneration run.
 
-    Configurations are cycled `reps` times rather than each run to completion,
-    so slow drift spreads over all of them instead of landing on whichever
-    went last.  The pivot's own spread across those passes is reported: it is
-    the residual noise after cancellation, and says what the ratios are worth.
+    Grouping is NOT free, so the group is sized to a memory budget rather than
+    fixed: the pivot is re-measured per group, and between-group drift then
+    enters the ratio, which took the ratio CV from 0.82% to 2.48% when every
+    length was forced into groups of six.  A plan at n=4096 is 2 MB, so all 48
+    fit inside the budget and the precision is untouched; only the largest
+    lengths, where a plan is 50 MB, pay anything.
     """
     rng = np.random.default_rng(seed)
-    power = np.ascontiguousarray(power, dtype=np.float32)
-    H = np.stack([template_with_power(n, power) for _ in range(nt)])
-    plans = {}
-    for cfg in configs:
-        band, U, K, margin = cfg
-        hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=nt, snr=snr,
-                                   fd=1e-3, band=band, oversample=U, taps=K)
-        hf.set_reference(power)
-        if margin != 1.0:
-            hf._ensure().set_coarse_margin(float(margin))
-        hf.set_templates(H)
-        plans[cfg] = hf
+    H = template_with_power(n, power)
     per = int(np.clip(pairs // (nt * batch), 2, 60))
-    acc = {c: [] for c in configs}
     data = [noise((batch, n), rng) for _ in range(per)]
-    for _ in range(reps):
-        for cfg in configs:                      # cycle, do not run to completion
-            hf = plans[cfg]
-            t0 = time.perf_counter()
-            for d in data:
-                hf.set_data(d)
-                hf.run(binsize=n, threshold=snr, raw=True)
-            acc[cfg].append((time.perf_counter() - t0) / (per * nt * batch))
-    med = {c: float(np.median(v)) for c, v in acc.items()}
-    piv = med.get(COST_PIVOT)
-    if not piv:
-        piv = min(med.values())
-    pv = acc.get(COST_PIVOT) or list(acc.values())[0]
-    resid = float(max(pv) / min(pv) - 1.0)       # what the ratios are worth
-    return {c: v / piv for c, v in med.items()}, resid
+
+    cfgs = list(configs)
+    if group is None:
+        # (data + template) split buffers, re and im, plus the hierarchical
+        # band state; rounded up generously rather than modelled exactly.
+        per_plan = 3.0 * (batch + 1) * n * 4 * 2
+        group = int(max(4, min(len(cfgs), mem_budget // max(per_plan, 1))))
+    pivot = COST_PIVOT if COST_PIVOT in cfgs else cfgs[0]
+    others = [c for c in cfgs if c != pivot]
+    med, pivot_runs = {}, []
+    for i in range(0, max(len(others), 1), max(group - 1, 1)):
+        chunk = [pivot] + others[i:i + max(group - 1, 1)]
+        plans = {}
+        for cfg in chunk:
+            band, U, K, margin = cfg
+            hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr,
+                                       fd=1e-3, band=band, oversample=U, taps=K)
+            hf.set_reference(power)
+            if margin != 1.0:
+                hf._ensure().set_coarse_margin(float(margin))
+            hf.set_templates(H[None, :])
+            plans[cfg] = hf
+        acc = {c: [] for c in chunk}
+        for _ in range(reps):
+            for cfg in chunk:                 # cycle, do not run to completion
+                hf = plans[cfg]
+                t0 = time.perf_counter()
+                for d in data:
+                    hf.set_data(d)
+                    hf.run(binsize=n, threshold=snr, raw=True)
+                acc[cfg].append((time.perf_counter() - t0) / (per * nt * batch))
+        piv = float(np.median(acc[pivot]))
+        pivot_runs += acc[pivot]
+        for c in chunk:
+            if c == pivot and pivot in med:
+                continue
+            med[c] = float(np.median(acc[c])) / max(piv, 1e-30)
+        plans.clear()                         # free before the next group
+        gc.collect()
+        if not others:
+            break
+    # Standard error of the estimate, NOT max/min. A range grows with the
+    # sample count by construction -- measured, it went 3.7% to 7.5% purely by
+    # adding repeats -- so reporting one as "what the ratios are worth" claims
+    # a precision that is not being measured and gets worse the harder you
+    # look.
+    pv = np.asarray(pivot_runs, float)
+    resid = float(np.std(pv) / max(np.mean(pv), 1e-30) / np.sqrt(len(pv)))
+    return med, resid
+
+
+def cost_over_realisations(n, power, snr, configs, draws=8, reps=3, **kw):
+    """Average the cost ratios over independent NOISE REALISATIONS.
+
+    Repeating the clock on one realisation does not help: measured, the ratio
+    CV was 2.5%, 1.8%, 2.8% at 3, 8 and 20 repeats -- flat, because the
+    variation is not in the timer. It is in the data. A different noise draw
+    escalates differently, so it genuinely costs something different, and that
+    is what has to be averaged.
+
+    Averaging draws behaves exactly as independent samples should:
+
+        draws     1      2      4      8
+        CV     3.33%  2.27%  1.56%  0.82%
+        1/sqrt 3.33%  2.35%  1.66%  1.18%
+
+    Eight draws puts the ratio CV below 1%, under the 3.5% differences that
+    selection was previously unable to resolve.
+    """
+    acc, res = {}, []
+    for k in range(draws):
+        rel, r = cost_sweep_one_reference(n, power, snr, configs, reps=reps,
+                                          seed=101 + 7 * k, **kw)
+        res.append(r)
+        for c, v in rel.items():
+            acc.setdefault(c, []).append(v)
+    out = {c: float(np.mean(v)) for c, v in acc.items()}
+    # spread of the per-draw ratios, divided by sqrt(draws): the precision the
+    # averaged number actually carries
+    cv = float(np.median([np.std(v) / max(np.mean(v), 1e-30) / np.sqrt(len(v))
+                          for v in acc.values()]))
+    return out, cv
 
 
 def cost_grid(n, snr_list, bands, Ks, margins, f_list, be_fracs, reps=4,
