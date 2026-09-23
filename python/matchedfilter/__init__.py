@@ -829,6 +829,81 @@ def _snr_rows_for(snr, covered, tol=1e-6):
     return (lo, hi), "between measured thresholds %g and %g" % (lo, hi)
 
 
+def margin_for_config(power, n, snr, fd, band, oversample, taps, tuning=None):
+    """Measured coarse margin for a configuration the CALLER chose.
+
+    `choose_config` resolves a margin as part of picking a configuration, but
+    a caller who pins band/oversample/taps skips it entirely and used to get
+    no margin at all -- an implicit 1.00, with the coarse threshold left to
+    the compiled model in src/hmf_table.h.  That model's recovery factors come
+    from the reference's MEAN spectrum, which is not a bound on any single
+    realisation: a real peak is sharper, the threshold sits too high, and
+    peaks go missing.  On the FIR-search-shaped workload in the tests it cost
+    8 of 140 peaks against a 3% budget, while the same pinned configuration
+    with its measured 0.97 loses none.
+
+    Pinning is meant to bypass the CHOICE, not the evidence.  Where the table
+    has rows for the pinned configuration they are the same rows selection
+    would have used, so they are used here too.
+
+    Returns None when nothing covers it, and the caller then keeps 1.00 --
+    still the compiled model, but now only where there is genuinely no
+    measurement, which is the one place a model belongs.
+    """
+    t = _load_tuning() if tuning is None else tuning
+    tsnrs = t["snrs_at"].get(n) if t else None
+    if not tsnrs:
+        return None
+    use, _why = _snr_rows_for(snr, tsnrs)
+    if use is None:
+        return None
+    exact = [s_ for s_ in tsnrs if abs(s_ - snr) <= 1e-6]
+
+    have = set()
+    for s_ in tsnrs:
+        for r in t["by_ns"].get((n, s_), ()):
+            if (r[1], r[2], r[3]) == (band, oversample, taps):
+                have.add(s_)
+    if not have:
+        return None
+    pick = exact if (exact and exact[0] in have) else [u for u in use if u in have]
+    if not pick:
+        pick = sorted(have)
+
+    bymargin = {}
+    for s_ in pick:
+        for r in t["by_ns"].get((n, s_), ()):
+            if (r[1], r[2], r[3]) == (band, oversample, taps):
+                bymargin.setdefault(r[7], []).append((r[5], r[6], r[8]))
+    if not bymargin:
+        return None
+
+    f, be = _band_features(power, band)
+    curve = []
+    for margin, rows in bymargin.items():
+        # the same covering rule selection uses: the worst row measured at
+        # least as high in both features as this reference
+        fq = min(f, max(r[0] for r in rows))
+        bq = min(be, max(r[1] for r in rows))
+        cover = [dm for (tf, tbe, dm) in rows
+                 if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
+        if cover:
+            curve.append((margin, max(cover)))
+    if not curve:
+        return None
+    m = _margin_at_budget(curve, fd, _dismissal_floor(t))
+    if m is None:
+        # Rows exist but none meets the budget.  `choose_config` reads that as
+        # "inadmissible" and drops the configuration, which is right when
+        # there are others to pick from.  Here there are not -- the caller
+        # named this one and pinning has to keep working -- so hand back the
+        # tightest margin that was measured.  Falling through to 1.00 would
+        # give the STRICTEST budget the LOOSEST threshold, which is backwards:
+        # at fd=1e-4 that returned 1.00 where 0.90 was on the table.
+        return min(mg for mg, _ in curve)
+    return m
+
+
 class HierarchicalFilter(MatchedFilter):
     """Matched filter that correlates the low band first and refines on demand.
 
@@ -869,6 +944,8 @@ class HierarchicalFilter(MatchedFilter):
         self._sbuf = None
         self._held = {}
         self._pending_ref = None
+        self._pinned = None
+        self._margin = None
         if band is None:
             # Defer: the band should be chosen from the reference, and the
             # reference arrives after construction in every caller we have.
@@ -878,8 +955,9 @@ class HierarchicalFilter(MatchedFilter):
             self._defer = True
         else:
             self._defer = False
-            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr, self.fd,
-                                 int(band), int(oversample or 2), int(taps or 8))
+            self._pinned = (int(band), int(oversample or 2), int(taps or 8))
+            self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr,
+                                 self.fd, *self._pinned)
 
     def _ensure(self):
         """Build the plan, choosing its configuration if that was deferred.
@@ -890,6 +968,20 @@ class HierarchicalFilter(MatchedFilter):
         no rebuild and no re-ingest of templates.
         """
         if self._mf is not None:
+            # A pinned configuration still gets the measured margin, but only
+            # once the reference is here: the margin depends on the
+            # reference's in-band fraction and effective bandwidth, and the
+            # plan is built in __init__, before set_reference is called.
+            if (self._pinned is not None and self._margin is None
+                    and self._pending_ref is not None):
+                try:
+                    m = margin_for_config(self._pending_ref, self.n, self.snr,
+                                          self.fd, *self._pinned)
+                except Exception:
+                    m = None     # a missing or unreadable table is not fatal
+                self._margin = 1.0 if m is None else float(m)
+                if abs(self._margin - 1.0) > 1e-9:
+                    self._mf.set_coarse_margin(self._margin)
             return self._mf
         cfg = None
         if self._pending_ref is not None:
@@ -910,6 +1002,7 @@ class HierarchicalFilter(MatchedFilter):
                              self.snr, self.fd, int(b), int(u), int(k))
         # the coarse threshold is the strongest lever and is tuned with the rest; it is
         # read per run, so setting it here is enough
+        self._margin = float(margin)
         if abs(margin - 1.0) > 1e-9:
             self._mf.set_coarse_margin(float(margin))
         if self._pending_ref is not None:

@@ -448,20 +448,56 @@ def test_run_series_grouping_is_invisible():
         np.testing.assert_array_equal(gv, bv)
 
 
-@pytest.mark.xfail(
-    reason="known, and scoped to the HAND-SPECIFIED path: pinning band/taps "
-           "bypasses selection, so the coarse threshold falls back to the compiled model "
-           "in src/hmf_table.h, whose g and graw are measured from the "
-           "reference's MEAN frequency series and are not a bound on an "
-           "individual realisation. Real peaks are sharper than the mean, the "
-           "margin sits too high, and this omits ~8/140 against a 3% budget. "
-           "The same workload PASSES when the library chooses -- see "
-           "test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not "
-           "below, which is what makes this a statement about the pinned path "
-           "rather than about the method. See docs/hierarchical.md.",
-    strict=False)
 def test_ratio_filter_shaped_workload():
+    """The pinned path meets the budget too, now that it reads the table.
+
+    This was xfail for a long time, and correctly: pinning band/taps skipped
+    selection, which is also where the coarse margin was resolved, so the
+    threshold came wholly from the compiled model in src/hmf_table.h.  That
+    model's recovery factors are measured from the reference's MEAN spectrum
+    and are not a bound on any single realisation -- real peaks are sharper,
+    the threshold sat too high, and this omitted 8 of 140 against a 3%
+    budget.  Pinning now takes the margin from the same measured rows
+    selection would have used; here that is 0.97, and nothing is lost.
+    """
     _ratio_filter_shaped_workload(pin=True)
+
+
+def test_pinning_reads_the_margin_from_the_table():
+    """Pinning bypasses the CHOICE, not the evidence.
+
+    The regression this guards is silent in every other test: an implicit
+    1.00 still runs, still reports peaks, and only drops the marginal ones.
+    """
+    n = 4096
+    k = np.arange(1, n // 2)
+    power = np.zeros(n, np.float32)
+    power[1:n // 2] = k ** (-7 / 3.0) / ((0.015 * n / k) ** 4 + 1.0)
+    power /= power.sum()
+
+    # a tighter budget must not give a looser threshold
+    ms = [mf.margin_for_config(power, n, 5.0, fd, 512, 2, 8)
+          for fd in (1e-2, 1e-3)]
+    assert all(m is not None and 0.5 < m <= 1.0 for m in ms), ms
+    assert ms[1] < ms[0], ms
+
+    # below what the table resolves it saturates at the tightest measured
+    # margin rather than falling back to 1.00, which would hand the
+    # strictest budget the loosest threshold
+    assert mf.margin_for_config(power, n, 5.0, 1e-9, 512, 2, 8) == \
+        pytest.approx(0.90)
+
+    # a configuration the table does not cover gets nothing, and the caller
+    # keeps the compiled model -- the one place a model belongs
+    assert mf.margin_for_config(power, n, 5.0, 1e-3, 333, 2, 8) is None
+
+    # and the plan actually applies it
+    hf = mf.HierarchicalFilter(n, 1, 2, snr=5.0, fd=1e-3,
+                               band=512, oversample=2, taps=8)
+    hf.set_reference(power)
+    hf._ensure()
+    assert hf._margin == pytest.approx(
+        mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8))
 
 
 def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():
@@ -470,10 +506,11 @@ def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():
     This is the whole claim of the tuning tables in one assertion: given only
     the reference and the budget, selection finds a configuration that meets
     the budget on a workload where a hand-picked band does not.
-    `test_ratio_filter_shaped_workload` above is the pinned half of the pair
-    and is xfail; if this one ever starts failing too, the tables have gone
-    stale against the code and regenerating them is the fix, not loosening
-    the bound.
+    `test_ratio_filter_shaped_workload` above is the pinned half of the pair.
+    It was xfail until pinning learned to read the same measured rows; both
+    halves now pass, and they pass for the same reason, which is the point.
+    If either starts failing the tables have gone stale against the code and
+    regenerating them is the fix, not loosening the bound.
     """
     _ratio_filter_shaped_workload(pin=False)
 
@@ -589,18 +626,20 @@ def _ratio_filter_shaped_workload(pin=True):
 def test_autotuned_calibration_meets_the_budget_where_the_default_does_not():
     """`MF_GCAL=1` is what makes the false-dismissal budget hold.
 
-    `test_ratio_filter_shaped_workload` above is xfail for exactly one reason:
-    g and graw are derived from a noiseless autocorrelation of the reference's
-    MEAN spectrum, which is not a bound on any individual realisation, so the
-    margin sits too high and the omission rate runs ~5% against a 1% budget.
-    The autotune re-measures both over realisations and the budget then holds.
+    g and graw are derived from a noiseless autocorrelation of the
+    reference's MEAN spectrum, which is not a bound on any individual
+    realisation, so the modelled threshold sits too high.  That is what made
+    `test_ratio_filter_shaped_workload` above xfail while the pinned path had
+    nothing but the model: 8 of 140 omitted against a 3% budget.  This
+    calibration re-measures both over realisations and the budget then holds.
 
-    Pinning that here does two things. It stops the autotune silently ceasing
-    to work -- nothing else in the suite exercises it. And it makes the xfail
-    above a statement about the DEFAULT rather than about the method: the
-    calibration is capable of meeting the budget, it is simply not on, because
-    it also over-corrects and costs ~9% more than tuning the coarse threshold by hand
-    (14.43 against 13.29 ms/segment on the captures, both at zero loss).
+    The measured margin now fixes the same workload more cheaply, so this is
+    no longer the only route to it -- but the calibration is still the only
+    thing that helps where the tables have no row, and nothing else in the
+    suite exercises it, so it is pinned here to stop it rotting.  It is off
+    by default because it over-corrects: ~9% more than tuning the coarse
+    threshold by hand, 14.43 against 13.29 ms/segment on the captures, both
+    at zero loss.
     """
     old = os.environ.get("MF_GCAL")
     os.environ["MF_GCAL"] = "1"
