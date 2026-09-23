@@ -302,7 +302,27 @@ def _load_tuning(path=None):
                 cost.setdefault((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
                                  float(f[5]), float(f[8])), []).append(
                                      (float(f[6]), float(f[7]), float(f[9])))
-    t = {"fdr": fdr, "cost": cost, "meta": meta, "paths": paths}
+    # Index the accuracy rows by (n, snr) once, here, instead of scanning all
+    # of them on every selection. choose_config used to walk the whole list,
+    # which cost 4.9 ms once the tables covered eight transform lengths --
+    # 10704 rows. pycbc builds a plan per segment and each one selects, so on
+    # a 13-segment run that was 64 ms of Python against a 186 ms kernel: a 28%
+    # slowdown that arrived purely from measuring MORE, with no code change and
+    # the same configuration chosen.
+    by_ns = {}
+    for r in fdr:
+        by_ns.setdefault((r[0], r[4]), []).append(r)
+    snrs_at = {}
+    for (rn, rs) in by_ns:
+        snrs_at.setdefault(rn, []).append(rs)
+    for rn in snrs_at:
+        snrs_at[rn] = sorted(snrs_at[rn])
+    cost_cfg = {}
+    for (kn, kb, kU, kK, s, km) in cost:
+        cost_cfg.setdefault((kn, kb, kU, kK, km), []).append(s)
+    t = {"fdr": fdr, "cost": cost, "meta": meta, "paths": paths,
+         "by_ns": by_ns, "snrs_at": snrs_at,
+         "cost_cfg": {k: sorted(v) for k, v in cost_cfg.items()}}
     if path is None or _TUNING is None:
         _TUNING = t
     return t
@@ -344,8 +364,7 @@ def _cost_snrs(t, n, band, U, K, margin, want):
     rather than refusing. A slightly mispriced ranking is a performance
     question; no answer at all is a correctness one.
     """
-    have = sorted({s for (kn, kb, kU, kK, s, km) in t["cost"]
-                   if (kn, kb, kU, kK, km) == (n, band, U, K, margin)})
+    have = t["cost_cfg"].get((n, band, U, K, margin), ())
     if not have:
         return ()
     exact = [w for w in want if any(abs(w - h) < 1e-9 for h in have)]
@@ -391,7 +410,7 @@ def choose_config(power, n, snr, fd, tuning=None):
     answer in the budget's name.
     """
     t = _load_tuning() if tuning is None else tuning
-    tsnrs = sorted({r[4] for r in t["fdr"] if r[0] == n})
+    tsnrs = t["snrs_at"].get(n)
     if not tsnrs:
         return None
     use, why = _snr_rows_for(snr, tsnrs)
@@ -399,8 +418,9 @@ def choose_config(power, n, snr, fd, tuning=None):
         return None
 
     feats, byconf = {}, {}
-    for (tn, band, U, K, tsnr, tf, tbe, margin, dm) in t["fdr"]:
-        if tn != n or tsnr not in use or band >= n:
+    rows = [r for s_ in use for r in t["by_ns"].get((n, s_), ())]
+    for (tn, band, U, K, tsnr, tf, tbe, margin, dm) in rows:
+        if band >= n:
             continue
         if band not in feats:
             feats[band] = _band_features(power, band)

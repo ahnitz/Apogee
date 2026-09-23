@@ -436,7 +436,7 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     hf.set_data(d)
     hf.set_templates(h)
 
-    def per_call(fn, floor=0.02):
+    def per_call(fn, floor=0.05):
         """Seconds per call, repeating until the timer has something to bite on.
 
         At n=1024 one call is tens of microseconds, so a single perf_counter
@@ -469,10 +469,27 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     # over all lags against 6.2% over a realistic window.
     ws = int(0.2 * n) & ~15
     we = ws + (int(0.6 * n) & ~15)
-    flat_run = lambda: flat.run(binsize=n, threshold=snr, window=(ws, we))
-    hier_run = lambda: hf.run(binsize=n, threshold=snr, window=(ws, we))
+    # One reported peak per 2048 lags, not one per pair. A search clusters at
+    # some fixed time resolution, not over the whole block, and the two are
+    # different amounts of output work: binsize=n reports one record per pair
+    # where this reports ceil(window/2048). Where the window is shorter than
+    # 2048 -- the small lengths -- it degenerates to one bin, which is the
+    # same thing the old code did, so nothing regresses at those sizes.
+    bs = min(2048, we - ws)
+    flat_run = lambda: flat.run(binsize=bs, threshold=snr, window=(ws, we))
+    hier_run = lambda: hf.run(binsize=bs, threshold=snr, window=(ws, we))
+    # Force the plan to exist before any clock starts. Construction is
+    # deferred until first use so the configuration can see the reference, and
+    # that first use runs choose_config -- table lookup, not filtering. It was
+    # already outside the timed region because per_call warms up first, but
+    # relying on that is fragile and it is the kind of thing that silently
+    # becomes 28% of a measurement when the tables grow.
+    hf._ensure()
+    flat_run()
+    hier_run()
+
     tfs, ths, ratios = [], [], []
-    for _ in range(max(3, reps)):
+    for _ in range(max(5, reps)):
         a = per_call(flat_run)
         b = per_call(hier_run)
         tfs.append(a)
