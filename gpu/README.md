@@ -187,3 +187,62 @@ Three things to try, in the order they look worth it:
    perfectly at the cost of the round trip the current design avoids --
    which of those wins is a measurement, and it will depend on escalation
    rate.
+
+## Register-resident four-step, and what it did not buy
+
+`fourstep.slang`. The CPU's own decomposition, against shared memory
+instead of cache: N = N1*N2, each thread holds a length-16 sub-transform
+entirely in registers and does it with no barrier, the two halves meeting
+through a single transpose.
+
+    256-point coarse transform, 8192 of them
+      radix-4 Stockham, four LDS stages     0.180 ms
+      register four-step, one transpose     0.080 ms     2.25x
+
+Correct to 3.4e-07, which is float32.
+
+**It did not make the fused kernel faster.** Dropped into the
+tile-fused hierarchical kernel it went 1.96x -> 1.86x against flat. The
+transform is faster; the kernel is not, because a single kernel makes both
+phases share one register and LDS budget:
+
+    separate bB buffer          40 KB LDS   phase 1 cost 0.216 ms
+    bB folded into bA           32 KB       still 0.216 ms
+    LDS reduction -> shuffles   32 KB       0.202 ms
+    ... against 0.080 ms for the same transform in a kernel of its own
+
+Phase 2's full-length Stockham forces registers to be allocated for it
+whether or not any pair escalates, and that is what the coarse pass pays.
+
+So the two-kernel form wins after all, `two_kernel.py`:
+
+    flat                       0.417 ms
+    coarse (register)          0.129 ms
+    coarse + refine            0.184 ms    2.27x, 0 missed, 0 invented
+
+against the 1.86x of the fused version. Fusing avoids a worklist round
+trip through global memory and costs more than the round trip does,
+because resource budgets do not separate the way work does.
+
+## Against the CPU's speedup, which is the real bar
+
+The CPU's hierarchical filter reaches 6.03x over flat in pycbc at 9.4%
+escalation. The GPU reaches 2.27x. That is not a 3x deficit -- the two are
+measured in different regimes, and the ideal differs with them:
+
+    case              band/n   escal.   ideal    measured   % of ideal
+    CPU pycbc n=4096    1/16     9.4%   7.37x     6.03x        82%
+    GPU spike n=1024    1/4      6.8%   3.73x     2.27x        61%
+
+Both are instruction-bound, so the same benefit should be available. Two
+things stand between here and there:
+
+1. **The regime.** Matching the CPU's SPEEDUP means matching its band/n
+   ratio, which means n=4096, where the ideal is 9.12x. That needs the
+   four-step at full length too -- which LDS forces anyway, since a
+   double-buffered 4096-point transform wants the entire 64 KB.
+2. **The remaining 39%.** The coarse pass alone is 0.129 ms here against
+   0.080 standalone, so the worklist and the second dispatch cost about
+   60%. Persistent workgroups pulling from a queue, or an indirect
+   dispatch sized to the actual survivor count rather than the whole
+   batch, are the obvious next things.
