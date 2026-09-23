@@ -25,7 +25,14 @@ static const uint R   = 16;
 static const uint WG  = NLEN / 16;        // threads per transform
 static const float PI = 3.14159265358979f;
 
-groupshared float2 sh[NLEN];
+//: The exchange is staged in chunks so the threadgroup array is a fixed
+//: 8 KB at every length, rather than sized to the transform -- which was
+//: 128 KB at n=16384, over every device's limit, and already past Apple's
+//: 32 KB at n=4096. CH registers of every thread are in flight at once.
+static const uint CAP = 1024;                  // complex, = 8 KB
+static const uint CH  = (CAP / WG > 0) ? (CAP / WG) : 1;
+groupshared float2 stg[CH * WG];
+static uint _tid;
 
 float2 cmul(float2 a, float2 b) { return float2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
 float2 cmulConj(float2 a, float2 b) { return float2(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
@@ -99,22 +106,36 @@ void innermost(inout float2 r[16])
     else                 { [unroll] for (uint b = 0; b < 8; ++b) dft2(r, b*2); }
 }
 
-// Scatter this level's result, then regather for the next one.
+// Exchange in chunks. Staging CH registers of every thread at a time,
+// a reader works out for each value it wants which register of which
+// thread wrote it -- the scatter formula inverts -- and takes it when
+// that register falls in the current chunk.
 //
-// These are separate because the indices change between them: the write
-// uses the CURRENT block and lane, the read the NEXT level's. Doing both
-// with one set -- which the first version did -- gathers from the wrong
-// block and quietly returns a wrong peak.
-void scatter(inout float2 r[16], uint blk, uint lane, uint span, uint len)
+//   scatter wrote   p = blk*len + i*span + lane
+//   so from p:      blk = p/len, i = (p%len)/span, lane = (p%len)%span
+//                   writer thread = blk*span + lane
+void exchange(inout float2 r[16], uint want[16], uint lgLen, uint lgSpan)
 {
-    GroupMemoryBarrierWithGroupSync();
-    [unroll] for (uint i = 0; i < R; ++i) sh[blk*len + i*span + lane] = r[i];
-    GroupMemoryBarrierWithGroupSync();
-}
-
-void gather(inout float2 r[16], uint blk, uint lane, uint span, uint len)
-{
-    [unroll] for (uint n2 = 0; n2 < R; ++n2) r[n2] = sh[blk*len + lane + span*n2];
+    // Every divisor here is a power of two, so these are shifts and masks.
+    // Written as / and % they were integer divisions -- 16 of them per
+    // thread per chunk -- and cost n=4096 a third of its throughput
+    // against the hand-specialised kernel.
+    float2 out[16];
+    uint spanMask = (1u << lgSpan) - 1u;
+    uint lenMask  = (1u << lgLen) - 1u;
+    [unroll] for (uint c = 0; c < R / CH; ++c) {
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint j = 0; j < CH; ++j) stg[j * WG + _tid] = r[c * CH + j];
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint d = 0; d < R; ++d) {
+            uint p = want[d];
+            uint b = p >> lgLen, rem = p & lenMask;
+            uint i = rem >> lgSpan, ln = rem & spanMask;
+            if (i >= c * CH && i < (c + 1) * CH)
+                out[d] = stg[(i - c * CH) * WG + (b << lgSpan) + ln];
+        }
+    }
+    [unroll] for (uint d = 0; d < R; ++d) r[d] = out[d];
 }
 
 [shader("compute")][numthreads(WG,1,1)]
@@ -123,6 +144,7 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 RWStructuredBuffer<float> peakMag, uniform uint ntmpl)
 {
     uint pair = gid.x, tid = lid.x;
+    _tid = tid;
     uint d = pair / ntmpl, t = pair % ntmpl;
     float2 r[16];
 
@@ -133,46 +155,43 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     }
 
     uint TB = WG, len = N, blk = 0, lane = tid;
+    uint lgLen = firstbithigh(N), lgTB = firstbithigh(WG);
+    uint want[16];
     while (true) {
         dft16(r);
         [unroll] for (uint k2 = 0; k2 < R; ++k2) {
             float ang = 2.0f * PI * float(lane * k2) / float(len);
             r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
         }
-        // The scatter happens at EVERY level including the last. After
-        // the dft16 a thread holds A[lane][k2] for its own lane -- the
-        // next DFT is over lane, which lives ACROSS threads, so skipping
-        // the exchange at the innermost level and transforming a thread's
-        // own registers transforms the wrong axis. It returned a peak
-        // about 15% low and nothing else looked wrong.
-        scatter(r, blk, lane, TB, len);
         if (TB <= R) {
-            // block holds [k2][n1], k2-major in runs of TB; this thread
-            // takes 16/TB whole runs
             uint per = R / TB;
-            [unroll] for (uint j = 0; j < R; ++j) {
-                uint jj = j / TB, mm = j % TB;
-                if (jj < per) r[j] = sh[blk*len + (lane*per + jj)*TB + mm];
+            [unroll] for (uint d = 0; d < R; ++d) {
+                uint j = d / TB, m = d % TB;
+                want[d] = blk * len + (lane * per + j) * TB + m;
             }
+            exchange(r, want, lgLen, lgTB);
             break;
         }
-        len = TB; TB = TB / R;                    // next level's shape
-        blk = tid / TB; lane = tid % TB;
-        gather(r, blk, lane, TB, len);
+        uint len2 = TB, TB2 = TB / R;
+        uint blk2 = tid / TB2, lane2 = tid % TB2;
+        [unroll] for (uint d = 0; d < R; ++d)
+            want[d] = blk2 * len2 + lane2 + TB2 * d;
+        exchange(r, want, lgLen, lgTB);
+        len = len2; TB = TB2; blk = blk2; lane = lane2;
+        lgLen = firstbithigh(len); lgTB = firstbithigh(TB);
     }
-    // innermost: 16/TB whole blocks live in this thread's registers
     innermost(r);
 
     float best = -1.0f;
     [unroll] for (uint i = 0; i < R; ++i) best = max(best, r[i].x*r[i].x + r[i].y*r[i].y);
     best = WaveActiveMax(best);
     GroupMemoryBarrierWithGroupSync();
-    if (WaveGetLaneIndex() == 0) sh[tid / WaveGetLaneCount()].x = best;
+    if (WaveGetLaneIndex() == 0) stg[tid / WaveGetLaneCount()].x = best;
     GroupMemoryBarrierWithGroupSync();
     if (tid == 0) {
         uint nw = (WG + WaveGetLaneCount() - 1) / WaveGetLaneCount();
-        float m = sh[0].x;
-        for (uint w = 1; w < nw; ++w) m = max(m, sh[w].x);
+        float m = stg[0].x;
+        for (uint w = 1; w < nw; ++w) m = max(m, stg[w].x);
         peakMag[pair] = sqrt(m);
     }
 }

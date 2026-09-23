@@ -580,7 +580,37 @@ transforms the wrong axis: the peak came out about 15% low and nothing
 else looked wrong. Found by simulating the shader's index arithmetic in
 numpy and comparing to the reference, not on the device.
 
-## What n=16384 needs
+## Tier B, complete: a fixed 8 KB at every length
+
+The threadgroup array is no longer sized to the transform. CH registers of
+every thread are staged at a time, with CH = 1024/WG, so the buffer is
+1024 complex -- 8 KB -- whatever the length. A reader inverts the scatter
+formula to find which register of which thread holds each value it wants,
+and takes it when that register is in the current chunk.
+
+    n        WG     CH    buffer    max rel err   ms      GFLOP/s
+    1024      64    16     8 KB      3.78e-07    0.032       924
+    2048     128     8     8 KB      3.42e-07    0.045      1424
+    4096     256     4     8 KB      3.51e-07    0.092      1499
+    8192     512     2     8 KB      3.47e-07    0.326       914
+    16384   1024     1     8 KB      3.30e-07    0.725       880
+
+Every length a workgroup can carry, correct to float32, under Apple's
+32 KB as well as everyone else's 64.
+
+The index arithmetic was written with / and % at first, which are integer
+divisions -- sixteen per thread per chunk. Every divisor is a power of
+two, so they are shifts and masks now. That bought n=16384 about 20%.
+
+**Generality costs about a third.** The hand-specialised 4096 kernel
+reaches 2385 GFLOP/s where this one reaches 1499. The difference is the
+per-value index computation the general kernel has to do and the
+specialised one folds at compile time. Both are worth keeping: the
+specialised path for the length the search actually uses, the general one
+for everything else. Which to run is a lookup, and belongs in the device
+table alongside the tile shape.
+
+## What the earlier n=16384 failure needed
 
     n        sh[] declared
     1024       8 KB     fine everywhere
