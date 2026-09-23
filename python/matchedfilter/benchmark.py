@@ -245,18 +245,38 @@ def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
     return best / pairs * 1e6, refs, ok
 
 
-def _inspiral_power(n, frac=0.85, fmax_frac=0.125):
-    """An f^(-7/3) spectrum scaled so `frac` of the power sits below n*fmax_frac.
+def _inspiral_power(n, frac=0.85, fmax_frac=0.125, knee_frac=0.019):
+    """Expected matched-filter OUTPUT power, as set_reference wants it.
 
-    Fixing the *fraction* rather than the exponent is what keeps the sizes
-    comparable: a fixed exponent puts 99% of the power below n/8 at n=2^20 and
-    60% at n=2^11, so the lengths would be measuring different problems.
+    This is |h(f)|^2 / S(f), NOT |h(f)|^2. The distinction is the one the
+    documentation warns callers about, and this function got it wrong: it
+    returned the raw f^(-7/3) signal power, which peaks in bin 1 and puts half
+    its power there. Measured on that, the effective bandwidth at band 256 was
+    1.9 bins against 141 for a real captured reference -- 74x too narrow.
+
+    Effective bandwidth is what sets how sharp the correlation peak is, and a
+    2-bin reference gives a maximally broad peak that the coarse lag grid
+    catches for free. So the hierarchical benchmark was measuring a best case
+    that no real search sees: it selected band 256 at snr 6 and reported 13x,
+    where the captured reference needs band 512 there.
+
+    The noise wall is what fixes it. S(f) rises steeply below the seismic
+    knee, so the output power peaks inside the band rather than at DC. With
+    the knee at 1.9% of the band this reproduces a real reference closely --
+    B_eff 177 against 141 at band 256, peak bin 72 against 78, half the power
+    below bin 108 against 122.
+
+    `frac` still fixes how much power sits below `fmax_frac`, because a fixed
+    exponent alone would put 99% below n/8 at n=2^20 and 60% at n=2^11, so the
+    lengths would be measuring different problems.
     """
     k = np.arange(1, n // 2, dtype=np.float64)
-    p = k ** (-7.0 / 3.0)
+    knee = max(2.0, knee_frac * n)
+    p = k ** (-7.0 / 3.0) / ((knee / k) ** 4 + 1.0)
     cut = max(2, int(n * fmax_frac))
     tail = p[cut - 1:]
-    tail *= (p[:cut - 1].sum() * (1 - frac) / frac) / tail.sum()
+    if tail.size and tail.sum() > 0:
+        tail *= (p[:cut - 1].sum() * (1 - frac) / frac) / tail.sum()
     out = np.zeros(n, np.float32)
     out[1:n // 2] = (p / p.sum()).astype(np.float32)
     return out
@@ -589,7 +609,7 @@ def main(argv=None):
         print(f"  {'n':>8} {'snr':>5} {'flat':>11} {'hierarchical':>11} "
               f"{'speedup':>9} {'triggered':>10} {'chosen':>14}")
         for n in a.n:
-            for snr in (5.0, 5.5, 6.0, 6.5):
+            for snr in (5.0, 5.5, 5.75, 6.0, 6.5):
                 try:
                     tf, th, rate, cfg, speed = _bench_hier(
                         n, a.data, a.templates, snr, a.fd, a.reps)

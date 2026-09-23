@@ -105,4 +105,6 @@ def test_page_builds_from_pre_rename_artifacts():
                              "hier_ms": 1.0, "speedup": 2.0,
                              "trigger_rate": 0.2}]}
     pages = build_report.build([run], root=ROOT)
-    assert "20.0%" in pages["hierarchical-benchmarks.html"]
+    # the escalation table now reports one row per (n, snr), deduplicated
+    # across runners, so look for the rate rather than a runner name
+    assert "20.00%" in pages["hierarchical-benchmarks.html"]

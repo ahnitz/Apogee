@@ -9,6 +9,7 @@ anything else being fetched.
 """
 import argparse
 import glob
+import collections
 import html
 import json
 import os
@@ -577,10 +578,12 @@ def workload_note(runs, kind):
                     % (d, t, d * t) for d, t in shapes)
     return ('<div class="note"><strong>Workload.</strong> %s, single-threaded, '
             'complex64 throughout. Batch shape matters: filtering D segments '
-            'against T templates together is up to 1.94x faster than the same '
-            'pairs one at a time, so a per-pair figure is only meaningful '
-            'alongside the shape it was measured at. It cannot change any '
-            'reported peak.</div>' % txt)
+            'against T templates together is faster than the same pairs one '
+            'at a time -- a d-by-t tile reads d+t operands to produce d*t '
+            'products, so squarer tiles move less memory per product -- and a '
+            'per-pair figure is only meaningful alongside the shape it was '
+            'measured at. Choosing that shape is not yet automatic; see the '
+            'design notes. It cannot change any reported peak.</div>' % txt)
 
 
 def details(summary, body):
@@ -695,32 +698,55 @@ def bench_speedup(runs, names):
              'pass and a tighter margin. A flat profile means the choice is not '
              'responding to the threshold.</div>')
     if gaps:
+        # One fact per (n, snr), not one per runner. Coverage is a property of
+        # the shipped tables, so every runner reports the same gaps -- listing
+        # them per runner turned 12 facts into 120 rows of table on the page.
+        cells = sorted({(h["n"], h["snr"]) for _, h in gaps})
+        per_runner = collections.Counter(l for l, _ in gaps)
+        same = len(set(per_runner.values())) == 1
         o.append('<div class="note warn"><strong>Not tuned.</strong> '
                  'The tuning tables are measured, and outside their coverage '
                  'the library refuses rather than guessing a configuration it '
-                 'cannot stand behind. These combinations reported no result '
-                 'for that reason, which is a gap in the shipped tables and '
-                 'not a failure of the build. Coverage extends along the '
-                 'threshold axis -- anything at or above the lowest measured '
-                 'threshold is answered conservatively -- but not across '
-                 'transform lengths, where nothing measured yet bounds the '
-                 'answer.</div>')
-        o.append(table(["runner", "n", "snr"],
-                       [[html.escape(l), h["n"], "%g" % h["snr"]]
-                        for l, h in gaps]))
+                 'cannot stand behind. %d combination%s reported no result for '
+                 'that reason%s, which is a gap in the shipped tables and not '
+                 'a failure of the build. Coverage extends along the threshold '
+                 'axis -- anything at or above the lowest measured threshold '
+                 'is answered conservatively -- but not across transform '
+                 'lengths, where nothing measured yet bounds the answer.</div>'
+                 % (len(cells), "" if len(cells) == 1 else "s",
+                    ", identically on every runner" if same else ""))
+        o.append('<p class="lede" style="font-size:14px">Uncovered: %s.</p>'
+                 % ", ".join("n=%d at snr %g" % c for c in cells))
 
-    # .get, not [...]: a row that reported no result carries neither a rate
-    # nor a speedup, and indexing it crashed the page build in CI.
+    # Same treatment: the escalation rate is a property of the algorithm and
+    # the data, not the machine, so it is identical on every runner. That it
+    # IS identical is the useful signal; ten copies of it are not.
     fired = [(r["host"]["label"], h) for r in runs for h in r.get("hierarchical", [])
              if _rate(h) > 0]
     if fired:
-        o.append('<div class="note warn"><strong>Where the coarse pass escalated on noise.</strong> '
-                 'It should rule every pair out on pure noise; where it does not, the '
-                 'work is wasted rather than wrong, and the speedup falls.</div>')
-        o.append(table(["runner", "n", "snr", "speedup", "triggered"],
-                       [[html.escape(l), h["n"], "%g" % h["snr"],
-                         "%.2fx" % h["speedup"], "%.1f%%" % (_rate(h) * 100)]
-                        for l, h in fired]))
+        by = collections.defaultdict(list)
+        for lab, h in fired:
+            by[(h["n"], h["snr"])].append(_rate(h))
+        rows = [[ "%d" % n, "%g" % snr, "%.2f%%" % (100 * min(v)),
+                  ("identical" if max(v) - min(v) < 1e-9
+                   else "%.2f-%.2f%%" % (100 * min(v), 100 * max(v))),
+                  "%d" % len(v)]
+                for (n, snr), v in sorted(by.items())]
+        o.append('<div class="note warn"><strong>Where the coarse pass '
+                 'escalated on noise.</strong> On pure noise almost nothing '
+                 'should reach the full correlation; where some does, the work '
+                 'is wasted rather than wrong and the speedup falls. This rate '
+                 'is set by the algorithm and the data, so agreement across '
+                 'runners is the check -- a machine-dependent rate would mean '
+                 'something was wrong.</div>')
+        o.append(table(["n", "snr", "escalated", "across runners", "runners"],
+                       rows))
+        o.append('<div class="note">This is the only rate reported here, and '
+                 'it is <em>not</em> what most of the variation rides on. '
+                 'Between snr 5.0 and 5.5 at n=4096 the configuration is the '
+                 'same band and the time falls by 28%, while this rate moves '
+                 'by 0.78 points -- worth about a fortieth of that. The rest '
+                 'is the odd coarse pass, whose rate is not yet exposed.</div>')
     return "".join(o)
 
 
@@ -830,17 +856,37 @@ def hier_benchmarks_page(runs):
         return "<p>No benchmark results were available when this page was built.</p>"
     names = [r["host"]["label"] for r in runs]
     hier = [h for r in runs for h in r.get("hierarchical", []) if "speedup" in h]
-    best = max((h["speedup"] for h in hier), default=0)
-    med = sorted(h["speedup"] for h in hier)
+    # Headline against ONE runner, named. A speedup is a ratio of two
+    # machine-dependent times and the two do not scale together: on the arm64
+    # runner the flat filter is 4.1x the x86 one while the coarse pass is only
+    # 2.7x, so the same algorithm reads 18.8x there against 12.2x on x86. A
+    # maximum across runners reports whichever machine has the weakest flat
+    # filter, which is not a property of this library.
+    ref = next((r for r in runs if r["host"]["label"] == "linux-x86_64"), runs[0])
+    rh = [h for h in ref.get("hierarchical", []) if "speedup" in h]
+    best = max((h["speedup"] for h in rh), default=0)
+    med = sorted(h["speedup"] for h in rh)
+    refname = ref["host"]["label"]
     o = ['<p>Every number here is a <strong>ratio against the flat filter on '
          'the same data</strong>, not a throughput. For what one correlation '
          'costs in absolute terms, see '
          '<a href="benchmarks.html">the matched filter page</a>.</p>',
          '<div class="cards">'
-         '<div class="card"><div class="k">%.1fx</div><div class="l">best speedup</div></div>'
-         '<div class="card"><div class="k">%.1fx</div><div class="l">median speedup</div></div>'
-         '<div class="card"><div class="k">%d</div><div class="l">configurations measured</div></div>'
-         '</div>' % (best, med[len(med) // 2] if med else 0, len(hier)),
+         '<div class="card"><div class="k">%.1fx</div>'
+         '<div class="l">best speedup on %s</div></div>'
+         '<div class="card"><div class="k">%.1fx</div>'
+         '<div class="l">median on %s</div></div>'
+         '<div class="card"><div class="k">%d</div>'
+         '<div class="l">configurations, %d runners</div></div>'
+         '</div>' % (best, html.escape(refname),
+                     med[len(med) // 2] if med else 0, html.escape(refname),
+                     len(hier), len(runs)),
+         '<div class="note">Headlined against one runner on purpose. Compare '
+         'speedups within a runner, never between: the flat filter and the '
+         'coarse pass do not scale together across machines, so the arm64 '
+         'runner reads 18.8x where x86 reads 12.2x for the same algorithm, '
+         'and a maximum across runners would simply find the weakest flat '
+         'filter.</div>',
          workload_note(runs, "hierarchical"),
          '<div class="note">Timed interleaved: within each repeat the flat '
          'and hierarchical filters run back to back on the same data, and the '
