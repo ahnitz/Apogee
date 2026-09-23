@@ -527,15 +527,39 @@ def choose_config(power, n, snr, fd, tuning=None):
     # Adding snr 5.75 for newly measured bands alone did exactly that -- at
     # n=2048 it forced band 1024 where 5.5 and 6.0 both choose 512, and the
     # speedup fell from 3.60x to 2.07x.
-    tsnrs = _complete_snrs(t, n)
+    tsnrs = t["snrs_at"].get(n)
     if not tsnrs:
         return None
     use, why = _snr_rows_for(snr, tsnrs)
     if use is None:
         return None
 
+    # Resolve the threshold PER CONFIGURATION, not once for the whole table.
+    #
+    # Coverage is ragged: at n=4096 snr 6.5 was measured for bands 256, 512
+    # and 1024 but not 2048. Discarding the whole threshold for that -- which
+    # an earlier "complete coverage only" guard did -- fell back to the snr
+    # 6.0 rows, a strictly harder problem, and handed every band a margin near
+    # 0.907 when 0.976 was admissible. It cost the n=4096 snr 6.5 point 9.01x
+    # against 5.66x.
+    #
+    # So each configuration uses its own rows at the requested threshold when
+    # it has them, and only falls back to the conservative bracketing rule
+    # where it does not. A band measured at 6.5 is judged at 6.5; one that is
+    # not is judged at 6.0 and priced accordingly.
     feats, byconf = {}, {}
-    rows = [r for s_ in use for r in t["by_ns"].get((n, s_), ())]
+    exact = [s_ for s_ in tsnrs if abs(s_ - snr) <= 1e-6]
+    at_snr = {}
+    for s_ in tsnrs:
+        for r in t["by_ns"].get((n, s_), ()):
+            at_snr.setdefault((r[1], r[2], r[3], r[7]), set()).add(s_)
+    rows = []
+    for cfg, have in at_snr.items():
+        pick = exact if (exact and exact[0] in have) else [u for u in use if u in have]
+        if not pick:
+            pick = sorted(have)
+        rows += [r for s_ in pick for r in t["by_ns"].get((n, s_), ())
+                 if (r[1], r[2], r[3], r[7]) == cfg]
     for (tn, band, U, K, tsnr, tf, tbe, margin, dm) in rows:
         if band >= n:
             continue
