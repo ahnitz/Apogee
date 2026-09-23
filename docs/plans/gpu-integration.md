@@ -42,7 +42,7 @@ rejected in favour of one that does not.
 requirement the library refuses and says which, rather than running
 something it cannot vouch for.
 
-## 1b. One API, and constants fixed at pipeline creation
+## 1b. Native targets, constants fixed at pipeline creation
 
 **Specialization constants, not a blob per configuration.** Slang's
 `[SpecializationConstant]` survives to both targets that matter:
@@ -58,19 +58,35 @@ ONE embedded blob. CUDA has no equivalent and would need a variant per
 configuration, which is free there because the driver JITs PTX anyway.
 (HLSL rejects them for an unrelated Slang reason; we do not target it.)
 
-**Vulkan only, to start.** Vulkan is native on AMD, NVIDIA, Intel and
-Android, and reaches Apple through MoltenVK. Everything these kernels use
--- storage buffers, workgroup memory, barriers, subgroup ops,
-specialization constants -- maps onto Metal, so the translation should
-carry it. That buys one RHI, one blob format, one code path and one set of
-bugs, against a vendored MoltenVK dylib in the macOS wheel and Apple
-performance going through a translation layer.
+**Native targets, not a translation layer.** Vulkan covers AMD, NVIDIA,
+Intel and Android natively. Apple has no Vulkan driver, so the choice
+there is MoltenVK -- a Vulkan-to-Metal translation layer -- or Slang's
+Metal output. It is Slang's Metal output.
 
-This is a cheap bet precisely because the Slang source already compiles to
-native Metal and CUDA, verified. If Apple through MoltenVK disappoints
-when it can be measured, moving that platform to native Metal is a build
-change rather than a rewrite. That is the payoff from the authoring layer
--- not using every target today, but making the choice reversible.
+MoltenVK would be legally fine: Apache 2.0, public Apple APIs only, App
+Store compatible. (An earlier note here repeated a "commercial paid
+license" claim found in search results; that is pre-2018 MoltenGL
+material, from before MoltenVK was open-sourced and given to Khronos.)
+What it is not is free of packaging work -- a multi-megabyte dylib at
+@rpath inside the wheel, code signing, notarization, rpath fixups and
+universal-binary handling, on the one platform whose packaging is already
+the most particular.
+
+Against that, the native path carries no third-party binary at all.
+Metal.framework is part of macOS. A metallib is built in CI on a macOS
+runner, or the MSL is compiled at first use by the system Metal compiler
+-- which is part of the OS, so it does not breach the no-bundled-compiler
+rule the way shipping glslang or nvrtc would. Apple performance is direct
+rather than translated.
+
+The cost is a second RHI: device, buffer, pipeline, dispatch, against the
+Metal API instead of Vulkan's. That is a few hundred lines of our own
+code rather than a vendored dependency, and it is the code we are best
+placed to fix.
+
+This is what choosing an authoring layer was for. Slang emits the MSL;
+we leverage their backend rather than writing one, and the kernels stay a
+single source.
 
 ## 2. Every supported length, in three tiers
 
