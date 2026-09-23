@@ -44,6 +44,12 @@ void ifft256(uint off, uint lane)
     [unroll] for (uint n2 = 0; n2 < 16; ++n2) r[n2] = sh[off + lane + 16 * n2];
     GroupMemoryBarrierWithGroupSync();      // gathered before anyone scatters
     dft16(r);
+    // Each twiddle from its own sin/cos, not walked incrementally. The
+    // incremental form (one transcendental plus 16 complex multiplies)
+    // looked 1.4x faster and was not: identical work on this box has a
+    // 2.41x spread and 29% CV, so the difference was noise. Its accuracy
+    // cost was real -- 3.4e-07 to 1.6e-06, from accumulating sixteen
+    // multiplies. Unproven speed is not worth measured accuracy.
     [unroll] for (uint k2 = 0; k2 < 16; ++k2) {
         float ang = 2.0f * 3.14159265358979f * float(lane * k2) / 256.0f;
         r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
@@ -106,13 +112,21 @@ void fusedBig(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     // transform output -- so the reported peak came out LARGER than the
     // true one. Wave width is not a portable constant; Metal's SIMD group
     // is 32, AMD's is 32 or 64 by compiler choice.
-    red[tid] = best;
+    // Two-level and wave-width AGNOSTIC: reduce inside each wave with the
+    // hardware op, then reduce the handful of wave results. The width comes
+    // from WaveGetLaneCount() at runtime rather than being assumed to be 32,
+    // which is what made the first version report peaks larger than the
+    // truth on a wave64 compile. One barrier instead of log2(WG) = 8.
+    uint lanes = WaveGetLaneCount();
+    best = WaveActiveMax(best);
+    if (WaveGetLaneIndex() == 0) red[tid / lanes] = best;
     GroupMemoryBarrierWithGroupSync();
-    for (uint st = WG / 2; st > 0; st >>= 1) {
-        if (tid < st) red[tid] = max(red[tid], red[tid + st]);
-        GroupMemoryBarrierWithGroupSync();
+    if (tid == 0) {
+        uint nw = (WG + lanes - 1) / lanes;
+        float m = red[0];
+        for (uint w = 1; w < nw; ++w) m = max(m, red[w]);
+        peakMag[pair] = sqrt(m);
     }
-    if (tid == 0) peakMag[pair] = sqrt(red[0]);
 }
 
 
@@ -135,11 +149,19 @@ void refineBig(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
         float2 c = sh[i];
         best = max(best, c.x*c.x + c.y*c.y);
     }
-    red[tid] = best;
+    // Two-level and wave-width AGNOSTIC: reduce inside each wave with the
+    // hardware op, then reduce the handful of wave results. The width comes
+    // from WaveGetLaneCount() at runtime rather than being assumed to be 32,
+    // which is what made the first version report peaks larger than the
+    // truth on a wave64 compile. One barrier instead of log2(WG) = 8.
+    uint lanes = WaveGetLaneCount();
+    best = WaveActiveMax(best);
+    if (WaveGetLaneIndex() == 0) red[tid / lanes] = best;
     GroupMemoryBarrierWithGroupSync();
-    for (uint st = WG / 2; st > 0; st >>= 1) {
-        if (tid < st) red[tid] = max(red[tid], red[tid + st]);
-        GroupMemoryBarrierWithGroupSync();
+    if (tid == 0) {
+        uint nw = (WG + lanes - 1) / lanes;
+        float m = red[0];
+        for (uint w = 1; w < nw; ++w) m = max(m, red[w]);
+        peakMag[pair] = sqrt(m);
     }
-    if (tid == 0) peakMag[pair] = sqrt(red[0]);
 }

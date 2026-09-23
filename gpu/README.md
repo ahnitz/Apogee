@@ -301,3 +301,54 @@ At TILE=4 that is 1024 < 2048; the halves overlapped and ran past the end.
 All three were caught by the same thing: every timing in these harnesses is
 printed next to a count of how many peak indices match a float64 reference.
 None of them would have been caught by a benchmark alone.
+
+## CPU against GPU, each against its own ceiling
+
+`compare_cpu_gpu.py`. Absolute throughput answers whether the GPU is worth
+it; the fraction of peak answers the more useful question, which is whether
+the GPU implementation is as well optimised for its hardware as the CPU one
+is for its.
+
+    flat matched filter, n=4096
+                    us/pair   GFLOP/s   ceiling   % of peak
+      CPU, 1 core     4.915        55       288      19.1%
+      GPU             0.291       931      5427      17.1%
+
+The GPU is 16.9x a single core, and sits at 0.90x the CPU's fraction of its
+ceiling. Both land near 17-19%, which is what this shape of work gives on
+either machine: an FFT is bound by shared memory and cache traffic, not by
+FMA throughput. rocFFT reaches 9.3% on the same device.
+
+The CPU ceiling is architectural -- Zen 5 AVX-512, two FMA units x 16
+float32 x 2 flops = 64 flops/cycle, quoted at a sustained 4.5 GHz. The GPU
+ceiling is measured on the device with a dependent-free FMA chain.
+
+    hierarchical, band/n = 256/4096
+                  speedup   escalating    ideal   % of ideal
+      CPU (pycbc)   6.03x         9.4%    7.37x        82%
+      GPU           6.12x         3.1%   13.76x        44%
+
+Matching the CPU's speedup was the goal and it is met. Being as close to
+the IDEAL is not: at 3.1% escalation there is far more available, and the
+whole gap is the coarse pass. At that rate refine should cost 0.018 ms and
+the coarse pass 0.025; the coarse pass measures about 0.080.
+
+## Why the optimisation stops here for now
+
+    the same kernel, the same data, 15 timings
+      min 0.589 ms   median 0.638 ms   max 1.421 ms
+      spread 2.41x   CV 29.1%
+
+This box is shared -- another user's 32-process job, plus this repository's
+own table regeneration on 30 of 32 cores -- and the 8060S is an iGPU
+sharing memory and power with the CPU. Differences smaller than about 2x
+cannot be attributed to anything on this machine right now.
+
+Which retired one change. Walking the twiddles incrementally (one sin/cos
+plus sixteen complex multiplies, against sixteen sin/cos) measured 1.4x
+faster and is not: 1.4x is inside the noise. Its cost is not -- accuracy
+went 3.4e-07 to 1.6e-06 from accumulating those multiplies. Unproven speed
+is not worth measured accuracy, so it is reverted, and `noise.py` is here
+to make the same judgement quickly next time.
+
+The coarse-pass work is the next thing, and it needs a quiet machine.
