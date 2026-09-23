@@ -78,6 +78,32 @@ pip install matchedfilter
 Wheels for CPython 3.9–3.13 on Linux x86-64 and macOS arm64; elsewhere pip
 builds from source, which needs numpy and a C compiler.
 
+### Building from source on Apple Silicon (macOS arm64)
+
+The CPU kernels are written against [Google Highway](https://github.com/google/highway),
+so on an M-series Mac the same sources compile to native NEON code (Highway
+picks `NEON_BF16` or `NEON` at run time). Nothing beyond Apple's command line
+tools is needed:
+
+```bash
+xcode-select --install                      # Apple clang, if not already present
+git clone https://github.com/ahnitz/matchedfilter
+cd matchedfilter
+git submodule update --init third_party/highway
+
+conda create --name mac-matchedfilter python=3.12 -y
+conda install --name mac-matchedfilter -c conda-forge numpy pytest setuptools wheel -y
+~/miniconda3/envs/mac-matchedfilter/bin/python -m pip install --no-build-isolation .
+
+# run the tests from outside the source tree, so they import the installed build
+cd /tmp && ~/miniconda3/envs/mac-matchedfilter/bin/python -m pytest /path/to/matchedfilter/tests
+python -c "import matchedfilter as mf; print(mf.backend())"   # NEON_BF16 on M2 and later
+```
+
+Make sure the Python is itself arm64 (`python -c "import platform;
+print(platform.machine())"` prints `arm64`); an x86-64 Python running under
+Rosetta will build the x86 kernels instead.
+
 ## Documentation
 
 | | |
