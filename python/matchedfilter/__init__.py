@@ -21,6 +21,7 @@ sides are stored in the layout the correlation loop walks - which measures at
 
 Supported lengths are 1024 and the powers of two from 4096 to 1048576.
 """
+import math
 import os
 import warnings
 
@@ -386,6 +387,87 @@ def _cost_snrs(t, n, band, U, K, margin, want):
     return (min(have, key=lambda h: abs(h - max(want))),)
 
 
+def _margin_at_budget(curve, fd, floor):
+    """Largest coarse margin whose interpolated dismissal still meets `fd`.
+
+    The margin is a continuous scale on the coarse threshold, but it was only
+    ever measured at four points and selection snapped to them. At n=4096,
+    snr 5.5, band 512 the grid lands on 0.90, whose measured dismissal is
+    1.5e-4 against a 1e-3 budget -- seven times safer than asked, and that
+    safety is not free: 0.90 escalates 19.1% of pairs where the interpolated
+    0.924 escalates 12.1%, measuring 1.95x against 2.44x.
+
+    Dismissal rises steeply and smoothly with the margin, so it is
+    interpolated in LOG dismissal, which is near-linear in the margin over a
+    grid step where the raw value moves by more than an order of magnitude.
+
+    `floor` is the trials resolution. A measured 0.0 does not mean zero, it
+    means "not resolved", so it is read as the floor rather than as -inf --
+    otherwise a single unresolved cell would drag the interpolation to the
+    grid edge and hand back exactly the over-safe snap this removes.
+
+    Returns None if even the tightest measured margin misses the budget.
+    """
+    pts = sorted(curve)
+    ms = [m for m, _ in pts]
+    ds = [max(d, floor) for _, d in pts]
+    if ds[0] > fd:
+        return None                       # tightest margin already over budget
+    if ds[-1] <= fd:
+        return ms[-1]                     # every margin fits; take the loosest
+    y = [math.log10(d) for d in ds]
+    t = math.log10(fd)
+    for i in range(len(ms) - 1):
+        if y[i] <= t <= y[i + 1]:
+            if y[i + 1] == y[i]:
+                return ms[i + 1]
+            w = (t - y[i]) / (y[i + 1] - y[i])
+            return ms[i] + w * (ms[i + 1] - ms[i])
+    return ms[0]
+
+
+def _cost_at_margin(curve, margin):
+    """Relative cost at a margin the table did not measure directly.
+
+    Interpolated for the same reason the margin itself is: admitting a
+    configuration at 0.924 and pricing it at 0.90 compares a cost the caller
+    will never pay. Cost falls monotonically with the margin at every band --
+    fewer escalations -- so linear interpolation between the bracketing grid
+    points is well behaved. Clamped at the ends.
+    """
+    pts = sorted(curve)
+    ms = [m for m, _ in pts]
+    cs = [c for _, c in pts]
+    if len(ms) == 1 or margin <= ms[0]:
+        return cs[0]
+    if margin >= ms[-1]:
+        return cs[-1]
+    for i in range(len(ms) - 1):
+        if ms[i] <= margin <= ms[i + 1]:
+            if ms[i + 1] == ms[i]:
+                return cs[i]
+            w = (margin - ms[i]) / (ms[i + 1] - ms[i])
+            return cs[i] + w * (cs[i + 1] - cs[i])
+    return cs[-1]
+
+
+def _complete_snrs(t, n):
+    """Measured thresholds at `n` whose band coverage is not a subset.
+
+    Coverage grows by measurement, and a threshold measured for only some
+    bands is a trap: it reads as an exact hit, so the conservative bracketing
+    rule never engages, and the choice is quietly confined to the bands that
+    happen to have rows.
+    """
+    bands = {}
+    for s_ in t["snrs_at"].get(n, ()):
+        bands[s_] = {r[1] for r in t["by_ns"].get((n, s_), ())}
+    if not bands:
+        return []
+    full = max(len(v) for v in bands.values())
+    return sorted(s_ for s_, v in bands.items() if len(v) == full)
+
+
 def choose_config(power, n, snr, fd, tuning=None):
     """Cheapest (band, oversample, taps) whose measured dismissal meets `fd`.
 
@@ -423,7 +505,14 @@ def choose_config(power, n, snr, fd, tuning=None):
     answer in the budget's name.
     """
     t = _load_tuning() if tuning is None else tuning
-    tsnrs = t["snrs_at"].get(n)
+    # Only thresholds whose band coverage matches the fullest available at
+    # this length. A partially measured threshold is worse than an absent one:
+    # it looks like an exact hit, so the bracketing rule never fires, and
+    # selection is silently restricted to whichever bands happen to have rows.
+    # Adding snr 5.75 for newly measured bands alone did exactly that -- at
+    # n=2048 it forced band 1024 where 5.5 and 6.0 both choose 512, and the
+    # speedup fell from 3.60x to 2.07x.
+    tsnrs = _complete_snrs(t, n)
     if not tsnrs:
         return None
     use, why = _snr_rows_for(snr, tsnrs)
@@ -438,54 +527,91 @@ def choose_config(power, n, snr, fd, tuning=None):
         if band not in feats:
             feats[band] = _band_features(power, band)
         byconf.setdefault((band, U, K, margin), []).append((tf, tbe, dm))
-    best, bcost = None, float("inf")
+    # Group by (band, U, K) so the margin becomes a continuous axis within
+    # each, rather than a fourth discrete choice snapped to four points.
+    fam = {}
     for (band, U, K, margin), rows in byconf.items():
+        fam.setdefault((band, U, K), {})[margin] = rows
+
+    floor = _dismissal_floor(t)
+    best, bcost, bmargin = None, float("inf"), None
+    for (band, U, K), bymargin in fam.items():
         f, be = feats[band]
-        # clamp to the grid: past its edge the most pessimistic row is the
-        # best evidence there is, and saying so beats extrapolating
-        fmax = max(r[0] for r in rows)
-        bmax = max(r[1] for r in rows)
-        fq, bq = min(f, fmax), min(be, bmax)
-        cover = [dm for (tf, tbe, dm) in rows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
-        if not cover or max(cover) > fd:
+        dcurve, ccurve = [], []
+        for margin, rows in bymargin.items():
+            # clamp to the grid: past its edge the most pessimistic row is the
+            # best evidence there is, and saying so beats extrapolating
+            fq = min(f, max(r[0] for r in rows))
+            bq = min(be, max(r[1] for r in rows))
+            cover = [dm for (tf, tbe, dm) in rows
+                     if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
+            if not cover:
+                continue
+            dcurve.append((margin, max(cover)))
+
+            crows = []
+            for cs in _cost_snrs(t, n, band, U, K, margin, use):
+                crows += t["cost"].get((n, band, U, K, round(cs, 2), margin)) or []
+            if not crows:
+                continue
+            # The accuracy rule's covering side, and it is the right one --
+            # but not for the reason it was inherited.
+            #
+            # Cost and dismissal move OPPOSITE ways in f: more power in band
+            # raises the coarse threshold, so fewer pairs escalate and the
+            # configuration is cheaper, while dismissal rises. That argument
+            # says this rule should under-price narrow bands, and it does.
+            #
+            # Three replacements were tried and MEASURED against the real best
+            # of every admissible configuration, at four (n, snr) points:
+            #
+            #     rule                        4096@5.0 4096@6.0 8192@5.0 16384@5.5
+            #     covering (this one)              80%      90%     100%      100%
+            #     pessimistic (f <= ours)          80%      72%      45%       47%
+            #     nearest in (f, beff)             63%      70%      57%       44%
+            #     interpolate in f                 57%      83%      60%      100%
+            #
+            # The theory is right about the direction and wrong about what
+            # follows from it: the rows are sparse and spread over B_eff as
+            # well as f, and every alternative reasoning about f alone lands
+            # on a row describing a different problem. Do not change this on
+            # an argument -- re-run tools/score_cost_rule.py, because the
+            # argument that looked conclusive cost up to 56% of the available
+            # speedup when it was believed.
+            cf = [c for (tf, tbe, c) in crows
+                  if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
+            ccurve.append((margin,
+                           max(cf) if cf else max(c for (_, _, c) in crows)))
+
+        if not dcurve or not ccurve:
             continue
-        crows = []
-        for cs in _cost_snrs(t, n, band, U, K, margin, use):
-            crows += t["cost"].get((n, band, U, K, round(cs, 2), margin)) or []
-        if not crows:
+        margin = _margin_at_budget(dcurve, fd, floor)
+        if margin is None:
             continue
-        # The accuracy rule's covering side, and it is the right one -- but
-        # not for the reason it was inherited.
-        #
-        # Cost and dismissal move OPPOSITE ways in f: more power in band
-        # raises the coarse threshold, so fewer pairs escalate and the
-        # configuration is cheaper, while dismissal rises. That argument says
-        # this rule should under-price narrow bands, and it does: at n=4096
-        # snr 5.0 it picks 1024/2/8 at 1.29x where 2048/2/8 measures 1.60x.
-        #
-        # Three replacements were tried and MEASURED against the real best of
-        # every admissible configuration, at four (n, snr) points:
-        #
-        #     rule                        4096@5.0  4096@6.0  8192@5.0  16384@5.5
-        #     covering (this one)              80%       90%      100%       100%
-        #     pessimistic (f <= ours)          80%       72%       45%        47%
-        #     nearest in (f, beff)             63%       70%       57%        44%
-        #     interpolate in f                 57%       83%       60%       100%
-        #
-        # So the theory is right about the direction and wrong about what
-        # follows from it. The rows are sparse and spread over B_eff as well
-        # as f, and every alternative that reasons about f alone lands on a
-        # row describing a different problem. Taking the worst of the rows
-        # that dominate the reference in BOTH features is crude, but it is the
-        # only one of the four that is never far wrong.
-        #
-        # Do not change this on an argument. Re-run tools/scorerule-style
-        # measurement, because the argument that looked conclusive here cost
-        # up to 56% of the available speedup when it was believed.
-        cf = [c for (tf, tbe, c) in crows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
-        c = max(cf) if cf else max(c for (_, _, c) in crows)
+        # Priced AT the margin that will actually be used. Admitting 0.924 and
+        # pricing it at the 0.90 grid point compares a cost no caller pays,
+        # and gets the ranking wrong: those two differ by 19.1% against 12.1%
+        # escalation at n=4096 snr 5.5.
+        c = _cost_at_margin(ccurve, margin)
         if c < bcost:
-            best, bcost = (band, U, K, margin), c
+            best, bcost, bmargin = (band, U, K), c, margin
+    if best is None:
+        return None
+    return (best[0], best[1], best[2], round(bmargin, 4))
+
+
+def _dismissal_floor(t):
+    """Smallest dismissal the shipped table could have resolved.
+
+    A measured 0.0 means "not resolved at this trial count", not zero, and the
+    margin interpolation has to read it that way or a single unresolved cell
+    drags the answer to the grid edge.
+    """
+    try:
+        return 3.0 / float(str(t["meta"].get("trials", "4000")).split()[0])
+    except Exception:
+        return 7.5e-4
+
     return best
 
 
