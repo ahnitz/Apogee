@@ -828,6 +828,36 @@ def reference_note(runs):
               'relying on these ratios.</div>')
 
 
+def trials_note():
+    """Why the speedup falls as the transform lengthens, at a fixed threshold.
+
+    Shown rather than corrected away. A longer block searches more lags for
+    one reported peak, so more of them clear the coarse threshold and the
+    first pass rules out less. That is what happens if a caller holds the
+    threshold fixed, and it is what the charts above plot.
+    """
+    return ('<h3>Why the longer transforms do worse here</h3>'
+            '<p>At a fixed threshold the speedup falls as <code>n</code> '
+            'grows, and that is real. The first pass decides <strong>per '
+            'pair</strong>, over every lag in the block -- so doubling the '
+            'block doubles the chances that some lag clears the coarse '
+            'threshold and drags the whole pair through the full correlation. '
+            'Escalation is close to linear in the lags searched: measured at '
+            'n=4096, band 512, it runs 4.3%, 7.0%, 11.7%, 19.1% for 304, 608, '
+            '1216 and 2432 lags.</p>'
+            '<div class="note">These charts hold the threshold fixed across '
+            'every length, which asks the long transforms to do a harder job: '
+            'n=262144 searches 64x the lags of n=4096 for the same threshold, '
+            'so it carries 64x the trials factor. A real search would not do '
+            'that -- it would raise the threshold as the block grows, since '
+            'the flat filter alone expects n&middot;exp(-t&sup2;/2) noise '
+            'crossings per pair. At thresholds equalised for that (5.50, 5.75, '
+            '5.98, 6.21 for n = 4096, 16384, 65536, 262144) the decline goes '
+            'away: 2.29x, 3.26x, 2.80x, 3.08x. The drop above is a property of '
+            'the comparison, not of the filter -- but it is the comparison a '
+            'reader is most likely to make, so it is the one plotted.</div>')
+
+
 def bench_speedup(runs, names):
     """Speedup against the flat filter: one panel per length, a line per budget.
 
@@ -995,6 +1025,7 @@ def hier_benchmarks_page(runs):
          '<a href="benchmarks.html">the matched filter page</a>. What was '
          'tested is set out <a href="#setup">below the charts</a>.</p>']
     o.append(bench_speedup(runs, names))
+    o.append(trials_note())
     o.append(setup_section(runs, hier))
     o.append(details("All numbers (%d rows)" % len(hier), bench_hier_raw(runs)))
     return "".join(o)
