@@ -173,6 +173,96 @@ def correlation_chart(case, width=760, height=300):
     return "".join(o)
 
 
+def precision_page(require=False):
+    """Run the precision sweep for real and plot it.
+
+    Executed at page-build time like the demo, so the curve is a measurement
+    of the build that produced the page rather than a picture of one taken
+    earlier.
+    """
+    try:
+        from matchedfilter import precision
+    except Exception as e:
+        if require:
+            raise SystemExit("the precision sweep could not be run (%s: %s)"
+                             % (type(e).__name__, e))
+        return ('<div class="note warn">The precision sweep could not be run '
+                'when this page was built (<code>%s</code>).</div>'
+                % html.escape("%s: %s" % (type(e).__name__, e)))
+    rows = precision.sweep()
+    ns = sorted({r["n"] for r in rows})
+    eps = precision.EPS32
+    o = ['<p>The filter computes in <strong>complex64</strong> and reports one '
+         'peak per bin. A float64 numpy correlation of the same inputs is the '
+         'answer it has to agree with. This sweeps injected SNR from pure '
+         'noise to 1000 and measures the disagreement -- run while this page '
+         'was built, not cached.</p>',
+         '<div class="cards">'
+         '<div class="card"><div class="k">%.1e</div>'
+         '<div class="l">worst relative error, any point</div></div>'
+         '<div class="card"><div class="k">%.1f</div>'
+         '<div class="l">float32 ULPs at worst</div></div>'
+         '<div class="card"><div class="k">%.0f%%</div>'
+         '<div class="l">lowest index agreement</div></div></div>'
+         % (max(r["rel_max"] for r in rows),
+            max(r["rel_max"] for r in rows) / eps,
+            100 * min(r["index_agreement"] for r in rows))]
+    panels = []
+    for stat, label in (("rel_median", "median"), ("rel_p90", "90th percentile"),
+                        ("rel_max", "worst case")):
+        series = [("n = %d" % n,
+                   [(max(r["snr"], 1.0), max(r[stat], 1e-12))
+                    for r in rows if r["n"] == n])
+                  for n in ns]
+        series.append(("float32 eps",
+                       [(max(r["snr"], 1.0), eps) for r in rows if r["n"] == ns[0]]))
+        panels.append((label, line_chart(
+            series, "Relative error vs a float64 correlation (%s)" % label,
+            "injected SNR (0 plotted at 1)", "relative error")))
+    o.append(tabs(panels, "statistic"))
+    o.append('<h3>What is being compared</h3>')
+    o.append(spec_table([
+        ("Reference", "The whole correlation in float64: "
+                      "<code>|IFFT(data * conj(template))| * n</code>, computed "
+                      "by numpy on the identical inputs."),
+        ("Error", "The reported magnitude against that reference evaluated "
+                  "<em>at the lag the filter reported</em>. That isolates "
+                  "arithmetic from tie-breaking: comparing peak magnitudes "
+                  "instead would blame the filter whenever two nearby lags "
+                  "swapped places."),
+        ("Index agreement", "Separately, how often the reported lag is the "
+                            "float64 argmax. Where two lags sit within "
+                            "rounding of each other either is a correct "
+                            "answer, so this is reported rather than asserted "
+                            "-- but over random noise exact ties are "
+                            "vanishingly unlikely, and it is 100%% here."),
+        ("Input", "Complex Gaussian noise with one copy of the template "
+                  "injected at a random lag, as a phase ramp on the spectrum "
+                  "-- exactly a circular shift, so the signal lands where "
+                  "intended with no resampling error of its own. %d trials per "
+                  "point." % rows[0]["trials"]),
+    ]))
+    o.append('<div class="note">The curves are flat in SNR, and that is the '
+             'result. A relative error that tracked the signal would mean '
+             'something was computed absolutely and then divided -- invisible '
+             'on noise, and growing on exactly the loud events a search most '
+             'needs to get right. Injected SNR spans 0 to 1000 here, so a '
+             'proportional term would show as three orders of magnitude of '
+             'growth. tests/test_precision.py asserts both this and the '
+             'absolute bound.</div>')
+    rows.sort(key=lambda r: (r["n"], r["snr"]))
+    o.append(details("All numbers (%d rows)" % len(rows),
+                     table(["n", "injected snr", "trials", "median", "p90",
+                            "worst", "ULPs at worst", "index agreement"],
+                           [["%d" % r["n"], "%g" % r["snr"], "%d" % r["trials"],
+                             "%.2e" % r["rel_median"], "%.2e" % r["rel_p90"],
+                             "%.2e" % r["rel_max"],
+                             "%.1f" % (r["rel_max"] / eps),
+                             "%.0f%%" % (100 * r["index_agreement"])]
+                            for r in rows])))
+    return "".join(o)
+
+
 def demo_page(require=False):
     """Run the demo for real and show the plots beside the code that made them.
 
@@ -1028,6 +1118,7 @@ NOTES = [("docs/hierarchical.md", "The hierarchical filter",
 PAGES = [("index.html", "Overview", "readme", ["_intro"]),
          ("demo.html", "See it work", "demo", None),
          ("using-it.html", "Using it", "file", "docs/usage.md"),
+         ("precision.html", "Numerical accuracy", "precision", None),
          ("benchmarks.html", "Benchmarks: matched filter", "bench-flat", None),
          ("hierarchical-benchmarks.html", "Benchmarks: hierarchical", "bench-hier", None),
          ("notes.html", "Design notes", "notes-index", None),
@@ -1189,6 +1280,9 @@ def build(runs, root=".", require_demo=False):
             body = md(read(os.path.join(root, arg)))
         elif kind == "demo":
             body = "<h2>See it work</h2>" + demo_page(require_demo)
+        elif kind == "precision":
+            body = ("<h2>Numerical accuracy</h2>"
+                    + precision_page(require_demo))
         else:
             body = ('<h2>Design notes</h2><p>Working notes on why the library is '
                     'built the way it is. Each records what was measured, '
