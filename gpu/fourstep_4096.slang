@@ -56,31 +56,51 @@ void dft16(inout float2 a[16])
 }
 
 
-// 16x16 transpose across the 16 lanes of one slot, in wave shuffles.
+// 16x16 transpose across the 16 lanes of one slot.
 //
-// No threadgroup memory and no barrier. This is the only way off the
-// occupancy cliff for the coarse pass: a 256-point transform needs a
-// 256-complex transpose buffer per 16 threads, which is 128 bytes per
-// thread however the workgroup is shaped, where full occupancy allows 32.
-// Batching more or fewer transforms per workgroup cannot change that
-// ratio -- only not using the memory can.
+// PORTABILITY. The shuffle path assumes the slot's 16 lanes lie inside one
+// wave. That holds at wave32 and wave64 (AMD), warp 32 (NVIDIA) and SIMD
+// group 32 (Apple), and NOT on Intel, whose subgroup may be SIMD8 -- there
+// the slot straddles two subgroups, the shuffles read lanes that are not
+// there, and the answer is quietly wrong: no crash, no validation error.
 //
-// Four butterfly steps. At step s a lane exchanges with lane^s, and the
+// So the width is checked rather than assumed. WaveGetLaneCount() is
+// uniform across the workgroup, so the branch is uniform too and costs a
+// scalar compare, not divergence. Below 16 lanes it goes through
+// threadgroup memory, which is slower and correct everywhere.
+//
+// Four butterfly steps. At step s a lane exchanges with lane^s and the
 // REGISTER index swaps with it: out[lane][i] takes cur[lane^s][i^s]
-// exactly when (lane & s) and (i & s) differ. Every index is static, so
-// the registers stay registers. Verified against a reference transpose
-// before being written here.
-//
-// A slot is 16 lanes and never straddles a wave, on wave32 or wave64.
-void transpose16(inout float2 v[16], uint lane)
+// exactly when (lane & s) and (i & s) differ. Every index is static.
+groupshared float2 tpose[WG];      // fallback only: one float2 per thread
+
+void transpose16(inout float2 v[16], uint tid, uint lane)
 {
-    uint base = WaveGetLaneIndex() - lane;     // this slot's first wave lane
-    [unroll] for (uint s = 1; s < 16; s <<= 1) {
-        float2 recv[16];
-        [unroll] for (uint i = 0; i < 16; ++i)
-            recv[i] = WaveShuffle(v[i ^ s], base + (lane ^ s));
-        [unroll] for (uint i = 0; i < 16; ++i)
-            if (((lane & s) != 0) != ((i & s) != 0)) v[i] = recv[i];
+    if (WaveGetLaneCount() >= R) {
+        uint base = WaveGetLaneIndex() - lane;
+        [unroll] for (uint s = 1; s < R; s <<= 1) {
+            float2 recv[16];
+            [unroll] for (uint i = 0; i < R; ++i)
+                recv[i] = WaveShuffle(v[i ^ s], base + (lane ^ s));
+            [unroll] for (uint i = 0; i < R; ++i)
+                if (((lane & s) != 0) != ((i & s) != 0)) v[i] = recv[i];
+        }
+    } else {
+        // one register at a time through threadgroup memory: 16 rounds,
+        // 2 KB, correct at any subgroup width including SIMD8
+        // Round i: every lane publishes its register i, and lane i takes
+        // the whole row -- which is exactly column i of the original, i.e.
+        // the transposed row lane i needs. Verified against a reference
+        // transpose before being written.
+        uint slot = tid - lane;
+        float2 out[16];
+        [unroll] for (uint i = 0; i < R; ++i) {
+            GroupMemoryBarrierWithGroupSync();
+            tpose[tid] = v[i];
+            GroupMemoryBarrierWithGroupSync();
+            if (lane == i) { [unroll] for (uint j = 0; j < R; ++j) out[j] = tpose[slot + j]; }
+        }
+        [unroll] for (uint i = 0; i < R; ++i) v[i] = out[i];
     }
 }
 
@@ -290,7 +310,7 @@ void coarseShuf(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
         float ang = 2.0f * 3.14159265358979f * float(lane * k2) / float(NSUB);
         r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
     }
-    transpose16(r, lane);
+    transpose16(r, tid, lane);
     dft16(r);
 
     float best = -1.0f;
