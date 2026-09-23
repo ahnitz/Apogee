@@ -270,6 +270,50 @@ more conservative -- lost four times as many as the default.  A lower
 threshold cannot lose more triggers; a different configuration can.  The
 override is monotonic by construction, which `tests/test_api.py` checks.
 
+## Interpolating cost works; shipping it is blocked on an accuracy gap
+
+The covering rule is backwards for cost, so the obvious repair is to
+interpolate instead of substituting a row.  Scored by
+`tools/score_cost_rule.py` against the measured best of every admissible
+configuration:
+
+    rule                    4096@5.0 4096@6.0 8192@5.0 16384@5.5  mean
+    covering (shipped)          79%      88%     100%       97%   91.0%
+    pessimistic (f <= ours)     79%      71%     100%       82%   83.0%
+    nearest in (f, beff)        68%      68%      93%       39%   67.0%
+    interpolate in f            59%      89%     100%      100%   87.0%
+    plane fit in (f, beff)     100%     100%      50%       41%   72.8%
+    inverse distance (f,beff)  100%     100%      93%      100%   98.3%
+
+Two results worth keeping separately.  Interpolating in `f` alone loses to
+covering, which is what was measured the first time this was tried and is
+explained by the isolation above: both features carry the effect.  And the
+choice of interpolator matters more than the choice to interpolate -- a
+least-squares plane extrapolates past the edge of the data and picks band
+256 at n=8192 and n=16384, where the measured best is 4096 and 2048.  An
+inverse-distance weight is a convex combination of measured rows and cannot
+return a cost below any of them, so that failure mode does not exist.
+
+It is not shipped, because switching to it breaks
+`test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not`:
+14 of 140 peaks omitted against a 3% budget.  Not a cost problem.  Priced
+correctly, band 256 becomes affordable and gets selected, and at band 256
+the FIR-search reference has B_eff = 1.1 against an accuracy grid whose
+smallest measured value is 5.2.  The accuracy side clamps to the grid and
+takes the worst measured row, 8e-4, where the real loss is 10%.
+
+The obvious guard -- refuse a configuration whose query falls below the
+measured grid -- was tried and is wrong: it also refuses six cases that work
+today, because dismissal RISES with both features, so below-grid is supposed
+to be the conservative direction.  At B_eff = 1.1 it is not, and the reason
+is not yet understood.  Until it is, the covering cost rule stays, and it is
+worth naming why: its pessimism about band 256 is load-bearing for a
+correctness property it has nothing to do with, and interpolation removes
+that by accident.
+
+So the order of work is accuracy first, cost second.  The 7 points on the
+table above are real and waiting.
+
 ## The cost table is right about its rows and wrong about the query
 
 Selection scores 90-93% of the measured best, and the obvious reading is
