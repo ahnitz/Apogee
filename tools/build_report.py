@@ -11,6 +11,8 @@ import argparse
 import glob
 import collections
 import html
+import math
+import numpy as np
 import json
 import os
 
@@ -42,13 +44,27 @@ def axis_ticks(lo, hi, count=5):
 
 
 def fmt(v):
+    """Axis label for a value that may span many decades.
+
+    Small numbers get scientific notation. Without it every tick on the
+    precision chart rendered as "0.00" -- the axis runs 1e-8 to 3e-7 and
+    "%.2f" flattens all of it to zero, which made the chart unreadable and
+    was not noticed because the curve still drew.
+    """
+    if v == 0:
+        return "0"
     if v >= 100:
         return "%.0f" % v
     if v >= 10:
         return "%.0f" % v
     if v >= 1:
         return "%.1f" % v
-    return "%.2f" % v
+    if v >= 0.01:
+        return "%.2f" % v
+    e = int(math.floor(math.log10(abs(v))))
+    m = v / 10.0 ** e
+    return ("%de%d" % (round(m), e) if abs(m - round(m)) < 0.05
+            else "%.1fe%d" % (m, e))
 
 
 def line_chart(series, title, xlabel, ylabel, width=760, height=380):
@@ -173,6 +189,69 @@ def correlation_chart(case, width=760, height=300):
     return "".join(o)
 
 
+def error_histogram(rows, width=760, height=300):
+    """Distribution of the per-trial errors, pooled over the sweep.
+
+    The median and the worst case say where the errors sit and how far they
+    reach. They do not say whether the distribution is a tight pile near the
+    float32 epsilon or something with a tail, and those are different claims
+    about the arithmetic -- a heavy tail would mean occasional large errors
+    that a percentile hides.
+    """
+    if not rows or "hist" not in rows[0]:
+        return ""
+    edges = rows[0]["hist_edges"]
+    tot = np.zeros(len(edges) - 1)
+    for r in rows:
+        tot += np.asarray(r["hist"], float)
+    nz = np.nonzero(tot)[0]
+    if not len(nz):
+        return ""
+    lo, hi = nz[0], nz[-1] + 1
+    tot, edges = tot[lo:hi], edges[lo:hi + 1]
+    L, R, T, B = 60, 18, 34, 54
+    W, H = width - L - R, height - T - B
+    ymax = tot.max() * 1.12
+    bw = W / len(tot)
+    o = ['<svg class="chart" viewBox="0 0 %d %d" role="img" aria-label='
+         '"distribution of relative error">' % (width, height)]
+    o.append('<text x="%d" y="20" class="title">Distribution of relative '
+             'error (%d trials, all lengths and SNRs)</text>'
+             % (L, int(tot.sum())))
+    for f in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = T + H - H * f
+        o.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" class="grid"/>'
+                 % (L, y, L + W, y))
+        o.append('<text x="%.1f" y="%.1f" class="tick ty">%d</text>'
+                 % (L - 8, y + 4, round(ymax * f)))
+    for i, v in enumerate(tot):
+        h = H * v / ymax
+        o.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" '
+                 'fill="var(--accent)" opacity="0.75"/>'
+                 % (L + i * bw + 1, T + H - h, max(bw - 2, 1), h))
+    eps = 2.0 ** -24
+    if edges[0] <= eps <= edges[-1]:
+        fr = (math.log10(eps) - math.log10(edges[0])) / (
+            math.log10(edges[-1]) - math.log10(edges[0]))
+        x = L + W * fr
+        o.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" class="unity"/>'
+                 % (x, T, x, T + H))
+        o.append('<text x="%.1f" y="%.1f" class="tick tx">float32 eps</text>'
+                 % (x, T - 6))
+    o.append('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="var(--bd)"/>'
+             % (L, T + H, L + W, T + H))
+    step = max(1, len(edges) // 7)
+    for i in range(0, len(edges), step):
+        o.append('<text x="%.1f" y="%.1f" class="tick tx">%s</text>'
+                 % (L + i * bw, T + H + 16, fmt(edges[i])))
+    o.append('<text x="%.1f" y="%.1f" class="axis tx">relative error against '
+             'a float64 correlation</text>' % (L + W / 2, height - 8))
+    o.append('<text x="%.1f" y="%.1f" class="axis tx">trials</text>'
+             % (14, T + H / 2))
+    o.append("</svg>")
+    return "".join(o)
+
+
 def precision_page(require=False):
     """Run the precision sweep for real and plot it.
 
@@ -220,6 +299,13 @@ def precision_page(require=False):
             series, "Relative error vs a float64 correlation (%s)" % label,
             "injected SNR (0 plotted at 1)", "relative error")))
     o.append(tabs(panels, "statistic"))
+    o.append(error_histogram(rows))
+    o.append('<div class="note">The distribution is a single pile a few '
+             'float32 epsilons wide with no tail. That is the claim the '
+             'percentiles above cannot make on their own: a median of 5e-8 '
+             'is consistent with a tight pile or with a narrow core plus '
+             'occasional large errors, and those are different statements '
+             'about the arithmetic.</div>')
     o.append('<h3>What is being compared</h3>')
     o.append(spec_table([
         ("Reference", "The whole correlation in float64: "

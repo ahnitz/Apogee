@@ -103,8 +103,19 @@ def _sweep_one(n, snrs, trials, batch, seed):
             hit += hi
             tot += nb
         a = np.array(rel) if rel else np.zeros(1)
+        # A histogram of the errors, not only their summary. The median and
+        # the worst case say where the distribution sits and how far it
+        # reaches; they do not say whether it is a tight pile near the float32
+        # epsilon or something with a tail, and those are different claims
+        # about the arithmetic. Logarithmic bins, since the values span
+        # decades.
+        lo, hi = 1e-9, 1e-5
+        edges = np.logspace(np.log10(lo), np.log10(hi), 25)
+        hist = np.histogram(np.clip(a, lo, hi * 0.999), bins=edges)[0]
         out.append(dict(
             n=n, snr=float(snr), trials=int(tot),
+            hist=[int(x) for x in hist],
+            hist_edges=[float(x) for x in edges],
             rel_median=float(np.median(a)),
             rel_p90=float(np.percentile(a, 90)),
             rel_max=float(a.max()),
