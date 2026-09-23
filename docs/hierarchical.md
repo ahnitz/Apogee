@@ -291,11 +291,24 @@ two from the same row:
                                   f=0.895 beff=183.1        1.105
 
 So the table measures its own reference correctly, to within the CV.  What
-fails is the covering rule reaching 0.027 in `f` to find a row that speaks
-for the query.  Escalation runs 2.9% at f=0.895 and 1.1% at f=0.950, and
-escalation is the entire cost difference between these two configurations --
-across that gap the ranking inverts, and selection takes a 10% loss acting
-on it.
+fails is the covering rule reaching for a row that does not sit at the query.
+It reaches on BOTH key axes, and isolating them -- holding one fixed and
+moving the other -- says neither is redundant and neither alone is the
+culprit:
+
+    reference                       ratio   escalation K4 / K8
+    query        f=0.895 beff=183   1.134      3.71% / 4.59%
+    move f only  f=0.950 beff=183   1.043      0.59% / 0.68%
+    move beff only f=0.895 beff=205 1.050      4.39% / 4.49%
+    move both    f=0.950 beff=205   0.979      1.07% / 0.88%
+
+Only the combination inverts the ranking, and the two act by different
+mechanisms.  `f` works through the escalation rate: more power in band raises
+the coarse threshold and escalation falls 6x, 3.7% to 0.6%.  `beff` barely
+moves escalation at all -- 3.7% to 4.4% -- and still moves the ratio by
+0.084, because B_eff is how sharp the correlation peak is and K is the number
+of taps interpolating it, so a K=4 against K=8 comparison depends on it
+directly.
 
 Two things this rules out.  It is not synthetic-versus-real: make_ref at
 matched features reproduces the real reference (1.105 against 1.091), so the
@@ -313,10 +326,11 @@ to swap them.
 
 Three replacements have been measured and all scored worse; see the comment
 in `choose_config`.  But they were all rules over the SAME rows, and the f
-ladder there is (0.713, 0.783, 0.850, 0.875, 0.922, 0.950, 0.974, 0.993) --
-the cost regeneration sweeps only f in (0.85, 0.95).  The next thing to try
-is a denser ladder where real references actually live, not another rule
-over a grid whose nearest row is 0.027 away.
+ladder there is (0.713, 0.783, 0.850, 0.875, 0.922, 0.950, 0.974, 0.993) and
+the cost regeneration sweeps only f in (0.85, 0.95), with B_eff at two
+fractions of the band.  The next thing to try is a denser grid in BOTH
+features where real references actually live -- not another rule over a grid
+whose nearest row is 0.027 in f and 25 bins in B_eff away.
 
 ## Recovery factors from a mean frequency series are not a bound at coarse grids
 
