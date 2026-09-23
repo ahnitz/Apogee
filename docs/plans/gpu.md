@@ -201,6 +201,76 @@ just device-specific rows.
 That is a design question to settle by measurement before any of the
 tuning work, because it determines what the table is keyed on.
 
+## The tables across devices
+
+The hierarchical algorithm is the same algorithm on a GPU -- same
+decimation, same coarse threshold, same taps, same margin. Nothing in the
+dismissal rate is architecture-dependent, so **the accuracy table should
+transfer and the cost table certainly does not**.
+
+That asymmetry is worth more than it first looks. The accuracy table is the
+expensive one: hours to generate, 13,856 rows, and the low-B_eff extension
+alone was 95 minutes. The cost table is the cheap one, about 40 minutes.
+If accuracy transfers, **adding a backend costs a cost table**, which is
+the difference between a device port being a day and being a week.
+
+Transfer is a hypothesis with a cheap test, so it gets tested rather than
+assumed: run the existing `measure()` harness against the GPU backend and
+compare dismissal cell by cell against the shipped rows. Agreement within
+the trials resolution means one accuracy table for every device. Two things
+could break it and both are worth looking for specifically -- different
+FMA contraction changing decisions for pairs sitting exactly at the coarse
+threshold, and any difference in which sample wins a tie in the peak
+reduction.
+
+The cost table needs more than new numbers, because the *shape* of the cost
+function changes. Escalation on a CPU costs roughly linearly in the
+escalation rate. On a GPU it is a step function in how many workgroups the
+compacted list fills, plus a fixed compaction cost paid even when nothing
+escalates. `choose_config` will need a device-aware cost model rather than
+device-specific rows in the same model.
+
+## Chunking, and why it is its own phase
+
+How the D x T batch is tiled has never been carefully examined -- not on
+the GPU, where nothing exists yet, and not on the CPU either. On a GPU it
+is the dominant performance parameter, and the roofline says so
+quantitatively.
+
+Measured on the Radeon 8060S (gfx1151, 40 CUs, RDNA 3.5), while the CPU was
+busy, so these are a floor and not a ceiling:
+
+    bandwidth   186.8 GB/s
+    fp32 FMA   5426.8 GFLOP/s
+    ridge          29 FLOP/byte
+
+For D=16, T=512, n=4096 -- 2.21 GFLOP of real work -- the tiling alone
+moves the workload across that ridge:
+
+    tiling                        traffic   FLOP/byte   bound      time
+    perfect reuse                   17 MB       128.0   compute   0.41 ms
+    8 data x 32 templates           42 MB        52.8   compute   0.41 ms
+    4 data x 16 templates           84 MB        26.4   memory    0.45 ms
+    1 data x 8 templates           302 MB         7.3   memory    1.62 ms
+    no reuse                       537 MB         4.1   memory    2.87 ms
+
+Seven times between the best and worst tiling, and the cliff sits between
+8x32 and 4x16 -- squarely inside the range of tile sizes a shared-memory
+budget actually permits. That is not a threshold anyone should guess at.
+
+Two things follow. The fusion argument is confirmed quantitatively: not
+writing D x T x n is what puts this workload at 128 FLOP/byte instead of
+7.8, and the difference is compute-bound against memory-bound. And the
+tiling has to be chosen per (n, D, T, device), which means it is another
+measured table, or another axis on the cost table.
+
+**Sequenced after a working GPU path, and covering both CPU and GPU.**
+There is no point optimising a tiling before there is something to measure
+it on, and the question is shared: the CPU's four-step split already tiles
+a transform against cache, and the GPU tiles it against shared memory. They
+are the same question asked of different memories, and answering it twice
+independently would be the usual way to get two different answers.
+
 ## Correctness, and how it gets tested without GPU runners
 
 The existing suites are the asset here: 134 tests, an adversarial set, an
@@ -286,8 +356,11 @@ and on real hardware.
 **4. The hierarchical filter.** Compaction and indirect dispatch, and the
 measurement that settles what the GPU cost model looks like.
 
-**5. Tuning on device.** Per-device tables, same refuse-when-uncovered
-rule, `tools/hmf_tune.py` taught to target a device.
+**5. Tuning on device, and chunking for both.** First test whether the
+accuracy table transfers, because it decides how expensive every later
+backend is. Then the device cost table, the device-aware cost model the
+compaction forces, and the chunking question above -- for the CPU at the
+same time, since it is one question about two memories.
 
 **6. CUDA.** The backend nobody here can test, added last and on purpose:
 by this point the interface has survived two real implementations, so NVIDIA
