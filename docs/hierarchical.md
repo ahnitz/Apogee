@@ -270,46 +270,60 @@ more conservative -- lost four times as many as the default.  A lower
 threshold cannot lose more triggers; a different configuration can.  The
 override is monotonic by construction, which `tests/test_api.py` checks.
 
-## Dismissal is U-shaped in B_eff, and the grid never reached the bad branch
+## The low-B_eff rows are right and cannot be used yet
 
-The accuracy grid samples B_eff as a FRACTION of the band, so its floor sits
-near band/10 -- 25.6 at band 256, 3328 at band 32768.  The damaging branch is
-at small ABSOLUTE B_eff, which a fractional ladder never reaches, and real
-references live there: the FIR-search reference is at B_eff 1.1 and the
-tests' inspiral reference at 1.9, at every band.
-
-Measured at n=4096, band 256, f=0.99, margin 1.00:
+The accuracy grid samples B_eff as a fraction of the band, so its floor sits
+near band/10 and never reaches small ABSOLUTE B_eff. Real references live
+there: the FIR-search reference is at 1.1 and the tests' inspiral reference
+at 1.9, at every band. 2592 rows were measured to fill that in -- an
+absolute ladder at 1.2 and 3.5 for all 54 (n, band) pairs, 95 minutes -- and
+the branch they revealed is real and reproducible:
 
     B_eff       1.1    1.5    2.0    3.0    5.2     12   25.6   76.4
     dismissal  6.4e-2 5.3e-2 4.2e-2 3.4e-2 2.4e-2 9.3e-3 7.2e-4    0
 
-and above that it turns back up, 2.9e-4 at 10 bins to 6.9e-3 at 463 -- the
-branch this file already described.  Same shape at n=65536 band 256 (4.7e-2)
-and n=262144 band 1024 (6.7e-2) at B_eff 2, so it is not one length's quirk.
-A correlation peak spread over one or two coarse bins is a wide peak, and a
-wide peak is what a decimated grid loses.
+at n=4096 band 256 f=0.99 margin 1.00, with the same shape at n=65536 band
+256 (4.7e-2) and n=262144 band 1024 (6.7e-2). Dismissal is U-shaped in
+B_eff, not monotonic, and the rising branch this file describes elsewhere is
+only half the curve.
 
-Three things follow, and all three are now in the code.
+**They are not in the shipped table.** Adding them destabilised selection in
+two ways, and the second one is the interesting one.
 
-**The grid goes down.** An absolute low ladder at B_eff 1.2 and 3.5, at
-f=0.99, for every (n, band).  Only f=0.99: dismissal rises with f, so that
-row bounds any query at or below it, and a reference concentrated enough to
-have low B_eff has high f by construction.
+The first was mechanical. `fq` clamps to the largest f present, so which
+rows qualify depends on which rows exist. Adding a ladder at f=0.99 raised
+that clamp from 0.97 to 0.9702 at n=65536 band 16384 and thereby EXCLUDED
+the f=0.97 rows that were speaking for the query -- by two parts in ten
+thousand. Selection moved to band 32768 and lost 63% of its speedup, while
+the configuration it abandoned measures 2.4e-3 against a 1e-2 budget. Adding
+measurements made the answer worse. Restricting the covering set to a B_eff
+neighbourhood first fixes it, by keeping the clamp local.
 
-**The covering rule brackets.** Taking the worst row at or ABOVE the query
-in B_eff is a bound on the rising branch and an understatement on the
-falling one -- at B_eff 1.1 it reported the 8e-4 it could see against a real
-6.4e-2.  `_cover_dismissal` now also includes the nearest row below the
-query, which changes nothing on the rising branch and is the whole point on
-the falling one.
+The second is not mechanical, and it is why none of this shipped. With the
+neighbourhood in place the table prices band 256 at 1.45e-3 for the
+FIR-search reference, selection takes it, and the workload loses 6.4% --
+9 peaks of 140 against a 3% budget. The reference sits at f=0.9999,
+B_eff=1.11 and the row that speaks for it was measured at f=0.99,
+B_eff=1.2. Nearly the same key, 44x apart in outcome.
 
-**Margin interpolation needs a sampled segment.** Landing exactly on the
-budget is fine when the bracketing points are close and worthless when they
-are not.  At band 256, B_eff 1.2 the step from margin 0.97 to 1.00 runs
-1.45e-3 to 5.62e-2 -- 39x in one step -- and interpolating that to hit 1e-2
-returns 0.9858 with no safety in it at all.  Above a decade of span the
-segment is now treated as unsampled and the safe measured end is taken.
-Below it the interpolation stands, which is where its speed came from.
+That is not a new problem and the answer is already written down, in the
+header of `tools/hmf_tune.py`: two references agreeing on f(512) to four
+figures differ THREEFOLD in dismissal, because they put 85.2% and 94.7% of
+their in-band power below 256, "and that is what sets the correlation peak
+width, hence the scalloping". The conclusion recorded there is that the
+features for band m must be the accumulated powers at m AND at every
+candidate edge below it, not a scalar summary.
+
+So (f, B_eff) does not determine dismissal, low B_eff is where that stops
+being a threefold error and becomes a 44x one, and the rows are correct
+measurements of references the key cannot distinguish from the one being
+asked about. The measurements are kept and reproducible --
+`tools/regen/accuracy_low_beff.py` -- and what they are waiting on is a
+richer key, not more data.
+
+Until then the shipped table stands, with the understanding that its
+apparent safety at low B_eff comes from the covering rule pricing band 256
+too high to be selected rather than from the accuracy side vouching for it.
 
 ## Interpolating cost works and is still not switched on
 
