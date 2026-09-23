@@ -402,9 +402,24 @@ def _cost_snrs(t, n, band, U, K, margin, want):
     return (min(have, key=lambda h: abs(h - max(want))),)
 
 
-#: Cost differences inside this fraction are treated as a tie. The cost rows
-#: are pivot-relative ratios whose residual spread across repeats is 2-3%, so
-#: anything smaller is below what the table can resolve.
+#: Cost differences inside this fraction are treated as a tie.
+#:
+#: This was added believing the limit was RESOLUTION -- the rows are
+#: pivot-relative ratios with a few percent of spread. Regenerating the table
+#: with eight noise realisations a cell, which takes the ratio CV to under 1%
+#: at n=4096, showed otherwise: the better-sampled table scored WORSE (91%
+#: against 100% at n=4096 snr 6.0), because the ordering was already wrong and
+#: sampling converged onto the wrong value more precisely.
+#:
+#: The error is BIAS, in the harness. tools/hmf_tune.py builds its cost plans
+#: with ntemplates=1 and divides by nt as though it had batched -- it measures
+#: the unbatched regime. Real use runs a bank, where the coarse pass amortises
+#: across templates and the tap count scales differently, which is exactly the
+#: axis it gets wrong: it puts 512/2/8 ahead of 512/2/4 where measurement has
+#: the latter 10.6% faster.
+#:
+#: So this is a patch over a systematic error. Fix the harness workload, then
+#: delete it -- do not tune it.
 _COST_TIE = 0.05
 
 

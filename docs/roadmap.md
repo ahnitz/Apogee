@@ -94,7 +94,40 @@ it covers five lengths with overlapping ratios, so the same R appears at
 several n. If dismissal at fixed (R, f, B_eff) agrees across n, the axis is
 real; if it does not, the tables stay per-length and this item closes.
 
-### 3. Choose the batch tiling, instead of streaming the whole bank
+### 3. Measure cost on a BANK, not on one template
+
+The cost half of the tuning is measured with `ntemplates=1` and the time then
+divided by `nt` as though a batch had been filtered. It measures the unbatched
+regime and labels it batched. Real callers run a bank -- 37 templates in
+`pycbc_inspiral_fir` -- where the coarse pass amortises across templates and
+the interpolation tap count scales differently.
+
+That is the largest known error in selection, and it is bias rather than
+noise. Regenerating the table with eight independent noise realisations a
+cell, which takes the ratio CV from 3.3% to under 1% at n=4096, made selection
+WORSE, not better:
+
+    point          in use   better-sampled
+    4096 @ 6.0      100%         91%
+    8192 @ 5.0      100%         86%
+    16384 @ 6.0      95%         92%
+
+The feature grids are identical and the cost ordering is identical. What
+changed is the gap -- 3.5% against 6.1% between 512/2/8 and 512/2/4 at n=4096
+snr 6.0 -- where measurement says 512/2/4 is 10.6% FASTER. Both tables have
+the sign wrong; the better one is wrong by more, so the 5% tie-break that was
+rescuing it no longer fires. Sampling converged onto a biased value.
+
+The tap axis is where it shows, which is what a one-template harness would
+predict: with a single template there is nothing for the coarse pass to
+amortise against, so K=4's advantage over K=8 never appears.
+
+What it needs: build the cost plans with a realistic bank, re-measure, and
+re-score with `tools/score_selection.py`. If the bias goes, `_COST_TIE` in
+`choose_config` should be deleted rather than retuned -- it exists only to
+mask this.
+
+### 4. Choose the batch tiling, instead of streaming the whole bank
 
 **What exists.** The hierarchical `run_series` groups data blocks internally:
 `dgroup = 8`, measured rather than assumed, and the table that settled it is
@@ -133,7 +166,7 @@ rather than a cross product with every existing axis. Then the same
 refuse-or-measure rule the band and margin already follow can pick the tiling,
 and the caller can go on handing over everything it has.
 
-### 4. Template support pruning -- small here, real for the flat filter
+### 5. Template support pruning -- small here, real for the flat filter
 
 Measured on the captures: templates are **exactly zero in 2047 of 4096 bins**.
 The product is therefore zero above n/2, and half the full filter's product
@@ -151,7 +184,7 @@ is 6% of the hierarchical cost, so **0.7% here** -- but 12% for anyone using
 Detect the support at ingest (measure it, do not assume it); a filter that is
 dense gets the current path.
 
-### 5. Output protocol
+### 6. Output protocol
 
 `fill` writes zeroed peak records for the 98.5% of pairs that report nothing.
 Returning fired peaks plus a count instead would remove it. Worth 1%, and it
