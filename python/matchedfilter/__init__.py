@@ -511,6 +511,12 @@ def _cost_snrs(t, n, band, U, K, margin, want):
 _COST_TIE = 0.05
 
 
+#: How much dismissal one margin grid step may span before interpolating
+#: across it stops being evidence. One decade: a step wider than that is
+#: extrapolation wearing interpolation's clothes.
+_MARGIN_INTERP_DECADES = 1.0
+
+
 def _margin_at_budget(curve, fd, floor):
     """Largest coarse margin whose interpolated dismissal still meets `fd`.
 
@@ -545,6 +551,22 @@ def _margin_at_budget(curve, fd, floor):
         if y[i] <= t <= y[i + 1]:
             if y[i + 1] == y[i]:
                 return ms[i + 1]
+            # Interpolate only where the grid actually supports it.
+            #
+            # Landing exactly on the budget is fine when the bracketing
+            # points are close together and worthless when they are not: at
+            # n=4096 band 256, B_eff 1.2, the step from margin 0.97 to 1.00
+            # runs 1.45e-3 to 5.62e-2, 39x in one step. Interpolating that to
+            # hit 1e-2 gives 0.9858 with no safety anywhere in it, and the
+            # FIR-search workload then loses 11 of 140 against a 3% budget.
+            #
+            # So above a decade of span the segment is treated as unsampled
+            # and the safe measured end is taken instead. Below it the
+            # interpolation stands, which is where its speed came from --
+            # 2.44x against 1.95x at n=4096 snr 5.5, where the same step
+            # moves dismissal by well under a decade.
+            if y[i + 1] - y[i] > _MARGIN_INTERP_DECADES:
+                return ms[i]
             w = (t - y[i]) / (y[i + 1] - y[i])
             return ms[i] + w * (ms[i + 1] - ms[i])
     return ms[0]
@@ -691,41 +713,24 @@ def choose_config(power, n, snr, fd, tuning=None):
             # best evidence there is, and saying so beats extrapolating
             fq = min(f, max(r[0] for r in rows))
             bq = min(be, max(r[1] for r in rows))
-            cover = [dm for (tf, tbe, dm) in rows
-                     if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
-            if not cover:
+            dm_ = _cover_dismissal(rows, fq, bq)
+            if dm_ is None:
                 continue
-            dcurve.append((margin, max(cover)))
+            dcurve.append((margin, dm_))
 
             crows = []
             for cs in _cost_snrs(t, n, band, U, K, margin, use):
                 crows += t["cost"].get((n, band, U, K, round(cs, 2), margin)) or []
             if not crows:
                 continue
-            # The accuracy rule's covering side, and it is the right one --
-            # but not for the reason it was inherited.
-            #
-            # Cost and dismissal move OPPOSITE ways in f: more power in band
-            # raises the coarse threshold, so fewer pairs escalate and the
-            # configuration is cheaper, while dismissal rises. That argument
-            # says this rule should under-price narrow bands, and it does.
-            #
-            # Three replacements were tried and MEASURED against the real best
-            # of every admissible configuration, at four (n, snr) points:
-            #
-            #     rule                        4096@5.0 4096@6.0 8192@5.0 16384@5.5
-            #     covering (this one)              80%      90%     100%      100%
-            #     pessimistic (f <= ours)          80%      72%      45%       47%
-            #     nearest in (f, beff)             63%      70%      57%       44%
-            #     interpolate in f                 57%      83%      60%      100%
-            #
-            # The theory is right about the direction and wrong about what
-            # follows from it: the rows are sparse and spread over B_eff as
-            # well as f, and every alternative reasoning about f alone lands
-            # on a row describing a different problem. Do not change this on
-            # an argument -- re-run tools/score_cost_rule.py, because the
-            # argument that looked conclusive cost up to 56% of the available
-            # speedup when it was believed.
+            # Covering, for cost, is BACKWARDS -- more power in band means
+            # fewer escalations, so the covering row describes an easier
+            # problem than the query, and it costs up to 10% where two
+            # configurations are close.  Inverse-distance interpolation
+            # scores 98.3% against this rule's 91.0%
+            # (tools/score_cost_rule.py) and is not switched on, because
+            # priced correctly band 256 becomes affordable and the accuracy
+            # side cannot yet vouch for it there.  See docs/hierarchical.md.
             cf = [c for (tf, tbe, c) in crows
                   if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
             ccurve.append((margin,
@@ -829,6 +834,91 @@ def _snr_rows_for(snr, covered, tol=1e-6):
     return (lo, hi), "between measured thresholds %g and %g" % (lo, hi)
 
 
+def _interp_dismissal(rows, f, be, k=4, power=2.0):
+    """Dismissal at (f, B_eff), interpolated from the measured rows.
+
+    `rows` are (f, B_eff, dismissal) at one configuration and margin.
+
+    An ESTIMATE, not a bound, and the caller derates it -- see
+    `_DISMISSAL_DERATE`.  That split is deliberate.  `_cover_dismissal` takes
+    the worst row of a covering set, which reads like a bound and is not one:
+    at B_eff 1.1 it reported 8e-4 against a real 6.4e-2, because the covering
+    set did not bracket the query.  Once a rule is an estimate either way, an
+    interpolated estimate is better information than a deliberately biased
+    one, and it can be derated by a factor that was itself measured.
+
+    Interpolated in LOG dismissal, because it moves by orders of magnitude
+    across the grid while the features move by factors.  Zeros are read as
+    the resolution floor, for the same reason `_margin_at_budget` does: a
+    measured 0.0 means "not resolved", not "cannot happen".
+
+    Inverse distance, in units of each feature's spread, for the reasons
+    given in `_idw_cost`: it is a convex combination of measured rows, so it
+    cannot return a value outside them, where a fitted surface can and does.
+    """
+    if not rows:
+        return None
+    mfs = _spread([r[0] for r in rows])
+    mbs = _spread([r[1] for r in rows])
+    d2 = sorted((((tf - f) / mfs) ** 2 + ((tbe - be) / mbs) ** 2, dm)
+                for (tf, tbe, dm) in rows)
+    near = d2[:max(k, 1)]
+    if near[0][0] < 1e-18:
+        return near[0][1]
+    ws = [(d ** (-0.5 * power), dm) for d, dm in near]
+    tot = sum(w for w, _ in ws)
+    return sum(w * dm for w, dm in ws) / tot
+
+
+def _spread(v):
+    """Scale for one feature axis: its standard deviation, never zero."""
+    if len(v) < 2:
+        return 1.0
+    m = sum(v) / len(v)
+    s = (sum((x - m) ** 2 for x in v) / len(v)) ** 0.5
+    return s if s > 1e-9 else 1.0
+
+
+def _cover_dismissal(rows, f, be):
+    """Worst measured dismissal that speaks for a reference at (f, B_eff).
+
+    `rows` are (f, B_eff, dismissal) at one configuration and margin.
+
+    Dismissal rises with `f`, so rows measured at least as high in `f` bound
+    the query, and the worst of them is the one to believe.  That half is
+    unchanged.
+
+    `B_eff` is not monotonic, and assuming it was is what let a 6.4e-2
+    dismissal be reported as 8e-4.  Measured at n=4096, band 256, f=0.99,
+    margin 1.00:
+
+        B_eff       1.1    1.5    2.0    3.0    5.2     12   25.6   76.4
+        dismissal  6.4e-2 5.3e-2 4.2e-2 3.4e-2 2.4e-2 9.3e-3 7.2e-4    0
+
+    and it turns back up above that, 2.9e-4 at 10 bins to 6.9e-3 at 463, which
+    is the branch the original rule was written against.  Same shape at
+    n=65536 band 256 (4.7e-2) and n=262144 band 1024 (6.7e-2) at B_eff 2, so
+    it is not one length's quirk: a correlation peak spread over one or two
+    coarse bins is wide, and a wide peak is what the decimated grid loses.
+
+    So take the rows at or above the query, AND the nearest row below it.  On
+    the rising branch the rows above dominate and nothing changes.  On the
+    falling branch the row below is the worse one and it is now included,
+    which is the whole point.  Returns None when no row speaks at all.
+    """
+    up = [(tbe, dm) for (tf, tbe, dm) in rows
+          if tf >= f - 1e-9 and tbe >= be - 1e-9]
+    below = [(tbe, dm) for (tf, tbe, dm) in rows
+             if tf >= f - 1e-9 and tbe < be - 1e-9]
+    cover = [dm for _, dm in up]
+    if below:
+        # the nearest one only; reaching further down the falling branch
+        # would price the query against a reference much harder than it is
+        near = max(tbe for tbe, _ in below)
+        cover += [dm for tbe, dm in below if tbe >= near - 1e-9]
+    return max(cover) if cover else None
+
+
 def margin_for_config(power, n, snr, fd, band, oversample, taps, tuning=None):
     """Measured coarse margin for a configuration the CALLER chose.
 
@@ -885,10 +975,9 @@ def margin_for_config(power, n, snr, fd, band, oversample, taps, tuning=None):
         # least as high in both features as this reference
         fq = min(f, max(r[0] for r in rows))
         bq = min(be, max(r[1] for r in rows))
-        cover = [dm for (tf, tbe, dm) in rows
-                 if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
-        if cover:
-            curve.append((margin, max(cover)))
+        dm_ = _cover_dismissal(rows, fq, bq)
+        if dm_ is not None:
+            curve.append((margin, dm_))
     if not curve:
         return None
     m = _margin_at_budget(curve, fd, _dismissal_floor(t))

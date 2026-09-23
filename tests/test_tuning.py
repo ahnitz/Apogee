@@ -183,3 +183,67 @@ def test_autotuning_answers_above_the_table_and_refuses_below():
     p = _inspiral_power(4096)
     assert mf.choose_config(p, 4096, 9.0, 1e-3) is not None
     assert mf.choose_config(p, 4096, 4.0, 1e-3) is None
+
+def test_dismissal_lookup_brackets_below_the_query():
+    """B_eff is not monotonic, so rows above the query are not a bound.
+
+    Measured at n=4096 band 256 f=0.99 margin 1.00, dismissal runs 6.4e-2 at
+    B_eff 1.1 down to 7.2e-4 at 25.6 and back up to 6.9e-3 at 463. Taking
+    only rows at or above the query reported the 8e-4 it could see where the
+    truth was 6.4e-2, which is how a configuration losing 10% of its peaks
+    passed as admissible.
+    """
+    # (f, B_eff, dismissal) on the FALLING branch: worse as B_eff drops
+    rows = [(0.99, 1.2, 5.0e-2), (0.99, 3.5, 3.0e-2), (0.99, 25.6, 7.0e-4)]
+    # a query between the two low rows must see the worse one below it
+    got = mf._cover_dismissal(rows, 0.99, 2.0)
+    assert got == pytest.approx(5.0e-2), got
+    # sitting above every row, the rows above are empty and the nearest
+    # below still speaks
+    assert mf._cover_dismissal(rows, 0.99, 30.0) == pytest.approx(7.0e-4)
+    # on the rising branch the rows above dominate, so nothing changes
+    rise = [(0.99, 10.0, 3.0e-4), (0.99, 100.0, 2.0e-3), (0.99, 460.0, 7.0e-3)]
+    assert mf._cover_dismissal(rise, 0.99, 50.0) == pytest.approx(7.0e-3)
+    # and a query no row speaks for returns None rather than a guess
+    assert mf._cover_dismissal([(0.80, 10.0, 1e-3)], 0.99, 5.0) is None
+
+
+def test_margin_interpolation_refuses_an_unsampled_segment():
+    """Interpolating onto the budget needs the segment to be sampled.
+
+    At n=4096 band 256 B_eff 1.2 the step from margin 0.97 to 1.00 runs
+    1.45e-3 to 5.62e-2. Interpolating that to land on 1e-2 returns 0.9858
+    with no safety in it, and the FIR-search workload then loses 11 of 140
+    against a 3% budget.
+    """
+    floor = 7.5e-4
+    steep = [(0.97, 1.45e-3), (1.00, 5.62e-2)]      # 39x in one step
+    assert mf._margin_at_budget(steep, 1e-2, floor) == pytest.approx(0.97)
+
+    # under a decade the interpolation stands; that is where its speed came
+    # from, 2.44x against 1.95x at n=4096 snr 5.5
+    gentle = [(0.90, 3.0e-3), (0.94, 9.0e-3)]
+    got = mf._margin_at_budget(gentle, 6.0e-3, floor)
+    assert 0.90 < got < 0.94, got
+
+    # the guard must not fire where no interpolation happens at all
+    assert mf._margin_at_budget([(0.90, 1e-4), (1.00, 5e-4)], 1e-2,
+                                floor) == pytest.approx(1.00)
+
+
+def test_low_beff_rows_exist_where_real_references_live():
+    """The shipped table must reach the B_eff that real references have.
+
+    Both the FIR-search reference (1.1) and the tests' inspiral reference
+    (1.9) sit below the fractional ladder's floor at every band. A table
+    that stops at band/10 cannot say anything about either.
+    """
+    t = mf._load_tuning()
+    floors = {}
+    for r in t["fdr"]:
+        key = (r[0], r[1])
+        floors[key] = min(floors.get(key, 1e9), r[6])
+    assert floors, "no accuracy rows loaded"
+    bad = {k: v for k, v in floors.items() if v > 4.0}
+    assert not bad, "B_eff floor above 4 for %d (n, band) pairs: %s" % (
+        len(bad), sorted(bad.items())[:4])

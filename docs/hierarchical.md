@@ -270,12 +270,51 @@ more conservative -- lost four times as many as the default.  A lower
 threshold cannot lose more triggers; a different configuration can.  The
 override is monotonic by construction, which `tests/test_api.py` checks.
 
-## Interpolating cost works; shipping it is blocked on an accuracy gap
+## Dismissal is U-shaped in B_eff, and the grid never reached the bad branch
 
-The covering rule is backwards for cost, so the obvious repair is to
-interpolate instead of substituting a row.  Scored by
-`tools/score_cost_rule.py` against the measured best of every admissible
-configuration:
+The accuracy grid samples B_eff as a FRACTION of the band, so its floor sits
+near band/10 -- 25.6 at band 256, 3328 at band 32768.  The damaging branch is
+at small ABSOLUTE B_eff, which a fractional ladder never reaches, and real
+references live there: the FIR-search reference is at B_eff 1.1 and the
+tests' inspiral reference at 1.9, at every band.
+
+Measured at n=4096, band 256, f=0.99, margin 1.00:
+
+    B_eff       1.1    1.5    2.0    3.0    5.2     12   25.6   76.4
+    dismissal  6.4e-2 5.3e-2 4.2e-2 3.4e-2 2.4e-2 9.3e-3 7.2e-4    0
+
+and above that it turns back up, 2.9e-4 at 10 bins to 6.9e-3 at 463 -- the
+branch this file already described.  Same shape at n=65536 band 256 (4.7e-2)
+and n=262144 band 1024 (6.7e-2) at B_eff 2, so it is not one length's quirk.
+A correlation peak spread over one or two coarse bins is a wide peak, and a
+wide peak is what a decimated grid loses.
+
+Three things follow, and all three are now in the code.
+
+**The grid goes down.** An absolute low ladder at B_eff 1.2 and 3.5, at
+f=0.99, for every (n, band).  Only f=0.99: dismissal rises with f, so that
+row bounds any query at or below it, and a reference concentrated enough to
+have low B_eff has high f by construction.
+
+**The covering rule brackets.** Taking the worst row at or ABOVE the query
+in B_eff is a bound on the rising branch and an understatement on the
+falling one -- at B_eff 1.1 it reported the 8e-4 it could see against a real
+6.4e-2.  `_cover_dismissal` now also includes the nearest row below the
+query, which changes nothing on the rising branch and is the whole point on
+the falling one.
+
+**Margin interpolation needs a sampled segment.** Landing exactly on the
+budget is fine when the bracketing points are close and worthless when they
+are not.  At band 256, B_eff 1.2 the step from margin 0.97 to 1.00 runs
+1.45e-3 to 5.62e-2 -- 39x in one step -- and interpolating that to hit 1e-2
+returns 0.9858 with no safety in it at all.  Above a decade of span the
+segment is now treated as unsampled and the safe measured end is taken.
+Below it the interpolation stands, which is where its speed came from.
+
+## Interpolating cost works and is still not switched on
+
+Inverse-distance interpolation in (f, B_eff) scores 98.3% of the measured
+best against the covering rule's 91.0%:
 
     rule                    4096@5.0 4096@6.0 8192@5.0 16384@5.5  mean
     covering (shipped)          79%      88%     100%       97%   91.0%
@@ -285,34 +324,33 @@ configuration:
     plane fit in (f, beff)     100%     100%      50%       41%   72.8%
     inverse distance (f,beff)  100%     100%      93%      100%   98.3%
 
-Two results worth keeping separately.  Interpolating in `f` alone loses to
-covering, which is what was measured the first time this was tried and is
-explained by the isolation above: both features carry the effect.  And the
-choice of interpolator matters more than the choice to interpolate -- a
-least-squares plane extrapolates past the edge of the data and picks band
-256 at n=8192 and n=16384, where the measured best is 4096 and 2048.  An
+Interpolating `f` alone loses to covering, which is what was measured the
+first time it was tried and is explained by the isolation below: both
+features carry the effect.  The interpolator matters as much as the decision
+to interpolate -- a least-squares plane extrapolates past the edge of the
+data and picks band 256 where the measured best is 4096, while an
 inverse-distance weight is a convex combination of measured rows and cannot
-return a cost below any of them, so that failure mode does not exist.
+return a cost below any of them.
 
-It is not shipped, because switching to it breaks
-`test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not`:
-14 of 140 peaks omitted against a 3% budget.  Not a cost problem.  Priced
-correctly, band 256 becomes affordable and gets selected, and at band 256
-the FIR-search reference has B_eff = 1.1 against an accuracy grid whose
-smallest measured value is 5.2.  The accuracy side clamps to the grid and
-takes the worst measured row, 8e-4, where the real loss is 10%.
+It is still not switched on, and the reason moved rather than went away.
+Priced correctly, band 256 becomes affordable and gets selected.  With the
+low-B_eff rows and both guards above in place, selection takes band 256 at
+margin 0.963, the table says that cell dismisses 1.45e-3, and the
+FIR-search workload loses 9 of 140 -- 6.4% against a 3% budget.
 
-The obvious guard -- refuse a configuration whose query falls below the
-measured grid -- was tried and is wrong: it also refuses six cases that work
-today, because dismissal RISES with both features, so below-grid is supposed
-to be the conservative direction.  At B_eff = 1.1 it is not, and the reason
-is not yet understood.  Until it is, the covering cost rule stays, and it is
-worth naming why: its pessimism about band 256 is load-bearing for a
-correctness property it has nothing to do with, and interpolation removes
-that by accident.
+So the remaining gap is not the lookup any more.  It is that the measured
+cell does not predict that workload: `measure()` injects at exactly `snr`
+into a template whose own power equals the reference, over the full lag
+range, while the workload is broadband ratio filters on a coloured series
+with per-block windows and peaks spread across a range of strengths.  Same
+class of problem as the cost table's -- a number measured correctly at one
+operating point and read at another -- and the same method will settle it:
+vary one thing at a time between the two harnesses until the 1.45e-3 and the
+6.4% meet.
 
-So the order of work is accuracy first, cost second.  The 7 points on the
-table above are real and waiting.
+Until then the covering cost rule stays.  Its pessimism about band 256 is
+load-bearing for a correctness property it has nothing to do with, which is
+worth knowing about any conservative default.
 
 ## The cost table is right about its rows and wrong about the query
 
