@@ -10,7 +10,7 @@
 // fused against (corr + reduce) is the honest comparison: the second pair
 // is what calling a vendor FFT and reducing afterwards costs.
 
-static const uint N = 2048;          // spike length
+static const uint N = 1024;          // spike length
 static const uint WG = 256;          // threads per workgroup
 static const uint PER = N / WG;      // points per thread
 

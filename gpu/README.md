@@ -78,3 +78,79 @@ dependent-free FMA chain, so there is roughly 6x still on the table.
   n>=4096, not at n=1048576 as the plan implied -- and that is the same
   decomposition the CPU already uses, for the same reason in a different
   memory.
+
+## How close to optimal? Against rocFFT, not against FMA peak
+
+"15% of FMA peak" says nothing on its own: an FFT is LDS- and
+bandwidth-bound, not FMA-bound. `rocfft_ref.py` measures AMD's own tuned
+library on this device for the same 512 inverse transforms of length 1024:
+
+    rocFFT          0.0517 ms   transform only
+    fused kernel    0.035  ms   transform + conjugate multiply + peak scan
+
+**1.48x faster than rocFFT while doing strictly more work**, and the gap
+would widen once rocFFT is given the multiply and reduction kernels it
+would need alongside. rocFFT moves 8 MB per dispatch and runs at 155 GB/s
+against this device's 187 GB/s ceiling -- it is bandwidth-bound, which is
+the whole argument for fusing. rocFFT reaches 9.3% of FMA peak on this
+problem; we reach 15.5%. So the yardstick was wrong, not the kernel.
+
+## The hierarchical filter, fused across a batch tile
+
+`hierarchical.slang`. One workgroup owns a tile of the batch and does both
+stages without leaving the workgroup: every coarse transform in the tile at
+once with all lanes busy, then the survivors IN THAT TILE one at a time at
+full length and full thread count. No compaction through global memory and
+no second dispatch.
+
+Measured at 8192 pairs (32 data x 256 templates), n=1024, coarse band 256,
+inspiral-like reference with a seismic knee, in-band fraction 0.988:
+
+    flat, every pair at full length      0.467 ms   8192/8192 peaks exact
+    hierarchical, 6.8% escalating        0.238 ms   1.96x, 0 missed, 0 invented
+      of which the coarse pass alone     0.180 ms
+
+Correct is the first claim: no peak above threshold is missed and none is
+invented, at every coarse threshold tried.
+
+## Two traps this cost, both worth remembering
+
+**Batch size decides the answer.** At 512 pairs the hierarchical filter was
+3x SLOWER than flat, and the reason was not arithmetic: tiling cuts the
+workgroup count, and 128 workgroups do not fill 40 CUs. At 8192 pairs it is
+2x faster. Any measurement of a tiled GPU kernel on a batch that does not
+fill the device is measuring occupancy, not the algorithm.
+
+**A stale constant made the baseline meaningless.** The flat kernel's
+length was left at 2048 from an earlier sweep while the data was 1024, and
+it reported a baseline 2.8x too slow -- which would have flattered the
+hierarchical result to 5.6x. It was caught only because the same harness
+also prints how many peak indices match the float64 reference, and it said
+9 of 8192. Every timing here is paired with that check for exactly this
+reason.
+
+## Where the remaining performance is
+
+Both phases carry about 2x of overhead against their own ideal:
+
+    phase 1  0.180 ms measured against ~0.093 ms if it cost the 1/5 of a
+             full transform that its size implies
+    phase 2  0.058 ms measured against ~0.032 ms for 6.8% of the flat work
+
+Three things to try, in the order they look worth it:
+
+1. **Register-resident coarse transforms.** 256 points over 32 threads is 8
+   points per thread -- a radix-8 butterfly in registers with ONE trip
+   through LDS, instead of four stages each reading and writing it. This is
+   the CPU's four-step idea (independent transforms in the lanes) applied
+   to the small pass.
+2. **Data and template reuse across a tile.** Every pair currently reloads
+   both spectra from global memory. A (d_tile x t_tile) tile reads
+   d_tile + t_tile spectra to do d_tile * t_tile pairs; the roofline work
+   in docs/plans/gpu.md puts the span of that choice at 7x.
+3. **Load balance in phase 2.** Survivors are Poisson across tiles, so a
+   tile with three costs three times one with none, and the dispatch waits
+   for the worst. A global worklist with a second dispatch balances
+   perfectly at the cost of the round trip the current design avoids --
+   which of those wins is a measurement, and it will depend on escalation
+   rate.
