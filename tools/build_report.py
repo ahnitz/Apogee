@@ -576,7 +576,17 @@ def workload_note(runs, kind):
         return ""
     txt = ", ".join("%d data segments x %d templates = %d pairs"
                     % (d, t, d * t) for d, t in shapes)
-    return ('<div class="note"><strong>Workload.</strong> %s, single-threaded, '
+    lag = ('<div class="note"><strong>Lag window.</strong> Peaks are searched '
+           'over the middle 60% of lags, not all n. An overlap-save search '
+           'cannot use the wrap-around region, and searching it anyway is not '
+           'free here: every extra lag is another chance for a noise sample to '
+           'clear the coarse threshold and force a reconstruction no real '
+           'search would have asked for. Measured at n=4096, band 512, 18.8% '
+           'of pure-noise pairs escalated over all lags against 6.2% over a '
+           'realistic window. The flat filter always used a window; the '
+           'hierarchical one did not, which made the two halves of this '
+           'benchmark disagree about what the workload was.</div>')
+    return (lag + '<div class="note"><strong>Workload.</strong> %s, single-threaded, '
             'complex64 throughout. Batch shape matters: filtering D segments '
             'against T templates together is faster than the same pairs one '
             'at a time -- a d-by-t tile reads d+t operands to produce d*t '
@@ -664,6 +674,58 @@ def bench_what(runs):
               'compare kernels. Rows with different prefixes ran on different '
               'runners and compare machines at least as much as kernels. '
               'A platform that is absent did not report; it did not pass.</div>')
+
+
+def reference_note(runs):
+    """State the synthetic workload's reference, computed at build time.
+
+    The hierarchical speedup depends on the reference more than on anything
+    else the benchmark controls, so a number without it is not interpretable.
+    These are computed by calling the same function the benchmark calls, so
+    they cannot drift from it -- which they did: the reference used to be the
+    raw f^(-7/3) TEMPLATE power rather than the matched-filter OUTPUT power,
+    giving an effective bandwidth of 1.9 bins against 141 for a real captured
+    reference, and every published speedup was optimistic as a result.
+    """
+    try:
+        from matchedfilter.benchmark import _inspiral_power
+        import matchedfilter as _mf
+    except Exception:
+        return ""
+    ns = sorted({h["n"] for r in runs for h in r.get("hierarchical", [])})
+    n = 4096 if 4096 in ns else (ns[0] if ns else 4096)
+    p = _inspiral_power(n)
+    #: Measured on a captured pycbc_inspiral_fir reference at n=4096. The
+    #: synthetic model is least-squares fitted to these.
+    captured = {256: (0.7956, 141.4), 512: (0.9335, 190.2), 1024: (0.9875, 212.5)}
+    rows = []
+    for m in (256, 512, 1024):
+        if m >= n:
+            continue
+        f, be = _mf._band_features(p, m)
+        c = captured.get(m)
+        rows.append([str(m), "%.4f" % f, "%.0f" % be,
+                     "%.4f" % c[0] if c else "-", "%.0f" % c[1] if c else "-"])
+    return ('<h3>The reference these numbers assume</h3>'
+            '<p>The hierarchical filter chooses its configuration from a '
+            '<em>reference</em>: the expected power of the filter output, bin '
+            'by bin. Everything on this page depends on it more than on any '
+            'other choice here, because it decides how narrow a first pass can '
+            'be. The benchmark uses a synthetic inspiral-like output spectrum '
+            '-- <code>|h(f)|^2 / S(f)</code>, an f<sup>-7/3</sup> signal '
+            'divided by a noise wall that rises below the seismic knee -- '
+            'fitted by least squares to a reference captured from a real '
+            'search. At n=%d:</p>' % n
+            + table(["band", "in-band fraction", "B_eff (bins)",
+                     "captured fraction", "captured B_eff"], rows)
+            + '<div class="note">B_eff is the effective bandwidth of the '
+              'in-band power, and it sets how sharp the correlation peak is, '
+              'which is what decides whether a coarse lag grid can find it. '
+              'A reference concentrated in a couple of bins gives a maximally '
+              'broad peak that the coarse pass catches for free -- so getting '
+              'this wrong flatters the filter rather than penalising it. '
+              'Your own templates will differ; measure against them before '
+              'relying on these ratios.</div>')
 
 
 def bench_speedup(runs, names):
@@ -895,6 +957,7 @@ def hier_benchmarks_page(runs):
          'straight into the ratio, which on a shared runner is the dominant '
          'error.</div>']
     o.append(bench_speedup(runs, names))
+    o.append(reference_note(runs))
     o.append(details("All numbers (%d rows)" % len(hier), bench_hier_raw(runs)))
     return "".join(o)
 

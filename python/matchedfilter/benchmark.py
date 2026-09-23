@@ -245,7 +245,7 @@ def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
     return best / pairs * 1e6, refs, ok
 
 
-def _inspiral_power(n, frac=0.85, fmax_frac=0.125, knee_frac=0.019):
+def _inspiral_power(n, frac=0.895, fmax_frac=0.125, knee_frac=0.0150):
     """Expected matched-filter OUTPUT power, as set_reference wants it.
 
     This is |h(f)|^2 / S(f), NOT |h(f)|^2. The distinction is the one the
@@ -268,7 +268,20 @@ def _inspiral_power(n, frac=0.85, fmax_frac=0.125, knee_frac=0.019):
 
     `frac` still fixes how much power sits below `fmax_frac`, because a fixed
     exponent alone would put 99% below n/8 at n=2^20 and 60% at n=2^11, so the
-    lengths would be measuring different problems.
+    lengths would be measuring different problems. Its value and the knee are
+    FITTED to the captured reference rather than chosen: least squares on
+    (f, B_eff) at bands 256/512/1024 gives frac=0.895, knee=0.0150 and a 4.9%
+    rms relative error --
+
+        band      this model            captured
+        256       0.8248 / 154.4        0.7956 / 141.4
+        512       0.8950 / 180.8        0.9335 / 190.2
+        1024      0.9702 / 211.8        0.9875 / 212.5
+
+    The previous frac=0.85 was inherited, and it mattered: it put 85% of the
+    power below n/8 where a real reference has 93%, which lowered the coarse
+    threshold enough to escalate 18.8% of pure-noise pairs against 1.2% on the
+    captures at the same band and margin.
     """
     k = np.arange(1, n // 2, dtype=np.float64)
     knee = max(2.0, knee_frac * n)
@@ -447,8 +460,17 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     # loops straight into the speedup -- on a shared CI runner that is the
     # dominant error. Within a rep the two run back to back under the same
     # conditions, so clock and neighbours are common to both and cancel.
-    flat_run = lambda: flat.run(binsize=n, threshold=snr)
-    hier_run = lambda: hf.run(binsize=n, threshold=snr)
+    # Same lag window the flat benchmark uses. Searching all n lags, as this
+    # did, is not something an overlap-save search does -- the wrap-around
+    # region is invalid -- and it inflates the coarse pass's work: every extra
+    # lag is another chance for a noise sample to clear the coarse threshold
+    # and force a reconstruction that a real search would never have asked
+    # for. Measured at n=4096, band 512: 18.8% of pure-noise pairs escalated
+    # over all lags against 6.2% over a realistic window.
+    ws = int(0.2 * n) & ~15
+    we = ws + (int(0.6 * n) & ~15)
+    flat_run = lambda: flat.run(binsize=n, threshold=snr, window=(ws, we))
+    hier_run = lambda: hf.run(binsize=n, threshold=snr, window=(ws, we))
     tfs, ths, ratios = [], [], []
     for _ in range(max(3, reps)):
         a = per_call(flat_run)
