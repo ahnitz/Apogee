@@ -402,6 +402,12 @@ def _cost_snrs(t, n, band, U, K, margin, want):
     return (min(have, key=lambda h: abs(h - max(want))),)
 
 
+#: Cost differences inside this fraction are treated as a tie. The cost rows
+#: are pivot-relative ratios whose residual spread across repeats is 2-3%, so
+#: anything smaller is below what the table can resolve.
+_COST_TIE = 0.05
+
+
 def _margin_at_budget(curve, fd, floor):
     """Largest coarse margin whose interpolated dismissal still meets `fd`.
 
@@ -632,7 +638,25 @@ def choose_config(power, n, snr, fd, tuning=None):
         # and gets the ranking wrong: those two differ by 19.1% against 12.1%
         # escalation at n=4096 snr 5.5.
         c = _cost_at_margin(ccurve, margin)
-        if c < bcost:
+        # Near-ties go to the higher margin, which is the more robust choice.
+        #
+        # The cost rows are ratios with a residual spread of 2-3%, so a gap
+        # that small is not a ranking -- it is noise, and following it is a
+        # coin flip. Measured at n=4096 snr 6.0: the table separates
+        # 512/2/8 m0.907 (0.716) from 512/2/4 m1.000 (0.741) by 3.5% and puts
+        # them the wrong way round; the real gap is 10.6% the other way.
+        #
+        # A higher margin means a higher coarse threshold, so fewer pairs
+        # escalate. That is worth having for its own sake when the price is
+        # inside the measurement error: escalation is the part of the cost
+        # that depends on the caller's data rather than on the machine, so the
+        # higher-margin configuration is the one whose measured cost will
+        # still hold on data that is not the design case.
+        if c < bcost * (1.0 - _COST_TIE) or (
+                best is not None and c < bcost * (1.0 + _COST_TIE)
+                and margin > bmargin + 1e-9):
+            best, bcost, bmargin = (band, U, K), min(c, bcost), margin
+        elif best is None:
             best, bcost, bmargin = (band, U, K), c, margin
     if best is None:
         return None
