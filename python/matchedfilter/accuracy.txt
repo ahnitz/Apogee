@@ -1,6 +1,6 @@
 # matchedfilter ACCURACY table -- false dismissal, measured
 #
-# commit  0281542
+# commit  398fa6f
 # trials  1024:4000, 2048:4000, 4096:4000, 8192:4000, 16384:4000, 32768:2500, 65536:2500, 131072:1500, 262144:1500 injected per cell, by transform length
 #
 # A property of the ALGORITHM, not of any machine. Regenerate only when the
