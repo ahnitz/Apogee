@@ -104,6 +104,22 @@ Make sure the Python is itself arm64 (`python -c "import platform;
 print(platform.machine())"` prints `arm64`); an x86-64 Python running under
 Rosetta will build the x86 kernels instead.
 
+### On the Apple GPU
+
+On macOS the same build also produces a Metal back end with the same API.
+It is 6-13x faster than one CPU thread on an M2, and 2-3.5x faster than all
+four performance cores:
+
+```python
+from matchedfilter import metal
+filt = metal.MatchedFilter(16384, ndata=16, ntemplates=256)   # same API
+```
+
+No Xcode is needed; the kernels compile at run time. Give it whole banks per
+call, since each call has a fixed cost of about 200 us. See
+[docs/metal.md](docs/metal.md) for the design, measurements and caveats, and
+`python -m matchedfilter.benchmark_metal` to measure your own machine.
+
 ## Documentation
 
 | | |
