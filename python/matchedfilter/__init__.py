@@ -421,6 +421,34 @@ def choose_config(power, n, snr, fd, tuning=None):
             crows += t["cost"].get((n, band, U, K, round(cs, 2), margin)) or []
         if not crows:
             continue
+        # The accuracy rule's covering side, and it is the right one -- but
+        # not for the reason it was inherited.
+        #
+        # Cost and dismissal move OPPOSITE ways in f: more power in band
+        # raises the coarse threshold, so fewer pairs escalate and the
+        # configuration is cheaper, while dismissal rises. That argument says
+        # this rule should under-price narrow bands, and it does: at n=4096
+        # snr 5.0 it picks 1024/2/8 at 1.29x where 2048/2/8 measures 1.60x.
+        #
+        # Three replacements were tried and MEASURED against the real best of
+        # every admissible configuration, at four (n, snr) points:
+        #
+        #     rule                        4096@5.0  4096@6.0  8192@5.0  16384@5.5
+        #     covering (this one)              80%       90%      100%       100%
+        #     pessimistic (f <= ours)          80%       72%       45%        47%
+        #     nearest in (f, beff)             63%       70%       57%        44%
+        #     interpolate in f                 57%       83%       60%       100%
+        #
+        # So the theory is right about the direction and wrong about what
+        # follows from it. The rows are sparse and spread over B_eff as well
+        # as f, and every alternative that reasons about f alone lands on a
+        # row describing a different problem. Taking the worst of the rows
+        # that dominate the reference in BOTH features is crude, but it is the
+        # only one of the four that is never far wrong.
+        #
+        # Do not change this on an argument. Re-run tools/scorerule-style
+        # measurement, because the argument that looked conclusive here cost
+        # up to 56% of the available speedup when it was believed.
         cf = [c for (tf, tbe, c) in crows if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
         c = max(cf) if cf else max(c for (_, _, c) in crows)
         if c < bcost:

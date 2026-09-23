@@ -275,3 +275,37 @@ def test_binsize_one_reports_every_lag():
     assert np.array_equal(pk["index"][0, 0], np.arange(n))
     z = np.fft.ifft(d[0].astype(np.complex128) * np.conj(h[0].astype(np.complex128))) * n
     assert np.allclose(pk["magnitude"][0, 0], np.abs(z), rtol=3e-5, atol=1e-6)
+
+
+def test_the_magnitude_underflow_cliff_is_where_it_is_expected():
+    """`magnitude` underflows below about 3.7e-23, and `value` does not.
+
+    The peak scan selects on |v|^2 in float32. The smallest float32 subnormal
+    is 1.4e-45, so |v|^2 flushes to zero once |v| falls below its square root
+    -- about 3.7e-23 -- while `value` itself is representable for another
+    seventeen orders of magnitude. Below the cliff the filter reports nothing
+    rather than something wrong, which is the right failure, but it is a cliff
+    and it is nowhere near the subnormal boundary a reader would assume.
+
+    Pinned here so a change to the scan moves this deliberately. Matched
+    filter inputs are normally O(1), so nothing real is near it.
+    """
+    n, lag = 1024, 321
+    rng = np.random.default_rng(8)
+    h = (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64)
+    h /= np.linalg.norm(h)
+    ramp = np.exp(-2j * np.pi * lag * np.arange(n) / n)
+
+    def at(scale):
+        d = (np.float32(scale) * h * ramp).astype(np.complex64)
+        f = mf.MatchedFilter(n, 1, 1)
+        f.set_data(d[None, :])
+        f.set_templates(h[None, :])
+        pk = f.run(binsize=n, threshold=0.0)
+        return float(pk["magnitude"][0, 0, 0]), abs(complex(pk["value"][0, 0, 0]))
+
+    m, v = at(1e-20)
+    assert m == pytest.approx(1e-20, rel=1e-2), "well above the cliff"
+    m, v = at(1e-24)
+    assert m == 0.0, "below the cliff the magnitude flushes"
+    assert v > 0.0, "but the complex value survives, so nothing is silently wrong"
