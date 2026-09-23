@@ -545,3 +545,53 @@ The three over the line are the early versions. The chunked exchange that
 bought 2.71x also brought the current kernel to 9 KB, so the fastest path
 is also the portable one -- which is a happy accident worth not relying
 on next time.
+
+## Tier B: one kernel for every length a workgroup can carry
+
+`tierb.slang`. The decomposition verified in `decomposition.py`, written
+out: L = TB*16 with TB threads holding 16 points each, a 16-point DFT per
+thread over its stride-TB column, a twiddle, an exchange, then TB-point
+transforms per block carried by TB/16 threads, recursing until TB <= 16.
+
+    n        threads   max rel err   status
+    1024        64      2.83e-07     OK
+    2048       128      2.49e-07     OK
+    4096       256      2.57e-07     OK
+    8192       512      3.54e-07     OK
+    16384     1024          --       crashes: see below
+
+Three bugs on the way, all of which the Python simulation caught or would
+have:
+
+**Registers cannot be indexed dynamically.** `dftm(r, b*TB, TB)` with a
+runtime offset and length spills the register array to scratch; the driver
+crashed. Every size and offset now folds at compile time, and every loop
+touching the array carries `[unroll]` -- thirteen of them. Miss one and
+the array silently leaves registers.
+
+**Scatter and gather need different indices.** Writing the transpose and
+reading it back with one set of block/lane values gathers from the wrong
+block. Wrong peak, no other symptom.
+
+**The innermost level needs its exchange too.** After the dft16 a thread
+holds A[lane][k2] for its own lane, and the next DFT is over lane, which
+lives ACROSS threads. Transforming a thread's own registers there
+transforms the wrong axis: the peak came out about 15% low and nothing
+else looked wrong. Found by simulating the shader's index arithmetic in
+numpy and comparing to the reference, not on the device.
+
+## What n=16384 needs
+
+    n        sh[] declared
+    1024       8 KB     fine everywhere
+    2048      16 KB     fine
+    4096      32 KB     at Apple's limit
+    8192      64 KB     AMD and NVIDIA only
+    16384    128 KB     over every limit -- this is the crash
+
+The threadgroup array is sized to the transform, which does not scale. The
+fix is the one that already bought 2.71x at n=4096: stage the exchange in
+chunks so the buffer is a fixed 8 KB whatever the length. That makes 16384
+possible and brings 4096 and 8192 back under Apple's 32 KB at the same
+time. It is the next piece of work, and it is a change to `scatter` and
+`gather` alone.
