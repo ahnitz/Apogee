@@ -246,3 +246,58 @@ things stand between here and there:
    60%. Persistent workgroups pulling from a queue, or an indirect
    dispatch sized to the actual survivor count rather than the whole
    batch, are the obvious next things.
+
+## n=4096, and matching the CPU's speedup
+
+`fourstep_4096.slang`. A double-buffered Stockham at 4096 points wants the
+entire 64 KB of threadgroup memory and does not launch, so the four-step is
+required rather than merely faster -- and it nests. N = 256*16 where the
+length-256 half is itself a 16x16 four-step, so the whole transform is three
+rounds of a 16-point DFT held in registers with two transposes through
+shared memory. The CPU's balanced split, applied twice.
+
+Correct to 3.4e-07. LDS 32 KB + 1 KB of reduction scratch.
+
+With the coarse pass at band 256 -- the ratio the CPU's pycbc case actually
+uses -- `hier4096.py`:
+
+    2048 pairs, 3.1% escalating, 0 missed, 0 invented
+    flat            0.648 ms
+    hierarchical    0.100 ms      6.51x
+
+    CPU pycbc, same band/n, 9.4% escalating     6.03x
+
+So the GPU now reaches the speedup the CPU gets, which was the bar. Both
+are instruction-bound and the same structural benefit is available to both,
+as expected.
+
+There is still 2x in it: 6.51x against an ideal of 13.71x for this
+escalation rate is 47%, where the CPU reaches 82% of its own ideal. The
+gap is the coarse pass and the reduction, not the transform.
+
+## Three bugs worth keeping, all silent
+
+**A gather/scatter race.** Every round reads its points from shared memory
+into registers and writes them back permuted. Without a barrier between,
+one thread overwrites an address another has not read. At 256 points this
+was invisible because 16 threads run in lockstep inside one wave; at 4096
+there are eight waves and it appeared immediately.
+
+**A wave-width assumption.** The cross-wave reduction did
+`if (WaveIsFirstLane()) sh[tid / 32] = best`, which assumes wave32. RADV
+can compile compute as wave64, and then only every other slot was written
+while the rest still held transform output -- so the reported peak came out
+LARGER than the true one, which is the one direction a peak finder must
+never fail in. Wave width is not a portable constant: Metal's SIMD group is
+32, AMD's is 32 or 64 at the compiler's discretion. The reduction is now a
+tree through scratch, which costs throughput (1205 -> 863 GFLOP/s) and is
+correct on any width.
+
+**A buffer-aliasing overrun.** Phase 2 of the fused kernel takes its two
+Stockham buffers as halves of the tile array, which needs TILE*BAND >= 2N.
+At TILE=4 that is 1024 < 2048; the halves overlapped and ran past the end.
+327 peaks missed and 148 invented, no crash, no validation error.
+
+All three were caught by the same thing: every timing in these harnesses is
+printed next to a count of how many peak indices match a float64 reference.
+None of them would have been caught by a benchmark alone.
