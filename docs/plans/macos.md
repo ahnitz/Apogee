@@ -1,6 +1,20 @@
 # macOS on the GPU
 
-> **Status: not implemented.** The wheel installs and the CPU path works on a
+> **Status: written, never executed.** The detection, the runtime and the
+> kernels all exist and ship; none of it has run, because there is no Apple
+> hardware on the development machine. The macOS CI job is what will say
+> whether it works.
+
+> **Is there even a GPU on a hosted runner?** Yes, apparently: `macos-latest`
+> exposes an *Apple Paravirtual device*, and MSL compilation and
+> command-buffer submission are reported working on it. Older images returned
+> nil from `MTLCreateSystemDefaultDevice`, which resolves the DISPLAY device
+> and is nil without a window-server session -- so the code falls back to
+> `MTLCopyAllDevices`. The feature most suspected of being absent on a
+> paravirtual device is simdgroup MATRIX operations; this kernel uses
+> `simd_max`, a plain reduction, and not those.
+
+> **Superseded below.** The wheel installs and the CPU path works on a
 > Mac; `device="gpu"` refuses because no Vulkan loader is found. This is what
 > it would take, with the parts that are already done marked.
 

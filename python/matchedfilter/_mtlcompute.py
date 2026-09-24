@@ -128,8 +128,15 @@ class Context:
         self.o.metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
         self.device = self.o.metal.MTLCreateSystemDefaultDevice()
         if not self.device:
-            raise MetalError("no Metal device: MTLCreateSystemDefaultDevice "
-                             "returned nothing")
+            # See _metal._first_of_all_devices: the system default is the
+            # DISPLAY device and is nil without a window-server session.
+            from . import _metal
+            self.device = _metal._first_of_all_devices(self.o.objc,
+                                                       self.o.metal)
+        if not self.device:
+            raise MetalError("no Metal device: neither "
+                             "MTLCreateSystemDefaultDevice nor "
+                             "MTLCopyAllDevices returned one")
         self.name = self.o.to_str(self.o.call(self.device, b"name"))
         self.queue = self.o.call(self.device, b"newCommandQueue")
         if not self.queue:
@@ -200,6 +207,17 @@ class Context:
         if not pso:
             raise MetalError("could not build a pipeline for %s: %s"
                              % (stem, self._error(err)))
+        # A paravirtual device may allow fewer threads per threadgroup than
+        # real hardware, and n=16384 wants the full 1024. Asking the PIPELINE
+        # rather than the device is what matters: the limit depends on the
+        # compiled kernel's register use, not only on the hardware.
+        limit = int(self.o.call(pso, b"maxTotalThreadsPerThreadgroup",
+                                restype=ctypes.c_ulong))
+        if limit < n // 16:
+            raise MetalError(
+                "n=%d needs a %d-thread threadgroup and this pipeline allows "
+                "%d on %s; use a shorter transform or device='cpu'"
+                % (n, n // 16, limit, self.name))
         self._pipelines[key] = pso
         return pso
 

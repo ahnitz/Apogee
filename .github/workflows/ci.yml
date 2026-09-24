@@ -128,13 +128,24 @@ jobs:
 
   metal:
     name: macOS GPU (Metal)
-    runs-on: macos-14          # Apple silicon, so there is a real GPU
+    # macos-latest: the paravirtual Metal device is reported working there,
+    # and older images returned nil from MTLCreateSystemDefaultDevice.
+    runs-on: macos-latest
     timeout-minutes: 30
-    # This job is EXPECTED TO FAIL until the Metal runtime exists, and that
-    # is the point of having it. There is no Apple hardware on the
-    # development machine, so every claim about the Metal path is currently
+    # The runtime now exists but has never executed: there is no Apple
+    # hardware on the development machine, so every claim about this path is
     # a claim about generated source rather than about something that ran.
-    # A failure here is information we do not otherwise have.
+    #
+    # A GPU should be there. Hosted macOS runners expose an "Apple
+    # Paravirtual device" -- MSL compilation and command-buffer submission
+    # are reported working -- though MTLCreateSystemDefaultDevice returned
+    # nil on older images, which is why the code also tries
+    # MTLCopyAllDevices. Simdgroup MATRIX operations are the feature most
+    # suspected of being missing on a paravirtual device; this kernel uses
+    # simd_max, a plain reduction, not those.
+    #
+    # Still continue-on-error: whichever way it goes, the output is
+    # information nobody currently has.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

@@ -33,6 +33,29 @@ def _nsstring(objc, obj, selector):
         if ptr else ""
 
 
+def _first_of_all_devices(objc, metal):
+    """The first device MTLCopyAllDevices reports, or None.
+
+    macOS only -- the call does not exist on iOS, which is why Metal code
+    usually reaches for the system default first.
+    """
+    if not hasattr(metal, "MTLCopyAllDevices"):
+        return None
+    metal.MTLCopyAllDevices.restype = ctypes.c_void_p
+    array = metal.MTLCopyAllDevices()
+    if not array:
+        return None
+    count_fn = ctypes.cast(objc.objc_msgSend,
+                           ctypes.CFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p,
+                                            ctypes.c_void_p))
+    if count_fn(array, objc.sel_registerName(b"count")) < 1:
+        return None
+    at_fn = ctypes.cast(objc.objc_msgSend,
+                        ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p,
+                                         ctypes.c_void_p, ctypes.c_ulong))
+    return at_fn(array, objc.sel_registerName(b"objectAtIndex:"), 0)
+
+
 def enumerate_devices():
     """``(devices, reason)``.  Never raises -- see matchedfilter._vulkan."""
     if sys.platform != "darwin":
@@ -51,11 +74,16 @@ def enumerate_devices():
 
     handle = metal.MTLCreateSystemDefaultDevice()
     if not handle:
-        # A real possibility on a hosted runner rather than a formality:
-        # those are virtual machines and the guest may be given no GPU.
-        return [], ("MTLCreateSystemDefaultDevice returned nothing -- macOS "
-                    "reports no Metal device, which happens on virtual "
-                    "machines that are not given one")
+        # MTLCreateSystemDefaultDevice resolves the DISPLAY device, so it
+        # returns nil wherever there is no window-server session -- over
+        # ssh, under launchd, and on some CI. That is not the same as having
+        # no GPU, and MTLCopyAllDevices answers the question that was
+        # actually asked.
+        handle = _first_of_all_devices(objc, metal)
+    if not handle:
+        return [], ("no Metal device: MTLCreateSystemDefaultDevice returned "
+                    "nothing and MTLCopyAllDevices is empty. On a virtual "
+                    "machine the guest may simply not be given a GPU")
 
     name = _nsstring(objc, handle, b"name") or "Apple GPU"
 
