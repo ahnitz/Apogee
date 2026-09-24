@@ -65,6 +65,12 @@ LDS_CAP = {
 }
 
 KERNEL = ROOT / "src" / "gpu" / "tierb.slang"
+
+#: The tiled coarse kernel, and the only band it is correct for. See the
+#: comment at the top of the file: it is a single 16x16 four-step, so the
+#: second stage is 16 points, which is right only at band=256.
+COARSE_KERNEL = ROOT / "src" / "gpu" / "coarse_tile.slang"
+COARSE_BANDS = (256,)
 #: Two entry points from one source. fusedTierB is the filter; gatedTierB is
 #: the same filter behind a coarse-pass gate it evaluates itself, so the
 #: hierarchical mode needs no host decision between the passes.
@@ -168,6 +174,20 @@ def main(argv=None):
         return 1
 
     OUT.mkdir(parents=True, exist_ok=True)
+    for band in COARSE_BANDS:
+        src = OUT / ("ct_%d.slang" % band)
+        src.write_text("#define NBAND %d\n" % band + COARSE_KERNEL.read_text())
+        spv = OUT / ("coarse_%d.spv" % band)
+        proc = subprocess.run(
+            [slangc, str(src), "-target", "spirv", "-entry", "coarseTile",
+             "-stage", "compute", "-O3", "-o", str(spv)],
+            capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError("slangc failed for coarse band=%d:\n%s"
+                               % (band, proc.stderr))
+        src.unlink()
+        print("  coarse band=%-4d %-16s %5d bytes  tiled"
+              % (band, spv.name, spv.stat().st_size))
     manifest = dict(entry=ENTRY, kernel=KERNEL.name, modules={})
     for n in TIER_B:
         gated = compile_one(slangc, n, OUT, "gatedTierB")

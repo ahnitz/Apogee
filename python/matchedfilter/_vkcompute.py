@@ -23,6 +23,10 @@ _SPIRV = pathlib.Path(__file__).resolve().parent / "spirv"
 #: halves occupancy, so this refuses rather than silently getting slower.
 _MAX_BINS = 2048
 
+#: Bands with a tiled coarse kernel, and its tile. Everywhere else the
+#: general kernel is used, one pair per workgroup.
+_COARSE_TILE = {256: 4}
+
 # --- enough of the Vulkan enums to dispatch -------------------------------
 _QUEUE_COMPUTE = 0x2
 _BUF_STORAGE = 0x20
@@ -441,7 +445,12 @@ class Context:
     def _make_hier(self, key, n, band, nd, nt, nbins, binsize, shift, lo, hi,
                    t2, even_thr, raw_thr):
         vk = self.vk
-        cpipe, clayout, cset_layout = self.pipeline(band)
+        tile = _COARSE_TILE.get(band)
+        if tile:
+            cpipe, clayout, cset_layout = self._build_pipeline(
+                ("coarse", band), "coarse_%d.spv" % band, 3, 8)
+        else:
+            cpipe, clayout, cset_layout = self.pipeline(band)
         gcpipe, gclayout, gcset_layout = self.gated_pipeline(band)
         gpipe, glayout, gset_layout = self.gated_pipeline(n)
         pairs = nd * nt
@@ -458,8 +467,15 @@ class Context:
             "idx":   _Buffer(self, nd * nt * nbins * 4),
             "val":   _Buffer(self, nd * nt * nbins * 8),
         }
-        ds_even = self._descriptor_set(cset_layout,
-                                       [b["cdata"], b["ct0"], b["eidx"], b["eval"]])
+        # The tiled coarse kernel reports a magnitude per pair and nothing
+        # else -- a maximum does not depend on the output ordering, so it
+        # needs no index and no digit reversal.
+        if tile:
+            ds_even = self._descriptor_set(cset_layout,
+                                           [b["cdata"], b["ct0"], b["eval"]])
+        else:
+            ds_even = self._descriptor_set(cset_layout,
+                                           [b["cdata"], b["ct0"], b["eidx"], b["eval"]])
         ds_odd_gated = self._descriptor_set(
             gcset_layout,
             [b["cdata"], b["ct1"], b["oidx"], b["oval"], b["eval"], b["eval"]])
@@ -480,13 +496,19 @@ class Context:
             sets = (_vp * 1)(ds)
             vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, clayout, 0, 1,
                                        sets, 0, None)
-            # One bin over the whole coarse span: the reported peak IS the
-            # maximum, which is what the gate needs.
-            pc = (ctypes.c_uint32 * 7)(nt, 0, band, band,
-                                       band.bit_length() - 1, 1, 0)
-            vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0, _PUSH_BYTES,
-                                  ctypes.byref(pc))
-            vk.vkCmdDispatch(cmd, pairs, 1, 1)
+            if tile:
+                pc = (ctypes.c_uint32 * 2)(nt, pairs)
+                vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0, 8,
+                                      ctypes.byref(pc))
+                vk.vkCmdDispatch(cmd, (pairs + tile - 1) // tile, 1, 1)
+            else:
+                # One bin over the whole coarse span: the reported peak IS
+                # the maximum, which is what the gate needs.
+                pc = (ctypes.c_uint32 * 7)(nt, 0, band, band,
+                                           band.bit_length() - 1, 1, 0)
+                vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0,
+                                      _PUSH_BYTES, ctypes.byref(pc))
+                vk.vkCmdDispatch(cmd, pairs, 1, 1)
 
         def coarse_odd(ds):
             """The odd half, GATED on the even one.
