@@ -209,3 +209,44 @@ def test_fuzz_binsize_and_window(device, n):
         b = hier.run(binsize=binsize, threshold=5.5, window=(ws, we))
         assert_one_sided(a, b, "n=%d binsize=%d window=(%d,%d)"
                          % (n, binsize, ws, we))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_omission_rate_meets_the_budget(device):
+    """`fd` is a promise, and it has to hold on every device that claims it.
+
+    Bit-identity says nothing about what is NOT reported: a margin set too
+    high passes every other test in this file while quietly losing signals.
+    The one-sided guarantee is also no protection here -- dismissing
+    everything satisfies it perfectly.
+
+    Measured: the CPU omits about 1.5% against a 1% budget (inside the
+    binomial scatter at this trial count), and the GPU omits NOTHING,
+    because it escalates the interpolation window rather than interpolating
+    it and so can only ever refine a superset of the CPU's pairs.
+    """
+    n, trials, snr, fd = 4096, 600, 5.5, 1e-2
+    rng = np.random.default_rng(13)
+    power = inspiral_power(n)
+    H = template_with_power(n, power)
+    flat, hier = build(device, n, 1, 1, power, snr=snr, fd=fd)
+    flat.set_templates(H[None, :])
+    hier.set_templates(H[None, :])
+
+    ph = np.exp(2j * np.pi * np.arange(n) / n)
+    detected = omitted = 0
+    for i in range(trials):
+        D = noise((1, n), rng)
+        D[0] += (snr * H * ph ** ((37 * i) % n)).astype(np.complex64)
+        flat.set_data(D)
+        hier.set_data(D)
+        a = flat.run(binsize=n, threshold=snr)
+        b = hier.run(binsize=n, threshold=snr)
+        if a["index"][0, 0, 0] >= 0:
+            detected += 1
+            omitted += b["index"][0, 0, 0] < 0
+    assert detected > 100, "too few detections to say anything"
+    rate = omitted / detected
+    # 3x absorbs binomial scatter at this trial count.
+    assert rate <= fd * 3, "omitted %.3f%% against a %.3f%% budget" % (
+        100 * rate, 100 * fd)

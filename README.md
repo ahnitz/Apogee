@@ -18,6 +18,18 @@
 
 ---
 
+> [!WARNING]
+> **This is under rapid development.** The API still moves, the GPU backend
+> is new and covers a smaller range than the CPU one, and performance work
+> is ongoing. Pin a version if you depend on it.
+>
+> **Contributions and collaboration are very welcome** — if you are working
+> on something this could serve, or want to help with it,
+> [open an issue](https://github.com/ahnitz/matchedfilter/issues/new) or get
+> in touch. Areas that would benefit most right now: a Metal/macOS backend,
+> per-device tuning on hardware other than a Radeon 8060S, and transform
+> lengths above 16384 on the GPU.
+
 ```bash
 pip install matchedfilter
 ```
