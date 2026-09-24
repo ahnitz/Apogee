@@ -409,7 +409,11 @@
       "gated": {
         "file": "gated_8192.spv",
         "bytes": 29888,
-        "descriptors": 6
+        "descriptors": 6,
+        "portable": {
+          "file": "gated_8192_lds32.spv",
+          "lds_bytes": 32768
+        }
       },
       "file": "tierb_8192.spv",
       "bytes": 28584,
@@ -476,7 +480,11 @@
       "gated": {
         "file": "gated_16384.spv",
         "bytes": 30500,
-        "descriptors": 6
+        "descriptors": 6,
+        "portable": {
+          "file": "gated_16384_lds32.spv",
+          "lds_bytes": 32768
+        }
       },
       "file": "tierb_16384.spv",
       "bytes": 29196,

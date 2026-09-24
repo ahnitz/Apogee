@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matchedfilter"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Fast single-threaded batched matched filter with peak-only output (x86-64)"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -363,9 +363,25 @@ class Context:
 
     # ---- pipeline ---------------------------------------------------------
     def gated_pipeline(self, n):
-        """The coarse-gated refinement pipeline for length ``n``."""
-        return self._build_pipeline(("gated", n), "gated_%d.spv" % n,
+        """The coarse-gated refinement pipeline for length ``n``.
+
+        Same 32 KB fallback as the flat kernel, and for the same reason. It
+        was missing here: a device offering 32 KB of shared memory ran the
+        flat path happily and then could not create this pipeline at all, so
+        the hierarchical mode was unavailable on hardware the flat mode
+        supported. Every device tested here has 64 KB, which is exactly why
+        nothing caught it.
+        """
+        return self._build_pipeline(("gated", n), self._gated_file(n),
                                     _NBIND_GATED, _PUSH_BYTES_GATED)
+
+    def _gated_file(self, n):
+        info = (_manifest().get("modules", {}).get(str(n)) or {}).get("gated")
+        if info and info.get("portable") \
+                and _manifest()["modules"][str(n)].get("lds_bytes", 0) \
+                > self.max_shared_memory:
+            return info["portable"]["file"]
+        return "gated_%d.spv" % n
 
     def pipeline(self, n):
         """Build (and cache) the compute pipeline for transform length ``n``.

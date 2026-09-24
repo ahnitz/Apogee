@@ -288,10 +288,24 @@ def main(argv=None):
                      lds_bytes(n, PORTABLE_CAP) // 1024))
         gated = compile_one(slangc, n, OUT, "gatedTierB")
         ginfo = reflect(gated.read_bytes())
+        # The gated kernel needs the same 32 KB fallback the flat one has.
+        # Without it a device with 32 KB of shared memory ran the flat path
+        # and could not create a pipeline for the hierarchical one -- and
+        # every device we test has 64 KB, so nothing here would have said so.
+        gsmall = None
+        if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
+            gsmall = compile_one(slangc, n, OUT, "gatedTierB",
+                                 cap=PORTABLE_CAP, suffix="_lds32")
+            print("  n=%-6d %-16s %5d bytes  staging %2d KB  portable gated"
+                  % (n, gsmall.name, gsmall.stat().st_size,
+                     lds_bytes(n, PORTABLE_CAP) // 1024))
         spv = compile_one(slangc, n, OUT)
         info = reflect(spv.read_bytes())
         info["gated"] = dict(file=gated.name, bytes=gated.stat().st_size,
                              descriptors=len(ginfo["descriptors"]))
+        if gsmall is not None:
+            info["gated"]["portable"] = dict(
+                file=gsmall.name, lds_bytes=lds_bytes(n, PORTABLE_CAP))
         info["file"] = spv.name
         info["bytes"] = spv.stat().st_size
         # Metal, from the same source. Built for every size so a macOS wheel
