@@ -200,8 +200,11 @@ compiles the shipped `.metal` source instead rather than refusing.
 index at n=1024 through 8192, verified in CI on an Apple GPU. Two limits:
 
 - Apple caps threadgroup memory at 32 KB and the fastest builds here use
-  64 KB, so the two largest sizes fall back to a 32 KB build — correct,
-  and slower.
+  64 KB, so the two largest sizes fall back to a 32 KB build. Measured on
+  gfx1151, where both builds run: the 32 KB one is 1.11x slower at n=8192
+  and 1.29x at n=16384. Halving the staging doubles the exchange chunks
+  and their barriers, and that costs more than the occupancy it buys — so
+  this is a real penalty at those two sizes, not a formality.
 - n=16384 needs a 1024-thread threadgroup. What a device actually allows
   depends on the compiled kernel's register use, not only on the hardware:
   the paravirtual GPU in CI allows this kernel 576, so that length raises
