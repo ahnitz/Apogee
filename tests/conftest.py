@@ -55,3 +55,100 @@ def pytest_runtest_makereport(item, call):
         # attribute's presence, so assigning it reports an xfail instead of
         # a skip -- which reads as "expected to be broken" rather than
         # "this device cannot do it".
+
+
+# --- a GPU that enumerates is not a GPU that works -------------------------
+_USABLE = "unset"
+
+
+def usable_gpu():
+    """A GPU device string this machine can actually RUN, or None.
+
+    Enumeration is not availability. A Mesa driver that cannot allocate its
+    shared memory -- "Failed to create anonymous file for memory
+    allocations" -- still enumerates the adapter, so mf.devices() lists a
+    GPU and then every attempt to open it raises "no gpu with index 0". On
+    such a machine, gating the GPU tests on enumeration alone produced
+    dozens of failures that read like defects in this library and were
+    nothing of the sort.
+
+    So the probe filters. Opening a context is not enough either, because
+    the allocation that fails is the one the first dispatch needs; the
+    cheapest honest question is whether a 1024-point filter returns an
+    answer. Asked once per session and cached.
+    """
+    global _USABLE
+    if _USABLE != "unset":
+        return _USABLE
+    _USABLE = None
+    try:
+        import numpy as np
+        import matchedfilter as mf
+    except Exception:
+        return _USABLE
+    for d in mf.devices():
+        if d.kind != "gpu" or d.is_software:
+            continue
+        try:
+            f = mf.MatchedFilter(1024, 1, 1, device=str(d))
+            z = np.zeros((1, 1024), dtype=np.complex64)
+            z[0, 0] = 1.0
+            f.set_data(z)
+            f.set_templates(z)
+            f.run(binsize=1024, threshold=0.0)
+        except Exception:
+            continue
+        _USABLE = str(d)
+        break
+    return _USABLE
+
+
+def usable_gpu_reason():
+    """Why there is no usable GPU, phrased so it does not mislead."""
+    try:
+        from matchedfilter import _vulkan
+        ok, why = _vulkan.available()
+    except Exception as e:                      # pragma: no cover
+        return "could not ask for a GPU: %s" % e
+    if ok:
+        return ("a GPU enumerates but cannot run a filter on this machine "
+                "(driver or environment, not the transform length)")
+    return why or "no usable GPU"
+
+
+_VK = "unset"
+
+
+def vulkan_runs():
+    """``(ok, reason)`` -- can a Vulkan CONTEXT actually be opened here?
+
+    _vulkan.available() answers a different question: whether a non-software
+    adapter enumerates. That is necessary and not sufficient. A driver that
+    cannot allocate its shared memory enumerates fine and raises on context
+    creation, so gates built on availability alone let the test body run and
+    then report a driver fault as a failure of this library.
+
+    Cached: opening a context is not free, and several modules ask.
+    """
+    global _VK
+    if _VK != "unset":
+        return _VK
+    try:
+        from matchedfilter import _vulkan
+        ok, why = _vulkan.available()
+    except Exception as e:                      # pragma: no cover
+        _VK = (False, "could not ask for Vulkan: %s" % e)
+        return _VK
+    if not ok:
+        _VK = (False, why or "no Vulkan device")
+        return _VK
+    try:
+        from matchedfilter import _vkcompute
+        c = _vkcompute.Context(0)
+        c.destroy()
+    except Exception as e:
+        _VK = (False, "a Vulkan device enumerates but will not open here: %s"
+                      % str(e).strip().splitlines()[0][:120])
+        return _VK
+    _VK = (True, None)
+    return _VK

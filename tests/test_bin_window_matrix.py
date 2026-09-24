@@ -26,11 +26,17 @@ from test_adversarial import brute
 
 
 def devices():
-    """cpu, plus any real GPU. Software devices are too slow for a matrix."""
+    """cpu, plus a GPU this machine can actually run -- see conftest.
+
+    Enumeration is not availability: a driver that cannot allocate its shared
+    memory still lists the adapter, and gating on the list alone turns a
+    broken driver into failures that read like defects here.
+    """
+    from conftest import usable_gpu
     out = ["cpu"]
-    for d in mf.devices():
-        if d.kind == "gpu" and not d.is_software:
-            out.append(str(d))
+    g = usable_gpu()
+    if g:
+        out.append(g)
     return out
 
 

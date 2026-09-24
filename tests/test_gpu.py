@@ -18,10 +18,17 @@ TIER_B = (1024, 2048, 4096, 8192, 16384)
 
 
 def devices():
+    """cpu, plus a GPU this machine can actually run -- see conftest.
+
+    Enumeration is not availability: a driver that cannot allocate its shared
+    memory still lists the adapter, and gating on the list alone turns a
+    broken driver into failures that read like defects here.
+    """
+    from conftest import usable_gpu
     out = ["cpu"]
-    for d in mf.devices():
-        if d.kind == "gpu" and not d.is_software:
-            out.append(str(d))
+    g = usable_gpu()
+    if g:
+        out.append(g)
     return out
 
 

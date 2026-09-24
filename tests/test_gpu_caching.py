@@ -23,10 +23,13 @@ from test_api import inspiral_power, template_with_power, noise
 
 
 def gpu_device():
-    for d in mf.devices():
-        if d.kind == "gpu" and not d.is_software:
-            return str(d)
-    return None
+    """A GPU this machine can actually run, or None -- see conftest.
+
+    Enumeration is not availability: a driver that cannot allocate its shared
+    memory still lists the adapter, and every attempt to use it then raises.
+    """
+    from conftest import usable_gpu
+    return usable_gpu()
 
 
 DEVICE = gpu_device()
@@ -263,10 +266,10 @@ def _vulkan_or_skip():
     there is. So that equivalence has no Apple host, by construction rather
     than by omission.
     """
-    from matchedfilter import _vulkan
-    ok, why = _vulkan.available()
+    from conftest import vulkan_runs
+    ok, why = vulkan_runs()
     if not ok:
-        pytest.skip(why or "no Vulkan loader on this platform")
+        pytest.skip(why)
     from matchedfilter import _vkcompute
     return _vkcompute
 

@@ -35,6 +35,12 @@ def reference_peaks(d, h):
 
 @pytest.fixture(scope="module")
 def ctx():
+    # Enumeration is not availability; see conftest.vulkan_runs. Without this
+    # a driver that will not open reports seven ERRORs from fixture setup.
+    from conftest import vulkan_runs
+    ok, why = vulkan_runs()
+    if not ok:
+        pytest.skip(why)
     from matchedfilter import _vkcompute
     c = _vkcompute.Context(0)
     yield c
@@ -71,6 +77,10 @@ def test_pipeline_is_cached():
     A batched caller dispatches many times per plan, so rebuilding per call
     would cost more than the work.
     """
+    from conftest import vulkan_runs
+    ok, why = vulkan_runs()
+    if not ok:
+        pytest.skip(why)
     from matchedfilter import _vkcompute
     c = _vkcompute.Context(0)
     try:

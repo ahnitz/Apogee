@@ -28,10 +28,10 @@ def _bands():
 
 @pytest.mark.parametrize("band", _bands() or [pytest.param(0, marks=pytest.mark.skip)])
 def test_tiled_coarse_matches_numpy(band):
-    from matchedfilter import _vulkan
-    ok, why = _vulkan.available()
+    from conftest import vulkan_runs
+    ok, why = vulkan_runs()
     if not ok:
-        pytest.skip(why or "no Vulkan loader")
+        pytest.skip(why)
     from matchedfilter import _vkcompute as V
 
     nd, nt = 4, 8

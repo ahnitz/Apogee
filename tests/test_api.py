@@ -389,7 +389,11 @@ def test_run_series_matches_block_by_block():
 
     for b, s in enumerate(starts):
         blk = np.zeros(n, np.complex64)
-        seg = ser[s:s + n]
+        # int(), because starts is uintp and NumPy 1 promotes
+        # uint64 + Python int to FLOAT64 -- which is not a valid slice index.
+        # NumPy 2's NEP 50 keeps it integral, so this passes there and fails
+        # on the floor the package actually claims (numpy>=1.20).
+        seg = ser[int(s):int(s) + n]
         blk[:len(seg)] = seg
         hf.set_data((np.fft.fft(blk) / n).astype(np.complex64)[None, :])
         want = hf.run(binsize=n, threshold=0.0,
@@ -632,7 +636,11 @@ def _ratio_filter_shaped_workload(pin=True):
 
     def block_spectrum(s):
         blk = np.zeros(n, np.complex64)
-        seg = ser[s:s + n]
+        # int(), because starts is uintp and NumPy 1 promotes
+        # uint64 + Python int to FLOAT64 -- which is not a valid slice index.
+        # NumPy 2's NEP 50 keeps it integral, so this passes there and fails
+        # on the floor the package actually claims (numpy>=1.20).
+        seg = ser[int(s):int(s) + n]
         blk[:len(seg)] = seg
         return (np.fft.fft(blk) / n).astype(np.complex64)
 
@@ -683,7 +691,8 @@ def _ratio_filter_shaped_workload(pin=True):
             unit[m] = H[t][m] / (np.abs(H[t][m]) ** 2)
             inj = (unit * amp * ph ** lag).astype(np.complex64)
             scale = (snr + 2.0) / max(np.abs(np.fft.ifft(inj * np.conj(H[t])) * n).max(), 1e-30)
-            ser[starts[b]:starts[b] + n] += (np.fft.ifft(inj) * n * scale).astype(np.complex64)
+            s0 = int(starts[b])          # uintp; see the note above
+            ser[s0:s0 + n] += (np.fft.ifft(inj) * n * scale).astype(np.complex64)
     hf = (mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
                                 band=512, oversample=2, taps=8) if pin else
           mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2))
