@@ -18,6 +18,19 @@
 
 ---
 
+<p align="center">
+  <img src="docs/assets/teaser.svg" alt="matchedfilter against FFTW and rocFFT at n=4096" width="860">
+</p>
+
+<p align="center">
+  <sub>16384 correlations of 4096 points. FFTW and rocFFT are timed doing the
+  <b>inverse transform alone</b>; matchedfilter is timed doing the product,
+  the transform <b>and</b> the peak scan — and still wins, because it never
+  writes the 537 MB of correlation the others have to.</sub>
+</p>
+
+---
+
 > [!WARNING]
 > **This is under rapid development.** The API still moves, the GPU backend
 > is new and covers a smaller range than the CPU one, and performance work

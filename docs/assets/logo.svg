@@ -112,14 +112,14 @@
     </text>
 
     <g transform="translate(0, 52)" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="600">
-      <rect x="0" y="0" width="108" height="20" rx="4" fill="#1e293b" />
-      <text x="54" y="14" fill="#38bdf8" text-anchor="middle">AVX2 · NEON</text>
+      <rect x="0" y="0" width="92" height="20" rx="4" fill="#1e293b" />
+      <text x="46" y="14" fill="#38bdf8" text-anchor="middle">CPU · GPU</text>
 
-      <rect x="116" y="0" width="86" height="20" rx="4" fill="#1e293b" />
-      <text x="159" y="14" fill="#38ef7d" text-anchor="middle">FP32 · PEAK</text>
+      <rect x="100" y="0" width="86" height="20" rx="4" fill="#1e293b" />
+      <text x="143" y="14" fill="#38ef7d" text-anchor="middle">FP32 · PEAK</text>
 
-      <rect x="210" y="0" width="108" height="20" rx="4" fill="#1e293b" />
-      <text x="264" y="14" fill="#c084fc" text-anchor="middle">HIERARCHICAL</text>
+      <rect x="194" y="0" width="108" height="20" rx="4" fill="#1e293b" />
+      <text x="248" y="14" fill="#c084fc" text-anchor="middle">HIERARCHICAL</text>
     </g>
   </g>
 </svg>

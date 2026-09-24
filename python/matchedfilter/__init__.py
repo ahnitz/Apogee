@@ -552,6 +552,38 @@ def _store_tuning(t, paths):
 
 
 
+def cost_table_for(device):
+    """Path to the cost table that best describes `device`, and its key.
+
+    Cost is a property of the machine. The accuracy rows describe the
+    ALGORITHM and travel unchanged; the cost rows do not, and selecting with
+    another machine's is how a configuration that is cheapest somewhere else
+    gets chosen here.
+
+    Tables are tried most specific first -- exact architecture, then family,
+    then vendor -- and the shipped generic table, measured on a CPU, is the
+    last resort. Returns ``(path, key)`` where key is None for the generic
+    one, so a caller can say which was used rather than leaving it implied.
+    """
+    here = os.path.dirname(__file__)
+    if os.environ.get("MF_COST"):
+        return os.environ["MF_COST"], "MF_COST"
+    for key in getattr(device, "arch", ()) or ():
+        candidate = os.path.join(here, "cost-%s.txt" % key)
+        if os.path.exists(candidate):
+            return candidate, key
+    return os.path.join(here, "cost.txt"), None
+
+
+def _load_tuning_for(device):
+    """Tuning for one device: shared accuracy rows, per-device cost rows."""
+    here = os.path.dirname(__file__)
+    cost, _key = cost_table_for(device)
+    return _load_tuning_paths(
+        [os.environ.get("MF_ACCURACY") or os.path.join(here, "accuracy.txt"),
+         cost])
+
+
 def _load_tuning(path=None):
     """Read the tuning table: measured dismissal and cost per configuration.
 
@@ -570,13 +602,18 @@ def _load_tuning(path=None):
              os.environ.get("MF_COST") or os.path.join(here, "cost.txt")]
     if path is not None:
         paths = [path]
+    return _load_tuning_paths(paths, cache=path is None)
+
+
+def _load_tuning_paths(paths, cache=True):
+    global _TUNING
     # The cache is keyed on these paths, so it can only be consulted AFTER
     # they are known. Looking it up first -- which an earlier version did --
     # meant every fresh process missed, reparsed, and then rewrote the cache
     # it had just failed to read: 59 ms instead of 50, worse than no cache.
     cached = _cached_tuning(tuple(paths))
     if cached is not None:
-        if path is None:
+        if cache:
             _TUNING = cached
         return cached
     fdr, cost, acc2, meta = [], {}, {}, {}
@@ -659,7 +696,7 @@ def _load_tuning(path=None):
          "by_ns": by_ns, "snrs_at": snrs_at,
          "cost_cfg": {k: sorted(v) for k, v in cost_cfg.items()}}
     _store_tuning(t, tuple(paths))
-    if path is None or _TUNING is None:
+    if cache or _TUNING is None:
         _TUNING = t
     return t
 
@@ -1302,6 +1339,13 @@ class HierarchicalFilter(MatchedFilter):
             # MatchedFilter's call to _start_gpu. Omitting this left device=
             # accepted, self.device reporting "gpu:0", and every run quietly
             # going to the CPU -- which looked like a working port.
+            #
+            # The pinned configuration is recorded BEFORE returning. Returning
+            # first skipped the band handling below, so a caller who pinned a
+            # configuration got the table's choice instead and config()
+            # reported the substitute rather than what was asked for.
+            if band is not None:
+                self._pinned = (int(band), int(oversample or 2), int(taps or 8))
             self._start_gpu()
             self._defer = True
             self._mf = None
@@ -1411,16 +1455,32 @@ class HierarchicalFilter(MatchedFilter):
         One template is enough: with a reference set the numbers do not depend
         on which.
         """
-        key = (threshold, self.snr, self.fd, self._fs_snr)
+        key = (threshold, self.snr, self.fd, self._fs_snr, self._pinned,
+               self._margin)
         if self._gcal is not None and self._gcal[0] == key:
             return self._gcal[1]
-        cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd)
+        # An explicitly pinned configuration must be honoured. Building the
+        # calibration plan without it silently substituted the table's own
+        # choice, so HierarchicalFilter(..., band=256, device="gpu") ran at
+        # band 512 and reported 512 -- a caller asking for a configuration
+        # got a different one.
+        pin = {}
+        if self._pinned is not None:
+            pin = dict(band=self._pinned[0], oversample=self._pinned[1],
+                       taps=self._pinned[2])
+        cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd, **pin)
         # Order matters: set_first_stage builds the plan, and building it
         # before the reference arrives means the band is chosen with nothing
         # to choose from, which fails with "no measured tuning" on a
         # configuration the tables cover perfectly well.
         cal.set_reference(self._pending_ref)
         cal.set_templates(self._gtmpl[0][None, :])
+        if self._margin is not None:
+            # The margin scales the coarse threshold, so it has to reach the
+            # plan the thresholds are read from. Without this the GPU ran at
+            # margin 1.0 whatever was selected -- the least conservative
+            # setting, and not the one the tables chose.
+            cal._ensure().set_coarse_margin(float(self._margin))
         if self._fs_snr is not None:
             cal.set_first_stage(self._fs_snr)
         plan = cal._ensure()
@@ -1464,6 +1524,19 @@ class HierarchicalFilter(MatchedFilter):
         if counts:
             return peaks, (peaks["index"] >= 0).sum(axis=2).astype(np.int32)
         return peaks
+
+    def set_coarse_margin(self, margin):
+        """Scale the coarse threshold, on either device.
+
+        Below 1.0 the first stage escalates more often and omits less; above
+        it, the reverse. Selection sets this from the measured tables, and a
+        caller overriding it is choosing a different point on that trade.
+        """
+        self._margin = float(margin)
+        if self._gpu is not None:
+            self._gcal = None                  # force recalibration
+            return
+        self._ensure().set_coarse_margin(float(margin))
 
     def set_first_stage(self, snr):
         """Calibrate the first stage against `snr` rather than the threshold.

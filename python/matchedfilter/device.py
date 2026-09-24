@@ -24,17 +24,50 @@ _VENDORS = {0x1002: "AMD", 0x10DE: "NVIDIA", 0x8086: "Intel",
             0x13B5: "ARM", 0x5143: "Qualcomm", 0x106B: "Apple"}
 
 
+def arch_keys(vendor, name):
+    """Cost-table names to try for a device, most specific first.
+
+    Cost is a property of the machine, so a table measured on one device is
+    only loosely transferable. The chain lets a table be shared by as much
+    hardware as it honestly covers:
+
+        gfx1151   this exact architecture
+        gfx11     its family -- RDNA 3 and 3.5 share the memory hierarchy and
+                  the workgroup limits that the measurements actually depend on
+        amd       the vendor
+        (generic) the shipped table, measured on a CPU
+
+    The architecture comes out of the device name because Vulkan does not
+    report it: Mesa writes it there as "RADV GFX1151", and the vendor id
+    distinguishes AMD from anyone else naming a device similarly.
+    """
+    import re
+    keys = []
+    vendors = {0x1002: "amd", 0x10DE: "nvidia", 0x8086: "intel", 0x106B: "apple"}
+    v = vendors.get(vendor)
+    m = re.search(r"gfx(\d{3,4})", name or "", re.I)
+    if m:
+        full = "gfx" + m.group(1)
+        keys.append(full)
+        keys.append("gfx" + m.group(1)[:2])      # the family
+    if v:
+        keys.append(v)
+    return keys
+
+
 class Device:
     """One place a filter can run.  Compare and print it as ``"gpu:0"``."""
 
-    __slots__ = ("kind", "index", "name", "backend", "is_software")
+    __slots__ = ("kind", "index", "name", "backend", "is_software", "arch")
 
-    def __init__(self, kind, index, name, backend, is_software=False):
+    def __init__(self, kind, index, name, backend, is_software=False, arch=()):
         self.kind = kind
         self.index = int(index)
         self.name = name
         self.backend = backend
         self.is_software = bool(is_software)
+        #: Cost-table keys to try, most specific first.  Empty for a CPU.
+        self.arch = tuple(arch)
 
     def __str__(self):
         return "%s:%d" % (self.kind, self.index)
@@ -91,7 +124,8 @@ def devices():
         if vendor and vendor.lower() not in name.lower():
             name = "%s %s" % (vendor, name)
         out.append(Device("gpu", i, name, "vulkan",
-                          is_software=d["kind"] == "cpu"))
+                          is_software=d["kind"] == "cpu",
+                          arch=arch_keys(d["vendor"], d["name"])))
     return out
 
 

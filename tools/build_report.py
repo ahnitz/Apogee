@@ -636,6 +636,11 @@ details>.scroll{margin-bottom:1.1rem}
       padding:.2rem 0 .2rem 1rem;margin:1.3rem 0;color:var(--mut);
       font-size:15px;border-radius:0}
 .warn{border-left-color:#d55e00;color:var(--fg)}
+/* GitHub alert kinds, so "> [!WARNING]" reads the same here as on GitHub */
+.note-warning{border-left-color:#d55e00;color:var(--fg)}
+.note-caution{border-left-color:#cc3311;color:var(--fg)}
+.note-important{border-left-color:#8855cc;color:var(--fg)}
+.note-tip{border-left-color:#009988}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
        gap:0;margin:1.4rem 0;border-top:1px solid var(--rule);
@@ -764,7 +769,22 @@ def md(text):
             buf = []
             while i < len(lines) and lines[i].startswith(">"):
                 buf.append(lines[i].lstrip("> ")); i += 1
-            out.append('<div class="note">%s</div>' % inline(" ".join(buf)))
+            # GitHub alert syntax: "> [!WARNING]" on the first line marks
+            # the callout's kind. Without this the marker rendered as literal
+            # text inside the box -- correct on GitHub, wrong on the site,
+            # which is exactly the sort of divergence having one source for
+            # both is supposed to prevent.
+            kind = "note"
+            if buf and buf[0].strip().startswith("[!"):
+                tag = buf[0].strip()
+                marker = tag[2:tag.index("]")].lower() if "]" in tag else ""
+                if marker in ("note", "tip", "important", "warning", "caution"):
+                    kind = marker
+                buf[0] = tag[tag.index("]") + 1:].strip() if "]" in tag else ""
+                if not buf[0]:
+                    buf = buf[1:]
+            out.append('<div class="note note-%s">%s</div>'
+                       % (kind, inline(" ".join(buf))))
             continue
         if ln.strip():
             # Take this line unconditionally, THEN gather. Gathering first
@@ -1503,7 +1523,22 @@ def overview_page(readme):
     # readers and for anything that outlines the document.
     hero = ('<h1 class="sr">matchedfilter</h1><div class="hero">%s</div>' % logo) \
         if logo else "<h1>matchedfilter</h1>"
+    # The teaser goes ABOVE the prose: it is the one thing a visitor needs
+    # in order to decide whether to keep reading. Generated offline by
+    # tools/teaser_figure.py, because it measures FFTW and rocFFT and cannot
+    # run on a CI machine without either.
+    teaser = asset("teaser.svg")
+    teaser_block = ('<div class="hero">%s</div>'
+                    '<p class="note">16384 correlations of 4096 points. FFTW '
+                    'and rocFFT are timed doing the <b>inverse transform '
+                    'alone</b>; matchedfilter is timed doing the product, the '
+                    'transform <b>and</b> the peak scan. On the GPU the '
+                    'baseline is at the memory-bandwidth limit — 213 GB/s '
+                    'against a 211 GB/s copy — because it has to write the '
+                    '537 MB of correlation. Not writing it is the point.</p>'
+                    % teaser) if teaser else ""
     return (hero
+            + teaser_block
             + md(readme.get("_intro", ""))
             + schematic()
             + "<h2>What it looks like</h2>"
