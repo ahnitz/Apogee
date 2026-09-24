@@ -579,9 +579,13 @@ def _load_tuning_for(device):
     """Tuning for one device: shared accuracy rows, per-device cost rows."""
     here = os.path.dirname(__file__)
     cost, _key = cost_table_for(device)
+    # cache=False: this must NOT become the process-wide table. It did, and
+    # then every later caller -- including CPU plans -- got the GPU's cost
+    # rows, which cover fewer transform lengths, so a CPU plan at a length
+    # the GPU table does not carry failed with "no measured tuning".
     return _load_tuning_paths(
         [os.environ.get("MF_ACCURACY") or os.path.join(here, "accuracy.txt"),
-         cost])
+         cost], cache=False)
 
 
 def _load_tuning(path=None):
@@ -1465,9 +1469,25 @@ class HierarchicalFilter(MatchedFilter):
         # band 512 and reported 512 -- a caller asking for a configuration
         # got a different one.
         pin = {}
+        margin = self._margin
         if self._pinned is not None:
             pin = dict(band=self._pinned[0], oversample=self._pinned[1],
                        taps=self._pinned[2])
+        else:
+            # Choose the configuration with THIS DEVICE's cost rows. Letting
+            # the calibration plan choose for itself used the shipped table,
+            # which is a CPU's -- so the GPU picked whichever band is
+            # cheapest on an AVX-512 core.
+            path, self._cost_key = cost_table_for(self.device)
+            try:
+                cfg = choose_config(self._pending_ref, self.n, self.snr,
+                                    self.fd, tuning=_load_tuning_for(self.device))
+            except Exception:
+                cfg = None
+            if cfg is not None:
+                pin = dict(band=cfg[0], oversample=cfg[1], taps=cfg[2])
+                if margin is None and len(cfg) > 3:
+                    margin = cfg[3]
         cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd, **pin)
         # Order matters: set_first_stage builds the plan, and building it
         # before the reference arrives means the band is chosen with nothing
@@ -1475,12 +1495,12 @@ class HierarchicalFilter(MatchedFilter):
         # configuration the tables cover perfectly well.
         cal.set_reference(self._pending_ref)
         cal.set_templates(self._gtmpl[0][None, :])
-        if self._margin is not None:
+        if margin is not None:
             # The margin scales the coarse threshold, so it has to reach the
             # plan the thresholds are read from. Without this the GPU ran at
             # margin 1.0 whatever was selected -- the least conservative
             # setting, and not the one the tables chose.
-            cal._ensure().set_coarse_margin(float(self._margin))
+            cal._ensure().set_coarse_margin(float(margin))
         if self._fs_snr is not None:
             cal.set_first_stage(self._fs_snr)
         plan = cal._ensure()
@@ -1743,6 +1763,19 @@ class HierarchicalFilter(MatchedFilter):
             return self._gcfg
         band, u, k = self._ensure().config()
         return band, u, k
+
+    @property
+    def cost_table(self):
+        """Which cost table selection used, or None for the generic one.
+
+        Worth being able to ask: a device with no measurements of its own
+        falls back to a CPU's, which is a real difference in what was
+        chosen, and it should not be something a user has to infer.
+        """
+        if self._gpu is None:
+            return None
+        self._gpu_calibration(self.snr)
+        return getattr(self, "_cost_key", None)
 
     @property
     def stats(self):

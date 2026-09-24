@@ -281,3 +281,40 @@ def test_both_staging_variants_agree(n):
     np.testing.assert_array_equal(out[0][0], out[1][0])
     np.testing.assert_allclose(np.abs(out[0][1]), np.abs(out[1][1]),
                                rtol=1e-5, atol=1e-5)
+
+
+def test_the_gpu_selects_with_its_own_cost_table():
+    """Cost is a property of the machine; the shipped table is a CPU's.
+
+    Without this the GPU chose whichever band is cheapest on an AVX-512
+    core -- not wrong, since any band is correct and the tables only price
+    them, but measured on completely different hardware.
+    """
+    from test_api import inspiral_power, template_with_power
+    n, nt = 1024, 4
+    reference = inspiral_power(n)
+    H = np.stack([template_with_power(n, reference) for _ in range(nt)])
+    f = mf.HierarchicalFilter(n, 1, nt, snr=5.5, fd=1e-2, device=DEVICE)
+    f.set_reference(reference)
+    f.set_templates(H)
+    f.set_data(np.zeros((1, n), np.complex64))
+    key = f.cost_table
+    assert key is not None, (
+        "the GPU fell back to the generic CPU cost table; expected one of %s"
+        % (mf.devices()[1].arch,))
+    assert key in mf.device.arch_keys(0x1002, "RADV GFX1151") or key == "MF_COST"
+
+
+def test_cost_table_resolution_order():
+    """Most specific first, then family, then vendor, then generic."""
+    from matchedfilter import cost_table_for
+    from matchedfilter.device import Device, arch_keys
+
+    keys = arch_keys(0x1002, "AMD Radeon 8060S Graphics (RADV GFX1151)")
+    assert keys == ["gfx1151", "gfx11", "amd"]
+    # nvidia and intel resolve to their vendor with no architecture tag
+    assert arch_keys(0x10DE, "NVIDIA GeForce RTX 4090") == ["nvidia"]
+    # a device with nothing measured falls back to the generic table
+    unknown = Device("gpu", 0, "Some Other GPU", "vulkan", arch=("nope",))
+    path, key = cost_table_for(unknown)
+    assert key is None and path.endswith("cost.txt")

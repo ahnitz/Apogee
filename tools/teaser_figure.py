@@ -178,61 +178,100 @@ def rocfft_ms(reps=10):
     return per * 1e3
 
 
+# Colours from the logo: slate for the baselines, the logo's blue for the
+# filter, its green for the hierarchical mode.
+BASELINE, FILTER, HIER = "#94a3b8", "#4facfe", "#38ef7d"
+
 BARS = [
-    ("CPU", "FFTW (patient)", "ifft only", fftw_ms, "#b0b6c0"),
-    ("CPU", "matchedfilter", "correlate + ifft + peak", lambda: cpu_ms("flat"), "#4c78a8"),
-    ("CPU", "matchedfilter, hierarchical", "correlate + ifft + peak", lambda: cpu_ms("hier"), "#2f5d8a"),
-    ("GPU", "rocFFT", "ifft only \u2014 at the bandwidth limit", rocfft_ms, "#b0b6c0"),
-    ("GPU", "matchedfilter", "correlate + ifft + peak", lambda: gpu_ms("flat"), "#e6924c"),
-    ("GPU", "matchedfilter, hierarchical", "correlate + ifft + peak", lambda: gpu_ms("hier"), "#c26a22"),
+    ("CPU", "FFTW (patient)", "ifft only", fftw_ms, BASELINE),
+    ("CPU", "matchedfilter", "correlate + ifft + peak", lambda: cpu_ms("flat"), FILTER),
+    ("CPU", "matchedfilter, hierarchical", "correlate + ifft + peak", lambda: cpu_ms("hier"), HIER),
+    ("GPU", "rocFFT", "ifft only \u2014 at the bandwidth limit", rocfft_ms, BASELINE),
+    ("GPU", "matchedfilter", "correlate + ifft + peak", lambda: gpu_ms("flat"), FILTER),
+    ("GPU", "matchedfilter, hierarchical", "correlate + ifft + peak", lambda: gpu_ms("hier"), HIER),
 ]
 
 
 def svg(results, out):
-    W, H = 900, 430
-    left, top, bw, gap = 300, 64, 520, 14
-    bh = 34
-    hi = max(r[1] for r in results)
+    """Two panels, independent scales, throughput so taller is better.
+
+    One scale for both would be useless: the GPU hierarchical bar is 450x
+    the FFTW one, so everything on the CPU side collapses to a hairline.
+    Splitting them keeps each comparison legible, and the axis label says
+    the panels are not on the same scale.
+
+    Colours are explicit and the panel has its own light background. Drawing
+    with currentColor meant the figure inherited the page's text colour, and
+    on a dark README it came out as faint grey on near-black.
+    """
+    # The logo's ground, so the figure sits beside it rather than fighting
+    # it -- and a fixed dark panel reads the same on a light or dark page,
+    # which inheriting currentColor did not.
+    INK, MUT, LINE, BG = "#e8eef7", "#94a3b8", "#243044", "#0b0f19"
+    W, H = 900, 470
+    pw, ph = 380, 250                 # panel plot area
     o = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" '
-         'width="%d" height="%d" font-family="-apple-system,Segoe UI,Roboto,'
-         'Helvetica,Arial,sans-serif">' % (W, H, W, H)]
-    o.append('<rect width="%d" height="%d" fill="none"/>' % (W, H))
-    o.append('<text x="24" y="28" font-size="16" font-weight="600" '
-             'fill="currentColor">16384 correlations of 4096 points</text>')
-    o.append('<text x="24" y="48" font-size="12.5" fill="currentColor" '
-             'opacity=".65">lower is better; FFT libraries are timed doing the '
-             'inverse transform ALONE</text>')
-    y = top
-    last_group = None
-    for (group, name, what, _fn, colour), ms in results:
-        if group != last_group:
-            o.append('<text x="24" y="%d" font-size="12" font-weight="600" '
-                     'fill="currentColor" opacity=".55">%s</text>'
-                     % (y + 22, group))
-            last_group = group
-        w = max(2.0, bw * ms / hi)
-        o.append('<rect x="%d" y="%d" width="%.1f" height="%d" rx="3" fill="%s"/>'
-                 % (left, y, w, bh, colour))
-        o.append('<text x="%d" y="%d" font-size="13" text-anchor="end" '
-                 'fill="currentColor">%s</text>' % (left - 12, y + 16, name))
-        o.append('<text x="%d" y="%d" font-size="10.5" text-anchor="end" '
-                 'fill="currentColor" opacity=".55">%s</text>'
-                 % (left - 12, y + 29, what))
-        o.append('<text x="%.1f" y="%d" font-size="12.5" fill="currentColor" '
-                 'opacity=".8">%.1f ms</text>' % (left + w + 10, y + 22, ms))
-        y += bh + gap
-    o.append('<text x="24" y="%d" font-size="11.5" fill="currentColor" '
-             'opacity=".6">matchedfilter returns only the peak per bin, so the '
-             '537 MB of correlation an FFT must write is never materialised. '
-             'On the GPU that is the whole gap: rocFFT runs at 213 GB/s '
-             'against a 211 GB/s copy ceiling — at the bandwidth limit.'
-             '</text>' % (H - 26))
-    o.append('<text x="24" y="%d" font-size="11.5" fill="currentColor" '
-             'opacity=".6">Measured on %s / %s.</text>'
-             % (H - 10, _cpu_name(), _gpu_name()))
+         'width="%d" height="%d" font-family="-apple-system,BlinkMacSystemFont,'
+         'Segoe UI,Roboto,Helvetica,Arial,sans-serif">' % (W, H, W, H)]
+    o.append('<rect width="%d" height="%d" rx="8" fill="%s"/>' % (W, H, BG))
+    o.append('<text x="28" y="34" font-size="17" font-weight="600" fill="%s">'
+             '16384 correlations of 4096 points</text>' % INK)
+    o.append('<text x="28" y="55" font-size="12.5" fill="%s">correlations per '
+             'second — taller is better. The two panels have DIFFERENT scales.'
+             '</text>' % MUT)
+
+    groups = [("CPU", [r for r in results if r[0][0] == "CPU"]),
+              ("GPU", [r for r in results if r[0][0] == "GPU"])]
+    for gi, (label, rows) in enumerate(groups):
+        x0 = 60 + gi * 450
+        y0 = 100
+        hi = max(PAIRS / (ms / 1e3) for _bar, ms in rows)
+        o.append('<text x="%d" y="%d" font-size="13" font-weight="600" '
+                 'fill="%s">%s</text>' % (x0, y0 - 16, INK, label))
+        o.append('<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s"/>'
+                 % (x0, y0 + ph, x0 + pw, y0 + ph, LINE))
+        bw, gap = 86, 40
+        for bi, (bar, ms) in enumerate(rows):
+            thru = PAIRS / (ms / 1e3)
+            h = max(3.0, ph * thru / hi)
+            x = x0 + 26 + bi * (bw + gap)
+            y = y0 + ph - h
+            o.append('<rect x="%d" y="%.1f" width="%d" height="%.1f" rx="3" '
+                     'fill="%s"/>' % (x, y, bw, h, bar[4]))
+            o.append('<text x="%d" y="%.1f" font-size="12.5" font-weight="600" '
+                     'text-anchor="middle" fill="%s">%s</text>'
+                     % (x + bw // 2, y - 20, INK, _thru(thru)))
+            o.append('<text x="%d" y="%.1f" font-size="10.5" '
+                     'text-anchor="middle" fill="%s">%.2f ms</text>'
+                     % (x + bw // 2, y - 7, MUT, ms))
+            for li, line in enumerate(_wrap(bar[1])):
+                o.append('<text x="%d" y="%d" font-size="11.5" '
+                         'text-anchor="middle" fill="%s">%s</text>'
+                         % (x + bw // 2, y0 + ph + 18 + li * 13, INK, line))
+            o.append('<text x="%d" y="%d" font-size="9.5" text-anchor="middle" '
+                     'fill="%s">%s</text>'
+                     % (x + bw // 2, y0 + ph + 18 + len(_wrap(bar[1])) * 13,
+                        MUT, bar[2]))
+    o.append('<text x="28" y="%d" font-size="11.5" fill="%s">FFTW and rocFFT '
+             'do the inverse transform ALONE; matchedfilter does the product, '
+             'the transform and the peak scan.</text>' % (H - 30, MUT))
+    o.append('<text x="28" y="%d" font-size="11.5" fill="%s">Only the peak per '
+             'bin is returned, so the 537 MB of correlation is never written — '
+             'on the GPU rocFFT is at the bandwidth limit (213 of 211 GB/s).'
+             '</text>' % (H - 14, MUT))
     o.append("</svg>")
     with open(out, "w") as fh:
         fh.write("\n".join(o))
+
+
+def _thru(v):
+    if v >= 1e6:
+        return "%.1fM/s" % (v / 1e6)
+    return "%.0fk/s" % (v / 1e3)
+
+
+def _wrap(name):
+    return name.split(", ") if ", " in name else [name]
 
 
 def _cpu_name():
