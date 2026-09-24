@@ -42,6 +42,16 @@
       },
       "file": "tierb_64.spv",
       "bytes": 15284,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_64.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_64.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 512,
       "lds_bytes": 512
     },
@@ -85,6 +95,16 @@
       },
       "file": "tierb_128.spv",
       "bytes": 15872,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_128.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_128.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 512,
       "lds_bytes": 1024
     },
@@ -128,6 +148,16 @@
       },
       "file": "tierb_256.spv",
       "bytes": 17808,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_256.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_256.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 512,
       "lds_bytes": 2048
     },
@@ -171,6 +201,16 @@
       },
       "file": "tierb_512.spv",
       "bytes": 21628,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_512.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_512.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 512,
       "lds_bytes": 4096
     },
@@ -214,6 +254,16 @@
       },
       "file": "tierb_1024.spv",
       "bytes": 22240,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_1024.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_1024.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 512,
       "lds_bytes": 4096
     },
@@ -257,6 +307,16 @@
       },
       "file": "tierb_2048.spv",
       "bytes": 22828,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_2048.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_2048.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 1024,
       "lds_bytes": 8192
     },
@@ -300,6 +360,16 @@
       },
       "file": "tierb_4096.spv",
       "bytes": 24764,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_4096.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_4096.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 2048,
       "lds_bytes": 16384
     },
@@ -343,6 +413,16 @@
       },
       "file": "tierb_8192.spv",
       "bytes": 28584,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_8192.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_8192.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 8192,
       "lds_bytes": 65536,
       "portable": {
@@ -390,6 +470,16 @@
       },
       "file": "tierb_16384.spv",
       "bytes": 29196,
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_16384.metal",
+          "metallib": null
+        },
+        "gatedTierB": {
+          "msl": "gated_16384.metal",
+          "metallib": null
+        }
+      },
       "lds_cap": 8192,
       "lds_bytes": 65536,
       "portable": {

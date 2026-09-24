@@ -23,6 +23,7 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 OUT = ROOT / "python" / "matchedfilter" / "spirv"
+MSL = ROOT / "python" / "matchedfilter" / "metal"
 
 #: Sizes the Tier-B kernel covers.  One source specialised by NLEN rather
 #: than a blob per hand-written kernel; 16384 is the ceiling because above it
@@ -153,6 +154,52 @@ def reflect(blob):
                 push_constant=push_constant)
 
 
+def compile_metal(slangc, n, cap, entry, outdir, suffix=""):
+    """Emit Metal Shading Language, and a .metallib when one can be built.
+
+    The MSL is generated anywhere -- it is Slang's own output and needs no
+    Apple tooling. Turning it into a .metallib needs `xcrun metal`, which
+    exists only on macOS, so that step runs on the macOS wheel builder and
+    is skipped elsewhere.
+
+    Shipping the compiled library is the point: the wheel carries kernels,
+    not a toolchain, exactly as it does for SPIR-V. The MSL travels too, so
+    a device whose .metallib is missing or stale can still be served by
+    compiling at run time rather than refusing.
+    """
+    src = outdir / ("mm_%d_%s%s.slang" % (n, entry, suffix))
+    src.write_text("#define NLEN %d\n#define LDS_CAP %d\n" % (n, cap)
+                   + KERNEL.read_text())
+    stem = ("tierb_%d%s" % (n, suffix) if entry == ENTRY
+            else "gated_%d%s" % (n, suffix))
+    msl = outdir / (stem + ".metal")
+    proc = subprocess.run(
+        [slangc, str(src), "-target", "metal", "-entry", entry,
+         "-stage", "compute", "-O3", "-o", str(msl)],
+        capture_output=True, text=True)
+    src.unlink()
+    if proc.returncode != 0:
+        raise RuntimeError("slangc -target metal failed for n=%d %s:\n%s"
+                           % (n, entry, proc.stderr))
+    lib = None
+    if shutil.which("xcrun"):
+        lib = outdir / (stem + ".metallib")
+        air = outdir / (stem + ".air")
+        for cmd in ([["xcrun", "-sdk", "macosx", "metal", "-c", str(msl),
+                      "-o", str(air)],
+                     ["xcrun", "-sdk", "macosx", "metallib", str(air),
+                      "-o", str(lib)]]):
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                print("  metallib step failed (%s); shipping MSL only"
+                      % r.stderr.strip().splitlines()[-1:], file=sys.stderr)
+                lib = None
+                break
+        if air.exists():
+            air.unlink()
+    return msl, lib
+
+
 def lds_bytes(n, cap):
     """Shared memory the kernel declares: stg[CH * WG * 2] uints.
 
@@ -197,6 +244,7 @@ def main(argv=None):
         return 1
 
     OUT.mkdir(parents=True, exist_ok=True)
+    MSL.mkdir(parents=True, exist_ok=True)
     for band in COARSE_BANDS:
         src = OUT / ("ct_%d.slang" % band)
         src.write_text("#define NBAND %d\n" % band + COARSE_KERNEL.read_text())
@@ -209,8 +257,19 @@ def main(argv=None):
             raise RuntimeError("slangc failed for coarse band=%d:\n%s"
                                % (band, proc.stderr))
         src.unlink()
-        print("  coarse band=%-4d %-16s %5d bytes  tiled"
-              % (band, spv.name, spv.stat().st_size))
+        # the same kernel in Metal
+        csrc = OUT / ("ct_%d_m.slang" % band)
+        csrc.write_text("#define NBAND %d\n" % band + COARSE_KERNEL.read_text())
+        cm = MSL / ("coarse_%d.metal" % band)
+        r = subprocess.run([slangc, str(csrc), "-target", "metal",
+                            "-entry", "coarseTile", "-stage", "compute",
+                            "-O3", "-o", str(cm)],
+                           capture_output=True, text=True)
+        csrc.unlink()
+        if r.returncode != 0:
+            raise RuntimeError("coarse metal band=%d:\n%s" % (band, r.stderr))
+        print("  coarse band=%-4d %-16s %5d bytes  tiled  (+ %s)"
+              % (band, spv.name, spv.stat().st_size, cm.name))
     manifest = dict(entry=ENTRY, kernel=KERNEL.name, modules={})
     for n in TIER_B:
         if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
@@ -227,6 +286,14 @@ def main(argv=None):
                              descriptors=len(ginfo["descriptors"]))
         info["file"] = spv.name
         info["bytes"] = spv.stat().st_size
+        # Metal, from the same source. Built for every size so a macOS wheel
+        # carries the same coverage as a Linux one.
+        metal = {}
+        for entry in ENTRIES:
+            m, lib = compile_metal(slangc, n, LDS_CAP[n], entry, MSL)
+            metal[entry] = dict(msl=m.name,
+                                metallib=lib.name if lib else None)
+        info["metal"] = metal
         info["lds_cap"] = LDS_CAP[n]
         info["lds_bytes"] = lds_bytes(n, LDS_CAP[n])
         if info["lds_bytes"] > lds_bytes(n, PORTABLE_CAP):

@@ -125,3 +125,57 @@ jobs:
           name: wheel
           path: wheelhouse/*.whl
           if-no-files-found: error
+
+  metal:
+    name: macOS GPU (Metal)
+    runs-on: macos-14          # Apple silicon, so there is a real GPU
+    timeout-minutes: 30
+    # This job is EXPECTED TO FAIL until the Metal runtime exists, and that
+    # is the point of having it. There is no Apple hardware on the
+    # development machine, so every claim about the Metal path is currently
+    # a claim about generated source rather than about something that ran.
+    # A failure here is information we do not otherwise have.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Slang's release carries slangc, which emits the MSL. Apple's own
+      # compiler then turns it into a .metallib -- that step exists only
+      # here, which is why the macOS wheel is the one that can ship one.
+      - name: Fetch slangc
+        run: |
+          V=2026.12
+          curl -fsSL -o slang.zip \
+            "https://github.com/shader-slang/slang/releases/download/v${V}/slang-${V}-macos-aarch64.zip" \
+            || curl -fsSL -o slang.tgz \
+            "https://github.com/shader-slang/slang/releases/download/v${V}/slang-${V}-macos-aarch64.tar.gz"
+          mkdir -p slangsdk
+          if [ -f slang.zip ]; then unzip -q slang.zip -d slangsdk; else tar xzf slang.tgz -C slangsdk; fi
+          echo "MF_SLANGC=$(find "$PWD/slangsdk" -name slangc -type f | head -1)" >> "$GITHUB_ENV"
+
+      - name: Show what the toolchain sees
+        run: |
+          xcrun -sdk macosx metal --version || echo "no Apple metal compiler"
+          system_profiler SPDisplaysDataType | head -20 || true
+
+      - name: Build the kernels, including .metallib
+        run: |
+          python -m pip install -U pip numpy
+          python tools/build_spirv.py
+          ls -la python/matchedfilter/metal/ | head
+
+      - name: Install and run the suite
+        run: |
+          python -m pip install -e . pytest
+          python -c "import matchedfilter as mf; print(mf.devices())"
+          python -m pytest tests -q
+
+      - name: Benchmark what runs
+        run: |
+          python -m matchedfilter.benchmark || true
+          python tools/scoreboard.py || true

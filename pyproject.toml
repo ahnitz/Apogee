@@ -52,7 +52,13 @@ packages = ["matchedfilter"]
 #                  every backend: no user compiles Slang, and nobody picks a
 #                  wheel or installs an extra package to get the GPU path.
 [tool.setuptools.package-data]
-matchedfilter = ["*.h", "*.txt", "spirv/*.spv", "spirv/manifest.json"]
+#   metal/*        the same kernels as Metal. The .metallib is what runs and
+#                  is built on the macOS wheel builder, where Apple's
+#                  compiler exists; the .metal source travels so a device
+#                  whose library is absent can compile at load time rather
+#                  than refuse.
+matchedfilter = ["*.h", "*.txt", "spirv/*.spv", "spirv/manifest.json",
+                 "metal/*.metal", "metal/*.metallib"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

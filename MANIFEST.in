@@ -22,4 +22,5 @@ recursive-include python/matchedfilter *.txt
 # be rebuilt with tools/build_spirv.py, which needs slangc and is therefore a
 # build-time tool rather than something a user ever invokes.
 recursive-include python/matchedfilter/spirv *.spv manifest.json
+recursive-include python/matchedfilter/metal *.metal *.metallib
 recursive-include src/gpu *.slang
