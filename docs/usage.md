@@ -21,7 +21,7 @@ Every release so far is an alpha, and pip installs a pre-release when that is
 all a project has. Once a stable version exists, getting an alpha will need
 `pip install --pre matchedfilter`.
 
-Wheels are built for CPython 3.9 to 3.13 on Linux x86-64 (manylinux and
+Wheels are built for CPython 3.9 to 3.14 on Linux x86-64 (manylinux and
 musllinux) and macOS arm64. Anywhere else pip falls back to the source
 distribution, which needs numpy and a C compiler -- including Linux arm64,
 where it builds and passes but no wheel is published yet.

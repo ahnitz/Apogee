@@ -25,6 +25,12 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "Programming Language :: C",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
 ]
 
@@ -69,7 +75,16 @@ python_files = ["test_*.py"]
 # those wheels needs QEMU and is slow enough to want its own decision.  Users
 # on it get the sdist, which compiles.
 [tool.cibuildwheel]
-build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+# 3.14 included: the extension uses only stable C API -- PyModule_Create,
+# PyArg_ParseTuple, Py_buffer, PyType_Ready -- and nothing removed in 3.12,
+# 3.13 or 3.14, so there was never a reason for it to stop at 3.13 beyond
+# 3.14 not existing when this list was written. CI is what verifies it;
+# there are no 3.14 headers on the development machine.
+#
+# Free-threaded builds (cp313t, cp314t) are deliberately NOT here. The
+# extension releases the GIL around the filter and would need its plan
+# state auditing for concurrent use before claiming to support them.
+build = "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_i686 *_i686 pp*"
 build-frontend = "build"
 test-requires = "pytest"

@@ -161,7 +161,7 @@ limited range of transform lengths and refuse outside them rather than
 guessing. Single-threaded by design on the CPU; parallelism is the caller's
 to arrange. See [Caveats](https://ahnitz.github.io/matchedfilter/caveats.html).
 
-Wheels for CPython 3.9–3.13 on Linux x86-64 and macOS arm64; elsewhere pip
+Wheels for CPython 3.9–3.14 on Linux x86-64 and macOS arm64; elsewhere pip
 builds from source, which needs numpy and a C compiler.
 
 ## Contributing
