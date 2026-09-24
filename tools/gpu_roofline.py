@@ -156,6 +156,58 @@ class Probe:
         return best
 
 
+def chain_src(nchain, op):
+    """A probe with `nchain` independent dependency chains.
+
+    Too few chains and the loop measures instruction LATENCY, not throughput:
+    each operation waits on the previous one. Too many and the registers
+    spill. The only way to know which side you are on is to sweep until the
+    rate stops rising -- a single hardcoded width reports whatever it happens
+    to hit and calls it the ceiling. 8 chains said 1322 GFLOP/s here and 16
+    said 1482, which is precisely how that mistake looks from the inside.
+    """
+    decl = " ".join("float a%d=gid+%d;" % (i, i) for i in range(nchain))
+    if op == "fma":
+        body = " ".join("a%d=fma(a%d,k,c);" % (i, i) for i in range(nchain))
+    else:
+        body = " ".join("a%d+=c;" % i for i in range(nchain))
+    tot = "+".join("a%d" % i for i in range(nchain))
+    return """
+#include <metal_stdlib>
+using namespace metal;
+[[kernel]] void probe(device float* out [[buffer(0)]],
+                      constant uint& iters [[buffer(1)]],
+                      uint gid [[thread_position_in_grid]]) {
+    %s
+    const float k = 1.0000001f, c = 0.0000001f;
+    for (uint i = 0; i < iters; ++i) { %s }
+    out[gid] = %s;
+}
+""" % (decl, body, tot)
+
+
+def sweep(p, out, groups, threads, iters, op, widths):
+    """Rate against chain width, so the plateau is visible rather than assumed."""
+    lanes = threads * groups * iters
+    per = 2 if op == "fma" else 1
+    best, rows = 0.0, []
+    for w in widths:
+        # A pipeline that cannot hold the requested threads does not
+        # fail the dispatch, it returns instantly and reports a rate in
+        # the terapoints -- 6.3e12 GFLOP/s at 1024 threads and 64
+        # chains, which is not a measurement.
+        try:
+            t = p.run(p.pipeline(chain_src(w, op)), groups, threads, [out, iters])
+        except Exception as e:
+            rows.append((w, None)); continue
+        r = lanes * w * per / t
+        if r > 1e13:            # no consumer GPU does 10 TFLOP/s of this
+            rows.append((w, None)); continue
+        rows.append((w, r))
+        best = max(best, r)
+    return best, rows
+
+
 def main():
     p = Probe()
     print("device: %s" % p.ctx.name)
@@ -163,22 +215,21 @@ def main():
 
     threads, groups, iters = 256, 2048, 4096
     out = M._Buffer(p.ctx, threads * groups * 4)
-    lanes = threads * groups * iters
 
-    t8 = p.run(p.pipeline(FMA), groups, threads, [out, iters])
-    fma8 = lanes * 8 * 2 / t8
-    t16 = p.run(p.pipeline(FMA16), groups, threads, [out, iters])
-    fma16 = lanes * 16 * 2 / t16
-    fma = max(fma8, fma16)
-    print("  FP32 FMA   8 chains  %8.2f GFLOP/s" % (fma8 / 1e9))
-    print("  FP32 FMA  16 chains  %8.2f GFLOP/s%s"
-          % (fma16 / 1e9, "   <- ceiling" if fma16 >= fma8 else ""))
+    widths = (4, 8, 16, 24, 32, 48)
+    fma, frows = sweep(p, out, groups, threads, iters, "fma", widths)
+    add, arows = sweep(p, out, groups, threads, iters, "add", widths)
+    print("  chains:   " + "".join("%8d" % w for w, _ in frows))
+    print("  FMA     : " + "".join("%8.0f" % (r / 1e9) if r else "       -"
+                                   for _, r in frows) + "  GFLOP/s")
+    print("  add     : " + "".join("%8.0f" % (r / 1e9) if r else "       -"
+                                   for _, r in arows) + "  GFLOP/s")
+    print("  FP32 FMA peak        %8.2f GFLOP/s" % (fma / 1e9))
+
 
     # The rate that actually bounds an FFT. A radix butterfly is adds and
     # subtracts with a twiddle multiply, not a stream of FMAs, so quoting
     # the FMA peak as the denominator flatters the kernel by about 2x.
-    ta = p.run(p.pipeline(ADD), groups, threads, [out, iters])
-    add = lanes * 16 / ta
     print("  FP32 add (no FMA)    %8.2f GFLOP/s   <- the FFT-relevant one"
           % (add / 1e9))
 
