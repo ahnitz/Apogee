@@ -1,0 +1,292 @@
+// Tier B: every transform length one workgroup can carry.
+//
+// L = TB*16 with TB threads holding 16 points each: a 16-point DFT per
+// thread over its stride-TB column, a twiddle, a transpose among those TB
+// threads, then TB-point transforms per block carried by TB/16 threads --
+// recursing until TB <= 16, where a thread's 16 registers hold 16/TB whole
+// blocks and it finishes them with no exchange at all.
+//
+// Verified in gpu/decomposition.py before any of this was written, for
+// 1024 through 16384. n >= 32768 wants more than 1024 threads and is
+// Tier C.
+//
+//   n      threads  recursion     innermost
+//   1024      64    64->4         4 blocks of 4 per thread
+//   2048     128    128->8        2 blocks of 8
+//   4096     256    256->16       1 block of 16
+//   8192     512    512->32->2    8 blocks of 2
+//  16384    1024    1024->64->4   4 blocks of 4
+
+#ifndef NLEN
+#define NLEN 1024
+#endif
+static const uint N   = NLEN;
+static const uint R   = 16;
+static const uint WG  = NLEN / 16;        // threads per transform
+static const float PI = 3.14159265358979f;
+
+//: The exchange is staged in chunks so the threadgroup array is a fixed
+//: 8 KB at every length, rather than sized to the transform -- which was
+//: 128 KB at n=16384, over every device's limit, and already past Apple's
+//: 32 KB at n=4096. CH registers of every thread are in flight at once.
+static const uint CAP = 1024;                  // complex, = 8 KB
+static const uint CH  = (CAP / WG > 0) ? (CAP / WG) : 1;
+//: Staged as uint so the per-bin peak table can alias this same memory
+//: once the transform is done. Sizing a second array would have doubled
+//: LDS to 16 KB, and LDS is what caps how many workgroups a CU can hold --
+//: the 8 KB here was chosen for occupancy, not convenience.
+groupshared uint stg[CH * WG * 2];
+void stgPut(uint i, float2 v) { stg[2*i] = asuint(v.x); stg[2*i+1] = asuint(v.y); }
+float2 stgGet(uint i) { return float2(asfloat(stg[2*i]), asfloat(stg[2*i+1])); }
+static uint _tid;
+
+//: Levels until a block fits in one thread's registers. Known from NLEN,
+//: so the level loop unrolls and every len/TB/shift below folds to a
+//: constant -- which is the whole difference between this and the
+//: hand-specialised kernel.
+static const uint NLEVELS = (WG <= 16) ? 1 : ((WG <= 256) ? 2 : 3);
+
+float2 cmul(float2 a, float2 b) { return float2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+float2 cmulConj(float2 a, float2 b) { return float2(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
+
+void r4(inout float2 a, inout float2 b, inout float2 c, inout float2 d)
+{
+    float2 t0=a+c, t1=a-c, t2=b+d, t3=b-d;
+    float2 j3 = float2(-t3.y, t3.x);
+    a=t0+t2; b=t1+j3; c=t0-t2; d=t1-j3;
+}
+
+// In-register DFTs at COMPILE-TIME sizes and offsets. A runtime offset
+// or length here indexes the register array dynamically, which forces a
+// spill to scratch -- the first version did that and the driver crashed.
+// The innermost block size follows from NLEN, so it folds.
+void dft2(inout float2 r[16], uint o)
+{
+    float2 a=r[o], b=r[o+1]; r[o]=a+b; r[o+1]=a-b;
+}
+void dft4(inout float2 r[16], uint o)
+{
+    r4(r[o], r[o+1], r[o+2], r[o+3]);
+    float2 t=r[o+1]; r[o+1]=r[o+2]; r[o+2]=t;
+}
+void dft8(inout float2 r[16], uint o)
+{
+    // radix-2, three stages, fully unrolled with static indices
+    const float S = 0.70710678f;
+    float2 b[8];
+    [unroll] for (uint s = 1; s < 8; s <<= 1) {
+        [unroll] for (uint j = 0; j < 4; ++j) {
+            uint k = j & (s-1), base = (j-k) << 1;
+            float ang = PI * float(k) / float(s);
+            float2 w = float2(cos(ang), sin(ang));
+            float2 u = r[o+j], v = r[o+j+4], t = cmul(w, v);
+            b[base+k] = u+t; b[base+k+s] = u-t;
+        }
+        [unroll] for (uint i = 0; i < 8; ++i) r[o+i] = b[i];
+    }
+}
+void dft16(inout float2 r[16])
+{
+    const float2 W1 = float2( 0.92387953f,  0.38268343f);
+    const float2 W2 = float2( 0.70710678f,  0.70710678f);
+    const float2 W3 = float2( 0.38268343f,  0.92387953f);
+    const float2 W4 = float2( 0.0f,         1.0f       );
+    const float2 W6 = float2(-0.70710678f,  0.70710678f);
+    const float2 W9 = float2(-0.92387953f, -0.38268343f);
+    [unroll] for (uint n1 = 0; n1 < 4; ++n1) r4(r[n1], r[n1+4], r[n1+8], r[n1+12]);
+    r[5]=cmul(r[5],W1);  r[9]=cmul(r[9],W2);   r[13]=cmul(r[13],W3);
+    r[6]=cmul(r[6],W2);  r[10]=cmul(r[10],W4); r[14]=cmul(r[14],W6);
+    r[7]=cmul(r[7],W3);  r[11]=cmul(r[11],W6); r[15]=cmul(r[15],W9);
+    [unroll] for (uint k2 = 0; k2 < 4; ++k2) r4(r[4*k2], r[4*k2+1], r[4*k2+2], r[4*k2+3]);
+    float2 t;
+    t=r[1];  r[1]=r[4];   r[4]=t;
+    t=r[2];  r[2]=r[8];   r[8]=t;
+    t=r[3];  r[3]=r[12];  r[12]=t;
+    t=r[6];  r[6]=r[9];   r[9]=t;
+    t=r[7];  r[7]=r[13];  r[13]=t;
+    t=r[11]; r[11]=r[14]; r[14]=t;
+}
+
+//: Innermost block size: recurse TB /= 16 until it fits in a thread.
+static const uint INNER = (WG <= 16) ? WG : ((WG / 16 <= 16) ? WG / 16 : WG / 256);
+
+void innermost(inout float2 r[16])
+{
+    if (INNER == 16)     { dft16(r); }
+    else if (INNER == 8) { [unroll] for (uint b = 0; b < 2; ++b) dft8(r, b*8); }
+    else if (INNER == 4) { [unroll] for (uint b = 0; b < 4; ++b) dft4(r, b*4); }
+    else                 { [unroll] for (uint b = 0; b < 8; ++b) dft2(r, b*2); }
+}
+
+// Exchange in chunks. Staging CH registers of every thread at a time,
+// a reader works out for each value it wants which register of which
+// thread wrote it -- the scatter formula inverts -- and takes it when
+// that register falls in the current chunk.
+//
+//   scatter wrote   p = blk*len + i*span + lane
+//   so from p:      blk = p/len, i = (p%len)/span, lane = (p%len)%span
+//                   writer thread = blk*span + lane
+void exchange(inout float2 r[16], uint want[16], uint lgLen, uint lgSpan)
+{
+    // Every divisor here is a power of two, so these are shifts and masks.
+    // Written as / and % they were integer divisions -- 16 of them per
+    // thread per chunk -- and cost n=4096 a third of its throughput
+    // against the hand-specialised kernel.
+    // Explicitly initialised. Every register index falls in exactly one
+    // chunk, so these are always written -- but the compiler cannot prove
+    // it and warns, and a backend that leaves an unwritten register as
+    // garbage rather than zero would turn that warning into a wrong
+    // answer. Cheap insurance against a compiler we have not met.
+    float2 out[16];
+    [unroll] for (uint z = 0; z < R; ++z) out[z] = float2(0.0f, 0.0f);
+    uint spanMask = (1u << lgSpan) - 1u;
+    uint lenMask  = (1u << lgLen) - 1u;
+    [unroll] for (uint c = 0; c < R / CH; ++c) {
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint j = 0; j < CH; ++j) stgPut(j * WG + _tid, r[c * CH + j]);
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint d = 0; d < R; ++d) {
+            uint p = want[d];
+            uint b = p >> lgLen, rem = p & lenMask;
+            uint i = rem >> lgSpan, ln = rem & spanMask;
+            if (i >= c * CH && i < (c + 1) * CH)
+                out[d] = stgGet((i - c * CH) * WG + (b << lgSpan) + ln);
+        }
+    }
+    [unroll] for (uint d = 0; d < R; ++d) r[d] = out[d];
+}
+
+//: The transform leaves outputs in mixed-radix digit-reversed order: the
+//: four-step skips the final transposes, so register q of thread tid holds
+//: output index reverse(tid*16 + q) under radices [16]*NLEVELS + INNER.
+//: Recovered by dumping every register against a reference transform and
+//: confirmed for all five lengths -- guessing it wrong is invisible to a
+//: peak-magnitude test, which is why nothing needed it until now.
+//:
+//: Every radix is a power of two, so it is a bit shuffle. The digits come
+//: out least-significant first and are consumed in that same order, so
+//: extraction and rebuild fuse into one loop with no array -- dynamic
+//: indexing of a register array spills to scratch and crashed the driver
+//: the first time this kernel did it.
+static const uint NIDIG = (INNER == 4) ? 2u : 1u;
+static const uint NDIG  = NLEVELS + NIDIG;
+static const uint LGI0  = (INNER == 2) ? 1u : ((INNER == 4) ? 1u : ((INNER == 8) ? 3u : 4u));
+
+uint lgOf(uint i) { return (i < NLEVELS) ? 4u : ((i == NLEVELS) ? LGI0 : 1u); }
+
+uint slotToIndex(uint slot)
+{
+    uint idx = 0u, x = slot;
+    [ForceUnroll] for (int i = int(NDIG) - 1; i >= 0; --i) {
+        uint lg = lgOf(uint(i));
+        uint d  = x & ((1u << lg) - 1u);
+        x >>= lg;
+        idx = (idx << lg) | d;
+    }
+    return idx;
+}
+
+[shader("compute")][numthreads(WG,1,1)]
+void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
+                StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                RWStructuredBuffer<float> peakMag,
+                RWStructuredBuffer<uint> peakIdx,
+                RWStructuredBuffer<float2> peakVal,
+                uniform uint ntmpl, uniform uint lgBin)
+{
+    uint pair = gid.x, tid = lid.x;
+    _tid = tid;
+    uint d = pair / ntmpl, t = pair % ntmpl;
+    float2 r[16];
+
+    // level 0: gather this thread's stride-WG column straight from global
+    [unroll] for (uint n2 = 0; n2 < R; ++n2) {
+        uint idx = tid + WG * n2;
+        r[n2] = cmulConj(data[d*N + idx], tmpl[t*N + idx]);
+    }
+
+    [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
+        uint want[16];                       // scoped per level
+        [unroll] for (uint z = 0; z < R; ++z) want[z] = 0u;
+        // lvl is an unrolled constant, so all of these are constants
+        const uint TB   = WG >> (4 * lvl);
+        const uint len  = N  >> (4 * lvl);
+        const uint lgTB = firstbithigh(TB);
+        const uint lgLn = firstbithigh(len);
+        uint blk  = tid >> lgTB;
+        uint lane = tid & (TB - 1);
+
+        dft16(r);
+        [unroll] for (uint k2 = 0; k2 < R; ++k2) {
+            float ang = 2.0f * PI * float(lane * k2) / float(len);
+            r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
+        }
+
+        // one assignment of want[], then one call: the branchy version
+        // left the compiler unsure it was initialised on every path
+        const uint per  = R / max(TB, 1u);
+        const uint TB2  = max(TB >> 4, 1u), len2 = TB;
+        uint blk2 = tid / TB2, lane2 = tid % TB2;
+        [unroll] for (uint d = 0; d < R; ++d) {
+            uint j = d / max(TB, 1u), m = d % max(TB, 1u);
+            want[d] = (TB <= R) ? (blk * len + (lane * per + j) * TB + m)
+                                : (blk2 * len2 + lane2 + TB2 * d);
+        }
+        exchange(r, want, lgLn, lgTB);
+    }
+    const uint INNER_TB = WG >> (4 * (NLEVELS - 1));
+    innermost(r);
+
+    // --- peak per bin ---------------------------------------------------
+    // Bins are contiguous in OUTPUT index, which is not contiguous in
+    // register or thread space, so every register has to be placed by its
+    // true index rather than by where it happens to sit.
+    //
+    // The max is taken with InterlockedMax on the float's bit pattern. For
+    // non-negative IEEE-754 floats that ordering is identical to numeric
+    // ordering, so this needs no CAS loop and no 64-bit atomics -- which
+    // are not universally available and would have cost portability.
+    const uint nbins = N >> lgBin;
+    GroupMemoryBarrierWithGroupSync();          // transform done with stg
+    for (uint b = tid; b < nbins; b += WG) stg[b] = 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    // No myIdx[]/myMag[] arrays. Holding 16 indices and 16 magnitudes
+    // alongside r[16] adds 32 registers to a kernel that already carries
+    // 32, and occupancy -- not ALU -- is what this kernel is short of.
+    // Recomputing both in the second pass is a few cheap operations
+    // against a halving of the workgroups a CU can keep in flight.
+    // When nbins <= R the bin is fixed by the REGISTER index, not the
+    // thread: index = q*WG + reverse(tid), so the top log2(nbins) bits of
+    // the index come from the bottom bits of the slot, which are q. Every
+    // thread's register q therefore lands in the same bin, and the whole
+    // workgroup was serialising on one LDS word per register.
+    //
+    // A wave-wide max first cuts the atomic traffic by the wave width.
+    // The branch is uniform across the workgroup -- lgBin is a push
+    // constant -- so it costs no divergence.
+    const bool binPerRegister = (nbins <= R);
+    [unroll] for (uint i = 0; i < R; ++i) {
+        uint idx = slotToIndex(tid * R + i);
+        float mag = r[i].x*r[i].x + r[i].y*r[i].y;
+        if (binPerRegister) {
+            float wm = WaveActiveMax(mag);
+            if (WaveIsFirstLane()) InterlockedMax(stg[idx >> lgBin], asuint(wm));
+        } else {
+            InterlockedMax(stg[idx >> lgBin], asuint(mag));
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll] for (uint i = 0; i < R; ++i) {
+        uint idx = slotToIndex(tid * R + i);
+        float mag = r[i].x*r[i].x + r[i].y*r[i].y;
+        uint b = idx >> lgBin;
+        if (stg[b] == asuint(mag)) {
+            uint o = pair * nbins + b;
+            peakMag[o] = sqrt(mag);
+            peakIdx[o] = idx;
+            peakVal[o] = r[i];
+        }
+    }
+}
