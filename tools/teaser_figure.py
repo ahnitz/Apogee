@@ -208,7 +208,7 @@ def svg(results, out):
     # it -- and a fixed dark panel reads the same on a light or dark page,
     # which inheriting currentColor did not.
     INK, MUT, LINE, BG = "#e8eef7", "#94a3b8", "#243044", "#0b0f19"
-    W, H = 900, 470
+    W, H = 900, 490
     pw, ph = 380, 250                 # panel plot area
     o = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" '
          'width="%d" height="%d" font-family="-apple-system,BlinkMacSystemFont,'
@@ -219,12 +219,23 @@ def svg(results, out):
     o.append('<text x="28" y="55" font-size="12.5" fill="%s">correlations per '
              'second — taller is better. The two panels have DIFFERENT scales.'
              '</text>' % MUT)
+    # Which machine. Every number here is a property of the hardware as much
+    # as of the method, and a reader comparing against their own has no way
+    # to place these without it.
+    # dx rather than spaces: SVG collapses runs of whitespace, so padding
+    # written as spaces comes out as one and the GPU label crowds the CPU
+    # name it follows.
+    o.append('<text x="28" y="76" font-size="11" fill="%s">'
+             '<tspan fill="%s">CPU</tspan><tspan dx="7">%s</tspan>'
+             '<tspan dx="24" fill="%s">GPU</tspan><tspan dx="7">%s</tspan>'
+             '</text>'
+             % (MUT, INK, _esc(_cpu_name()), INK, _esc(_gpu_name())))
 
     groups = [("CPU", [r for r in results if r[0][0] == "CPU"]),
               ("GPU", [r for r in results if r[0][0] == "GPU"])]
     for gi, (label, rows) in enumerate(groups):
         x0 = 60 + gi * 450
-        y0 = 100
+        y0 = 120
         hi = max(PAIRS / (ms / 1e3) for _bar, ms in rows)
         o.append('<text x="%d" y="%d" font-size="13" font-weight="600" '
                  'fill="%s">%s</text>' % (x0, y0 - 16, INK, label))
@@ -264,6 +275,12 @@ def svg(results, out):
         fh.write("\n".join(o))
 
 
+def _esc(text):
+    """Device names are vendor strings; & and < in one would break the SVG."""
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+
 def _thru(v):
     if v >= 1e6:
         return "%.1fM/s" % (v / 1e6)
@@ -275,6 +292,23 @@ def _wrap(name):
 
 
 def _cpu_name():
+    """The CPU model, however this platform reports it.
+
+    The figure is generated on whichever machine runs it, so the bars mean
+    nothing without the part number beside them. macOS has no /proc, and
+    falling back to a bare "CPU" there would be the one case where the
+    label is missing precisely because the hardware is interesting.
+    """
+    if sys.platform == "darwin":
+        import subprocess
+        try:
+            out = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                 capture_output=True, text=True, check=True)
+            if out.stdout.strip():
+                return out.stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        return "Apple silicon"
     try:
         for line in open("/proc/cpuinfo"):
             if line.startswith("model name"):

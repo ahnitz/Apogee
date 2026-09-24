@@ -239,10 +239,7 @@ jobs:
           python tools/build_spirv.py
           ls -la python/matchedfilter/metal/
 
-      - name: What can this device do?
-        run: python tools/metal_probe.py
-
-      - name: Install and run the suite
+      - name: Install
         run: |
           python -m pip install -e . pytest
           python -c "
@@ -252,7 +249,15 @@ jobs:
           from matchedfilter import _metal
           print('metal:', _metal.available())
           "
-          python -m pytest tests -q
+
+      # After the install, because it imports the package -- and with
+      # always(), because the whole point of it is to explain a failure.
+      - name: What can this device do?
+        if: always()
+        run: python tools/metal_probe.py
+
+      - name: Run the suite
+        run: python -m pytest tests -q
 
       # The end of the chain: does a shipped kernel actually run and give
       # the right answer? A failure here is the useful outcome -- it says

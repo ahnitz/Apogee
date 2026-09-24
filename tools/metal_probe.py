@@ -19,8 +19,15 @@ import ctypes
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "python"))
-from matchedfilter import _mtlcompute as M          # noqa: E402
+# The installed package first: an editable install may keep the compiled
+# _core somewhere only its own import hook knows about, and putting the
+# source tree on the path ahead of it hides that and fails on _core.
+try:
+    from matchedfilter import _mtlcompute as M
+except ImportError:
+    sys.path.insert(0,
+                    str(pathlib.Path(__file__).resolve().parents[1] / "python"))
+    from matchedfilter import _mtlcompute as M      # noqa: E402
 
 PROBES = {
     "plain": """
