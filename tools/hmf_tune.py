@@ -136,15 +136,40 @@ sys.path.insert(0, "tools")
 import hmf_design as D_design                                 # noqa: E402
 
 
-def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None,
-            margin=1.0):
+#: Trials per call when measuring on a GPU. The CPU's 64 is a throughput
+#: batch for a CPU and a rounding error for a GPU: at 64 pairs the call is
+#: almost entirely submit-and-wait, so the sweep would measure launch
+#: latency several thousand times over. Accuracy does not care how the
+#: trials are grouped -- only how many there are -- so the batch is free to
+#: follow the device.
+_GPU_BATCH = 2048
+
+
+def device_batch(device, default=64):
+    """Trials per call, sized for whoever is running them."""
+    return default if device in (None, "cpu") else _GPU_BATCH
+
+
+def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
+            margin=1.0, device=None):
     """Measured (dismissal, seconds-per-pair) for one configuration.
 
     Both numbers come from the real filter.  Injections go into a batch of
     data spectra at once, which is how a caller drives it, so the time is
     throughput rather than per-call overhead, and the trial count needed to
     resolve 1e-4 stays affordable.
+
+    `device` picks which implementation is being characterised. Accuracy
+    rows describe an ALGORITHM, and the GPU does not run the CPU's -- it
+    escalates the whole interpolation window where the CPU interpolates the
+    coarse peak -- so measuring it needs the GPU actually running, not a
+    CPU measurement relabelled. The flat filter stays on the same device as
+    the hierarchical one: a dismissal is defined against what the flat
+    filter found, and comparing across devices would fold their float
+    differences into the answer.
     """
+    if batch is None:
+        batch = device_batch(device)
     rng = np.random.default_rng(seed)
     if power is None:
         power = inspiral_power(n)
@@ -155,9 +180,9 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None,
     # stands in for any bank with the same profile -- including a ratio filter
     # whose own spectrum looks nothing like its output.
     H = template_with_power(n, power)
-    flat = mf.MatchedFilter(n, ndata=batch, ntemplates=1)
+    flat = mf.MatchedFilter(n, ndata=batch, ntemplates=1, device=device)
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
-                               band=band, oversample=U, taps=K)
+                               band=band, oversample=U, taps=K, device=device)
     hf.set_reference(power)
     # Always, including 1.0. The margin is an independent variable of this
     # sweep, and a pinned plan now takes one from the table when the caller
@@ -170,13 +195,21 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None,
     detected = omitted = 0
     sec = 0.0
     npair = 0
-    ph = np.exp(2j * np.pi * np.arange(n) / n)
+    # exp(2 pi i k L / n) by table lookup rather than ph ** L. The phase
+    # ramp only ever takes the n values already in the table, and a complex
+    # power recomputes one from scratch per element: measured at 30.7 ms a
+    # batch against 0.98 ms, and it was 77% of the whole cell -- the sweep
+    # was spending its time building injections, not filtering them. The
+    # lookup is also the more accurate of the two, since repeated powers
+    # drift and an exact index does not.
+    kidx = np.arange(n)
+    ph_tab = np.exp(2j * np.pi * kidx / n)
     lag0 = 0
     for _ in range((trials + batch - 1) // batch):
         D = noise((batch, n), rng)
         for j in range(batch):
             lag0 = (lag0 + 37) % n
-            D[j] += (snr * H * ph ** lag0).astype(np.complex64)
+            D[j] += (snr * H * ph_tab[(kidx * lag0) % n]).astype(np.complex64)
         flat.set_data(D)
         hf.set_data(D)
         a_ = flat.run(binsize=n, threshold=snr, raw=True)
@@ -189,11 +222,14 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=64, power=None,
         hit = ai >= 0
         detected += int(hit.sum())
         omitted += int((bi[hit] < 0).sum())
+    for o in (flat, hf):
+        if getattr(o, "_gpu", None) is not None:
+            o._gpu.destroy()
     return (omitted / detected if detected else 1.0), detected, sec / npair
 
 
 def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True,
-         power=None):
+         power=None, device=None):
     if bands is None:
         bands = [b for b in (256, 512, 1024, 2048, 4096) if b <= n // 2]
     rows = []
@@ -202,7 +238,7 @@ def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True,
             for K in (4, 8):
                 try:
                     dm, det, sec = measure(n, band, U, K, snr, trials, seed,
-                                           power=power)
+                                           power=power, device=device)
                 except Exception as e:                       # unsupported combo
                     if verbose:
                         print("  band %-5d U=%d K=%-3d  unavailable (%s)"
@@ -279,16 +315,31 @@ def main():
                     help="re-measure the cost table for this machine, using "
                          "the shipped accuracy table's cells; writes --out")
     ap.add_argument("--out", default="cost.txt")
+    ap.add_argument("--device", default=None, metavar="DEV",
+                    help="measure the implementation this device runs "
+                         "('gpu', 'gpu:1', ...). Accuracy rows describe an "
+                         "ALGORITHM, and the GPU does not run the CPU's, so "
+                         "an accuracy-gpu.txt has to be measured with the "
+                         "GPU actually filtering. Default: the CPU.")
     a = ap.parse_args()
+    if a.device and a.device != "cpu":
+        import matchedfilter as _mf
+        ok = [d for d in _mf.devices() if d.kind == "gpu"]
+        if not ok:
+            ap.error("no GPU found, so there is nothing to characterise")
+        if a.n not in getattr(_mf, "_GPU_SIZES", {a.n}):
+            ap.error("the GPU backend does not run n=%d, so it has no "
+                     "accuracy to measure there; the shipped table still "
+                     "covers it for the CPU" % a.n)
     if a.retune_cost is not None:
         acc = a.retune_cost or os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "python", "matchedfilter", "accuracy.txt")
         retune_cost(acc, a.out, trials=max(a.trials, 2000))
         return
-    print("n=%d snr=%.1f fd=%.0e -- every row is the real filter, not a model\n"
-          % (a.n, a.snr, a.fd))
-    best, _ = tune(a.n, a.snr, a.fd, trials=a.trials)
+    print("n=%d snr=%.1f fd=%.0e on %s -- every row is the real filter, "
+          "not a model\n" % (a.n, a.snr, a.fd, a.device or "cpu"))
+    best, _ = tune(a.n, a.snr, a.fd, trials=a.trials, device=a.device)
     print("\nPICK: %s" % (best if best else "nothing met the target"))
 
 
@@ -386,10 +437,11 @@ def f_min(n, band, U, K, snr, fd, trials=4000, lo=0.50, hi=0.999, tol=0.01):
 
 def _cell(job):
     """One (n, band, U, K, snr, fd, want_f) measurement. Top level for pickling."""
-    n, band, U, K, snr, fd, wf, trials = job
+    n, band, U, K, snr, fd, wf, trials, device = job
     try:
         ref = (np.abs(D_design.make_template(n, band, wf)) ** 2).astype(np.float32)
-        dm, det, sec = measure(n, band, U, K, snr, trials, power=ref)
+        dm, det, sec = measure(n, band, U, K, snr, trials, power=ref,
+                               device=device)
         return dict(n=n, band=band, U=U, K=K, snr=snr, fd=fd, want_f=wf,
                     dismissal=dm, detected=det, sec=sec, ok=(det > 0 and dm <= fd))
     except Exception as e:
@@ -397,12 +449,25 @@ def _cell(job):
                     error=str(e), ok=False)
 
 
-def sweep(ns, bands, Us, Ks, snrs, fds, want_fs, trials, jobs):
-    """Run every cell in parallel. Returns the raw rows."""
+def sweep(ns, bands, Us, Ks, snrs, fds, want_fs, trials, jobs, device=None):
+    """Run every cell in parallel. Returns the raw rows.
+
+    The pool is used for a GPU sweep too, which is not obvious: every worker
+    queues on the same device, so the filtering serialises. It is worth it
+    because the filtering is not the cost. Measured on one cell, 8192 trials
+    at n=4096: 1.19 s wall, of which the GPU is about 0.05 s. The rest is
+    numpy building noise and injections, and that is per-core work. Deciding
+    this by reasoning gave the opposite -- and the wrong -- answer.
+
+    Fewer workers than a CPU sweep, though: each carries its own device
+    context, compiles its own pipelines, and they share one device's memory.
+    """
     import multiprocessing as mp
-    work = [(n, b, U, K, T, fd, wf, trials)
+    work = [(n, b, U, K, T, fd, wf, trials, device)
             for n in ns for b in bands if b <= n // 2
             for U in Us for K in Ks for T in snrs for fd in fds for wf in want_fs]
+    if device not in (None, "cpu") and jobs is None:
+        jobs = max(1, min(8, (os.cpu_count() or 4) // 2))
     with mp.Pool(jobs) as pool:
         out = []
         for i, r in enumerate(pool.imap_unordered(_cell, work, chunksize=1)):
