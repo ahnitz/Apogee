@@ -250,11 +250,18 @@ def test_the_cpu_still_covers_the_larger_sizes(n):
 def _vulkan_or_skip():
     """The tests below exercise the SPIR-V kernel CHOICE, which is Vulkan's.
 
-    Two staging variants per size exist only in the SPIR-V build, and the
-    selection between them is what these check. The Metal backend ships one
-    library per size and has nothing to choose, so on macOS there is no
-    question here to answer -- skipping says that, where failing would
-    report a missing Vulkan loader as a broken kernel selection.
+    What these check is the selection between staging variants. That USED to
+    be Vulkan's alone, and this skip used to say the Metal backend ships one
+    library per size and has nothing to choose. That stopped being true when
+    the portable 32 KB Metal builds were added: Metal has two variants at the
+    top sizes and _stem picks between them off its own manifest field. The
+    equivalent Metal coverage is test_the_chosen_metal_kernel_fits_the_device.
+
+    What genuinely cannot move is test_both_staging_variants_agree. Comparing
+    the two builds needs a device that can run BOTH, and the preferred build
+    asks for 64 KB of threadgroup memory -- over the limit on every Apple GPU
+    there is. So that equivalence has no Apple host, by construction rather
+    than by omission.
     """
     from matchedfilter import _vulkan
     ok, why = _vulkan.available()

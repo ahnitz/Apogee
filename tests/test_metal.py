@@ -80,3 +80,68 @@ def test_metallib_presence_is_recorded(manifest):
             if lib is not None:
                 assert (METAL_DIR / lib).is_file(), \
                     "manifest claims %s but it is not in the package" % lib
+
+
+def _metal_or_skip():
+    """A live Metal device, or a skip that says why there is none."""
+    import sys
+    if sys.platform != "darwin":
+        pytest.skip("Metal needs macOS")
+    from matchedfilter import _metal
+    ok, why = _metal.available()
+    if not ok:
+        pytest.skip(why or "no Metal device")
+    from matchedfilter import _mtlcompute
+    return _mtlcompute
+
+
+def test_the_chosen_metal_kernel_fits_the_device(manifest):
+    """Never select a Metal kernel asking for more threadgroup memory than exists.
+
+    This had no coverage because its Vulkan twin skips on macOS with the
+    reason "the Metal backend ships one library per size and has nothing to
+    choose" -- which stopped being true when the portable 32 KB Metal builds
+    were added. Metal has two variants at the top sizes and _stem picks
+    between them, so there is very much a question here to answer, and the
+    selection reads a manifest field (metal_lds_bytes) that is distinct from
+    the Vulkan one. Getting it wrong does not return a wrong answer, it
+    fails to create a pipeline at all, and Metal reports that as
+    "Compilation failed" naming nothing.
+    """
+    M = _metal_or_skip()
+    ctx = M.Context(0)
+    try:
+        for key, info in manifest["modules"].items():
+            n = int(key)
+            if n < 1024:
+                continue
+            stem = ctx._stem(n, "fusedTierB")
+            need = (info.get("metal_lds_bytes", info["lds_bytes"])
+                    if not stem.endswith("_lds32")
+                    else info["metal"]["fusedTierB"]["portable"]["lds_bytes"])
+            assert need <= ctx.max_shared_memory, (
+                "n=%d picked %s needing %d KB with %d KB available"
+                % (n, stem, need // 1024, ctx.max_shared_memory // 1024))
+            # And it must actually build, which is the failure being guarded.
+            ctx.pipeline(n)
+    finally:
+        ctx.destroy()
+
+
+def test_apple_takes_the_full_32kb_staging_where_it_fits(manifest):
+    """n=4096 must use the base build, not a portable one.
+
+    The Metal staging cap was widened to CH=16 at 1024/2048/4096, which is
+    2.01x at n=4096 on an M2 and lands on exactly 32 KB -- precisely Apple's
+    limit. One byte more and _stem would quietly fall back to a portable
+    variant that does not exist for these sizes, or to the Vulkan figure and
+    pick wrong. This pins the fit.
+    """
+    _metal_or_skip()
+    for n in (1024, 2048, 4096):
+        info = manifest["modules"][str(n)]
+        assert info["metal_lds_bytes"] <= 32768
+        assert "portable" not in info["metal"]["fusedTierB"], (
+            "n=%d gained a portable Metal variant; the base build no longer "
+            "fits Apple and the CH=16 win is silently gone" % n)
+    assert manifest["modules"]["4096"]["metal_lds_bytes"] == 32768
