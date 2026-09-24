@@ -23,6 +23,13 @@ native Metal on Apple silicon.
   they resolve separately: `cost-<arch>.txt` by device, `accuracy-gpu.txt`
   by code path. Shipped: `cost-gfx11.txt` (RDNA 3/3.5), `cost-apple.txt`,
   `accuracy-gpu.txt` measured with the GPU actually filtering.
+- **`MatchedFilter.run_series`** (`ap_mf_run_series`). The wide interface --
+  one call per segment instead of one per block -- previously existed only on
+  `HierarchicalFilter`, which is backwards: hierarchical needs a reference
+  spectrum and the `(n, snr, fd)` tables, flat needs neither, so flat is what
+  a caller outside gravitational-wave search reaches for first. Blocks sharing
+  a window are filtered together up to the plan's own `ndata`, which is the
+  grouping knob and deliberately the only one.
 - **`UnsupportedSize`**, so a length a device genuinely cannot run is a
   skip with a reason rather than a failure with none.
 - DLPack ingest, device selection, and a standing CPU/GPU scoreboard.
@@ -41,6 +48,14 @@ native Metal on Apple silicon.
 
 ### Fixed
 
+- **Heap overflow in `run_series`, on the shipped hierarchical path.** The
+  output is addressed at a single stride taken from the first block, but the
+  bin count was recomputed per group, so a window yielding fewer bins wrote
+  into the next block's row and off the end of the buffer. Ordinary
+  overlap-save input reaches it -- the ragged edge blocks `run_series` exists
+  to accept are exactly the short ones -- and it aborted the interpreter
+  rather than failing. Now refused with a clear error, in C and in Python,
+  on both filter classes.
 - The hierarchical coarse-template cache never hit -- it was keyed on the
   `id()` of a fresh view.
 - `_ensure` discarded a pinned configuration on the GPU path.
