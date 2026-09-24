@@ -162,6 +162,8 @@ class MatchedFilter:
         # spectrum rather than copying it, so the wrapper must keep it alive.
         self._held = {}
         self._gpu = None
+        self._gpairs = 0
+        self._gtrig = 0
         if self.device.kind == "gpu":
             self._start_gpu()
             return
@@ -242,6 +244,61 @@ class MatchedFilter:
         for i in range(self.ntemplates):
             self._ensure().set_template(i, a[i])
 
+
+    def _gpu_hier(self, D, H, binsize, threshold, start, end):
+        """Coarse pass, then the flat filter on what survives.
+
+        Shared by run() and run_series() so the two cannot drift: run_series
+        used to have no GPU branch at all, which meant it silently built a
+        CPU plan and ran there, returning entirely plausible results.
+        """
+        band, f, margin, raw_thr, even_thr = self._gpu_calibration(threshold)
+        # Coarse templates: truncate, scale, and phase-ramp for the odd half.
+        s = 1.0 / np.sqrt(f) if f > 0 else 0.0
+        ct0 = (H[:, :band] * s).astype(np.complex64)
+        ramp = np.exp(1j * np.pi * np.arange(band) / band).astype(np.complex64)
+        ct1 = (ct0 * ramp).astype(np.complex64)
+        Dc = np.ascontiguousarray(D[:, :band])
+
+        # The coarse pass is the flat filter at `band`, one bin over the whole
+        # window, which is what makes the reported peak the maximum.
+        _, ev = self._gpu.peaks(band, Dc, ct0, binsize=band, threshold=0.0)
+        _, od = self._gpu.peaks(band, Dc, ct1, binsize=band, threshold=0.0)
+        even = np.abs(ev[:, :, 0])
+        odd = np.abs(od[:, :, 0])
+
+        # The C dismisses on the even half alone before paying for the odd
+        # one, and takes the odd value only above raw_thr.
+        alive = even >= even_thr
+        best = np.where(odd >= raw_thr, np.maximum(even, odd), even)
+
+        # Escalate at raw_thr rather than at margin. Between the two sits the
+        # only window where the C's interpolation can change the verdict; it
+        # can only ever raise the statistic, so escalating the whole window is
+        # strictly MORE conservative than interpolating it. Measured at
+        # 0.9-2.2% of pairs, and it removes the 13-tap interpolator -- and the
+        # coarse series it would need resident -- from the device entirely.
+        escalate = alive & (best >= raw_thr)
+
+        # Refinement IS the flat filter, which is what makes the one-sided
+        # guarantee hold by construction rather than by agreement.
+        nb = self.nbins(binsize, (start, end))
+        nd, nt = D.shape[0], H.shape[0]
+        idx = np.full((nd, nt, nb), -1, dtype=np.int64)
+        val = np.zeros((nd, nt, nb), dtype=np.complex64)
+        self._last_refine = float(escalate.mean()) if escalate.size else 0.0
+        self._gpairs += escalate.size
+        for d in range(nd):
+            sel = np.flatnonzero(escalate[d])
+            if not sel.size:
+                continue
+            gi, gv = self._gpu.peaks(
+                self.n, D[d:d + 1], np.ascontiguousarray(H[sel]),
+                binsize=binsize, threshold=threshold, window=(start, end))
+            idx[d, sel] = gi[0]
+            val[d, sel] = gv[0]
+        self._gtrig += int((idx >= 0).any(axis=2).sum())
+        return idx, val
 
     def _run_gpu(self, binsize, threshold, start, end, data, templates,
                  counts, raw):
@@ -1248,6 +1305,8 @@ class HierarchicalFilter(MatchedFilter):
         self._fs_snr = None
         self._last_refine = 0.0
         self._gpu = None
+        self._gpairs = 0
+        self._gtrig = 0
         if self.device.kind == "gpu":
             # HierarchicalFilter overrides __init__, so it does NOT inherit
             # MatchedFilter's call to _start_gpu. Omitting this left device=
@@ -1366,15 +1425,20 @@ class HierarchicalFilter(MatchedFilter):
         if self._gcal is not None and self._gcal[0] == key:
             return self._gcal[1]
         cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd)
-        if self._fs_snr is not None:
-            cal.set_first_stage(self._fs_snr)
+        # Order matters: set_first_stage builds the plan, and building it
+        # before the reference arrives means the band is chosen with nothing
+        # to choose from, which fails with "no measured tuning" on a
+        # configuration the tables cover perfectly well.
         cal.set_reference(self._pending_ref)
         cal.set_templates(self._gtmpl[0][None, :])
+        if self._fs_snr is not None:
+            cal.set_first_stage(self._fs_snr)
         plan = cal._ensure()
         band = cal.config[0]
         margin, raw, even = plan.coarse_thresholds(float(threshold))
         ref = np.asarray(self._pending_ref, dtype=np.float64)
         f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
+        self._gcfg = cal.config          # the real (band, oversample, taps)
         out = (band, f, margin, raw, even)
         self._gcal = (key, out)
         return out
@@ -1397,55 +1461,13 @@ class HierarchicalFilter(MatchedFilter):
         if self._pending_ref is None:
             raise ValueError("set_reference is required before running on a GPU")
 
-        band, f, margin, raw_thr, even_thr = self._gpu_calibration(threshold)
         D = self._gdata[d0:d0 + nd]
         H = self._gtmpl[t0:t0 + nt]
 
-        # Coarse templates: truncate, scale, and phase-ramp for the odd half.
-        s = 1.0 / np.sqrt(f) if f > 0 else 0.0
-        ct0 = (H[:, :band] * s).astype(np.complex64)
-        ramp = np.exp(1j * np.pi * np.arange(band) / band).astype(np.complex64)
-        ct1 = (ct0 * ramp).astype(np.complex64)
-        Dc = np.ascontiguousarray(D[:, :band])
-
-        # The coarse pass is the flat filter at `band`, one bin over the whole
-        # window, which is what makes the reported peak the maximum.
-        _, ev = self._gpu.peaks(band, Dc, ct0, binsize=band, threshold=0.0)
-        _, od = self._gpu.peaks(band, Dc, ct1, binsize=band, threshold=0.0)
-        even = np.abs(ev[:, :, 0])
-        odd = np.abs(od[:, :, 0])
-
-        # The C dismisses on the even half alone before paying for the odd
-        # one, and takes the odd value only above raw_thr.
-        alive = even >= even_thr
-        best = np.where(odd >= raw_thr, np.maximum(even, odd), even)
-
-        # Escalate at raw_thr rather than at margin. Between the two sits the
-        # only window where the C's interpolation can change the verdict; it
-        # can only ever raise the statistic, so escalating the whole window is
-        # strictly MORE conservative than interpolating it. Measured at
-        # 0.9-2.2% of pairs, and it removes the 13-tap interpolator -- and the
-        # coarse series it would need resident -- from the device entirely.
-        escalate = alive & (best >= raw_thr)
-
-        nb = self.nbins(binsize, (start, end))
-        peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
-        peaks["index"] = -1
-        peaks["value"] = 0
-        self._last_refine = float(escalate.mean()) if escalate.size else 0.0
-
-        # Refinement IS the flat filter, which is what makes the one-sided
-        # guarantee hold by construction rather than by agreement.
-        for d in range(nd):
-            sel = np.flatnonzero(escalate[d])
-            if not sel.size:
-                continue
-            idx, val = self._gpu.peaks(
-                self.n, D[d:d + 1], np.ascontiguousarray(H[sel]),
-                binsize=binsize, threshold=threshold, window=(start, end))
-            peaks["index"][d, sel] = idx[0]
-            peaks["value"][d, sel] = val[0]
-
+        idx, val = self._gpu_hier(D, H, binsize, threshold, start, end)
+        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
+        peaks["index"] = idx
+        peaks["value"] = val
         if raw_out:
             r = (peaks["index"], peaks["value"])
             return (r, (peaks["index"] >= 0).sum(axis=2).astype(np.int32)) if counts else r
@@ -1534,6 +1556,56 @@ class HierarchicalFilter(MatchedFilter):
         if abs(self._margin - 1.0) > 1e-9:
             self._mf.set_coarse_margin(self._margin)
 
+    def _run_series_gpu(self, ser, st, ws, we, binsize, threshold,
+                        templates, raw):
+        """run_series on a GPU plan.
+
+        The C does the per-block forward transform inside the plan; here it is
+        done on the host, which is the same arithmetic and keeps the device
+        code to the one kernel that already exists.
+
+        Blocks are grouped by window, because a window is a dispatch parameter
+        rather than per-pair data: blocks sharing one can go in a single call,
+        and only the ragged ones at a segment's edges are left on their own.
+        """
+        n = self.n
+        nblk = st.size
+        t0, nt = (0, self.ntemplates) if templates is None else (
+            int(templates[0]), int(templates[1]))
+        binsize = n if binsize is None else int(binsize)
+        H = self._gtmpl[t0:t0 + nt]
+
+        # One forward transform per block. Blocks may run off the end of the
+        # series; the missing tail is zero, as the C's padding makes it.
+        spec = np.zeros((nblk, n), dtype=np.complex64)
+        for b in range(nblk):
+            lo = int(st[b])
+            seg = ser[lo:lo + n]
+            buf = np.zeros(n, dtype=np.complex64)
+            buf[:seg.size] = seg
+            spec[b] = np.fft.fft(buf)
+
+        nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
+        idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
+        val = np.zeros((nblk, nt, nb), dtype=np.complex64)
+        for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
+            rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
+            gi, gv = self._gpu_hier(np.ascontiguousarray(spec[rows]), H,
+                                    binsize, threshold, w[0], w[1])
+            if gi.shape[2] != nb:
+                raise ValueError(
+                    "blocks in one call must produce the same bin count; "
+                    "window %s gives %d against %d" % (w, gi.shape[2], nb))
+            idx[rows] = gi
+            val[rows] = gv
+
+        if raw:
+            return idx, val
+        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
+        peaks["index"] = idx
+        peaks["value"] = val
+        return peaks
+
     def run_series(self, series, starts, win_start, win_end,
                    binsize=None, threshold=0.0, templates=None, raw=False):
         """Filter a time series over a caller-supplied block layout.
@@ -1571,6 +1643,9 @@ class HierarchicalFilter(MatchedFilter):
         if not (st.size == ws.size == we.size):
             raise ValueError("starts, win_start and win_end must be the same length")
         nblk = st.size
+        if self._gpu is not None:
+            return self._run_series_gpu(ser, st, ws, we, binsize, threshold,
+                                        templates, raw)
         t0, nt = (0, self.ntemplates) if templates is None else (
             int(templates[0]), int(templates[1]))
         binsize = self.n if binsize is None else int(binsize)
@@ -1601,8 +1676,8 @@ class HierarchicalFilter(MatchedFilter):
     def config(self):
         """``(band, oversample, taps)`` the design table selected."""
         if self._gpu is not None:
-            band, _f, _m, _r, _e = self._gpu_calibration(self.snr)
-            return band, 2, 0
+            self._gpu_calibration(self.snr)
+            return self._gcfg
         band, u, k = self._ensure().config()
         return band, u, k
 
@@ -1610,7 +1685,7 @@ class HierarchicalFilter(MatchedFilter):
     def stats(self):
         """``(pairs, triggers)`` accumulated since construction."""
         if self._gpu is not None:
-            return (0, 0)          # no C plan to carry the counters
+            return (self._gpairs, self._gtrig)
         return self._ensure().stats()
 
     @property
