@@ -3,7 +3,7 @@
 #include <metal_texture>
 using namespace metal;
 
-#line 61 "/home/ahnitz/projects/claude/searchdev/work/peak-fft/python/matchedfilter/spirv/ct_256_m.slang"
+#line 61 "/home/ahnitz/projects/claude/searchdev/work/peak-fft/python/matchedfilter/spirv/ct_1024_m.slang"
 float2 cmulConj_0(float2 a_0, float2 b_0)
 {
 
@@ -203,25 +203,97 @@ void dft16_0(array<float2, int(16)> thread* r_0)
 }
 
 
-#line 114
-void dftR_0(array<float2, int(16)> thread* r_1)
+#line 99
+void dft32_0(array<float2, int(32)> thread* r_1)
+{
+    thread array<float2, int(16)> e_0;
+
+#line 101
+    thread array<float2, int(16)> o_0;
+
+#line 101
+    uint i_0 = 0U;
+    for(;;)
+    {
+
+#line 102
+        if(i_0 < 16U)
+        {
+        }
+        else
+        {
+
+#line 102
+            break;
+        }
+
+#line 102
+        uint _S10 = 2U * i_0;
+
+#line 102
+        e_0[i_0] = (*r_1)[_S10];
+
+#line 102
+        o_0[i_0] = (*r_1)[_S10 + 1U];
+
+#line 102
+        i_0 = i_0 + 1U;
+
+#line 102
+    }
+    dft16_0(&e_0);
+    dft16_0(&o_0);
+
+#line 104
+    uint k_0 = 0U;
+    for(;;)
+    {
+
+#line 105
+        if(k_0 < 16U)
+        {
+        }
+        else
+        {
+
+#line 105
+            break;
+        }
+
+#line 106
+        float ang_0 = 6.28318548202514648 * float(k_0) / 32.0;
+        float2 w_0 = cmul_0(o_0[k_0], float2(cos(ang_0), sin(ang_0)));
+        (*r_1)[k_0] = e_0[k_0] + w_0;
+        (*r_1)[k_0 + 16U] = e_0[k_0] - w_0;
+
+#line 105
+        k_0 = k_0 + 1U;
+
+#line 105
+    }
+
+#line 111
+    return;
+}
+
+void dftR_0(array<float2, int(32)> thread* r_2)
 {
 
-    dft16_0(r_1);
 
 
+    dft32_0(r_2);
 
     return;
 }
 
 
 #line 128
-void stage2_0(array<float2, int(16)> thread* r_2)
+void stage2_0(array<float2, int(32)> thread* r_3)
 {
 
-    dft16_0(r_2);
+#line 143
+    dft32_0(r_3);
 
-#line 145
     return;
 }
 
@@ -234,14 +306,14 @@ struct EntryPointParams_0
 };
 
 
-#line 173 "/home/ahnitz/projects/claude/searchdev/work/peak-fft/python/matchedfilter/spirv/ct_256_m.slang"
+#line 173 "/home/ahnitz/projects/claude/searchdev/work/peak-fft/python/matchedfilter/spirv/ct_1024_m.slang"
 struct KernelContext_0
 {
     EntryPointParams_0 constant* entryPointParams_0;
     packed_float2 device* entryPointParams_data_0;
     packed_float2 device* entryPointParams_tmpl_0;
     packed_float2 device* entryPointParams_out_0;
-    array<float2, int(1024)> threadgroup* sh_0;
+    array<float2, int(4096)> threadgroup* sh_0;
 };
 
 
@@ -265,7 +337,7 @@ struct KernelContext_0
     (&kernelContext_0)->entryPointParams_out_0 = entryPointParams_out_1;
 
 #line 150
-    threadgroup array<float2, int(1024)> sh_1;
+    threadgroup array<float2, int(4096)> sh_1;
 
 #line 150
     (&kernelContext_0)->sh_0 = &sh_1;
@@ -274,12 +346,12 @@ struct KernelContext_0
     uint tid_0 = lid_0.x;
 
 #line 155
-    uint slot_0 = tid_0 / 16U;
+    uint slot_0 = tid_0 / 32U;
 
 #line 155
-    uint lane_0 = tid_0 % 16U;
+    uint lane_0 = tid_0 % 32U;
     uint pair_0 = gid_0.x * 4U + slot_0;
-    uint base_0 = slot_0 * 256U;
+    uint base_0 = slot_0 * 1024U;
     if(pair_0 >= (entryPointParams_1->npairs_0))
     {
 
@@ -288,20 +360,20 @@ struct KernelContext_0
     }
 
 #line 159
-    uint _S10 = pair_0 / (&kernelContext_0)->entryPointParams_0->ntmpl_0;
+    uint _S11 = pair_0 / (&kernelContext_0)->entryPointParams_0->ntmpl_0;
 
 #line 159
-    uint _S11 = pair_0 % (&kernelContext_0)->entryPointParams_0->ntmpl_0;
+    uint _S12 = pair_0 % (&kernelContext_0)->entryPointParams_0->ntmpl_0;
 
-    thread array<float2, int(16)> r_3;
+    thread array<float2, int(32)> r_4;
 
 #line 161
-    uint i_0 = 0U;
+    uint i_1 = 0U;
     for(;;)
     {
 
 #line 162
-        if(i_0 < 16U)
+        if(i_1 < 32U)
         {
         }
         else
@@ -312,18 +384,18 @@ struct KernelContext_0
         }
 
 #line 163
-        uint k_0 = lane_0 + 16U * i_0;
-        r_3[i_0] = cmulConj_0(float2(*((&kernelContext_0)->entryPointParams_data_0+(_S10 * 256U + k_0))) , float2(*((&kernelContext_0)->entryPointParams_tmpl_0+(_S11 * 256U + k_0))) );
+        uint k_1 = lane_0 + 32U * i_1;
+        r_4[i_1] = cmulConj_0(float2(*((&kernelContext_0)->entryPointParams_data_0+(_S11 * 1024U + k_1))) , float2(*((&kernelContext_0)->entryPointParams_tmpl_0+(_S12 * 1024U + k_1))) );
 
 #line 162
-        i_0 = i_0 + 1U;
+        i_1 = i_1 + 1U;
 
 #line 162
     }
 
 
 
-    dftR_0(&r_3);
+    dftR_0(&r_4);
 
 #line 166
     uint k2_1 = 0U;
@@ -331,7 +403,7 @@ struct KernelContext_0
     {
 
 #line 167
-        if(k2_1 < 16U)
+        if(k2_1 < 32U)
         {
         }
         else
@@ -342,8 +414,8 @@ struct KernelContext_0
         }
 
 #line 168
-        float ang_0 = 6.28318548202514648 * float(lane_0 * k2_1) / 256.0;
-        r_3[k2_1] = cmul_0(r_3[k2_1], float2(cos(ang_0), sin(ang_0)));
+        float ang_1 = 6.28318548202514648 * float(lane_0 * k2_1) / 1024.0;
+        r_4[k2_1] = cmul_0(r_4[k2_1], float2(cos(ang_1), sin(ang_1)));
 
 #line 167
         k2_1 = k2_1 + 1U;
@@ -355,12 +427,12 @@ struct KernelContext_0
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
 #line 172
-    i_0 = 0U;
+    i_1 = 0U;
     for(;;)
     {
 
 #line 173
-        if(i_0 < 16U)
+        if(i_1 < 32U)
         {
         }
         else
@@ -371,22 +443,22 @@ struct KernelContext_0
         }
 
 #line 173
-        (*(&kernelContext_0)->sh_0)[base_0 + i_0 * 16U + lane_0] = r_3[i_0];
+        (*(&kernelContext_0)->sh_0)[base_0 + i_1 * 32U + lane_0] = r_4[i_1];
 
 #line 173
-        i_0 = i_0 + 1U;
+        i_1 = i_1 + 1U;
 
 #line 173
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
 #line 174
-    i_0 = 0U;
+    i_1 = 0U;
     for(;;)
     {
 
 #line 175
-        if(i_0 < 16U)
+        if(i_1 < 32U)
         {
         }
         else
@@ -397,27 +469,27 @@ struct KernelContext_0
         }
 
 #line 175
-        r_3[i_0] = (*(&kernelContext_0)->sh_0)[base_0 + lane_0 * 16U + i_0];
+        r_4[i_1] = (*(&kernelContext_0)->sh_0)[base_0 + lane_0 * 32U + i_1];
 
 #line 175
-        i_0 = i_0 + 1U;
+        i_1 = i_1 + 1U;
 
 #line 175
     }
-    stage2_0(&r_3);
+    stage2_0(&r_4);
 
 #line 176
     float best_0 = 0.0;
 
 #line 176
-    i_0 = 0U;
+    i_1 = 0U;
 
 
     for(;;)
     {
 
 #line 179
-        if(i_0 < 16U)
+        if(i_1 < 32U)
         {
         }
         else
@@ -428,16 +500,16 @@ struct KernelContext_0
         }
 
 #line 179
-        float _S12 = max(best_0, r_3[i_0].x * r_3[i_0].x + r_3[i_0].y * r_3[i_0].y);
+        float _S13 = max(best_0, r_4[i_1].x * r_4[i_1].x + r_4[i_1].y * r_4[i_1].y);
 
 #line 179
-        uint i_1 = i_0 + 1U;
+        uint i_2 = i_1 + 1U;
 
 #line 179
-        best_0 = _S12;
+        best_0 = _S13;
 
 #line 179
-        i_0 = i_1;
+        i_1 = i_2;
 
 #line 179
     }
@@ -445,14 +517,14 @@ struct KernelContext_0
 
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint _S13 = base_0 + lane_0;
+    uint _S14 = base_0 + lane_0;
 
 #line 184
-    (*(&kernelContext_0)->sh_0)[_S13] = float2(best_0, 0.0);
+    (*(&kernelContext_0)->sh_0)[_S14] = float2(best_0, 0.0);
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
 #line 185
-    uint st_0 = 8U;
+    uint st_0 = 16U;
     for(;;)
     {
 
@@ -472,7 +544,7 @@ struct KernelContext_0
         {
 
 #line 187
-            (*(&kernelContext_0)->sh_0)[_S13] = float2(max((*(&kernelContext_0)->sh_0)[_S13].x, (*(&kernelContext_0)->sh_0)[_S13 + st_0].x), 0.0);
+            (*(&kernelContext_0)->sh_0)[_S14] = float2(max((*(&kernelContext_0)->sh_0)[_S14].x, (*(&kernelContext_0)->sh_0)[_S14 + st_0].x), 0.0);
 
 #line 187
         }

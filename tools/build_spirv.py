@@ -81,7 +81,13 @@ KERNEL = ROOT / "src" / "gpu" / "tierb.slang"
 #: comment at the top of the file: it is a single 16x16 four-step, so the
 #: second stage is 16 points, which is right only at band=256.
 COARSE_KERNEL = ROOT / "src" / "gpu" / "coarse_tile.slang"
-COARSE_BANDS = (256,)
+#: Bands that get the tiled coarse kernel, and the registers per lane it
+#: uses there. R and BAND/R are the two transform lengths, and the kernel
+#: implements 16 and 32 -- so these are the bands where both land on one of
+#: those. They are also exactly the bands that need tiling: the untiled
+#: kernel's workgroup is BAND/16 threads, which is 16, 32 and 64 here, and
+#: is already 128 at band 2048.
+COARSE_BANDS = {256: 16, 512: 32, 1024: 32}
 #: Two entry points from one source. fusedTierB is the filter; gatedTierB is
 #: the same filter behind a coarse-pass gate it evaluates itself, so the
 #: hierarchical mode needs no host decision between the passes.
@@ -245,9 +251,10 @@ def main(argv=None):
 
     OUT.mkdir(parents=True, exist_ok=True)
     MSL.mkdir(parents=True, exist_ok=True)
-    for band in COARSE_BANDS:
+    for band, rpt in COARSE_BANDS.items():
         src = OUT / ("ct_%d.slang" % band)
-        src.write_text("#define NBAND %d\n" % band + COARSE_KERNEL.read_text())
+        src.write_text("#define NBAND %d\n#define RPT %d\n" % (band, rpt)
+                       + COARSE_KERNEL.read_text())
         spv = OUT / ("coarse_%d.spv" % band)
         proc = subprocess.run(
             [slangc, str(src), "-target", "spirv", "-entry", "coarseTile",
@@ -259,7 +266,8 @@ def main(argv=None):
         src.unlink()
         # the same kernel in Metal
         csrc = OUT / ("ct_%d_m.slang" % band)
-        csrc.write_text("#define NBAND %d\n" % band + COARSE_KERNEL.read_text())
+        csrc.write_text("#define NBAND %d\n#define RPT %d\n" % (band, rpt)
+                        + COARSE_KERNEL.read_text())
         cm = MSL / ("coarse_%d.metal" % band)
         r = subprocess.run([slangc, str(csrc), "-target", "metal",
                             "-entry", "coarseTile", "-stage", "compute",
@@ -268,8 +276,8 @@ def main(argv=None):
         csrc.unlink()
         if r.returncode != 0:
             raise RuntimeError("coarse metal band=%d:\n%s" % (band, r.stderr))
-        print("  coarse band=%-4d %-16s %5d bytes  tiled  (+ %s)"
-              % (band, spv.name, spv.stat().st_size, cm.name))
+        print("  coarse band=%-4d %-16s %5d bytes  tiled R=%d TP=%d (+ %s)"
+              % (band, spv.name, spv.stat().st_size, rpt, band // rpt, cm.name))
     manifest = dict(entry=ENTRY, kernel=KERNEL.name, modules={})
     for n in TIER_B:
         if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):

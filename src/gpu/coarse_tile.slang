@@ -24,15 +24,32 @@
 #define TILE 4
 #endif
 static const uint BAND = NBAND;
-static const uint R    = 16;
-//: ONLY CORRECT AT BAND = 256. The decomposition here is a single 16x16
-//: four-step: gather stride-TP, dft16, twiddle, transpose, dft16. That makes
-//: the second stage a 16-point transform, which is the right size only when
-//: TP is 16. At band=512 it needs a 32-point stage and this kernel returns
-//: an answer wrong by 24%, not an obvious failure -- so tools/build_spirv.py
-//: emits it for 256 alone and the host falls back to the general kernel at
-//: every other band.
-static const uint TP   = BAND / 16;          // lanes per transform
+
+//: A four-step of BAND = TP * R: each lane holds R points, TP lanes carry
+//: one transform. Stage one is a length-R DFT down the registers, stage two
+//: -- after the transpose -- is a length-TP DFT.
+//:
+//: Both stages being dft16 is what used to pin this kernel to BAND=256,
+//: because that is the only band where TP and R are both 16. The failure at
+//: any other band was a 24% error rather than a crash: the second stage
+//: transformed 16 points where the axis was 32 long, which is a plausible
+//: looking number.
+//:
+//: R is chosen per band so that both stages are a size this file implements:
+//:
+//:     BAND    256     512    1024
+//:     R        16      32      32
+//:     TP       16      16      32
+//:     stages  16,16   32,16   32,32
+//:
+//: R beyond 32 is not offered. R float2 registers are 2R VGPRs of live data
+//: per lane, and at R=64 that alone is 128 -- the occupancy this kernel
+//: exists to buy back would go straight out again.
+#ifndef RPT
+#define RPT 16
+#endif
+static const uint R    = RPT;
+static const uint TP   = BAND / R;           // lanes per transform
 static const uint WG   = TP * TILE;
 static const float PI  = 3.14159265358979f;
 
@@ -69,6 +86,62 @@ void dft16(inout float2 r[16])
     t=r[11]; r[11]=r[14]; r[14]=t;
 }
 
+//: A 32-point DFT by decimation in time: split even and odd, one dft16 on
+//: each, then combine with the 32nd roots. Reusing dft16 rather than writing
+//: a second butterfly network keeps one implementation of the hard part.
+//:
+//: PLUS in the exponent, because dft16 above is the INVERSE convention --
+//: r4 multiplies by +i and its twiddles are e^{+i pi/8}. Writing the
+//: textbook e^{-2 pi i k/N} here produced a wrong answer that still looked
+//: like a correlation magnitude: 19% low at band 512, 24% high at 1024.
+void dft32(inout float2 r[32])
+{
+    float2 e[16], o[16];
+    [unroll] for (uint i=0;i<16;++i) { e[i]=r[2*i]; o[i]=r[2*i+1]; }
+    dft16(e);
+    dft16(o);
+    [unroll] for (uint k=0;k<16;++k) {
+        float ang = 2.0f*PI*float(k)/32.0f;
+        float2 w  = cmul(o[k], float2(cos(ang), sin(ang)));
+        r[k]    = e[k] + w;
+        r[k+16] = e[k] - w;
+    }
+}
+
+//: Stage one: one length-R transform down each lane's registers.
+void dftR(inout float2 r[R])
+{
+#if RPT == 16
+    dft16(r);
+#else
+    dft32(r);
+#endif
+}
+
+//: Stage two: R/TP transforms of length TP, on consecutive chunks of the
+//: registers. The transpose leaves lane L holding rows L*(R/TP) onward of
+//: the R x TP array, each row TP long and contiguous -- so the chunking is
+//: just r[0..TP), r[TP..2TP), and the read index sh[base + lane*R + i] that
+//: produces it is the same expression at every band.
+void stage2(inout float2 r[R])
+{
+#if RPT == 16
+    dft16(r);                                   // BAND=256:  one 16
+#elif (NBAND / RPT) == 16
+    {                                           // BAND=512:  two 16s
+        float2 a[16];
+        [unroll] for (uint q=0;q<16;++q) a[q] = r[q];
+        dft16(a);
+        [unroll] for (uint q=0;q<16;++q) r[q] = a[q];
+        [unroll] for (uint q=0;q<16;++q) a[q] = r[16+q];
+        dft16(a);
+        [unroll] for (uint q=0;q<16;++q) r[16+q] = a[q];
+    }
+#else
+    dft32(r);                                   // BAND=1024: one 32
+#endif
+}
+
 //: Only the MAXIMUM magnitude is wanted, and a maximum is independent of the
 //: output ordering -- so this needs no digit-reversal and no index.
 [shader("compute")][numthreads(WG,1,1)]
@@ -83,12 +156,12 @@ void coarseTile(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     if (pair >= npairs) return;
     uint d = pair / ntmpl, t = pair % ntmpl;
 
-    float2 r[16];
+    float2 r[R];
     [unroll] for (uint i=0;i<R;++i) {
         uint k = lane + TP*i;
         r[i] = cmulConj(data[d*BAND + k], tmpl[t*BAND + k]);
     }
-    dft16(r);
+    dftR(r);
     [unroll] for (uint k2=0;k2<R;++k2) {
         float ang = 2.0f*PI*float(lane*k2)/float(BAND);
         r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
@@ -98,7 +171,7 @@ void coarseTile(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     [unroll] for (uint i=0;i<R;++i) sh[base + i*TP + lane] = r[i];
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint i=0;i<R;++i) r[i] = sh[base + lane*R + i];
-    dft16(r);
+    stage2(r);
 
     float best = 0.0f;
     [unroll] for (uint i=0;i<R;++i) best = max(best, r[i].x*r[i].x + r[i].y*r[i].y);

@@ -43,8 +43,25 @@ _MAX_BINS = 2048
 _OFF_SHARED_MEMORY = 296 + 216
 _OFF_MAX_INVOCATIONS = 296 + 232
 
-#: Bands with a tiled coarse kernel, and its tile. Everywhere else the
-#: general kernel is used, one pair per workgroup.
+#: Bands that USE the tiled coarse kernel. It is built and validated for
+#: 512 and 1024 as well, and deliberately not selected there.
+#:
+#: Tiling pays at 256 and only at 256, because the untiled workgroup is
+#: BAND/16 threads and 16 is HALF A WAVE -- the other half idles. At 512
+#: that is a full wave and at 1024 two, so there is no waste to recover,
+#: while the tile's shared memory grows to 16 and 32 KB against 4 and costs
+#: occupancy. Measured, hierarchical call, untiled against tiled:
+#:
+#:     n=8192  band 512   0.761 -> 0.730 ms   1.04x
+#:     n=8192  band 512   0.417 -> 0.539 ms   0.77x
+#:     n=16384 band 1024  0.973 -> 1.008 ms   0.97x
+#:     n=16384 band 512   2.007 -> 1.664 ms   1.21x
+#:
+#: Noise around one. The 1.8x the tile buys at 256 does not generalise, and
+#: assuming it did is what prompted the measurement.
+#:
+#: The tile must match the TILE the kernel was compiled with, or the
+#: dispatch covers the wrong number of pairs.
 _COARSE_TILE = {256: 4}
 
 # --- enough of the Vulkan enums to dispatch -------------------------------
