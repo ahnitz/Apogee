@@ -69,13 +69,34 @@ def measure(n, band, margin, snr, reps=8):
     f.run(binsize=n, threshold=snr)          # records the command buffer
     rate = f.refine_rate
 
-    # Replay the recording: device work only. Timing run() instead put the
-    # host's output marshalling in the number, and that is the same for every
+    # Device work only. Timing run() instead put the host's output
+    # marshalling in the number, and that is the same for every
     # configuration -- it swamped the differences being measured and made
     # adjacent margins come out non-monotonic.
+    #
+    # The two backends reach that the way each can. Vulkan already holds
+    # recorded command buffers, so it resubmits them. Metal builds encoders
+    # per dispatch and has nothing to replay, but reports the GPU's own
+    # start and end timestamps, which excludes the same host work.
     import ctypes
-    from matchedfilter import _vkcompute as V
     ctx = f._gpu
+    if getattr(ctx, "last_gpu_time", None) is not None and \
+            type(ctx).__module__.endswith("_mtlcompute"):
+        def go():
+            f.run(binsize=n, threshold=snr)
+        for _ in range(3):
+            go()
+        best = float("inf")
+        for _ in range(reps):
+            go()
+            best = min(best, ctx.last_gpu_time)
+        # measure() is called once per (band, margin, snr) cell -- hundreds
+        # of times -- so the context has to go back with the early return
+        # as well, not only on the path that falls through.
+        ctx.destroy()
+        return best, rate
+
+    from matchedfilter import _vkcompute as V
     cmds = [b[1] for b in ctx._hier.values()] + [b[4] for b in ctx._batches.values()]
     arr = (V._vp * len(cmds))(*cmds)
     sub = V._SubmitInfo(4, None, 0, None, None, len(cmds), arr, 0, None)
@@ -110,11 +131,16 @@ def main(argv=None):
     out = args.out or os.path.join(os.path.dirname(mf.__file__),
                                    "cost-%s.txt" % key)
 
-    try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-    except Exception:
-        commit = "unknown"
+    # MF_COMMIT first: the Mac test machine gets the tree by rsync without
+    # .git, so rev-parse fails there and the table lands with no provenance
+    # at all -- which is the one field that cannot be reconstructed later.
+    commit = os.environ.get("MF_COMMIT")
+    if not commit:
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+        except Exception:
+            commit = "unknown"
 
     rows = []
     for n in [int(x) for x in args.sizes.split(",")]:

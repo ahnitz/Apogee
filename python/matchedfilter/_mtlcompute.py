@@ -198,6 +198,8 @@ class Context:
         self.device = found[index]
         self.name = self.o.to_str(self.o.call(self.device, b"name"))
         self.queue = self.o.call(self.device, b"newCommandQueue")
+        #: Device-only seconds for the last dispatch, see _record_gpu_time.
+        self.last_gpu_time = 0.0
         if not self.queue:
             raise MetalError("newCommandQueue failed")
         self.max_shared_memory = int(self.o.call(
@@ -353,6 +355,23 @@ class Context:
         return pso
 
     # ---- dispatch ---------------------------------------------------------
+    def _record_gpu_time(self, cmd):
+        """Device-only duration of the command buffer just completed.
+
+        Metal builds its encoders per dispatch, so there is no recording to
+        replay the way the Vulkan path times device work. GPUEndTime and
+        GPUStartTime give the same thing more directly: the window the GPU
+        actually spent, with the host's marshalling left out. Cost tuning
+        needs that -- timing the whole call instead adds a per-call constant
+        to every configuration, which compresses the ratios it is trying to
+        measure and made adjacent margins come out non-monotonic on Vulkan.
+
+        Only meaningful after waitUntilCompleted.
+        """
+        t0 = self.o.call(cmd, b"GPUStartTime", restype=ctypes.c_double)
+        t1 = self.o.call(cmd, b"GPUEndTime", restype=ctypes.c_double)
+        self.last_gpu_time = float(t1) - float(t0)
+
     def peaks(self, n, data, tmpl, binsize=None, threshold=0.0, window=None,
               upload_data=True, upload_tmpl=True):
         """Peak index and complex value per (data, template, bin).
@@ -426,6 +445,7 @@ class Context:
         self.o.call(enc, b"endEncoding", restype=None)
         self.o.call(cmd, b"commit", restype=None)
         self.o.call(cmd, b"waitUntilCompleted", restype=None)
+        self._record_gpu_time(cmd)
 
         self._check_completed(cmd)
 
@@ -567,6 +587,7 @@ class Context:
         self.o.call(enc, b"endEncoding", restype=None)
         self.o.call(cmd, b"commit", restype=None)
         self.o.call(cmd, b"waitUntilCompleted", restype=None)
+        self._record_gpu_time(cmd)
         self._check_completed(cmd)
 
         out = nd * nt * nbins
