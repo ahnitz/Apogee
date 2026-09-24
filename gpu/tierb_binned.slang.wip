@@ -192,7 +192,7 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 RWStructuredBuffer<float> peakMag,
                 RWStructuredBuffer<uint> peakIdx,
                 RWStructuredBuffer<float2> peakVal,
-                uniform uint ntmpl, uniform uint lgBin)
+                uniform uint ntmpl, uniform uint lgBin, uniform uint thrBits)
 {
     uint pair = gid.x, tid = lid.x;
     _tid = tid;
@@ -247,46 +247,60 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     // ordering, so this needs no CAS loop and no 64-bit atomics -- which
     // are not universally available and would have cost portability.
     const uint nbins = N >> lgBin;
-    GroupMemoryBarrierWithGroupSync();          // transform done with stg
-    for (uint b = tid; b < nbins; b += WG) stg[b] = 0u;
+
+    // Seed every bin with the SQUARED THRESHOLD, exactly as the CPU does
+    // (bmax[j] = t2). Anything below it can never win, so it needs no
+    // atomic, no comparison and no further thought -- and at a real
+    // detection threshold almost nothing clears it, often nothing at all
+    // in a given bin. That turns the reduction from "every value" into
+    // "the rare survivor".
+    GroupMemoryBarrierWithGroupSync();
+    for (uint b = tid; b < nbins; b += WG) stg[b] = thrBits;
     GroupMemoryBarrierWithGroupSync();
 
-    // No myIdx[]/myMag[] arrays. Holding 16 indices and 16 magnitudes
-    // alongside r[16] adds 32 registers to a kernel that already carries
-    // 32, and occupancy -- not ALU -- is what this kernel is short of.
-    // Recomputing both in the second pass is a few cheap operations
-    // against a halving of the workgroups a CU can keep in flight.
-    // When nbins <= R the bin is fixed by the REGISTER index, not the
-    // thread: index = q*WG + reverse(tid), so the top log2(nbins) bits of
-    // the index come from the bottom bits of the slot, which are q. Every
-    // thread's register q therefore lands in the same bin, and the whole
-    // workgroup was serialising on one LDS word per register.
-    //
-    // A wave-wide max first cuts the atomic traffic by the wave width.
-    // The branch is uniform across the workgroup -- lgBin is a push
-    // constant -- so it costs no divergence.
     const bool binPerRegister = (nbins <= R);
+    uint  myIdx[16];
+    uint  myMag[16];
     [unroll] for (uint i = 0; i < R; ++i) {
-        uint idx = slotToIndex(tid * R + i);
-        float mag = r[i].x*r[i].x + r[i].y*r[i].y;
-        if (binPerRegister) {
-            float wm = WaveActiveMax(mag);
-            if (WaveIsFirstLane()) InterlockedMax(stg[idx >> lgBin], asuint(wm));
-        } else {
-            InterlockedMax(stg[idx >> lgBin], asuint(mag));
+        myIdx[i] = slotToIndex(tid * R + i);
+        myMag[i] = asuint(r[i].x*r[i].x + r[i].y*r[i].y);
+        if (nbins == 1) {
+            // Handled below with a single wave reduction.
+        } else if (binPerRegister) {
+            uint wm = WaveActiveMax(myMag[i]);
+            if (WaveIsFirstLane() && wm > thrBits)
+                InterlockedMax(stg[myIdx[i] >> lgBin], wm);
+        } else if (myMag[i] > thrBits) {
+            InterlockedMax(stg[myIdx[i] >> lgBin], myMag[i]);
         }
+    }
+    // One bin over the whole window is the common case at the small sizes
+    // -- the CPU has a dedicated binmax_one for it. All 16 registers share
+    // the bin, so they combine in registers FIRST and the wave reduces
+    // once, which is exactly the baseline's shape. Reducing per register
+    // instead costs 16 wave operations where 1 will do.
+    if (nbins == 1) {
+        uint bestBits = thrBits;
+        [unroll] for (uint i = 0; i < R; ++i) bestBits = max(bestBits, myMag[i]);
+        uint wm = WaveActiveMax(bestBits);
+        if (WaveIsFirstLane() && wm > thrBits) InterlockedMax(stg[0], wm);
     }
     GroupMemoryBarrierWithGroupSync();
 
     [unroll] for (uint i = 0; i < R; ++i) {
-        uint idx = slotToIndex(tid * R + i);
-        float mag = r[i].x*r[i].x + r[i].y*r[i].y;
-        uint b = idx >> lgBin;
-        if (stg[b] == asuint(mag)) {
-            uint o = pair * nbins + b;
-            peakMag[o] = sqrt(mag);
-            peakIdx[o] = idx;
+        if (myMag[i] > thrBits && stg[myIdx[i] >> lgBin] == myMag[i]) {
+            uint o = pair * nbins + (myIdx[i] >> lgBin);
+            peakMag[o] = sqrt(asfloat(myMag[i]));
+            peakIdx[o] = myIdx[i];
             peakVal[o] = r[i];
+        }
+    }
+    // Bins nothing cleared: index -1, magnitude 0, matching the CPU.
+    for (uint b = tid; b < nbins; b += WG) {
+        if (stg[b] == thrBits) {
+            uint o = pair * nbins + b;
+            peakMag[o] = 0.0f; peakIdx[o] = 0xffffffffu;
+            peakVal[o] = float2(0.0f, 0.0f);
         }
     }
 }

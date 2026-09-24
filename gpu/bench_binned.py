@@ -13,7 +13,7 @@ def build(ctx, n, nbind, blobdir, name):
     binds = (V._LayoutBinding*nbind)(*[V._LayoutBinding(i,V._DESC_STORAGE_BUFFER,1,V._STAGE_COMPUTE,None) for i in range(nbind)])
     sli = V._SetLayoutCreate(32,None,0,nbind,binds); sl=V._vp()
     vk.vkCreateDescriptorSetLayout(ctx.device,ctypes.byref(sli),None,ctypes.byref(sl))
-    push = V._PushRange(V._STAGE_COMPUTE,0,8)
+    push = V._PushRange(V._STAGE_COMPUTE,0,12)
     ls=(V._vp*1)(sl)
     pli=V._PipelineLayoutCreate(30,None,0,1,ctypes.cast(ls,V._vp),1,ctypes.pointer(push))
     lay=V._vp(); vk.vkCreatePipelineLayout(ctx.device,ctypes.byref(pli),None,ctypes.byref(lay))
@@ -48,8 +48,8 @@ def run(n, nd, nt, nbind, blobdir, name, push, reps=200, check=False):
         vk.vkCmdBindPipeline(cmd,V._BIND_POINT_COMPUTE,pp)
         sets=(V._vp*1)(ds)
         vk.vkCmdBindDescriptorSets(cmd,V._BIND_POINT_COMPUTE,lay,0,1,sets,0,None)
-        pc=(ctypes.c_uint32*2)(*push)
-        vk.vkCmdPushConstants(cmd,lay,V._STAGE_COMPUTE,0,8,ctypes.byref(pc))
+        pc=(ctypes.c_uint32*len(push))(*push)
+        vk.vkCmdPushConstants(cmd,lay,V._STAGE_COMPUTE,0,4*len(push),ctypes.byref(pc))
         for _ in range(k): vk.vkCmdDispatch(cmd,nd*nt,1,1)
         vk.vkEndCommandBuffer(cmd); return cmd
     def go(cmd):
