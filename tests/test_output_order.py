@@ -4,8 +4,8 @@ import pytest
 from matchedfilter import _vulkan
 
 import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "gpu"))
-import output_order
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+import gpu_output_order as output_order
 
 
 @pytest.mark.parametrize("n", sorted(output_order.RADICES))

@@ -24,13 +24,16 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 OUT = ROOT / "python" / "matchedfilter" / "spirv"
 
-#: Sizes the Tier-B kernel covers.  It is one source specialised by NLEN
-#: rather than one blob per hand-written kernel; 16384 is its ceiling because
-#: above it the transform needs more than 1024 threads and must be split
-#: across dispatches (Tier C, not yet written).
+#: Sizes the Tier-B kernel covers.  One source specialised by NLEN rather
+#: than a blob per hand-written kernel; 16384 is the ceiling because above it
+#: the transform needs more than 1024 threads and must be split across
+#: dispatches (Tier C, not yet written).
+#:
+#: Keep in step with matchedfilter._GPU_SIZES, which is what device="gpu"
+#: checks before it builds a plan.
 TIER_B = (1024, 2048, 4096, 8192, 16384)
 
-KERNEL = ROOT / "gpu" / "tierb.slang"
+KERNEL = ROOT / "src" / "gpu" / "tierb.slang"
 ENTRY = "fusedTierB"
 
 _STORAGE_CLASS = {2: "Uniform", 9: "PushConstant", 12: "StorageBuffer"}

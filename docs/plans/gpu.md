@@ -1,3 +1,10 @@
+> **Status: done.** This plan has shipped. `device="gpu"` runs the full
+> API and the GPU is covered by the same tests as the CPU. Kept for the
+> reasoning and the decisions recorded along the way; for how the result
+> actually works see [the GPU notes](../gpu-notes.md). Note that what
+> this plan calls `gpu/` is now `src/gpu/` for the kernel and `tools/`
+> for the development scripts.
+
 # Running on GPUs without giving up the CPU
 
 Plan for review. Nothing here is built.

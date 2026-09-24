@@ -137,9 +137,7 @@ setup(
     # accuracy.txt describes the algorithm and travels; cost.txt is this
     # machine's timings and is the one a user regenerates. Both are plain
     # text so a wheel can be inspected and a local table diffed against it.
-    # The SPIR-V is built ahead of time by tools/build_spirv.py so that one
-    # wheel carries every backend: no user compiles Slang, and nobody has to
-    # pick a wheel or install an extra package to get the GPU path.
-    package_data={"matchedfilter": ["accuracy.txt", "cost.txt",
-                                    "spirv/*.spv", "spirv/manifest.json"]},
+    # Package data lives in pyproject.toml -- a pyproject build ignores a
+    # package_data= given here, silently, which is how the SPIR-V came to be
+    # absent from a wheel that built and installed without complaint.
 )

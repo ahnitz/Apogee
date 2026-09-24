@@ -10,7 +10,7 @@ for as long as magnitude was all the kernel returned -- and why getting this
 wrong would have been invisible rather than loud.
 
 It was established by dumping every register against a float64 reference on
-the GPU (gpu/dump_output_order.py) for all five lengths, then fitting. The
+the GPU for all five lengths, then fitting. The
 fit is exact, not approximate, for 1024 through 16384.
 """
 

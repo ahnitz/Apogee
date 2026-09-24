@@ -16,3 +16,10 @@ global-exclude *.pyc *.so *.o __pycache__
 
 # The measured tuning tables, read at run time and shipped with the package.
 recursive-include python/matchedfilter *.txt
+
+# The ahead-of-time GPU kernels, and the Slang they were built from. The
+# blobs are what ships and what runs; the source is included so an sdist can
+# be rebuilt with tools/build_spirv.py, which needs slangc and is therefore a
+# build-time tool rather than something a user ever invokes.
+recursive-include python/matchedfilter/spirv *.spv manifest.json
+recursive-include src/gpu *.slang

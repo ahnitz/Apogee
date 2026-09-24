@@ -1354,6 +1354,9 @@ NOTES = [("docs/hierarchical.md", "The hierarchical filter",
           "Measurements on how far the first stage can be narrowed."),
          ("docs/machine-notes.md", "Zen 5 instruction notes",
           "Measured issue rates, not vendor documentation."),
+         ("docs/gpu-notes.md", "The GPU backend",
+          "How the Vulkan path is built and dispatched, and the measurements "
+          "that contradicted the plan."),
          ("docs/roadmap.md", "What is left, and what is closed",
           "Three live avenues, what shipped, and the many that measurement "
           "ruled out.")]

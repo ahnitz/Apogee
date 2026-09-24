@@ -39,10 +39,20 @@ Homepage = "https://github.com/ahnitz/matchedfilter"
 package-dir = {"" = "python"}
 packages = ["matchedfilter"]
 
-# The C header ships inside the package.  Direct C use is not the priority, but
-# allowing it costs nothing, so matchedfilter.include_dir() points a compiler at it.
+# Everything that ships INSIDE the package is listed here, and only here.
+# setup.py also has a package_data= argument; with a pyproject build it is
+# ignored, which is why the SPIR-V silently failed to ship when it was added
+# there. MANIFEST.in still has to repeat these for the sdist.
+#
+#   *.h            the C header, so matchedfilter.include_dir() can point a
+#                  compiler at it -- direct C use is not the priority, but
+#                  allowing it costs nothing
+#   *.txt          the measured tuning tables, read at run time
+#   spirv/*        the GPU kernels, compiled ahead of time. One wheel carries
+#                  every backend: no user compiles Slang, and nobody picks a
+#                  wheel or installs an extra package to get the GPU path.
 [tool.setuptools.package-data]
-matchedfilter = ["*.h"]
+matchedfilter = ["*.h", "*.txt", "spirv/*.spv", "spirv/manifest.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

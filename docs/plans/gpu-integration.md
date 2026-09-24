@@ -1,3 +1,10 @@
+> **Status: done.** This plan has shipped. `device="gpu"` runs the full
+> API and the GPU is covered by the same tests as the CPU. Kept for the
+> reasoning and the decisions recorded along the way; for how the result
+> actually works see [the GPU notes](../gpu-notes.md). Note that what
+> this plan calls `gpu/` is now `src/gpu/` for the kernel and `tools/`
+> for the development scripts.
+
 # Getting the GPU path into the library
 
 The spike answered its questions: fusion pays 1.63x over transform-plus-

@@ -192,6 +192,34 @@ changes the API.
 
 ## Done
 
+### A GPU backend, in the same wheel
+
+`device="gpu"` runs the full API -- index and complex value, per bin, with a
+window and an arbitrary binsize -- on any Vulkan device, and is covered by
+the same tests as the CPU, parametrised over device.
+
+**How it is built.** One Slang source, `src/gpu/tierb.slang`, specialised by
+transform length and compiled to SPIR-V ahead of time by
+`tools/build_spirv.py`. The blobs ship inside the wheel and are dispatched by
+`_vkcompute.py`, a ctypes layer over the system Vulkan loader. Nothing at run
+time imports a shader compiler and there is no second wheel to choose, which
+was the constraint the design started from.
+
+**What it cost to get right.** The transform leaves its output in mixed-radix
+digit-reversed order, because the four-step skips its final transposes. A
+peak *magnitude* is order-independent, so nothing needed to know this until
+the kernel had to report an index and place samples into bins -- and getting
+it wrong would have been silent. It was established by dumping every register
+against a float64 reference at all five lengths and fitting; see
+`tools/gpu_output_order.py`.
+
+**Still open.** Transform lengths above 16384 need more than one workgroup
+and are not implemented. `run()` allocates and frees its device buffers per
+call, so the measured end-to-end time is well above the kernel time; buffer
+reuse is the obvious next step, and the CPU path already does it. Per-device
+cost tables do not exist, so the hierarchical mode's selection still prices
+everything with CPU numbers.
+
 ### Choosing the band and the coarse threshold from the reference, jointly
 
 This was the largest live item on the page and it is now shipped. Kept here in
@@ -310,8 +338,10 @@ settle.
 ## Closed, with evidence
 
 ### Parallelism
-**Ruled out by the contract**, not by measurement. Single-threaded is the
-design; callers run one process per core.
+**Ruled out by the contract** on the CPU, not by measurement. Single-threaded
+is the design there; callers run one process per core. The GPU backend is a
+separate answer to the same question rather than an exception to this: it is
+still one call from one thread, and the parallelism is inside the device.
 
 ### Non-power-of-two transform sizes
 **Closed twice over.**

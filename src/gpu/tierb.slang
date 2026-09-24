@@ -6,8 +6,8 @@
 // recursing until TB <= 16, where a thread's 16 registers hold 16/TB whole
 // blocks and it finishes them with no exchange at all.
 //
-// Verified in gpu/decomposition.py before any of this was written, for
-// 1024 through 16384. n >= 32768 wants more than 1024 threads and is
+// Verified in tools/gpu_decomposition.py before any of this was written,
+// for 1024 through 16384. n >= 32768 wants more than 1024 threads and is
 // Tier C.
 //
 //   n      threads  recursion     innermost
@@ -160,7 +160,7 @@ void exchange(inout float2 r[16], uint want[16], uint lgLen, uint lgSpan)
 //: in mixed-radix digit-reversed order: register q of thread tid holds output
 //: index reverse(tid*16 + q) under radices [16]*NLEVELS + INNER. Established
 //: by dumping every register against a float64 reference for all five
-//: lengths -- see gpu/output_order.py. Note INNER=4 contributes [2,2] and not
+//: lengths -- see tools/gpu_output_order.py. INNER=4 contributes [2,2] and not
 //: [4]: dft4 leaves its pair bit-reversed, which was measured, not reasoned.
 //:
 //: A peak MAGNITUDE is order-independent, which is why nothing needed this

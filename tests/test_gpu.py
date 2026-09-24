@@ -1,13 +1,13 @@
 """End-to-end filtering on every device, through the public API.
 
-This file used to drive gpu/runner.py, the slangpy development spike. That
-made it skip wherever slangpy was absent -- which is most environments,
-including this project's own -- so it reported "no GPU path" on a machine
-with a working GPU. It also could not reach binsize or window, because those
-live in run() and the spike only ever returned a peak magnitude.
+This file once drove a slangpy development spike. That made it skip wherever
+slangpy was absent -- which is most environments, including this project's
+own -- so it reported "no GPU path" on a machine with a working GPU. It also
+could not reach binsize or window, because those live in run() and the spike
+only ever returned a peak magnitude.
 
-Everything here goes through matchedfilter.MatchedFilter. The spike remains
-in gpu/ as a development tool; nothing in the test suite depends on it.
+Everything here goes through matchedfilter.MatchedFilter, so the GPU is held
+to the same standard as the CPU by the same assertions.
 """
 import numpy as np
 import pytest

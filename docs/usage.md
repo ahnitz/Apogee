@@ -101,6 +101,51 @@ Supported lengths are the powers of two from 1024 to 1048576. The
 hierarchical mode additionally needs measured tuning coverage at that length;
 `tools/hmf_tune.py` generates more.
 
+## Running on a GPU
+
+Pass `device=`. The spelling is PyTorch's, because you already know it:
+
+```python
+import matchedfilter as mf
+
+mf.devices()
+# [Device('cpu:0', 'AMD Ryzen 9 9950X', backend='AVX3'),
+#  Device('gpu:0', 'AMD Radeon 8060S', backend='vulkan')]
+
+filt = mf.MatchedFilter(4096, ndata=16, ntemplates=64, device="gpu")
+```
+
+`"cpu"`, `"gpu"`, `"gpu:1"` and `"auto"` are all accepted, and `MF_DEVICE`
+sets the default from the environment so a benchmark harness can switch
+backends without editing the code that builds the plans.
+
+**The default is the CPU even when a GPU is present.** Dispatching somewhere
+you did not name would change numerics and failure modes without being asked.
+`"auto"` exists for callers who want the library to choose, but they have to
+say so.
+
+Both devices return the same fields, the same shapes, and the same
+`index == -1` for a bin nothing cleared, so the same code reads either. They
+are not bit-identical: the transform sums in a different order, so values
+agree to single precision rather than exactly, and an index may differ where
+two samples tie.
+
+The GPU path is a Vulkan compute backend. The kernels ship compiled inside
+the wheel, so there is no toolchain to install, no second wheel to pick, and
+nothing extra to import — but it does need a working Vulkan driver.
+
+Two limits, both of which raise rather than working around you:
+
+- **Transform length 1024 to 16384.** One workgroup carries a whole
+  transform; longer ones need more than 1024 threads and are not implemented.
+- **At most 2048 bins per call**, that is `ceil((end - start) / binsize)`.
+  The per-bin table shares the kernel's 8 KB of workgroup memory, and
+  enlarging it would halve occupancy.
+
+A GPU that reports no devices on a machine that has one is usually a
+shadowed C++ runtime rather than a driver problem — `matchedfilter` says so
+in the error. See [the GPU notes](notes.html) for that and the rest.
+
 ## Platforms
 
 One kernel source is compiled once per SIMD target the compiler can generate,

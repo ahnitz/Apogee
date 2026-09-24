@@ -21,8 +21,24 @@ import matchedfilter
 SPIRV_DIR = pathlib.Path(matchedfilter.__file__).resolve().parent / "spirv"
 MANIFEST = SPIRV_DIR / "manifest.json"
 
-pytestmark = pytest.mark.skipif(not MANIFEST.is_file(),
-                                reason="SPIR-V not built into this tree")
+def test_the_kernels_are_present_in_the_installed_package():
+    """The GPU blobs must travel with the package, and this must FAIL loudly.
+
+    It was a skip once, and that hid a real bug: setup.py carried a
+    package_data= listing the SPIR-V, a pyproject build ignores that
+    argument, and the wheel shipped without a single kernel in it. The build
+    succeeded, the install succeeded, and only device="gpu" would have found
+    out -- on the user's machine.
+    """
+    assert MANIFEST.is_file(), (
+        "%s is missing. Run tools/build_spirv.py, and if this is an installed "
+        "package check [tool.setuptools.package-data] in pyproject.toml."
+        % MANIFEST)
+    import json
+    for info in json.loads(MANIFEST.read_text())["modules"].values():
+        blob = SPIRV_DIR / info["file"]
+        assert blob.is_file(), "%s missing from the package" % blob
+        assert blob.stat().st_size == info["bytes"]
 
 
 @pytest.fixture(scope="module")
@@ -83,5 +99,5 @@ def test_blobs_match_the_current_kernel_source(manifest, tmp_path):
         fresh = build_spirv.compile_one(slangc, int(n_str), tmp_path).read_bytes()
         shipped = (SPIRV_DIR / info["file"]).read_bytes()
         assert fresh == shipped, (
-            "%s is stale: gpu/%s has changed since it was built. "
+            "%s is stale: src/gpu/%s has changed since it was built. "
             "Re-run tools/build_spirv.py." % (info["file"], manifest["kernel"]))

@@ -1,28 +1,45 @@
-# GPU spike
+# GPU notes
 
-Phase 1 of `docs/plans/gpu.md`: find out whether fusing the correlation and
-the peak scan into one kernel is worth a bespoke kernel, before building
-anything on the assumption that it is.
+The GPU backend is part of the library: `device="gpu"` runs the same call as
+the CPU, returns the same fields with the same conventions, and is held to
+the same tests. The kernels are Slang compiled to SPIR-V ahead of time and
+shipped inside the wheel, dispatched through a few hundred lines of ctypes
+over the system Vulkan loader. Nothing at run time imports a shader compiler,
+and there is no second wheel to choose.
 
-Not part of the package. Nothing here is built or installed.
+These are the working notes from building it, kept because most of what they
+record is a measurement that contradicted an expectation. They are in the
+order the questions came up, so early sections describe code that has since
+been replaced -- what survives is the reasoning and the numbers.
 
-## Running it
+## Where the pieces live
 
-    pip install slangpy              # in its own venv; see the note below
-    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json \
-        python spike.py
+| | |
+|---|---|
+| `src/gpu/tierb.slang` | the kernel, one source specialised by transform length |
+| `tools/build_spirv.py` | compiles it, reflects the binding contract, writes the manifest |
+| `python/matchedfilter/_vkcompute.py` | the Vulkan dispatch, ctypes, no dependencies |
+| `python/matchedfilter/_vulkan.py` | device enumeration, and why a machine reports none |
+| `tools/gpu_decomposition.py` | the transform decomposition, verified before any kernel was written |
+| `tools/gpu_output_order.py` | where each register lands in the output |
 
-Two environment traps, both cost an hour to find:
+## Two traps, both of which cost an hour
 
-- **slangpy must be imported before numpy.** Importing numpy first makes
-  Vulkan device creation fail with "No adapters found" -- a symbol clash
-  between numpy's bundled libraries and the LLVM Mesa uses. This is a
-  spike-only problem: the shipped library would dlopen Vulkan itself with
-  no C++ runtime of its own, and a direct ctypes probe behaves the same
-  with and without numpy loaded.
-- **Buffers must be ENTRY-POINT parameters, not globals.** slangpy binds
-  dispatch kwargs to entry-point parameters; global `StructuredBuffer`
-  declarations silently bind nothing and every kernel writes zeros.
+- **A shadowed `libstdc++` looks exactly like having no GPU.** Mesa's drivers
+  link against the system C++ runtime. A conda prefix early on the library
+  path supplies an older one -- miniconda ships 6.0.29, missing the
+  `GLIBCXX_3.4.30` and `3.4.32` the drivers need -- and then *every* ICD
+  fails to load and the loader reports, accurately and uselessly, that it
+  found no valid GPUs. `matchedfilter._vulkan` names this as a cause rather
+  than leaving it to be misread as absent hardware.
+
+- **Do not set `VK_ICD_FILENAMES`.** An earlier version walked the ICD
+  directory setting it per candidate, on the theory that probing a driver for
+  absent hardware poisons the loader for the rest. That theory was wrong, and
+  setting the variable was itself the failure: pointed at the radeon ICD,
+  `vkCreateInstance` returns `VK_ERROR_INCOMPATIBLE_DRIVER` on a machine
+  whose radeon driver works perfectly when the loader is left alone. The
+  failures behind the theory were the shadowed `libstdc++` above.
 
 ## What it measures
 
