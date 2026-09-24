@@ -172,19 +172,65 @@ jobs:
       # The question this job exists to answer: does a hosted runner give
       # the guest a GPU at all? These are virtual machines, and a Metal
       # device is not guaranteed. Everything else here is downstream of it.
+      # The question this job exists to answer: does a hosted runner give
+      # the guest a GPU at all? These are virtual machines, and a Metal
+      # device is not guaranteed.
+      #
+      # Ask BOTH ways. MTLCreateSystemDefaultDevice resolves the DISPLAY
+      # device and returns nil without a window-server session, which is
+      # exactly the situation on CI -- on macos-14 it returned NULL and
+      # system_profiler reported no display at all. That is not the same
+      # as having no GPU, and MTLCopyAllDevices is the question that
+      # actually distinguishes them.
       - name: Is there actually a GPU?
         run: |
+          sw_vers
           xcrun -sdk macosx metal --version || echo "no Apple metal compiler"
-          system_profiler SPDisplaysDataType | head -30 || true
+          echo "--- displays ---"
+          system_profiler SPDisplaysDataType 2>/dev/null | head -30 || true
+          echo "--- Metal ---"
           python - <<'EOF'
-          import ctypes, sys
-          try:
-              m = ctypes.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
-              m.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
-              d = m.MTLCreateSystemDefaultDevice()
-              print("MTLCreateSystemDefaultDevice ->", hex(d) if d else "NULL")
-          except Exception as exc:
-              print("Metal unavailable:", exc)
+          import ctypes
+          objc = ctypes.CDLL("/usr/lib/libobjc.dylib")
+          objc.sel_registerName.restype = ctypes.c_void_p
+          objc.sel_registerName.argtypes = [ctypes.c_char_p]
+          m = ctypes.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
+          m.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+          d = m.MTLCreateSystemDefaultDevice()
+          print("MTLCreateSystemDefaultDevice ->", hex(d) if d else "NULL")
+
+          def name_of(dev):
+              send = ctypes.cast(objc.objc_msgSend,
+                                 ctypes.CFUNCTYPE(ctypes.c_void_p,
+                                                  ctypes.c_void_p,
+                                                  ctypes.c_void_p))
+              ns = send(dev, objc.sel_registerName(b"name"))
+              p = send(ns, objc.sel_registerName(b"UTF8String"))
+              return ctypes.cast(p, ctypes.c_char_p).value.decode() if p else "?"
+
+          if hasattr(m, "MTLCopyAllDevices"):
+              m.MTLCopyAllDevices.restype = ctypes.c_void_p
+              arr = m.MTLCopyAllDevices()
+              cnt = 0
+              if arr:
+                  cf = ctypes.cast(objc.objc_msgSend,
+                                   ctypes.CFUNCTYPE(ctypes.c_ulong,
+                                                    ctypes.c_void_p,
+                                                    ctypes.c_void_p))
+                  cnt = cf(arr, objc.sel_registerName(b"count"))
+              print("MTLCopyAllDevices -> %d device(s)" % cnt)
+              at = ctypes.cast(objc.objc_msgSend,
+                               ctypes.CFUNCTYPE(ctypes.c_void_p,
+                                                ctypes.c_void_p,
+                                                ctypes.c_void_p,
+                                                ctypes.c_ulong))
+              for i in range(cnt):
+                  dev = at(arr, objc.sel_registerName(b"objectAtIndex:"), i)
+                  print("   [%d] %s" % (i, name_of(dev)))
+          else:
+              print("MTLCopyAllDevices is not exported")
+          if d:
+              print("system default is:", name_of(d))
           EOF
 
       - name: Build the kernels, including .metallib
@@ -214,6 +260,11 @@ jobs:
           import numpy as np, matchedfilter as mf
           gpus = [d for d in mf.devices() if d.kind == "gpu"]
           if not gpus:
+              # Say WHY, not just that. The library knows which question it
+              # asked and what the answer was.
+              from matchedfilter import _metal, _vulkan
+              print("metal :", _metal.available()[1])
+              print("vulkan:", _vulkan.available()[1])
               raise SystemExit("no GPU device was reported; nothing to run")
           n = 4096
           rng = np.random.default_rng(0)
