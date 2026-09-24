@@ -1,0 +1,156 @@
+{
+  "entry": "fusedTierB",
+  "kernel": "tierb.slang",
+  "modules": {
+    "1024": {
+      "local_size": [
+        64,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakMag",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_1024.spv",
+      "bytes": 18672
+    },
+    "2048": {
+      "local_size": [
+        128,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakMag",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_2048.spv",
+      "bytes": 19420
+    },
+    "4096": {
+      "local_size": [
+        256,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakMag",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_4096.spv",
+      "bytes": 21372
+    },
+    "8192": {
+      "local_size": [
+        512,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakMag",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_8192.spv",
+      "bytes": 24824
+    },
+    "16384": {
+      "local_size": [
+        1024,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakMag",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_16384.spv",
+      "bytes": 25096
+    }
+  }
+}
