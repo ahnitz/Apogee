@@ -31,7 +31,13 @@ static const float PI = 3.14159265358979f;
 //: 32 KB at n=4096. CH registers of every thread are in flight at once.
 static const uint CAP = 1024;                  // complex, = 8 KB
 static const uint CH  = (CAP / WG > 0) ? (CAP / WG) : 1;
-groupshared float2 stg[CH * WG];
+//: Staged as uint so the per-bin peak table can alias this same memory once
+//: the transform is finished. A second array would have doubled LDS to 16 KB,
+//: and LDS is what caps how many workgroups a CU holds -- the 8 KB here was
+//: chosen for occupancy. Measured free: +0.1% against float2 staging.
+groupshared uint stg[CH * WG * 2];
+void stgPut(uint i, float2 v) { stg[2*i] = asuint(v.x); stg[2*i+1] = asuint(v.y); }
+float2 stgGet(uint i) { return float2(asfloat(stg[2*i]), asfloat(stg[2*i+1])); }
 static uint _tid;
 
 //: Levels until a block fits in one thread's registers. Known from NLEN,
@@ -137,23 +143,60 @@ void exchange(inout float2 r[16], uint want[16], uint lgLen, uint lgSpan)
     uint lenMask  = (1u << lgLen) - 1u;
     [unroll] for (uint c = 0; c < R / CH; ++c) {
         GroupMemoryBarrierWithGroupSync();
-        [unroll] for (uint j = 0; j < CH; ++j) stg[j * WG + _tid] = r[c * CH + j];
+        [unroll] for (uint j = 0; j < CH; ++j) stgPut(j * WG + _tid, r[c * CH + j]);
         GroupMemoryBarrierWithGroupSync();
         [unroll] for (uint d = 0; d < R; ++d) {
             uint p = want[d];
             uint b = p >> lgLen, rem = p & lenMask;
             uint i = rem >> lgSpan, ln = rem & spanMask;
             if (i >= c * CH && i < (c + 1) * CH)
-                out[d] = stg[(i - c * CH) * WG + (b << lgSpan) + ln];
+                out[d] = stgGet((i - c * CH) * WG + (b << lgSpan) + ln);
         }
     }
     [unroll] for (uint d = 0; d < R; ++d) r[d] = out[d];
 }
 
+//: The four-step skips its final transposes, so the transform leaves results
+//: in mixed-radix digit-reversed order: register q of thread tid holds output
+//: index reverse(tid*16 + q) under radices [16]*NLEVELS + INNER. Established
+//: by dumping every register against a float64 reference for all five
+//: lengths -- see gpu/output_order.py. Note INNER=4 contributes [2,2] and not
+//: [4]: dft4 leaves its pair bit-reversed, which was measured, not reasoned.
+//:
+//: A peak MAGNITUDE is order-independent, which is why nothing needed this
+//: until the kernel had to report an index and place samples into bins -- and
+//: why getting it wrong would be silent rather than loud.
+//:
+//: Every radix is a power of two, so this is a bit shuffle. The digits come
+//: out least-significant first and are consumed in that same order, so
+//: extraction and rebuild fuse into one loop with NO array: dynamic indexing
+//: of a register array spills to scratch and crashed a driver here once.
+static const uint NIDIG = (INNER == 4) ? 2u : 1u;
+static const uint NDIG  = NLEVELS + NIDIG;
+static const uint LGI0  = (INNER == 2) ? 1u : ((INNER == 4) ? 1u : ((INNER == 8) ? 3u : 4u));
+
+uint lgOf(uint i) { return (i < NLEVELS) ? 4u : ((i == NLEVELS) ? LGI0 : 1u); }
+
+uint slotToIndex(uint slot)
+{
+    uint idx = 0u, x = slot;
+    [ForceUnroll] for (int i = int(NDIG) - 1; i >= 0; --i) {
+        uint lg = lgOf(uint(i));
+        uint d  = x & ((1u << lg) - 1u);
+        x >>= lg;
+        idx = (idx << lg) | d;
+    }
+    return idx;
+}
+
 [shader("compute")][numthreads(WG,1,1)]
 void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
-                RWStructuredBuffer<float> peakMag, uniform uint ntmpl)
+                RWStructuredBuffer<int> peakIdx,
+                RWStructuredBuffer<float2> peakVal,
+                uniform uint ntmpl, uniform uint winStart, uniform uint winEnd,
+                uniform uint binsize, uniform int binShift, uniform uint nbins,
+                uniform uint thrBits)
 {
     uint pair = gid.x, tid = lid.x;
     _tid = tid;
@@ -198,16 +241,70 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     const uint INNER_TB = WG >> (4 * (NLEVELS - 1));
     innermost(r);
 
-    float best = -1.0f;
-    [unroll] for (uint i = 0; i < R; ++i) best = max(best, r[i].x*r[i].x + r[i].y*r[i].y);
-    best = WaveActiveMax(best);
+    // --- peak per bin ---------------------------------------------------
+    // Bins are contiguous in OUTPUT index, and the output index is not
+    // contiguous in register or thread space, so every register has to be
+    // placed by its true index. A host-side lookup cannot do this.
+
+    // Seeded with the SQUARED THRESHOLD, exactly as the CPU does (bmax[j] =
+    // t2). Anything at or below it can never win, so it takes no atomic and
+    // no comparison -- and at a real detection threshold almost nothing
+    // clears it, often nothing at all in a given bin. Seeding at zero rather
+    // than -1 also means a bin whose every |v|^2 underflowed reports index
+    // -1 instead of naming the first sample, matching the CPU.
+    GroupMemoryBarrierWithGroupSync();          // transform is done with stg
+    for (uint b = tid; b < nbins; b += WG) stg[b] = thrBits;
     GroupMemoryBarrierWithGroupSync();
-    if (WaveGetLaneIndex() == 0) stg[tid / WaveGetLaneCount()].x = best;
+
+    uint myMag[16];
+    uint myBin[16];
+    [unroll] for (uint i = 0; i < R; ++i) {
+        uint idx = slotToIndex(tid * R + i);
+        bool live = (idx >= winStart && idx < winEnd);
+        // Out-of-window samples are set to zero rather than branched around:
+        // zero can never beat a seed of >= 0, so the window costs a select
+        // and no divergence.
+        myMag[i] = live ? asuint(r[i].x*r[i].x + r[i].y*r[i].y) : 0u;
+        uint off = idx - winStart;
+        // Shift when the binsize is a power of two, divide when it is not --
+        // the same split the CPU makes, and the reason no restriction on
+        // binsize is needed. A real division here is ~20 cycles.
+        myBin[i] = live ? (binShift >= 0 ? (off >> uint(binShift)) : (off / binsize))
+                        : 0u;
+        if (nbins > 1 && myMag[i] > thrBits)
+            InterlockedMax(stg[myBin[i]], myMag[i]);
+    }
+
+    // One bin over the whole window is the common case at the small sizes --
+    // the CPU has a dedicated binmax_one for it. Every register shares the
+    // bin, so they combine in REGISTERS first and the wave reduces once.
+    // Reducing per register spends 16 wave operations where 1 will do, and
+    // that single change was worth 2.48 -> 2.28 ms at n=4096.
+    if (nbins == 1) {
+        uint bestBits = thrBits;
+        [unroll] for (uint i = 0; i < R; ++i) bestBits = max(bestBits, myMag[i]);
+        uint wm = WaveActiveMax(bestBits);
+        if (WaveIsFirstLane() && wm > thrBits) InterlockedMax(stg[0], wm);
+    }
     GroupMemoryBarrierWithGroupSync();
-    if (tid == 0) {
-        uint nw = (WG + WaveGetLaneCount() - 1) / WaveGetLaneCount();
-        float m = stg[0].x;
-        for (uint w = 1; w < nw; ++w) m = max(m, stg[w].x);
-        peakMag[pair] = sqrt(m);
+
+    // Whoever matches the bin maximum writes it. On an exact tie more than
+    // one thread writes, at equal magnitude and different indices; any of
+    // them is a correct argmax and the caller was promised no tie-break.
+    [unroll] for (uint i = 0; i < R; ++i) {
+        if (myMag[i] > thrBits && stg[myBin[i]] == myMag[i]) {
+            uint o = pair * nbins + myBin[i];
+            peakIdx[o] = int(slotToIndex(tid * R + i));
+            peakVal[o] = r[i];
+        }
+    }
+    // Bins nothing cleared: index -1 and a zero value, matching the CPU. No
+    // value is offered for a sample that was never chosen.
+    for (uint b = tid; b < nbins; b += WG) {
+        if (stg[b] == thrBits) {
+            uint o = pair * nbins + b;
+            peakIdx[o] = -1;
+            peakVal[o] = float2(0.0f, 0.0f);
+        }
     }
 }

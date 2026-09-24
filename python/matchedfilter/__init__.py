@@ -42,6 +42,10 @@ except (ImportError, PackageNotFoundError):  # running from a source tree
 #: np.abs(peaks["value"]).
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8")])
 
+#: Transform lengths the GPU kernel covers. One workgroup carries a whole
+#: transform, so 16384 is the ceiling at 1024 threads.
+_GPU_SIZES = frozenset((1024, 2048, 4096, 8192, 16384))
+
 __all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "backend",
            "targets", "set_target", "devices", "Device", "__version__"]
 
@@ -143,15 +147,13 @@ class MatchedFilter:
     correlation loop wants, so that cost is paid once rather than per pair.
     """
 
+    #: Class-level so subclasses with their own __init__ -- HierarchicalFilter
+    #: -- inherit the CPU default instead of raising on first use.
+    _gpu = None
+
     def __init__(self, n, ndata=1, ntemplates=1, device=None):
         from .device import parse as _parse_device
         self.device = _parse_device(device)
-        if self.device.kind != "cpu":
-            raise NotImplementedError(
-                "the %s backend is not wired up yet; this release runs on "
-                "device='cpu'. Selection and enumeration are in place so "
-                "that when it lands nothing about the call changes."
-                % self.device.backend)
         self.n = int(n)
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
@@ -159,12 +161,45 @@ class MatchedFilter:
         # Arrays the plan holds pointers into. The C side keeps the caller's
         # spectrum rather than copying it, so the wrapper must keep it alive.
         self._held = {}
+        self._gpu = None
+        if self.device.kind == "gpu":
+            self._start_gpu()
+            return
         self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
+
+    # ---- GPU -----------------------------------------------------------
+    #
+    # The GPU holds the spectra itself rather than handing them to the C
+    # plan, so the two paths diverge at ingest and meet again at run().
+    # Everything user-visible -- shapes, dtype, bin layout, the index -1
+    # convention -- is identical, which is what lets one test body assert
+    # against both.
+    def _start_gpu(self):
+        from . import _vkcompute
+        if self.n not in _GPU_SIZES:
+            raise ValueError(
+                "device='gpu' supports n in %s; got %d. Larger transforms need "
+                "more than 1024 threads and are not implemented yet, so they "
+                "would have to be split across dispatches."
+                % (sorted(_GPU_SIZES), self.n))
+        self._gpu = _vkcompute.Context(self.device.index)
+        self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
+        self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
 
     # ---- ingest -------------------------------------------------------------
     def _ensure(self):
         """The live plan. Always built here; HierarchicalFilter defers."""
         return self._mf
+
+    def _gpu_set(self, store, spectra, index, what):
+        if index is None:
+            a = np.ascontiguousarray(_from_any(spectra), dtype=np.complex64)
+            if a.shape != store.shape:
+                raise ValueError("expected shape %s, got %s"
+                                 % (store.shape, a.shape))
+            store[:] = a
+        else:
+            store[int(index)] = _as_c64(spectra, self.n, "spectrum")
 
     def set_data(self, spectra, index=None):
         """Set one data spectrum (with ``index``) or all from a (ndata, n) array.
@@ -172,6 +207,8 @@ class MatchedFilter:
         Inputs are frequency domain - the unnormalised forward transform of the
         segment, natural order.
         """
+        if self._gpu is not None:
+            return self._gpu_set(self._gdata, spectra, index, "data")
         if index is not None:
             a = _as_c64(spectra, self.n, "spectrum")
             # The plan keeps this pointer -- the coarse band is read straight
@@ -194,6 +231,8 @@ class MatchedFilter:
 
         Conjugation happens here, once, rather than in the pair loop.
         """
+        if self._gpu is not None:
+            return self._gpu_set(self._gtmpl, spectra, index, "template")
         if index is not None:
             self._ensure().set_template(int(index), _as_c64(spectra, self.n, "spectrum"))
             return
@@ -203,9 +242,40 @@ class MatchedFilter:
         for i in range(self.ntemplates):
             self._ensure().set_template(i, a[i])
 
+
+    def _run_gpu(self, binsize, threshold, start, end, data, templates,
+                 counts, raw):
+        """The GPU half of run(), returning exactly what the CPU half does.
+
+        Sub-ranges are taken by slicing the stored spectra rather than by
+        telling the kernel about them: the kernel dispatches one workgroup
+        per pair, so a sub-range is just a smaller dispatch, and keeping that
+        out of the kernel keeps its index arithmetic in one place.
+        """
+        d0, nd = (0, self.ndata) if data is None else (int(data[0]), int(data[1]))
+        t0, nt = (0, self.ntemplates) if templates is None else (int(templates[0]), int(templates[1]))
+        if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
+           or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
+            raise ValueError("data/templates sub-range out of bounds")
+
+        idx, val = self._gpu.peaks(
+            self.n, self._gdata[d0:d0 + nd], self._gtmpl[t0:t0 + nt],
+            binsize=binsize, threshold=threshold, window=(start, end))
+        if raw:
+            r = (idx, val)
+            return (r, (idx >= 0).sum(axis=2).astype(np.int32)) if counts else r
+        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
+        peaks["index"] = idx
+        peaks["value"] = val
+        if counts:
+            return peaks, (idx >= 0).sum(axis=2).astype(np.int32)
+        return peaks
+
     # ---- run ----------------------------------------------------------------
     def nbins(self, binsize, window=None):
         start, end = self._window(window)
+        if self._gpu is not None:
+            return 0 if start >= end else -(-(end - start) // int(binsize))
         return self._ensure().nbins(int(binsize), start, end)
 
     def _window(self, window):
@@ -258,6 +328,9 @@ class MatchedFilter:
         n = self.n
         binsize = n if binsize is None else int(binsize)
         start, end = self._window(window)
+        if self._gpu is not None:
+            return self._run_gpu(binsize, threshold, start, end, data,
+                                 templates, counts, raw)
         d0, nd = (0, self.ndata) if data is None else (int(data[0]), int(data[1]))
         t0, nt = (0, self.ntemplates) if templates is None else (int(templates[0]), int(templates[1]))
         if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
@@ -286,6 +359,7 @@ class MatchedFilter:
         peaks["index"] = idx.reshape(nd, nt, nb)
         peaks["value"] = val.reshape(nd, nt, nb)
         return (peaks, cnt.reshape(nd, nt)) if counts else peaks
+
 
 
 

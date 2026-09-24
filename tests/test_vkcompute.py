@@ -51,10 +51,17 @@ def test_peak_matches_a_float64_reference(ctx, n):
     structural bugs this has caught, which were wrong by 15% or more.
     """
     d, h = spectra(n, 3, 5, seed=n)
-    got = ctx.peaks(n, d, h)
+    idx, val = ctx.peaks(n, d, h)
     want = reference_peaks(d, h)
-    assert got.shape == (3, 5)
+    assert idx.shape == (3, 5, 1)
+    got = np.abs(val[:, :, 0])
     assert np.max(np.abs(got - want) / want) < 1e-5
+    # the index must name the sample the value came from
+    for i in range(3):
+        for j in range(5):
+            z = np.fft.ifft(d[i].astype(np.complex128)
+                            * np.conj(h[j].astype(np.complex128))) * n
+            assert idx[i, j, 0] == int(np.argmax(np.abs(z)))
 
 
 @novk
@@ -83,14 +90,16 @@ def test_gpu_shaped_batch(ctx):
     """
     n, nd, nt = 4096, 64, 512
     d, h = spectra(n, nd, nt, seed=11)
-    got = ctx.peaks(n, d, h)
-    assert got.shape == (nd, nt)
+    gidx, gval = ctx.peaks(n, d, h)
+    assert gidx.shape == (nd, nt, 1)
+    got = np.abs(gval[:, :, 0])
     assert np.all(np.isfinite(got)) and np.all(got > 0)
+    assert np.all(gidx >= 0)
 
-    idx = [(0, 0), (17, 255), (63, 511)]
-    want = reference_peaks(np.array([d[i] for i, _ in idx]),
-                           np.array([h[j] for _, j in idx]))
-    for k, (i, j) in enumerate(idx):
+    pairs = [(0, 0), (17, 255), (63, 511)]
+    want = reference_peaks(np.array([d[i] for i, _ in pairs]),
+                           np.array([h[j] for _, j in pairs]))
+    for k, (i, j) in enumerate(pairs):
         assert abs(got[i, j] - want[k, k]) / want[k, k] < 1e-5
 
 
@@ -104,6 +113,7 @@ def test_rectangular_batches_are_not_transposed(ctx):
     """
     n, nd, nt = 1024, 3, 7
     d, h = spectra(n, nd, nt, seed=4)
-    got = ctx.peaks(n, d, h)
-    assert got.shape == (nd, nt)
-    assert np.max(np.abs(got - reference_peaks(d, h)) / reference_peaks(d, h)) < 1e-5
+    gidx, gval = ctx.peaks(n, d, h)
+    assert gidx.shape == (nd, nt, 1)
+    want = reference_peaks(d, h)
+    assert np.max(np.abs(np.abs(gval[:, :, 0]) - want) / want) < 1e-5

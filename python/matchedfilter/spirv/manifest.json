@@ -22,15 +22,21 @@
           "binding": 1
         },
         {
-          "name": "entryPointParams.peakMag",
+          "name": "entryPointParams.peakIdx",
           "kind": "StorageBuffer",
           "set": 0,
           "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
         }
       ],
       "push_constant": true,
       "file": "tierb_1024.spv",
-      "bytes": 18672
+      "bytes": 22804
     },
     "2048": {
       "local_size": [
@@ -52,15 +58,21 @@
           "binding": 1
         },
         {
-          "name": "entryPointParams.peakMag",
+          "name": "entryPointParams.peakIdx",
           "kind": "StorageBuffer",
           "set": 0,
           "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
         }
       ],
       "push_constant": true,
       "file": "tierb_2048.spv",
-      "bytes": 19420
+      "bytes": 23392
     },
     "4096": {
       "local_size": [
@@ -82,15 +94,21 @@
           "binding": 1
         },
         {
-          "name": "entryPointParams.peakMag",
+          "name": "entryPointParams.peakIdx",
           "kind": "StorageBuffer",
           "set": 0,
           "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
         }
       ],
       "push_constant": true,
       "file": "tierb_4096.spv",
-      "bytes": 21372
+      "bytes": 25328
     },
     "8192": {
       "local_size": [
@@ -112,15 +130,21 @@
           "binding": 1
         },
         {
-          "name": "entryPointParams.peakMag",
+          "name": "entryPointParams.peakIdx",
           "kind": "StorageBuffer",
           "set": 0,
           "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
         }
       ],
       "push_constant": true,
       "file": "tierb_8192.spv",
-      "bytes": 24824
+      "bytes": 29228
     },
     "16384": {
       "local_size": [
@@ -142,15 +166,21 @@
           "binding": 1
         },
         {
-          "name": "entryPointParams.peakMag",
+          "name": "entryPointParams.peakIdx",
           "kind": "StorageBuffer",
           "set": 0,
           "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
         }
       ],
       "push_constant": true,
       "file": "tierb_16384.spv",
-      "bytes": 25096
+      "bytes": 29660
     }
   }
 }

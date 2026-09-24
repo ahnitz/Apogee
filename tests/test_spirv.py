@@ -58,12 +58,13 @@ def test_workgroup_is_one_sixteenth_of_the_transform(manifest, n):
 def test_host_binding_contract(manifest, n):
     """What the host must bind, read from the artefact rather than the source.
 
-    `uniform uint ntmpl` in Slang compiles to a PUSH CONSTANT, not a fourth
-    descriptor. A host written from the source would bind a buffer the module
-    never reads, so this is pinned where it can be seen.
+    The uniform entry-point parameters compile to PUSH CONSTANTS, not to
+    further descriptors. A host written from the Slang source would bind
+    buffers the module never reads, so this is pinned where it can be seen.
     """
     info = manifest["modules"][str(n)]
-    assert [(d["set"], d["binding"]) for d in info["descriptors"]] == [(0, 0), (0, 1), (0, 2)]
+    assert [(d["set"], d["binding"]) for d in info["descriptors"]] == [
+        (0, 0), (0, 1), (0, 2), (0, 3)]     # data, tmpl, peakIdx, peakVal
     assert all(d["kind"] == "StorageBuffer" for d in info["descriptors"])
     assert info["push_constant"] is True
 
