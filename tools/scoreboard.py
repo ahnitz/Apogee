@@ -55,8 +55,23 @@ def cpu_ms(kind, n, nd, nt, reps=3):
     return (time.perf_counter() - t0) / reps * 1e3
 
 
+class _NoComputeOnly(RuntimeError):
+    """This backend has no recorded command buffer to replay."""
+
+
 def _submit_only(ctx, reps):
-    """Replay every recorded command buffer: compute with no host traffic."""
+    """Replay every recorded command buffer: compute with no host traffic.
+
+    Vulkan only, and not by oversight. The measurement IS the replay: it
+    works because the Vulkan backend records a command buffer once and
+    resubmits it, so there is something to re-run without the host. Metal
+    builds its command buffer inside each call, so there is nothing
+    recorded to replay and no compute-only figure to report. Inventing one
+    -- timing the encode too, and calling it compute-only -- would be the
+    same number as end-to-end wearing a better label.
+    """
+    if not hasattr(ctx, "vk"):
+        raise _NoComputeOnly(type(ctx).__module__)
     vk = ctx.vk
     cmds = [b[4] for b in ctx._batches.values()]
     cmds += [b[1] for b in getattr(ctx, "_hier", {}).values()]
@@ -112,7 +127,10 @@ def gpu_ms(kind, n, nd, nt, reps=12):
     f.set_data(d)
     f.set_templates(h)
     f.run(binsize=n, threshold=THRESHOLD)          # record everything once
-    t = _submit_only(f._gpu, reps)
+    try:
+        t = _submit_only(f._gpu, reps)
+    except _NoComputeOnly:
+        t = None
     rate = f.refine_rate if kind == "hier" else None
     f._gpu.destroy()
     return t, rate
@@ -142,11 +160,22 @@ def main(argv=None):
         gf, _ = gpu_ms("flat", n, nd, nt)
         gh, rate = gpu_ms("hier", n, nd, nt)
         ge = gpu_full_ms("hier", n, nd, nt)
+        if gf is None or gh is None:
+            # No recorded command buffer to replay -- see _submit_only. The
+            # end-to-end figure is real and is printed; the two compute-only
+            # columns are left blank rather than filled with it.
+            gff = gpu_full_ms("flat", n, nd, nt)
+            print("  %6d %7d | %8.2f ms %8.2f ms | %11s %11s %8.3f ms |"
+                  " %5.1fx %6s  %8.1fx"
+                  % (n, pairs, cf, ch, "-", "-", ge, cf / gff, "-", ch / ge))
+            continue
         print("  %6d %7d | %8.2f ms %8.2f ms | %8.3f ms %8.3f ms %8.3f ms |"
               " %5.1fx %6.1fx %8.1fx"
               % (n, pairs, cf, ch, gf, gh, ge, cf / gf, ch / gh, ch / ge))
     print()
     print("  target: 50x or better in both GPU columns")
+    print("  a '-' means this backend records nothing to replay, so there is")
+    print("  no compute-only figure; the 'flat x' shown is then end-to-end.")
     return 0
 
 
