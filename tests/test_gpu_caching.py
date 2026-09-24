@@ -401,22 +401,28 @@ def test_accuracy_table_resolution_order():
     vk = Device("gpu", 0, "some card", "vulkan")
     mtl = Device("gpu", 0, "Apple", "metal")
 
-    for dev in (cpu, vk, mtl):
-        path, key = accuracy_table_for(dev)
-        assert key is None, "no per-path table ships yet, so all share one"
-        assert os.path.basename(path) == "accuracy.txt"
+    # The CPU keeps the shipped default; it must never pick up a GPU table.
+    path, key = accuracy_table_for(cpu)
+    assert key is None and os.path.basename(path) == "accuracy.txt"
 
-    here = os.path.dirname(accuracy_table_for(cpu)[0])
-    for name, dev, want in (("accuracy-gpu.txt", vk, "gpu"),
-                            ("accuracy-vulkan.txt", vk, "vulkan")):
-        made = os.path.join(here, name)
-        open(made, "w").close()
-        try:
-            assert accuracy_table_for(dev)[1] == want
-            # The CPU must not pick up a GPU table.
-            assert accuracy_table_for(cpu)[1] is None
-        finally:
-            os.unlink(made)
+    # accuracy-gpu.txt now ships, measured with the GPU filtering, and both
+    # GPU backends run the same Slang kernels so both resolve to it.
+    for dev in (vk, mtl):
+        path, key = accuracy_table_for(dev)
+        assert key == "gpu", "%s resolved to %r" % (dev, key)
+        assert os.path.basename(path) == "accuracy-gpu.txt"
+
+    # A backend-specific table outranks the shared GPU one, which is how the
+    # two would be split if Vulkan and Metal ever stop running one kernel.
+    here = os.path.dirname(path)
+    made = os.path.join(here, "accuracy-vulkan.txt")
+    open(made, "w").close()
+    try:
+        assert accuracy_table_for(vk)[1] == "vulkan"
+        assert accuracy_table_for(mtl)[1] == "gpu", "metal must not take it"
+        assert accuracy_table_for(cpu)[1] is None
+    finally:
+        os.unlink(made)
 
     os.environ["MF_ACCURACY"] = "/tmp/whatever.txt"
     try:
