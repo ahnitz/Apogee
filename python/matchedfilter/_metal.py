@@ -33,27 +33,41 @@ def _nsstring(objc, obj, selector):
         if ptr else ""
 
 
-def _first_of_all_devices(objc, metal):
-    """The first device MTLCopyAllDevices reports, or None.
+def _all_devices(objc, metal):
+    """Every Metal device, via MTLCopyAllDevices.
 
-    macOS only -- the call does not exist on iOS, which is why Metal code
-    usually reaches for the system default first.
+    This is the RIGHT call for compute, and MTLCreateSystemDefaultDevice is
+    not. That one returns the device the system recommends for RENDERING --
+    it resolves against the display -- so it is nil on any headless machine:
+    over ssh, under launchd, on CI. A compute kernel needs no display, and
+    treating a missing one as a missing GPU is a category error the API
+    invites.
+
+    It is macOS-only, which is why Metal examples reach for the system
+    default first; on iOS there is exactly one device and the question does
+    not arise.
     """
     if not hasattr(metal, "MTLCopyAllDevices"):
-        return None
+        return []
     metal.MTLCopyAllDevices.restype = ctypes.c_void_p
     array = metal.MTLCopyAllDevices()
     if not array:
-        return None
+        return []
     count_fn = ctypes.cast(objc.objc_msgSend,
                            ctypes.CFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p,
                                             ctypes.c_void_p))
-    if count_fn(array, objc.sel_registerName(b"count")) < 1:
-        return None
+    count = int(count_fn(array, objc.sel_registerName(b"count")))
     at_fn = ctypes.cast(objc.objc_msgSend,
                         ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p,
                                          ctypes.c_void_p, ctypes.c_ulong))
-    return at_fn(array, objc.sel_registerName(b"objectAtIndex:"), 0)
+    sel = objc.sel_registerName(b"objectAtIndex:")
+    return [at_fn(array, sel, i) for i in range(count)]
+
+
+def _first_of_all_devices(objc, metal):
+    """Back-compat shim for the runtime; prefer _all_devices."""
+    found = _all_devices(objc, metal)
+    return found[0] if found else None
 
 
 def enumerate_devices():
@@ -72,41 +86,37 @@ def enumerate_devices():
     objc.objc_msgSend.restype = ctypes.c_void_p
     objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
-    handle = metal.MTLCreateSystemDefaultDevice()
-    if not handle:
-        # MTLCreateSystemDefaultDevice resolves the DISPLAY device, so it
-        # returns nil wherever there is no window-server session -- over
-        # ssh, under launchd, and on some CI. That is not the same as having
-        # no GPU, and MTLCopyAllDevices answers the question that was
-        # actually asked.
-        handle = _first_of_all_devices(objc, metal)
-    if not handle:
-        return [], ("no Metal device: MTLCreateSystemDefaultDevice returned "
-                    "nothing and MTLCopyAllDevices is empty. On a virtual "
-                    "machine the guest may simply not be given a GPU")
+    # Enumerate first, and fall back to the system default only if the
+    # enumeration is unavailable. A display is irrelevant to compute.
+    handles = _all_devices(objc, metal)
+    if not handles:
+        one = metal.MTLCreateSystemDefaultDevice()
+        handles = [one] if one else []
+    if not handles:
+        return [], ("no Metal device: MTLCopyAllDevices is empty and "
+                    "MTLCreateSystemDefaultDevice returned nothing either. "
+                    "On a virtual machine the guest may simply not be given "
+                    "a GPU")
 
-    name = _nsstring(objc, handle, b"name") or "Apple GPU"
+    out = []
+    for handle in handles:
+        name = _nsstring(objc, handle, b"name") or "Apple GPU"
 
-    # Two limits decide whether the shipped kernels can run at all, so they
-    # are read here rather than discovered at pipeline creation.
-    def _uint(selector):
-        objc.objc_msgSend.restype = ctypes.c_ulong
+        # Read the limit that decides whether the shipped kernels can run
+        # here rather than discovering it at pipeline creation.
+        def _uint(selector, dev=handle):
+            fn = ctypes.cast(objc.objc_msgSend,
+                             ctypes.CFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p,
+                                              ctypes.c_void_p))
+            return int(fn(dev, objc.sel_registerName(selector)))
+
         try:
-            return int(objc.objc_msgSend(handle, objc.sel_registerName(selector)))
-        finally:
-            objc.objc_msgSend.restype = ctypes.c_void_p
-
-    try:
-        shared = _uint(b"maxThreadgroupMemoryLength")
-    except Exception:
-        shared = 0
-    try:
-        low_power = bool(_uint(b"isLowPower"))
-    except Exception:
-        low_power = False
-
-    return [dict(name=name, vendor=0x106B, kind="integrated",
-                 shared_memory=shared, low_power=low_power)], None
+            shared = _uint(b"maxThreadgroupMemoryLength")
+        except Exception:
+            shared = 0
+        out.append(dict(name=name, vendor=0x106B, kind="integrated",
+                        shared_memory=shared))
+    return out, None
 
 
 def available():

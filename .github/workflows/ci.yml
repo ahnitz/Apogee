@@ -176,12 +176,12 @@ jobs:
       # the guest a GPU at all? These are virtual machines, and a Metal
       # device is not guaranteed.
       #
-      # Ask BOTH ways. MTLCreateSystemDefaultDevice resolves the DISPLAY
-      # device and returns nil without a window-server session, which is
-      # exactly the situation on CI -- on macos-14 it returned NULL and
-      # system_profiler reported no display at all. That is not the same
-      # as having no GPU, and MTLCopyAllDevices is the question that
-      # actually distinguishes them.
+      # Ask BOTH ways, and note which one matters. Compute needs no
+      # display, but MTLCreateSystemDefaultDevice returns the device the
+      # system recommends for RENDERING and is nil with nothing attached --
+      # on macos-14 it returned NULL and system_profiler reported no display
+      # at all. MTLCopyAllDevices is the enumeration, and it is the one that
+      # answers "is there a GPU here".
       - name: Is there actually a GPU?
         run: |
           sw_vers

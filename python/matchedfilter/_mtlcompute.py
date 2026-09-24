@@ -126,17 +126,21 @@ class Context:
             raise MetalError("Metal is only available on macOS")
         self.o = _ObjC()
         self.o.metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
-        self.device = self.o.metal.MTLCreateSystemDefaultDevice()
-        if not self.device:
-            # See _metal._first_of_all_devices: the system default is the
-            # DISPLAY device and is nil without a window-server session.
-            from . import _metal
-            self.device = _metal._first_of_all_devices(self.o.objc,
-                                                       self.o.metal)
-        if not self.device:
-            raise MetalError("no Metal device: neither "
-                             "MTLCreateSystemDefaultDevice nor "
-                             "MTLCopyAllDevices returned one")
+        # Enumerate rather than ask for the "system default", which is the
+        # device recommended for RENDERING and is nil with no display
+        # attached. Compute does not need one.
+        from . import _metal
+        found = _metal._all_devices(self.o.objc, self.o.metal)
+        if not found:
+            one = self.o.metal.MTLCreateSystemDefaultDevice()
+            found = [one] if one else []
+        if index >= len(found):
+            raise MetalError(
+                "no Metal device with index %d (found %d); "
+                "MTLCopyAllDevices is the enumeration and "
+                "MTLCreateSystemDefaultDevice needs a display"
+                % (index, len(found)))
+        self.device = found[index]
         self.name = self.o.to_str(self.o.call(self.device, b"name"))
         self.queue = self.o.call(self.device, b"newCommandQueue")
         if not self.queue:
