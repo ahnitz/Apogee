@@ -23,6 +23,23 @@ been replaced -- what survives is the reasoning and the numbers.
 | `tools/gpu_decomposition.py` | the transform decomposition, verified before any kernel was written |
 | `tools/gpu_output_order.py` | where each register lands in the output |
 
+## Shared memory is a portability limit, not a performance dial
+
+The exchange staging is the single biggest performance lever -- see the
+measured table in `tools/build_spirv.py` -- and the fastest setting at
+n >= 8192 asks a workgroup for 64 KB. Apple allows 32 KB.
+
+So every size whose preferred staging exceeds 32 KB is built twice, and the
+runtime reads `maxComputeSharedMemorySize` from the device and picks. The
+two builds are checked against each other in the test suite; they differ
+only in speed.
+
+What makes this worth stating: **a software rasteriser hides it**. llvmpipe
+reports 32 KB and then runs a 64 KB kernel anyway, so the lavapipe CI path
+passes while real hardware would fail to create the pipeline at all. The
+test asserts the SELECTED kernel fits the device rather than asserting that
+it ran.
+
 ## Two traps, both of which cost an hour
 
 - **A shadowed `libstdc++` looks exactly like having no GPU.** Mesa's drivers

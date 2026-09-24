@@ -101,3 +101,29 @@ def test_blobs_match_the_current_kernel_source(manifest, tmp_path):
         assert fresh == shipped, (
             "%s is stale: src/gpu/%s has changed since it was built. "
             "Re-run tools/build_spirv.py." % (info["file"], manifest["kernel"]))
+
+
+def test_every_kernel_has_a_portable_variant_when_it_needs_one(manifest):
+    """Anything over 32 KB of workgroup memory must have a fallback.
+
+    Apple allows a threadgroup 32 KB and several kernels are built at 64 KB
+    because that is fastest on the development device. Without a smaller
+    build those sizes cannot create a pipeline at all there.
+    """
+    for key, info in manifest["modules"].items():
+        if info.get("lds_bytes", 0) > 32768:
+            assert "portable" in info, (
+                "n=%s asks for %d KB and has no portable variant"
+                % (key, info["lds_bytes"] // 1024))
+            assert info["portable"]["lds_bytes"] <= 32768
+            assert (SPIRV_DIR / info["portable"]["file"]).is_file()
+
+
+def test_declared_shared_memory_matches_the_kernels_own_arithmetic(manifest):
+    """The manifest must not claim a size the shader does not ask for."""
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path(matchedfilter.__file__).parents[2] / "tools"))
+    from build_spirv import lds_bytes, LDS_CAP
+    for key, info in manifest["modules"].items():
+        n = int(key)
+        assert info["lds_bytes"] == lds_bytes(n, LDS_CAP[n])

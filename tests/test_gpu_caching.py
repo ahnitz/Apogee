@@ -233,3 +233,51 @@ def test_the_cpu_still_covers_the_larger_sizes(n):
     pk = f.run(binsize=n, threshold=0.0)
     z = np.fft.ifft(d[0].astype(np.complex128) * np.conj(t[0].astype(np.complex128))) * n
     assert int(pk["index"][0, 0, 0]) == int(np.argmax(np.abs(z)))
+
+
+def test_the_chosen_kernel_fits_the_device():
+    """Never select a kernel asking for more shared memory than exists.
+
+    A software rasteriser hides this: llvmpipe reports 32 KB and then runs a
+    64 KB kernel anyway, so the CI fallback passes where real hardware --
+    Apple in particular -- would fail to create the pipeline.
+    """
+    from matchedfilter import _vkcompute as V
+    import json, pathlib
+    man = json.loads((pathlib.Path(V.__file__).parent / "spirv"
+                      / "manifest.json").read_text())
+    for i, dev in enumerate(mf.devices()):
+        if dev.kind != "gpu":
+            continue
+        ctx = V.Context(dev.index)
+        try:
+            for key, info in man["modules"].items():
+                chosen = ctx._kernel_file(int(key))
+                need = (info["lds_bytes"] if chosen == info["file"]
+                        else info["portable"]["lds_bytes"])
+                assert need <= ctx.max_shared_memory, (
+                    "%s picked %s needing %d KB with %d KB available"
+                    % (dev, chosen, need // 1024, ctx.max_shared_memory // 1024))
+        finally:
+            ctx.destroy()
+
+
+@pytest.mark.parametrize("n", [8192, 16384])
+def test_both_staging_variants_agree(n):
+    """The portable build must compute the same answer, only slower."""
+    from matchedfilter import _vkcompute as V
+    rng = np.random.default_rng(n)
+    d = (rng.standard_normal((2, n)) + 1j * rng.standard_normal((2, n))).astype(np.complex64)
+    h = (rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))).astype(np.complex64)
+    out = []
+    for forced in (None, "tierb_%d_lds32.spv" % n):
+        ctx = V.Context(0)
+        if forced:
+            ctx._kernel_file = lambda _n, f=forced: f
+        try:
+            out.append(ctx.peaks(n, d, h, binsize=n, threshold=0.0))
+        finally:
+            ctx.destroy()
+    np.testing.assert_array_equal(out[0][0], out[1][0])
+    np.testing.assert_allclose(np.abs(out[0][1]), np.abs(out[1][1]),
+                               rtol=1e-5, atol=1e-5)

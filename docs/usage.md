@@ -183,6 +183,31 @@ Other things worth knowing, all work in progress:
   not necessarily at their best until they have their own measurements.
 - **No float64 path**, on either device, and none planned.
 
+### Which GPUs
+
+The backend is Vulkan. The kernels ship as SPIR-V and the runtime loads
+whatever Vulkan driver the system provides, so AMD, NVIDIA and Intel all
+work from the same wheel with nothing to install.
+
+**macOS does not work yet.** There is no Metal backend and no MoltenVK in
+the wheel, so on a Mac the loader finds no `libvulkan.1.dylib` and
+`device="gpu"` refuses. Two routes are open and neither is taken:
+
+- bundle MoltenVK, which translates Vulkan to Metal and is Apache 2.0, so
+  the existing SPIR-V would run unchanged;
+- emit Metal directly — `slangc` has a Metal target, so the same kernel
+  source would compile, but it needs a Metal runtime beside the Vulkan one.
+
+Either way the shared-memory limit matters: Apple allows a threadgroup
+32 KB, and the fastest builds here use 64 KB. That is already handled —
+every kernel over 32 KB also ships a 32 KB build and the runtime picks by
+what the device reports — but it is why a Mac would be slower at the two
+largest sizes rather than simply working.
+
+A software rasteriser will not catch a mistake here. llvmpipe reports 32 KB
+and then runs a 64 KB kernel regardless, so the lavapipe CI path passes
+where real hardware would fail to create the pipeline.
+
 ## Platforms
 
 One kernel source is compiled once per SIMD target the compiler can generate,

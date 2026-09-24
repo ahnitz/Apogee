@@ -59,6 +59,16 @@ _COARSE_ONLY = (64, 128, 256, 512)
 #: These are THIS device's numbers. 64 KB exceeds what Apple allows a
 #: threadgroup, so a Metal build will need its own column -- which is what
 #: the per-device tables in docs/plans/gpu-integration.md are for.
+#: The largest staging that is portable. Apple allows a threadgroup 32 KB,
+#: and several of the fastest entries below exceed it -- so every size whose
+#: preferred staging does not fit is ALSO emitted at this cap, and the
+#: runtime picks by what the device reports.
+#:
+#: A software rasteriser will not catch this: llvmpipe reports 32 KB and
+#: then runs a 64 KB kernel anyway, so the lavapipe CI path passes where
+#: real hardware would fail to create the pipeline.
+PORTABLE_CAP = 4096          # complex, = 32 KB
+
 LDS_CAP = {
     64: 512, 128: 512, 256: 512, 512: 512,
     1024: 512, 2048: 1024, 4096: 2048, 8192: 8192, 16384: 8192,
@@ -143,11 +153,24 @@ def reflect(blob):
                 push_constant=push_constant)
 
 
-def compile_one(slangc, n, outdir, entry=ENTRY):
-    src = outdir / ("mf_%d_%s.slang" % (n, entry))
+def lds_bytes(n, cap):
+    """Shared memory the kernel declares: stg[CH * WG * 2] uints.
+
+    Mirrors the kernel's own arithmetic -- WG = n/16, CH = min(cap/WG, 16) --
+    so a build cannot claim a size the shader does not actually ask for.
+    """
+    wg = n // 16
+    ch = min(max(cap // wg, 1), 16)
+    return ch * wg * 8
+
+
+def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix=""):
+    cap = LDS_CAP[n] if cap is None else cap
+    src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n"
-                   % (n, LDS_CAP[n]) + KERNEL.read_text())
-    name = "tierb_%d.spv" % n if entry == ENTRY else "gated_%d.spv" % n
+                   % (n, cap) + KERNEL.read_text())
+    name = ("tierb_%d%s.spv" % (n, suffix) if entry == ENTRY
+            else "gated_%d%s.spv" % (n, suffix))
     spv = outdir / name
     proc = subprocess.run(
         [slangc, str(src), "-target", "spirv", "-entry", entry,
@@ -190,6 +213,12 @@ def main(argv=None):
               % (band, spv.name, spv.stat().st_size))
     manifest = dict(entry=ENTRY, kernel=KERNEL.name, modules={})
     for n in TIER_B:
+        if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
+            small = compile_one(slangc, n, OUT, ENTRY, cap=PORTABLE_CAP,
+                                suffix="_lds32")
+            print("  n=%-6d %-16s %5d bytes  staging %2d KB  portable variant"
+                  % (n, small.name, small.stat().st_size,
+                     lds_bytes(n, PORTABLE_CAP) // 1024))
         gated = compile_one(slangc, n, OUT, "gatedTierB")
         ginfo = reflect(gated.read_bytes())
         spv = compile_one(slangc, n, OUT)
@@ -199,6 +228,10 @@ def main(argv=None):
         info["file"] = spv.name
         info["bytes"] = spv.stat().st_size
         info["lds_cap"] = LDS_CAP[n]
+        info["lds_bytes"] = lds_bytes(n, LDS_CAP[n])
+        if info["lds_bytes"] > lds_bytes(n, PORTABLE_CAP):
+            info["portable"] = dict(file="tierb_%d_lds32.spv" % n,
+                                    lds_bytes=lds_bytes(n, PORTABLE_CAP))
         manifest["modules"][str(n)] = info
         print("  n=%-6d %-16s %5d bytes  wg=%-4s staging %2d KB  %d descriptors%s"
               % (n, spv.name, info["bytes"], info["local_size"][0],

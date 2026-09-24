@@ -18,10 +18,29 @@ from . import _vulkan
 
 _SPIRV = pathlib.Path(__file__).resolve().parent / "spirv"
 
+_MANIFEST = None
+
+
+def _manifest():
+    global _MANIFEST
+    if _MANIFEST is None:
+        try:
+            import json
+            _MANIFEST = json.loads((_SPIRV / "manifest.json").read_text())
+        except Exception:
+            _MANIFEST = {}
+    return _MANIFEST
+
 #: The per-bin table aliases the 8 KB exchange staging: CAP=1024 complex =
 #: 2048 uints. Past that the kernel needs its own array and the LDS cost
 #: halves occupancy, so this refuses rather than silently getting slower.
 _MAX_BINS = 2048
+
+#: Byte offsets into VkPhysicalDeviceProperties. The 5 leading uint32s, the
+#: 256-byte name and the 16-byte UUID come to 292, padded to 296 because
+#: VkPhysicalDeviceLimits contains 64-bit members; maxComputeSharedMemorySize
+#: sits 216 bytes into those limits.
+_OFF_SHARED_MEMORY = 296 + 216
 
 #: Bands with a tiled coarse kernel, and its tile. Everywhere else the
 #: general kernel is used, one pair per workgroup.
@@ -247,6 +266,17 @@ class Context:
         vk.vkGetDeviceQueue(self.device, self.queue_family, 0,
                             ctypes.byref(self.queue))
 
+        # What this device will actually give a workgroup. Several kernels
+        # are built at 64 KB because that is fastest here, and Apple allows
+        # 32 KB -- so the size has to be asked for rather than assumed. A
+        # software rasteriser will not reveal the mistake: llvmpipe reports
+        # 32 KB and runs a 64 KB kernel regardless.
+        props = (ctypes.c_ubyte * 2048)()
+        vk.vkGetPhysicalDeviceProperties(self.physical, ctypes.byref(props))
+        self.max_shared_memory = int(ctypes.cast(
+            ctypes.byref(props, _OFF_SHARED_MEMORY),
+            ctypes.POINTER(_u32))[0])
+
         self.mem_props = _MemProps()
         vk.vkGetPhysicalDeviceMemoryProperties(self.physical,
                                                ctypes.byref(self.mem_props))
@@ -299,7 +329,25 @@ class Context:
         which costs milliseconds -- far more than a dispatch -- and a batched
         workload calls this once and dispatches many times.
         """
-        return self._build_pipeline(n, "tierb_%d.spv" % n, _NBIND, _PUSH_BYTES)
+        return self._build_pipeline(n, self._kernel_file(n), _NBIND, _PUSH_BYTES)
+
+    def _kernel_file(self, n):
+        """The fastest variant this device can actually run.
+
+        Falls back to the 32 KB build when the preferred one asks for more
+        shared memory than the device offers, rather than failing to create
+        the pipeline on the user's machine.
+        """
+        info = _manifest().get("modules", {}).get(str(n))
+        if info and info.get("lds_bytes", 0) > self.max_shared_memory:
+            alt = info.get("portable")
+            if alt is None:
+                raise VulkanError(
+                    "n=%d needs %d KB of workgroup memory and this device "
+                    "offers %d KB" % (n, info["lds_bytes"] // 1024,
+                                      self.max_shared_memory // 1024))
+            return alt["file"]
+        return "tierb_%d.spv" % n
 
     def _build_pipeline(self, key, filename, nbind, push_bytes):
         if key in self._pipelines:
