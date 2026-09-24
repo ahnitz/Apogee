@@ -1231,7 +1231,15 @@ class HierarchicalFilter(MatchedFilter):
     """
 
     def __init__(self, n, ndata=1, ntemplates=1, snr=5.5, fd=1e-2,
-                 band=None, oversample=None, taps=None):
+                 band=None, oversample=None, taps=None, device=None):
+        from .device import parse as _parse_device
+        self.device = _parse_device(device)
+        if self.device.kind != "cpu":
+            raise NotImplementedError(
+                "the hierarchical mode does not run on %s yet; it needs the "
+                "coarse pass and the refinement dispatch, not just the flat "
+                "kernel. Use MatchedFilter for device='gpu', or "
+                "HierarchicalFilter on device='cpu'." % self.device)
         self.n = int(n)
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
