@@ -188,7 +188,14 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
     # sweep, and a pinned plan now takes one from the table when the caller
     # does not state one -- so skipping the call at 1.0 would measure the
     # table's margin and label it 1.0.
-    hf._ensure().set_coarse_margin(float(margin))
+    # Through the PUBLIC setter, not hf._ensure().set_coarse_margin(). Those
+    # are the same call on the CPU and not on the GPU, where the margin is
+    # read from the filter at calibration time rather than from the plan
+    # object -- so reaching through _ensure wrote it somewhere the GPU never
+    # looks. A whole 7000-cell GPU sweep came back with every margin giving
+    # the identical answer, which is exactly the shape this failure makes:
+    # the strongest lever in the table doing nothing at all.
+    hf.set_coarse_margin(float(margin))
     flat.set_templates(H[None, :])
     hf.set_templates(H[None, :])
 
@@ -608,7 +615,7 @@ def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,
     # sweep, and a pinned plan now takes one from the table when the caller
     # does not state one -- so skipping the call at 1.0 would measure the
     # table's margin and label it 1.0.
-    hf._ensure().set_coarse_margin(float(margin))
+    hf.set_coarse_margin(float(margin))
     hf.set_templates(H)
     # Cap the call count. A 1x1 shape would otherwise need `pairs_target`
     # separate run() calls per repeat -- 40000 of them, each paying full
@@ -735,7 +742,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
                                        fd=1e-3, band=band, oversample=U, taps=K)
             hf.set_reference(power)
             # always, including 1.0 -- see the note at the top of the file
-            hf._ensure().set_coarse_margin(float(margin))
+            hf.set_coarse_margin(float(margin))
             hf.set_templates(H)
             plans[cfg] = hf
         acc = {c: [] for c in chunk}

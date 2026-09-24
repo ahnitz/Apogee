@@ -66,7 +66,35 @@ def cell(job):
     return r
 
 
+def preflight():
+    """Refuse to start if the margin does not move the answer.
+
+    The first attempt at this table ran 7000 cells in 85 minutes and was
+    worthless: the margin was being set through hf._ensure(), which on the
+    GPU writes it somewhere the calibration never reads, so every cell was
+    measured at margin 1.0. Nothing failed. The table just came back with
+    all five margins identical to four digits -- and the margin is the
+    strongest lever in it, 90x across 0.97 to 1.00.
+
+    Two cells, twenty seconds, and that cannot happen unnoticed again.
+    """
+    lo = t._fdr_cell((8192, 1024, 2, 4, 5.0, 0.995, 2.0, 3000, 0.90, DEVICE))
+    hi = t._fdr_cell((8192, 1024, 2, 4, 5.0, 0.995, 2.0, 3000, 1.00, DEVICE))
+    for r in (lo, hi):
+        if "error" in r:
+            raise SystemExit("preflight cell failed: %s" % r["error"])
+    if lo["dismissal"] == hi["dismissal"]:
+        raise SystemExit(
+            "preflight: margin 0.90 and 1.00 both give %.4e on %s, so the "
+            "margin is not reaching the filter and every cell would measure "
+            "the same configuration. Fix that before spending the hour."
+            % (lo["dismissal"], DEVICE))
+    print("preflight ok: margin 0.90 -> %.3e, 1.00 -> %.3e"
+          % (lo["dismissal"], hi["dismissal"]), flush=True)
+
+
 if __name__ == "__main__":
+    preflight()
     jobs = [(n, K, snr, f, be, mg)
             for n in NS for K in KS for snr in SNRS
             for f in FS for be in BEFFS for mg in MARGINS
