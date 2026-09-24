@@ -76,12 +76,12 @@ float2 cmul_0(float2 a_2, float2 b_2)
 #line 69
 void dft16_0(array<float2, int(16)> thread* r_0)
 {
-    float2 W1_0 = float2(0.92387950420379639, 0.38268342614173889);
-    float2 W2_0 = float2(0.70710676908493042, 0.70710676908493042);
-    float2 W3_0 = float2(0.38268342614173889, 0.92387950420379639);
-    float2 W4_0 = float2(0.0, 1.0);
-    float2 W6_0 = float2(-0.70710676908493042, 0.70710676908493042);
-    float2 W9_0 = float2(-0.92387950420379639, -0.38268342614173889);
+    float2 W1_0 = float2(0.92387950420379639f, 0.38268342614173889f);
+    float2 W2_0 = float2(0.70710676908493042f, 0.70710676908493042f);
+    float2 W3_0 = float2(0.38268342614173889f, 0.92387950420379639f);
+    float2 W4_0 = float2(0.0f, 1.0f);
+    float2 W6_0 = float2(-0.70710676908493042f, 0.70710676908493042f);
+    float2 W9_0 = float2(-0.92387950420379639f, -0.38268342614173889f);
 
 #line 76
     uint n1_0 = 0U;
@@ -261,7 +261,7 @@ void dft32_0(array<float2, int(32)> thread* r_1)
         }
 
 #line 106
-        float ang_0 = 6.28318548202514648 * float(k_0) / 32.0;
+        float ang_0 = 6.28318548202514648f * float(k_0) / 32.0f;
         float2 w_0 = cmul_0(o_0[k_0], float2(cos(ang_0), sin(ang_0)));
         (*r_1)[k_0] = e_0[k_0] + w_0;
         (*r_1)[k_0 + 16U] = e_0[k_0] - w_0;
@@ -414,7 +414,7 @@ struct KernelContext_0
         }
 
 #line 168
-        float ang_1 = 6.28318548202514648 * float(lane_0 * k2_1) / 1024.0;
+        float ang_1 = 6.28318548202514648f * float(lane_0 * k2_1) / 1024.0f;
         r_4[k2_1] = cmul_0(r_4[k2_1], float2(cos(ang_1), sin(ang_1)));
 
 #line 167
@@ -479,7 +479,7 @@ struct KernelContext_0
     stage2_0(&r_4);
 
 #line 176
-    float best_0 = 0.0;
+    float best_0 = 0.0f;
 
 #line 176
     i_1 = 0U;
@@ -520,7 +520,7 @@ struct KernelContext_0
     uint _S14 = base_0 + lane_0;
 
 #line 184
-    (*(&kernelContext_0)->sh_0)[_S14] = float2(best_0, 0.0);
+    (*(&kernelContext_0)->sh_0)[_S14] = float2(best_0, 0.0f);
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
 #line 185
@@ -544,7 +544,7 @@ struct KernelContext_0
         {
 
 #line 187
-            (*(&kernelContext_0)->sh_0)[_S14] = float2(max((*(&kernelContext_0)->sh_0)[_S14].x, (*(&kernelContext_0)->sh_0)[_S14 + st_0].x), 0.0);
+            (*(&kernelContext_0)->sh_0)[_S14] = float2(max((*(&kernelContext_0)->sh_0)[_S14].x, (*(&kernelContext_0)->sh_0)[_S14 + st_0].x), 0.0f);
 
 #line 187
         }
@@ -561,7 +561,7 @@ struct KernelContext_0
     {
 
 #line 194
-        *((&kernelContext_0)->entryPointParams_out_0+pair_0) = packed_float2(float2(sqrt((*(&kernelContext_0)->sh_0)[base_0].x), 0.0)) ;
+        *((&kernelContext_0)->entryPointParams_out_0+pair_0) = packed_float2(float2(sqrt((*(&kernelContext_0)->sh_0)[base_0].x), 0.0f)) ;
 
 #line 194
     }

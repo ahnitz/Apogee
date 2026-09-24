@@ -3,22 +3,22 @@
 #include <metal_texture>
 using namespace metal;
 
-#line 10912 "hlsl.meta.slang"
+#line 11218 "hlsl.meta.slang"
 uint firstbithigh_0(uint value_0)
 {
 
-#line 10925
+#line 11231
     if(value_0 == 0U)
     {
 
-#line 10926
+#line 11232
         return 4294967295U;
     }
 
-#line 10927
+#line 11233
     uint _S1 = clz(value_0);
 
-#line 10927
+#line 11233
     return 31U - _S1;
 }
 
@@ -96,12 +96,12 @@ float2 cmul_0(float2 a_2, float2 b_2)
 #line 109
 void dft16_0(array<float2, int(16)> thread* r_0)
 {
-    float2 W1_0 = float2(0.92387950420379639, 0.38268342614173889);
-    float2 W2_0 = float2(0.70710676908493042, 0.70710676908493042);
-    float2 W3_0 = float2(0.38268342614173889, 0.92387950420379639);
-    float2 W4_0 = float2(0.0, 1.0);
-    float2 W6_0 = float2(-0.70710676908493042, 0.70710676908493042);
-    float2 W9_0 = float2(-0.92387950420379639, -0.38268342614173889);
+    float2 W1_0 = float2(0.92387950420379639f, 0.38268342614173889f);
+    float2 W2_0 = float2(0.70710676908493042f, 0.70710676908493042f);
+    float2 W3_0 = float2(0.38268342614173889f, 0.92387950420379639f);
+    float2 W4_0 = float2(0.0f, 1.0f);
+    float2 W6_0 = float2(-0.70710676908493042f, 0.70710676908493042f);
+    float2 W9_0 = float2(-0.92387950420379639f, -0.38268342614173889f);
 
 #line 116
     uint n1_0 = 0U;
@@ -310,7 +310,7 @@ void exchange_0(array<float2, int(16)> thread* r_1, const array<uint, int(16)> t
         }
 
 #line 162
-        out_0[z_0] = float2(0.0, 0.0);
+        out_0[z_0] = float2(0.0f, 0.0f);
 
 #line 162
         z_0 = z_0 + 1U;
@@ -505,7 +505,7 @@ void dft8_0(array<float2, int(16)> thread* r_2, uint o_0)
 
 #line 100
             uint k_0 = j_1 & (s_0 - 1U);
-            float ang_0 = 3.14159274101257324 * float(k_0) / float(s_0);
+            float ang_0 = 3.14159274101257324f * float(k_0) / float(s_0);
 
             uint _S18 = o_0 + j_1;
 
@@ -773,7 +773,7 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
                     }
 
 #line 246
-                    float ang_1 = 6.28318548202514648 * float(_S24 * k2_1) / 128.0;
+                    float ang_1 = 6.28318548202514648f * float(_S24 * k2_1) / 128.0f;
                     r_4[k2_1] = cmul_0(r_4[k2_1], float2(cos(ang_1), sin(ang_1)));
 
 #line 245
@@ -1164,7 +1164,7 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
             *(peakIdx_0+o_2) = int(-1);
 
 #line 327
-            *(peakVal_0+o_2) = packed_float2(float2(0.0, 0.0)) ;
+            *(peakVal_0+o_2) = packed_float2(float2(0.0f, 0.0f)) ;
 
 #line 325
         }
@@ -1287,7 +1287,7 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
             *((&kernelContext_4)->entryPointParams_peakIdx_0+o_3) = int(-1);
 
 #line 380
-            *((&kernelContext_4)->entryPointParams_peakVal_0+o_3) = packed_float2(float2(0.0, 0.0)) ;
+            *((&kernelContext_4)->entryPointParams_peakVal_0+o_3) = packed_float2(float2(0.0f, 0.0f)) ;
 
 #line 378
             b_7 = b_7 + 8U;

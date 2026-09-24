@@ -152,3 +152,34 @@ def test_declared_shared_memory_matches_the_kernels_own_arithmetic(manifest):
     for key, info in manifest["modules"].items():
         n = int(key)
         assert info["lds_bytes"] == lds_bytes(n, LDS_CAP[n])
+
+
+def test_the_metal_column_is_recorded_and_fits_apple(manifest):
+    """Metal is built against its own staging cap, so it must say so.
+
+    The two backends want opposite answers -- CH=16 is a 2.01x win at n=4096
+    on an M2 and a 31% loss on a Radeon 8060S -- so the Metal build no longer
+    shares LDS_CAP. If metal_lds_bytes went missing, _stem would fall back to
+    the Vulkan figure and compare this device's limit against a number no
+    Metal kernel was built with: at n=4096 that reads 16 KB where the kernel
+    actually asks for 32, which is under Apple's limit by luck rather than by
+    check. The direction that bites is a size whose Metal cap is larger than
+    its Vulkan one and over 32 KB -- silently no portable variant, and no Mac
+    can create the pipeline.
+    """
+    import sys
+    tools = _tools_dir()
+    if tools is None:
+        pytest.skip("tools/ is not beside the tests (installed package?)")
+    sys.path.insert(0, str(tools))
+    from build_spirv import lds_bytes, metal_cap
+    for key, info in manifest["modules"].items():
+        n = int(key)
+        assert "metal_lds_bytes" in info, "n=%s has no Metal column" % key
+        assert info["metal_lds_bytes"] == lds_bytes(n, metal_cap(n))
+        if info["metal_lds_bytes"] > 32768:
+            for entry, files in info["metal"].items():
+                assert "portable" in files, (
+                    "n=%s %s asks Apple for %d KB with no portable build"
+                    % (key, entry, info["metal_lds_bytes"] // 1024))
+                assert files["portable"]["lds_bytes"] <= 32768

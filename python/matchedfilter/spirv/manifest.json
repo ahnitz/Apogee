@@ -52,6 +52,8 @@
           "metallib": null
         }
       },
+      "metal_lds_cap": 512,
+      "metal_lds_bytes": 512,
       "lds_cap": 512,
       "lds_bytes": 512
     },
@@ -105,6 +107,8 @@
           "metallib": null
         }
       },
+      "metal_lds_cap": 512,
+      "metal_lds_bytes": 1024,
       "lds_cap": 512,
       "lds_bytes": 1024
     },
@@ -158,6 +162,8 @@
           "metallib": null
         }
       },
+      "metal_lds_cap": 512,
+      "metal_lds_bytes": 2048,
       "lds_cap": 512,
       "lds_bytes": 2048
     },
@@ -211,6 +217,8 @@
           "metallib": null
         }
       },
+      "metal_lds_cap": 512,
+      "metal_lds_bytes": 4096,
       "lds_cap": 512,
       "lds_bytes": 4096
     },
@@ -264,6 +272,8 @@
           "metallib": null
         }
       },
+      "metal_lds_cap": 1024,
+      "metal_lds_bytes": 8192,
       "lds_cap": 512,
       "lds_bytes": 4096
     },
@@ -317,6 +327,8 @@
           "metallib": null
         }
       },
+      "metal_lds_cap": 2048,
+      "metal_lds_bytes": 16384,
       "lds_cap": 1024,
       "lds_bytes": 8192
     },
@@ -370,6 +382,8 @@
           "metallib": null
         }
       },
+      "metal_lds_cap": 4096,
+      "metal_lds_bytes": 32768,
       "lds_cap": 2048,
       "lds_bytes": 16384
     },
@@ -437,6 +451,8 @@
           }
         }
       },
+      "metal_lds_cap": 8192,
+      "metal_lds_bytes": 65536,
       "lds_cap": 8192,
       "lds_bytes": 65536,
       "portable": {
@@ -508,6 +524,8 @@
           }
         }
       },
+      "metal_lds_cap": 8192,
+      "metal_lds_bytes": 65536,
       "lds_cap": 8192,
       "lds_bytes": 65536,
       "portable": {

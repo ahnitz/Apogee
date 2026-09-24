@@ -75,6 +75,34 @@ LDS_CAP = {
     1024: 512, 2048: 1024, 4096: 2048, 8192: 8192, 16384: 8192,
 }
 
+#: Metal's own column. The exchange runs R/CH chunks with CH = CAP/WG, and
+#: each chunk costs two barriers plus a full R-iteration reader pass of which
+#: only CH iterations can land -- so CH = 16 means one chunk, half the
+#: barriers, and no wasted address arithmetic. Apple takes that trade and the
+#: Radeon does not: the same widening measured, us/pair at 4096 pairs,
+#:
+#:              Apple M2            Radeon 8060S
+#:     n=1024   0.263 -> 0.228      0.0484 -> 0.0555
+#:     n=2048   0.599 -> 0.508      0.0499 -> 0.0513
+#:     n=4096   1.480 -> 0.736      0.0866 -> 0.1131
+#:
+#: a 2.01x win at n=4096 on Apple against a 31% loss on the Radeon, which is
+#: why this is a separate table and not an edit to the one above. Apple has
+#: far less threadgroup memory per core, so a second resident workgroup buys
+#: it less than the barriers cost; the Radeon has enough to keep several in
+#: flight and would rather have them.
+#:
+#: Sizes absent here fall back to LDS_CAP. n=4096 at CAP 4096 lands on
+#: exactly 32 KB, which is precisely Apple's per-threadgroup limit, so it
+#: needs no portable variant.
+METAL_CAP = {1024: 1024, 2048: 2048, 4096: 4096}
+
+
+def metal_cap(n):
+    """Staging capacity for the Metal build of this length."""
+    return METAL_CAP.get(n, LDS_CAP[n])
+
+
 KERNEL = ROOT / "src" / "gpu" / "tierb.slang"
 
 #: The tiled coarse kernel, and the only band it is correct for. See the
@@ -311,15 +339,16 @@ def main(argv=None):
         # Metal, from the same source. Built for every size so a macOS wheel
         # carries the same coverage as a Linux one.
         metal = {}
+        mcap = metal_cap(n)
         for entry in ENTRIES:
-            m, lib = compile_metal(slangc, n, LDS_CAP[n], entry, MSL)
+            m, lib = compile_metal(slangc, n, mcap, entry, MSL)
             metal[entry] = dict(msl=m.name,
                                 metallib=lib.name if lib else None)
             # Apple caps threadgroup memory at 32 KB, under what the tuned
             # staging asks for at the top sizes. Without a build that fits,
             # those kernels cannot create a pipeline on ANY Mac -- and the
             # refusal arrives as "Compilation failed", naming nothing.
-            if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
+            if lds_bytes(n, mcap) > lds_bytes(n, PORTABLE_CAP):
                 sm, slib = compile_metal(slangc, n, PORTABLE_CAP, entry, MSL,
                                          suffix="_lds32")
                 metal[entry]["portable"] = dict(
@@ -328,6 +357,11 @@ def main(argv=None):
                 print("  n=%-6d %-24s portable Metal variant, staging %d KB"
                       % (n, sm.name, lds_bytes(n, PORTABLE_CAP) // 1024))
         info["metal"] = metal
+        # Kept beside, not inside, "metal": the consumers of that key
+        # iterate it as entry -> files and a scalar sibling would break
+        # them.
+        info["metal_lds_cap"] = mcap
+        info["metal_lds_bytes"] = lds_bytes(n, mcap)
         info["lds_cap"] = LDS_CAP[n]
         info["lds_bytes"] = lds_bytes(n, LDS_CAP[n])
         if info["lds_bytes"] > lds_bytes(n, PORTABLE_CAP):

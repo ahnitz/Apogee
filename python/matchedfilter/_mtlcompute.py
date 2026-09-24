@@ -256,7 +256,12 @@ class Context:
         """
         base = ("tierb_%d" % n) if entry == "fusedTierB" else ("gated_%d" % n)
         info = _manifest().get("modules", {}).get(str(n), {})
-        need = info.get("lds_bytes", 0)
+        # The Metal column. Metal is built against its own staging cap
+        # -- Apple and the Radeon want opposite answers -- so reading
+        # the Vulkan "lds_bytes" here would compare this device's limit
+        # against a number no Metal kernel was built with, and pick the
+        # portable variant at sizes that do not need it.
+        need = info.get("metal_lds_bytes", info.get("lds_bytes", 0))
         if need <= self.max_shared_memory:
             return base
         alt = base + "_lds32"
