@@ -185,24 +185,28 @@ Other things worth knowing, all work in progress:
 
 ### Which GPUs
 
-The backend is Vulkan. The kernels ship as SPIR-V and the runtime loads
-whatever Vulkan driver the system provides, so AMD, NVIDIA and Intel all
-work from the same wheel with nothing to install.
+Two backends, one API. On Linux and Windows it is Vulkan: the kernels ship
+as SPIR-V and the runtime loads whatever driver the system provides, so
+AMD, NVIDIA and Intel all work from the same wheel with nothing to install.
+On macOS it is Metal, chosen automatically — `device="gpu"` does not need
+to be told which. MoltenVK is not bundled and is not needed.
 
-**macOS does not work yet.** There is no Metal backend and no MoltenVK in
-the wheel, so on a Mac the loader finds no `libvulkan.1.dylib` and
-`device="gpu"` refuses. Two routes are open and neither is taken:
+Both backends are generated from the same Slang source, so they are the
+same kernel rather than two implementations to keep in step. The wheel
+carries compiled `.metallib` files; if one is missing or stale the runtime
+compiles the shipped `.metal` source instead rather than refusing.
 
-- bundle MoltenVK, which translates Vulkan to Metal and is Apache 2.0, so
-  the existing SPIR-V would run unchanged;
-- emit Metal directly — `slangc` has a Metal target, so the same kernel
-  source would compile, but it needs a Metal runtime beside the Vulkan one.
+**macOS status.** Flat filtering runs and agrees with the CPU index for
+index at n=1024 through 8192, verified in CI on an Apple GPU. Two limits:
 
-Either way the shared-memory limit matters: Apple allows a threadgroup
-32 KB, and the fastest builds here use 64 KB. That is already handled —
-every kernel over 32 KB also ships a 32 KB build and the runtime picks by
-what the device reports — but it is why a Mac would be slower at the two
-largest sizes rather than simply working.
+- Apple caps threadgroup memory at 32 KB and the fastest builds here use
+  64 KB, so the two largest sizes fall back to a 32 KB build — correct,
+  and slower.
+- n=16384 needs a 1024-thread threadgroup. What a device actually allows
+  depends on the compiled kernel's register use, not only on the hardware:
+  the paravirtual GPU in CI allows this kernel 576, so that length raises
+  `UnsupportedSize` there. Real Apple silicon has more headroom, but the
+  check is per pipeline and the answer is whatever the device says.
 
 A software rasteriser will not catch a mistake here. llvmpipe reports 32 KB
 and then runs a 64 KB kernel regardless, so the lavapipe CI path passes
