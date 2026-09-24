@@ -1,20 +1,26 @@
 # Testing Metal on real Apple hardware
 
-The macOS CI runner is an *Apple Paravirtual device*. It is enough to prove
-the Metal path compiles, dispatches and agrees with the CPU, and it is not
-enough to characterise the backend: a paravirtual GPU reports different
-limits from real silicon, and the differences are the kind that decide
-whether a transform length works at all.
+The macOS CI runner is an *Apple Paravirtual device*. It proves the Metal
+path compiles, dispatches and agrees with the CPU. It does not characterise
+the backend, and the gap is not academic:
 
-Measured on the same kernel, same commit:
+| | paravirtual (CI) | Apple M2 |
+|---|---|---|
+| families | Apple1–**5**, Mac2, Common1/3 | Apple1–**8**, Mac2, Common1/3, **Metal3** |
+| threadgroup memory | 32 KB | 32 KB |
+| `tierb_8192_lds32` allows | **512** threads | **448** threads |
+| `tierb_16384_lds32` allows | 576 | 576 |
 
-| pipeline            | paravirtual (CI) | Apple M2 |
-|---------------------|------------------|----------|
-| `tierb_8192_lds32`  | 512 threads      | **448**  |
-| `tierb_16384_lds32` | 576 threads      | 576      |
+n=8192 needs 512, so it runs in CI and raises `UnsupportedSize` on a real
+M2. Testing only in CI would have shipped that as supported.
 
-n=8192 needs 512, so it runs in CI and **fails on a real M2**. Testing only
-in CI would have shipped that.
+Note which way round it is: the CI device advertises a *lower* feature set
+-- Apple5 is roughly an A13, below even an M1's Apple7 -- and allows *more*
+threads for the same kernel. That is the shape of a different compiler
+target allocating registers differently, not of more capable hardware. With
+one real device there is no separating the virtualised driver from the chip
+generation, and the operational point does not need it: **a CI limit
+predicts a real device's limit in neither direction.**
 
 ## The machine
 
