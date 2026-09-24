@@ -206,7 +206,87 @@ def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we, ifft=None):
     return idx, mag
 
 
-def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
+
+#: Templates dominate the working set at nt * n * 8 bytes, so one fixed
+#: batch cannot span this grid: 512 templates at n=262144 is 1.07 GB on
+#: their own. This picks the largest power-of-two shape at a 1:8 data to
+#: template ratio that fits the budget, capped at 32768 pairs.
+#:
+#: 256 pairs -- what this used to default to -- is not a measurement of
+#: anything a caller would run. It is far too small to fill a GPU, and by
+#: the time a real batch is 32768 pairs it is not a realistic CPU call
+#: either. The cap is where the curve flattens: above it the per-pair cost
+#: stops moving, so a bigger batch measures the same thing more slowly.
+_SHAPE_BUDGET = 256 << 20
+_MAX_PAIRS = 64 * 512
+
+#: The hierarchical sweep runs fifteen configurations per length (three
+#: false-dismissal rates times five thresholds), so it pays the batch cost
+#: fifteen times over. It also measures a RATIO -- hierarchical against
+#: flat on the same data -- and a refine rate, neither of which needs a
+#: full batch to be meaningful. At the flat cap this one table would take
+#: the benchmark job from under a minute to over an hour.
+_HIER_MAX_PAIRS = 16 * 128
+
+
+def default_shape(n, budget=_SHAPE_BUDGET, cap=_MAX_PAIRS):
+    """(ndata, ntemplates) for a transform length: as big as memory allows.
+
+    Flat at 64 x 512 through n=32768, then quartering. The ratio is held at
+    1:8 so both scale together rather than one of them collapsing to a
+    degenerate 1 or 2.
+    """
+    k = 3
+    while True:
+        nd, nt = 1 << (k + 1), 1 << (k + 4)
+        if nd * nt > cap or (nd + nt) * n * 8 > budget:
+            break
+        k += 1
+    k = max(k, 2)                          # never below 8 x 64
+    return 1 << k, 1 << (k + 3)
+
+
+def _gpu_us(n, nd, nt, dspec, tspec, binsize, window, thr, reps):
+    """Per-pair microseconds for the same workload on a GPU, or None.
+
+    The whole call, transfers included -- the same thing the CPU column
+    times. A compute-only figure would flatter it and would not be what a
+    caller experiences.
+
+    None rather than an exception for every ordinary reason it cannot run:
+    no GPU, a length the backend does not cover, or a length this
+    particular device has not the threads for. A benchmark is not the place
+    to fail over a machine's capabilities.
+    """
+    try:
+        gpus = [d for d in mf.devices() if d.kind == "gpu" and not d.is_software]
+    except Exception:
+        return None
+    if not gpus:
+        return None
+    ws, we = window
+    try:
+        g = mf.MatchedFilter(n, nd, nt, device=str(gpus[0]))
+        g.set_data(dspec)
+        g.set_templates(tspec)
+        g.run(binsize=binsize, threshold=thr, window=(ws, we))   # warm
+        best = float("inf")
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            g.run(binsize=binsize, threshold=thr, window=(ws, we))
+            best = min(best, time.perf_counter() - t0)
+    except (ValueError, mf.UnsupportedSize, RuntimeError):
+        return None
+    finally:
+        try:
+            g._gpu.destroy()
+        except Exception:
+            pass
+    return best / (nd * nt) * 1e6
+
+
+def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure",
+         gpu=True):
     rng = np.random.default_rng(1234)
     d = rng.standard_normal((nd, n)) + 1j * rng.standard_normal((nd, n))
     t = rng.standard_normal((nt, n)) + 1j * rng.standard_normal((nt, n))
@@ -249,7 +329,9 @@ def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
     refs = reference_transform_us(n, rbatch, reps, fftw_plan)
 
     pairs = nd * nt
-    return best / pairs * 1e6, refs, ok
+    gus = _gpu_us(n, nd, nt, dspec, tspec, binsize, window, thr,
+                  reps) if gpu else None
+    return best / pairs * 1e6, refs, ok, gus
 
 
 def _inspiral_power(n, frac=0.895, fmax_frac=0.125, knee_frac=0.0150):
@@ -535,8 +617,10 @@ def main(argv=None):
     ap.add_argument("--n", type=int, nargs="+",
                     default=[1024, 4096, 16384, 65536],
                     help="transform lengths to test")
-    ap.add_argument("--data", type=int, default=8, help="number of data segments")
-    ap.add_argument("--templates", type=int, default=8, help="number of templates")
+    ap.add_argument("--data", type=int, default=0,
+                    help="data segments; 0 picks a shape by transform length")
+    ap.add_argument("--templates", type=int, default=0,
+                    help="templates; 0 picks a shape by transform length")
     ap.add_argument("--binsize", type=int, default=0, help="0 picks min(n, 1024)")
     ap.add_argument("--window", type=float, default=0.6,
                     help="fraction of the lag range to search (1.0 = all)")
@@ -568,8 +652,13 @@ def main(argv=None):
           f"{platform.processor() or platform.machine()}   "
           f"backend={mf.backend()}")
     print(f"python {sys.version.split()[0]}   numpy {np.__version__}")
-    print(f"{a.data} data x {a.templates} templates = {a.data * a.templates} pairs, "
-          f"{a.window:.0%} window\n")
+    if a.data and a.templates:
+        print(f"{a.data} data x {a.templates} templates = "
+              f"{a.data * a.templates} pairs, {a.window:.0%} window\n")
+    else:
+        lo, hi = default_shape(max(a.n)), default_shape(min(a.n))
+        print("batch chosen per length: %d x %d down to %d x %d pairs, "
+              "%.0f%% window\n" % (hi[0], hi[1], lo[0], lo[1], a.window * 100))
 
     if a.backends is not None:
         isas = a.backends or ["AVX3", "AVX2", "SSE4"]
@@ -591,7 +680,8 @@ def main(argv=None):
               "is timed: one that disagrees is not a faster back end.")
         return 1 if bad else 0
     engines = available_engines()
-    print("  " + f"{'n':>8}" + f"{'matchedfilter':>14}"
+    print("  " + f"{'n':>8}" + f"{'pairs':>8}" + f"{'matchedfilter':>14}"
+          + f"{'gpu':>11}" + f"{'gpu x':>8}"
           + "".join(f"{e:>11}" for e in engines)
           + "".join(f"{'vs ' + e:>9}" for e in engines) + "   check")
     if "fftw" not in engines:
@@ -609,19 +699,24 @@ def main(argv=None):
             ws = int((1.0 - a.window) * 0.5 * n) & ~15
             we = ws + (int(a.window * n) & ~15)
         try:
-            mine, refs, ok = _one(n, a.data, a.templates, bs, (ws, we),
-                                  a.reps, not a.no_check, a.fftw_plan)
+            nd, nt = (a.data, a.templates) if (a.data and a.templates) \
+                else default_shape(n)
+            mine, refs, ok, gus = _one(n, nd, nt, bs, (ws, we),
+                                       a.reps, not a.no_check, a.fftw_plan)
         except ValueError as e:
             print(f"  {n:>8}   unsupported: {e}")
             continue
         if "FAILED" in ok:
             fails += 1
-        print("  " + f"{n:>8}" + f"{mine:>12.3f}µs"
+        print("  " + f"{n:>8}" + f"{nd * nt:>8}" + f"{mine:>12.3f}µs"
+              + (f"{gus:>9.3f}µs" + f"{mine / gus:>7.1f}x" if gus
+                 else f"{'-':>11}" + f"{'-':>8}")
               + "".join(f"{refs[e]:>11.2f}" if e in refs else f"{'-':>11}"
                         for e in engines)
               + "".join(f"{refs[e] / mine:>8.1f}x" if e in refs else f"{'-':>9}"
                         for e in engines) + f"   {ok}")
-        flat_rows.append({"n": n, "data": a.data, "templates": a.templates,
+        flat_rows.append({"n": n, "data": nd, "templates": nt,
+                          "gpu_us_per_pair": gus,
                           "us_per_pair": mine,
                           "numpy_us_per_pair": refs.get("numpy"),
                           "reference_us_per_pair": refs,
@@ -655,11 +750,13 @@ def main(argv=None):
         print(f"  {'n':>8} {'fd':>7} {'snr':>5} {'flat':>11} {'hierarchical':>11} "
               f"{'speedup':>9} {'triggered':>10} {'chosen':>14}")
         for n in a.n:
+          hnd, hnt = (a.data, a.templates) if (a.data and a.templates) \
+              else default_shape(n, cap=_HIER_MAX_PAIRS)
           for fd in FD_SWEEP:
             for snr in (5.0, 5.5, 5.75, 6.0, 6.5):
                 try:
                     tf, th, rate, cfg, speed = _bench_hier(
-                        n, a.data, a.templates, snr, fd, a.reps)
+                        n, hnd, hnt, snr, fd, a.reps)
                 except (ValueError, RuntimeError) as e:
                     # An uncovered (n, snr, fd) is a refusal, not a failure:
                     # the tables are measured and the library will not answer
@@ -667,7 +764,7 @@ def main(argv=None):
                     first = str(e).strip().split("\n")[0]
                     print(f"  {n:>8} {fd:>7.0e} {snr:>5.1f}   not tuned: {first}")
                     hier_rows.append({"n": n, "snr": snr, "fd": fd,
-                                      "data": a.data, "templates": a.templates,
+                                      "data": hnd, "templates": hnt,
                                       "uncovered": first})
                     continue
                 tag = "%d/%d/%d" % cfg
@@ -675,7 +772,7 @@ def main(argv=None):
                       f"{th * 1e3:>10.2f}ms {speed:>8.2f}x {rate:>9.1%} "
                       f"{tag:>14}")
                 hier_rows.append({"n": n, "snr": snr, "fd": fd,
-                                  "data": a.data, "templates": a.templates,
+                                  "data": hnd, "templates": hnt,
                                   "flat_ms": tf * 1e3, "hier_ms": th * 1e3,
                                   "speedup": speed, "refine_rate": rate,
                                   "band": cfg[0], "oversample": cfg[1],

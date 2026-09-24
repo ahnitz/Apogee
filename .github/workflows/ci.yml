@@ -93,7 +93,7 @@ jobs:
       - name: Benchmark
         run: |
           cd /tmp
-          python -m matchedfilter.benchmark --n 4096 16384 --data 4 --templates 16 --reps 3 \
+          python -m matchedfilter.benchmark --n 4096 16384 --reps 3 \
             | tee /tmp/bench.txt
 
       - name: Publish to the run summary

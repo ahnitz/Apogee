@@ -91,7 +91,7 @@ jobs:
             python -m pytest -q "$GITHUB_WORKSPACE/tests" -rs
             python -m matchedfilter.benchmark \
               --n 1024 2048 4096 8192 16384 65536 262144 \
-              --data 8 --templates 32 --reps 7 --fd 1e-3 \
+              --reps 7 --fd 1e-3 \
               --label "$name" \
               --json "$GITHUB_WORKSPACE/bench-$name.json" \
               | tee "$GITHUB_WORKSPACE/bench-$name.txt"
