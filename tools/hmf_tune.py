@@ -557,15 +557,20 @@ def make_ref(n, m, f, beff, tol=0.02):
 
 
 def _fdr_cell(job):
-    n, m, U, K, snr, f, be, trials, margin = job
+    #: The device is optional so the existing CPU drivers keep working with
+    #: their 9-tuples; a 10th element characterises another implementation.
+    n, m, U, K, snr, f, be, trials, margin = job[:9]
+    device = job[9] if len(job) > 9 else None
     try:
         ref = make_ref(n, m, f, be)
-        dm, det, sec = measure(n, m, U, K, snr, trials, power=ref, margin=margin)
+        dm, det, sec = measure(n, m, U, K, snr, trials, power=ref,
+                               margin=margin, device=device)
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, margin=margin,
-                    beff_act=beff_of(ref, m), dismissal=dm, detected=det, sec=sec)
+                    beff_act=beff_of(ref, m), dismissal=dm, detected=det,
+                    sec=sec, device=device)
     except Exception as e:
         return dict(n=n, band=m, U=U, K=K, snr=snr, f=f, beff=be, margin=margin,
-                    nt=locals().get("nt"), nd=locals().get("nd"), error=str(e))
+                    device=device, error=str(e))
 
 
 def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,

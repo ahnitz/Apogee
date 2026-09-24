@@ -1457,7 +1457,20 @@ class HierarchicalFilter(MatchedFilter):
         if self._mf is not None:
             return self._mf
         cfg = None
-        if self._pending_ref is not None:
+        if self._pinned is not None:
+            # A pinned configuration is an instruction, not a hint.
+            #
+            # On the CPU path __init__ builds the plan immediately and this
+            # returns above. On the GPU path it records the pin and leaves
+            # _mf None -- so without this, the first _ensure() threw the pin
+            # away and asked the table, and then REFUSED for any reference
+            # the table does not cover, even though the caller had already
+            # said what to run. Pinning exists precisely to run something
+            # the tables do not describe, which is what the tuner does on
+            # every cell.
+            cfg = self._pinned + (self._margin if self._margin is not None
+                                  else 1.0,)
+        elif self._pending_ref is not None:
             try:
                 cfg = choose_config(self._pending_ref, self.n, self.snr, self.fd)
             except Exception:
