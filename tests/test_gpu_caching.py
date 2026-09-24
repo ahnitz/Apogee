@@ -439,3 +439,52 @@ def test_accuracy_table_resolution_order():
         assert accuracy_table_for(vk) == ("/tmp/whatever.txt", "MF_ACCURACY")
     finally:
         del os.environ["MF_ACCURACY"]
+
+
+def test_a_dropped_gpu_filter_gives_its_descriptors_back():
+    """A filter that goes out of scope must release the Vulkan device.
+
+    Nothing called Context.destroy() unless a caller did it by hand, so every
+    dropped GPU filter leaked its instance and device -- a few descriptors
+    each. A process that builds many then walks into RLIMIT_NOFILE, which
+    Fedora ships at 1024.
+
+    The reason this earns a test rather than a code comment is that the
+    failure never mentions descriptors. It surfaced as Mesa being unable to
+    create an anonymous file for its allocations, vkCreateInstance returning
+    VK_ERROR_INCOMPATIBLE_DRIVER, and the GPU vanishing from enumeration
+    partway through a session -- a machine that looked like it had a broken
+    driver. The suite leaked 540 descriptors across 108 tests, and under a
+    256 limit produced 55 failures and 34 errors naming everything except
+    the cause.
+    """
+    import os
+    import sys
+    if not sys.platform.startswith("linux") or not os.path.isdir("/proc/self/fd"):
+        pytest.skip("counting open descriptors needs /proc")
+    if DEVICE is None:
+        pytest.skip(_why())
+
+    def nfd():
+        return len(os.listdir("/proc/self/fd"))
+
+    d, h = spectra(0)
+
+    def once():
+        f = mf.MatchedFilter(N, ND, NT, device=DEVICE)
+        f.set_data(d)
+        f.set_templates(h)
+        f.run(binsize=N, threshold=0.0)
+
+    once()                       # warm: one-time opens are not the leak
+    import gc
+    gc.collect()
+    base = nfd()
+    for _ in range(12):
+        once()
+    gc.collect()
+    grown = nfd() - base
+    assert grown <= 4, (
+        "12 dropped GPU filters left %d descriptors behind; they used to "
+        "leak about 4 each, which exhausts a 1024 limit in one session"
+        % grown)

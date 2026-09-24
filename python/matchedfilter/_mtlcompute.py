@@ -613,6 +613,8 @@ class Context:
                             else "no error object"))
 
     def destroy(self):
+        if getattr(self, "_batches", None) is None:
+            return
         for batch in self._batches.values():
             for buf in batch:
                 buf.destroy()
@@ -622,3 +624,17 @@ class Context:
                 buf.destroy()
         self._hier.clear()
         self._pipelines.clear()
+
+    def __del__(self):
+        """Release the device buffers when the context is dropped.
+
+        Metal does not hold the file descriptors Vulkan does, so this is not
+        the leak that exhausted RLIMIT_NOFILE -- but a dropped context still
+        held its batch and hierarchical buffers until the process ended, and
+        the two backends should not differ on whether going out of scope
+        frees anything.
+        """
+        try:
+            self.destroy()
+        except Exception:
+            pass

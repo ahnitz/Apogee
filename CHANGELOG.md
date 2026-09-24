@@ -48,6 +48,16 @@ native Metal on Apple silicon.
 
 ### Fixed
 
+- **A dropped GPU filter leaked its Vulkan device.** Nothing called
+  `Context.destroy()` unless a caller did it by hand, so every
+  `MatchedFilter(device="gpu")` that went out of scope leaked its instance
+  and device -- about four file descriptors each. A process that builds many
+  then walks into `RLIMIT_NOFILE`, which Fedora ships at 1024. The failure
+  names everything except the cause: Mesa cannot create an anonymous file
+  for its allocations, `vkCreateInstance` returns
+  `VK_ERROR_INCOMPATIBLE_DRIVER`, and the GPU disappears from enumeration
+  partway through a session, so the machine looks like it has a broken
+  driver. Both contexts now finalise, and `destroy()` is idempotent.
 - **`HierarchicalFilter.run_series(raw=True)` returned three arrays** where
   every other entry point -- including that same method's GPU branch --
   returned two. The method disagreed with itself depending on the device, so

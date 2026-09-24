@@ -819,6 +819,10 @@ class Context:
         return idx, val
 
     def destroy(self):
+        # Idempotent: __del__ calls this too, and a caller that already
+        # destroyed explicitly must not hand vkDestroyDevice a dead handle.
+        if getattr(self, "device", None) is None:
+            return
         vk = self.vk
         for pipe, layout, set_layout in self._pipelines.values():
             vk.vkDestroyPipeline(self.device, pipe, None)
@@ -838,3 +842,29 @@ class Context:
         vk.vkDestroyCommandPool(self.device, self.command_pool, None)
         vk.vkDestroyDevice(self.device, None)
         vk.vkDestroyInstance(self.instance, None)
+        self.device = None
+        self.instance = None
+
+    def __del__(self):
+        """A context that goes out of scope must give the device back.
+
+        Nothing called destroy() unless a caller did so by hand, so every
+        MatchedFilter(device="gpu") that was simply dropped leaked its
+        instance and device -- a few file descriptors each. A process that
+        builds many then walks into RLIMIT_NOFILE, which Fedora ships at 1024.
+
+        What makes this worth a comment is how it presents. The fd exhaustion
+        surfaces as Mesa failing to create an anonymous file for its
+        allocations, vkCreateInstance returning VK_ERROR_INCOMPATIBLE_DRIVER,
+        and the GPU disappearing from enumeration mid-session -- so the
+        machine looks like it has a broken driver, and the tests report
+        dozens of failures that name everything except the cause. Measured on
+        this box the suite leaked 540 descriptors across 108 tests.
+
+        Exceptions are swallowed: this can run during interpreter shutdown,
+        and a finalizer that raises there is noise nobody can act on.
+        """
+        try:
+            self.destroy()
+        except Exception:
+            pass
