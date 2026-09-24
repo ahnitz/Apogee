@@ -19,6 +19,31 @@ rather than what was hoped for.
    obvious somewhere else.
 6. **Record the number here**, and in the commit message.
 
+### Principles
+
+Added as they are earned, not in advance. Each one exists because its
+absence cost something.
+
+1. **Write the failing check first.** If the check cannot fail, the item is
+   not understood well enough to work on yet.
+2. **Compare the paths to each other, not each to a reference.** Every
+   backend was checked against a numerical reference and never against the
+   other through the same call, which is why `raw=True` returned three
+   arrays on one path and two on the rest, undetected.
+3. **Test the case where the right answer is nothing.** A filter's most
+   important output is often silence: the dismissal, the empty bin, the
+   refusal. `test_run_series_agrees_with_the_cpu` compares the two devices
+   on data containing injections, so both sides fire and the comparison is
+   made where firing is expected -- which cannot see a gate that fires when
+   it should stay quiet. That is exactly the bug in item 0, sitting in a
+   well-tested method the whole time. Every agreement test needs a companion
+   whose expected result is an empty one.
+4. **A probe that reproduces once has not reproduced.** Item 0 appeared,
+   vanished under two variations, and returned only when the case was
+   swept rather than sampled. Vary one thing at a time and sweep the
+   parameter before believing either the presence or the absence of a
+   fault.
+
 ### The four environments, because three of them found bugs the others could not
 
 | environment | how | what it has caught |
@@ -54,6 +79,35 @@ GPU run_series host fraction   38-47% of the call, serial with the device
 ## Backlog
 
 Ordered by measured size of the gap, not by how interesting the work is.
+
+### 0. The GPU hierarchical `run_series` fires where the CPU dismisses
+
+**Correctness, so it outranks everything below.** Found by reading the code
+for item D: the two `_run_series_gpu` implementations disagree about the
+`1/n` the C applies on the way in. The flat one divides; the hierarchical
+one does not.
+
+On pure noise with a gate calibrated at `snr=5.5` the correct answer is
+nothing, and the CPU gives nothing. The GPU reports peaks at every block
+count tried (1, 2, 3, 4, 5, 6, 8, 12), at magnitudes around n times the flat
+filter's on the same data -- 0.061 to 0.087 after dividing by n=4096,
+against the flat filter's 0.0742. Values that size sail past the coarse
+gate, so every pair escalates and is reported.
+
+Reproducer: `tests/test_hier_series_scale.py`, xfail, strict=False.
+
+**Not yet root-caused, and one thing contradicts the obvious explanation.**
+If the error were a uniform factor of n, `test_run_series_agrees_with_the_cpu`
+would fail -- it compares magnitudes where both fired, and it passes. So
+either the scaling is compensated somewhere on the injected-signal path, or
+the factor is not uniform. Resolve that before changing the `1/n`.
+
+Next step: compare `_gpu_hier`'s inputs between the `run()` route (spectra
+the caller pre-divided) and the `run_series` route (spectra built in the
+method), on the same blocks. One of them is scaled differently and the
+difference is the bug.
+
+**Done when:** the xfail flips to a pass without loosening the fixture.
 
 ### A. Fewer decisions for the user
 
