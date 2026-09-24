@@ -67,7 +67,7 @@ def one_batch(n, snr, batch, rng):
     for j in range(batch):
         ref = reference(d[j], h)
         i = int(peaks["index"][j, 0, 0])
-        m = float(peaks["magnitude"][j, 0, 0])
+        m = float(np.abs(peaks["value"])[j, 0, 0])
         scale = float(ref.max())
         if scale <= 0:
             continue

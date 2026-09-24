@@ -133,7 +133,7 @@ def test_bins_that_do_not_divide_evenly(n, ws, we, binsize):
     eidx, emag = brute(d, h, binsize, 0.0, ws, we)
     assert pk["index"].shape == eidx.shape
     assert np.array_equal(pk["index"], eidx)
-    assert np.allclose(pk["magnitude"], emag, rtol=2e-5, atol=1e-5)
+    assert np.allclose(np.abs(pk["value"]), emag, rtol=2e-5, atol=1e-5)
 
 
 # -------------------------------------------------------- value ranges
@@ -151,7 +151,7 @@ def test_amplitude_scale_does_not_change_which_lag_wins(amp):
     d, h = planted(n, lag, amp=amp)
     pk = run(d, h, n, 0.0)
     assert int(pk["index"][0, 0, 0]) == lag, amp
-    m = float(pk["magnitude"][0, 0, 0])
+    m = float(np.abs(pk["value"])[0, 0, 0])
     assert np.isfinite(m), amp
     assert m == pytest.approx(amp, rel=1e-3), amp
 
@@ -168,7 +168,7 @@ def test_templates_of_wildly_different_scale_in_one_batch():
     pk = run(d, h, n, 0.0)
     eidx, emag = brute(d, h, n, 0.0, 0, n)
     assert np.array_equal(pk["index"], eidx)
-    assert np.allclose(pk["magnitude"], emag, rtol=1e-4)
+    assert np.allclose(np.abs(pk["value"]), emag, rtol=1e-4)
 
 
 # ------------------------------------------------------- degenerate input
@@ -179,7 +179,7 @@ def test_all_zero_data_reports_nothing_above_a_positive_threshold():
     h = np.ones((1, n), np.complex64)
     pk = run(d, h, n, 1e-6)
     assert int(pk["index"][0, 0, 0]) == -1
-    assert float(pk["magnitude"][0, 0, 0]) == 0.0
+    assert float(np.abs(pk["value"])[0, 0, 0]) == 0.0
 
 
 def test_all_zero_template_is_not_a_crash_or_a_nan():
@@ -188,8 +188,8 @@ def test_all_zero_template_is_not_a_crash_or_a_nan():
     d = (rng.standard_normal((1, n)) + 1j * rng.standard_normal((1, n))).astype(np.complex64)
     h = np.zeros((1, n), np.complex64)
     pk = run(d, h, n, 0.0)
-    assert np.all(np.isfinite(pk["magnitude"]))
-    assert float(pk["magnitude"][0, 0, 0]) == 0.0
+    assert np.all(np.isfinite(np.abs(pk["value"])))
+    assert float(np.abs(pk["value"])[0, 0, 0]) == 0.0
 
 
 def test_single_nonzero_frequency_bin():
@@ -211,7 +211,7 @@ def test_single_nonzero_frequency_bin():
     z = np.fft.ifft(d[0].astype(np.complex128) * np.conj(h[0].astype(np.complex128))) * n
     w = np.abs(z)
     got_i = int(pk["index"][0, 0, 0])
-    got_m = float(pk["magnitude"][0, 0, 0])
+    got_m = float(np.abs(pk["value"])[0, 0, 0])
     assert 0 <= got_i < n
     assert got_m == pytest.approx(float(w.max()), rel=1e-5)
     assert w[got_i] == pytest.approx(float(w.max()), rel=1e-5), "reported lag is not a maximum"
@@ -226,7 +226,7 @@ def test_threshold_exactly_at_the_peak_magnitude():
     n, lag = 1024, 300
     d, h = planted(n, lag, amp=4.0)
     pk = run(d, h, n, 0.0)
-    m = float(pk["magnitude"][0, 0, 0])
+    m = float(np.abs(pk["value"])[0, 0, 0])
     # One float32 ULP, not one float64 ULP: the threshold crosses a float32
     # interface, so np.nextafter on a Python float asks for a distinction the
     # argument cannot carry and rounds straight back to m.
@@ -248,7 +248,7 @@ def test_odd_batch_shapes_agree_with_numpy(nd, nt):
     pk = run(d, h, 256, 0.0)
     eidx, emag = brute(d, h, 256, 0.0, 0, n)
     assert np.array_equal(pk["index"], eidx)
-    assert np.allclose(pk["magnitude"], emag, rtol=2e-5, atol=1e-6)
+    assert np.allclose(np.abs(pk["value"]), emag, rtol=2e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("n", [1024, 2048, 4096, 8192, 16384])
@@ -261,7 +261,7 @@ def test_every_supported_length_agrees_with_numpy(n):
     pk = run(d, h, bs, 0.0)
     eidx, emag = brute(d, h, bs, 0.0, 0, n)
     assert np.array_equal(pk["index"], eidx)
-    assert np.allclose(pk["magnitude"], emag, rtol=3e-5, atol=1e-6)
+    assert np.allclose(np.abs(pk["value"]), emag, rtol=3e-5, atol=1e-6)
 
 
 def test_binsize_one_reports_every_lag():
@@ -274,21 +274,26 @@ def test_binsize_one_reports_every_lag():
     assert pk["index"].shape == (1, 1, n)
     assert np.array_equal(pk["index"][0, 0], np.arange(n))
     z = np.fft.ifft(d[0].astype(np.complex128) * np.conj(h[0].astype(np.complex128))) * n
-    assert np.allclose(pk["magnitude"][0, 0], np.abs(z), rtol=3e-5, atol=1e-6)
+    assert np.allclose(np.abs(pk["value"])[0, 0], np.abs(z), rtol=3e-5, atol=1e-6)
 
 
-def test_the_magnitude_underflow_cliff_is_where_it_is_expected():
-    """`magnitude` underflows below about 3.7e-23, and `value` does not.
+def test_the_selection_cliff_reports_nothing_rather_than_the_wrong_sample():
+    """The peak scan selects on |v|^2 in float32, and squaring halves the range.
 
-    The peak scan selects on |v|^2 in float32. The smallest float32 subnormal
-    is 1.4e-45, so |v|^2 flushes to zero once |v| falls below its square root
-    -- about 3.7e-23 -- while `value` itself is representable for another
-    seventeen orders of magnitude. Below the cliff the filter reports nothing
-    rather than something wrong, which is the right failure, but it is a cliff
-    and it is nowhere near the subnormal boundary a reader would assume.
+    The smallest float32 subnormal is 1.4e-45, so |v|^2 flushes to zero once
+    |v| falls below its square root -- about 3.7e-23 -- while `value` itself
+    is representable for another seventeen orders of magnitude. Below that
+    cliff every candidate in the bin compares equal at zero.
 
-    Pinned here so a change to the scan moves this deliberately. Matched
-    filter inputs are normally O(1), so nothing real is near it.
+    What must NOT happen is reporting the first sample as though it were the
+    peak. There used to be a `magnitude` field, and its flushing to zero was
+    what warned a caller that the accompanying index meant nothing. With the
+    field gone that warning has to live in the index, so a maximum of exactly
+    zero falls through to index -1 -- the same "nothing here" the threshold
+    path already uses.
+
+    Matched filter inputs are normally O(1), so nothing real is near this. It
+    is pinned so a change to the scan moves it deliberately.
     """
     n, lag = 1024, 321
     rng = np.random.default_rng(8)
@@ -302,10 +307,12 @@ def test_the_magnitude_underflow_cliff_is_where_it_is_expected():
         f.set_data(d[None, :])
         f.set_templates(h[None, :])
         pk = f.run(binsize=n, threshold=0.0)
-        return float(pk["magnitude"][0, 0, 0]), abs(complex(pk["value"][0, 0, 0]))
+        return int(pk["index"][0, 0, 0]), complex(pk["value"][0, 0, 0])
 
-    m, v = at(1e-20)
-    assert m == pytest.approx(1e-20, rel=1e-2), "well above the cliff"
-    m, v = at(1e-24)
-    assert m == 0.0, "below the cliff the magnitude flushes"
-    assert v > 0.0, "but the complex value survives, so nothing is silently wrong"
+    i, v = at(1e-20)
+    assert i == lag, "well above the cliff the peak is found"
+    assert abs(v) == pytest.approx(1e-20, rel=1e-2)
+
+    i, v = at(1e-24)
+    assert i == -1, "below the cliff nothing is reported..."
+    assert v == 0, "...and no value is offered for a sample that was not chosen"

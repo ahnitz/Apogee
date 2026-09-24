@@ -63,7 +63,7 @@ def check(device, n, binsize, window, threshold=1.0, nd=2, nt=3, seed=0):
     got = run_on(device, d, t, binsize, threshold, window)
     widx, wmag = brute(d, t, binsize, threshold, ws, we)
     assert got.shape == widx.shape, "bin count disagrees with the reference"
-    np.testing.assert_allclose(got["magnitude"], wmag, rtol=2e-5, atol=2e-5)
+    np.testing.assert_allclose(np.abs(got["value"]), wmag, rtol=2e-5, atol=2e-5)
     # Where the magnitude is resolved, the reported index must be the argmax.
     # Compared only where the reference actually found something: a bin with
     # nothing above threshold carries index -1 and no meaningful value.
@@ -124,7 +124,7 @@ def test_threshold_above_everything_empties_every_bin(device):
     """
     got = check(device, 1024, 128, (0, 1024), threshold=1e6)
     assert np.all(got["index"] == -1)
-    assert np.all(got["magnitude"] == 0.0)
+    assert np.all(np.abs(got["value"]) == 0.0)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -158,7 +158,7 @@ def test_reported_value_matches_the_reported_index(device):
                 k = int(got["index"][i, j, b])
                 if k < 0:
                     continue
-                assert abs(got["magnitude"][i, j, b] - abs(z[k])) < 2e-3 * abs(z[k])
+                assert abs(np.abs(got["value"])[i, j, b] - abs(z[k])) < 2e-3 * abs(z[k])
                 assert abs(complex(got["value"][i, j, b]) - z[k]) < 2e-3 * abs(z[k])
 
 

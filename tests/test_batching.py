@@ -67,5 +67,5 @@ def test_many_data_segments_and_templates():
                                    for _ in range(nt)]))
         for _ in range(3):
             hf.set_data(noise((nd, n), rng))
-            idx, val, mag = hf.run(binsize=n, threshold=5.0, raw=True)
+            idx, val = hf.run(binsize=n, threshold=5.0, raw=True)
             assert idx.shape == (nd, nt, 1), (nt, nd, idx.shape)

@@ -54,7 +54,7 @@ def basic():
     found = np.argwhere(peaks["index"] >= 0)
     for d, t, b in found:
         print("segment %d x template %d: lag %d, snr %.2f"
-              % (d, t, peaks["index"][d, t, b], peaks["magnitude"][d, t, b]))
+              % (d, t, peaks["index"][d, t, b], np.abs(peaks["value"])[d, t, b]))
     print("everything else is below threshold and reports index -1")
 
 
@@ -75,7 +75,7 @@ def output_fields():
     filt.set_templates(h[None, :])
     pk = filt.run(binsize=n, threshold=0.0)[0, 0, 0]
 
-    v, m = complex(pk["value"]), float(pk["magnitude"])
+    v, m = complex(pk["value"]), float(np.abs(pk["value"]))
     print("index      %d" % int(pk["index"]))
     print("value      %+.4f%+.4fj      the complex sample, so phase is available"
           % (v.real, v.imag))
@@ -136,7 +136,7 @@ def thresholding():
     for thr in (0.0, 4.0, 5.0, 5.5, 6.0):
         pk = filt.run(binsize=256, threshold=thr)
         kept = int((pk["index"][0, 0] >= 0).sum())
-        loud = float(pk["magnitude"][0, 0].max())
+        loud = float(np.abs(pk["value"])[0, 0].max())
         print("threshold %.1f -> %2d of %d bins reported%s"
               % (thr, kept, pk.shape[2],
                  (", loudest snr %.2f" % loud) if kept else ""))
@@ -171,9 +171,9 @@ def window():
     whole = filt.run(binsize=n, threshold=5.0).copy()
     part = filt.run(binsize=n, threshold=5.0, window=(1024, 3072))
     print("all %d lags     -> lag %d, snr %.1f"
-          % (n, int(whole["index"][0, 0, 0]), whole["magnitude"][0, 0, 0]))
+          % (n, int(whole["index"][0, 0, 0]), np.abs(whole["value"])[0, 0, 0]))
     print("lags 1024..3072 -> lag %d, snr %.1f"
-          % (int(part["index"][0, 0, 0]), part["magnitude"][0, 0, 0]))
+          % (int(part["index"][0, 0, 0]), np.abs(part["value"])[0, 0, 0]))
     print()
     print("The louder signal at lag 500 is outside the window and is not")
     print("reported. An overlap-save caller passes its valid span here so the")
@@ -253,7 +253,7 @@ def hierarchical():
     for d_, t_, b_ in np.argwhere(peaks["index"] >= 0):
         print("found segment %d x template %d: lag %d, snr %.2f"
               % (d_, t_, peaks["index"][d_, t_, b_],
-                 peaks["magnitude"][d_, t_, b_]))
+                 np.abs(peaks["value"])[d_, t_, b_]))
     print()
     print("Peaks it reports are identical to the flat filter's. It can omit,")
     print("never invent, and fd is the budget for how often it may omit one.")
@@ -292,8 +292,8 @@ def teaser():
     print("peaks.shape   ", peaks.shape, "  one record per bin, not 16384 samples")
     print("above 5.5     ", int(above.sum()), "of", above.size, "bins")
     print("loudest       ", "snr %.2f at lag %d"
-          % (peaks["magnitude"].max(),
-             peaks["index"].ravel()[peaks["magnitude"].argmax()]))
+          % (np.abs(peaks["value"]).max(),
+             peaks["index"].ravel()[np.abs(peaks["value"]).argmax()]))
 
 
 def _teaser_inputs():

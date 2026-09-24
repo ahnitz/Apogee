@@ -40,8 +40,11 @@ planning.
 
 [[example:A complete example]]
 
-With unit-norm templates and unit-variance noise, `magnitude` reads directly
-as a signal-to-noise ratio, which is why the examples are built that way.
+With unit-norm templates and unit-variance noise, `abs(peak["value"])` reads
+directly as a signal-to-noise ratio, which is why the examples are built that
+way.  A peak is `index` and `value` only: the magnitude was a third field once
+and equalled `abs(value)` exactly, so it carried no information and cost a copy
+on every call.
 
 [[example:What comes back]]
 

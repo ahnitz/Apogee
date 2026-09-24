@@ -118,13 +118,13 @@ def run(n=512, threshold=5.0, seed=20240917):
             expect=expect,
             rho=[float(v) for v in rho],
             index=idx,
-            magnitude=float(peak["magnitude"]) if fired else None,
+            magnitude=float(np.abs(peak["value"])) if fired else None,
             fired=bool(fired),
             brightest=brightest,
             max_rho=float(rho.max()),
             agrees=bool((not fired and rho.max() <= threshold)
                         or (fired and idx == brightest
-                            and abs(float(peak["magnitude"]) - rho[brightest])
+                            and abs(float(np.abs(peak["value"])) - rho[brightest])
                             <= 2e-3 * max(1.0, rho[brightest]))),
             peak_tolerance=tol,
             offset=(idx - lag) if (lag is not None and fired) else None,

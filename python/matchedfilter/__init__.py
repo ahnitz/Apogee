@@ -8,7 +8,7 @@ loudest sample in each bin of a search window:
     >>> filt.set_data(data_spectra)       # (16, 16384) complex64, ALREADY FFT'd
     >>> filt.set_templates(template_spectra)
     >>> peaks = filt.run(binsize=1024, threshold=t, window=(a, b))
-    >>> peaks["index"], peaks["value"], peaks["magnitude"]
+    >>> peaks["index"], peaks["value"]
 
 Produce the spectra with whatever you already use - numpy, MKL, FFTW.  matchedfilter
 does not need to own that step, and there is no plan object to manage: the
@@ -35,7 +35,12 @@ except (ImportError, PackageNotFoundError):  # running from a source tree
     __version__ = "0.0.0.dev0"
 
 #: dtype of the arrays returned by :meth:`MatchedFilter.run`.
-PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8"), ("magnitude", "<f4")])
+#: A peak is WHERE and WHAT, nothing else. The magnitude used to be a third
+#: field and was always abs(value) to the last bit, so it carried no
+#: information -- it cost a field copy on assembly, a buffer, and on the GPU
+#: a third output array and a sqrt per bin. Callers who want it write
+#: np.abs(peaks["value"]).
+PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8")])
 
 __all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "backend",
            "targets", "set_target", "devices", "Device", "__version__"]
@@ -218,10 +223,14 @@ class MatchedFilter:
         """Correlate and report the loudest sample per bin.
 
         Returns a structured array of shape ``(ndata, ntemplates, nbins)`` with
-        fields ``index`` (lag, int64), ``value`` (complex64) and ``magnitude``
-        (float32).  A bin whose maximum does not exceed ``threshold`` comes back
-        with ``index == -1`` and ``magnitude == 0``, so bin j always sits at
-        slot j and the result can be indexed by frequency without searching.
+        fields ``index`` (lag, int64) and ``value`` (complex64).  A bin whose
+        maximum does not exceed ``threshold`` comes back with ``index == -1``
+        and ``value == 0``, so bin j always sits at slot j and the result can
+        be indexed by frequency without searching.
+
+        For the magnitude, take ``np.abs(peaks["value"])``.  It was a third
+        field once; it equalled that expression exactly, so it only cost a
+        copy.
 
         ``data`` and ``templates`` restrict the run to a sub-range, given as
         ``(start, count)``; the answer is identical to the matching slice of a
@@ -230,10 +239,10 @@ class MatchedFilter:
         With ``counts=True`` returns ``(peaks, counts)``, where counts has shape
         ``(ndata, ntemplates)`` and holds how many bins crossed the threshold.
 
-        ``raw=True`` returns ``(index, value, magnitude)`` as three plain arrays
+        ``raw=True`` returns ``(index, value)`` as two plain arrays
         of shape ``(ndata, ntemplates, nbins)`` instead of assembling a
         structured array.  A caller driving small batches in a tight loop pays
-        for that assembly on every call -- three field copies here and a
+        for that assembly on every call -- a field copy here and a
         structured-array slice at the other end -- which can exceed the filter
         work itself.
 
@@ -272,12 +281,10 @@ class MatchedFilter:
         self._ensure().run(d0, nd, t0, nt, binsize, float(threshold), start, end,
                      idx, val, mag, cnt)
         if raw:
-            r = (idx.reshape(nd, nt, nb), val.reshape(nd, nt, nb),
-                 mag.reshape(nd, nt, nb))
+            r = (idx.reshape(nd, nt, nb), val.reshape(nd, nt, nb))
             return (r, cnt.reshape(nd, nt)) if counts else r
         peaks["index"] = idx.reshape(nd, nt, nb)
         peaks["value"] = val.reshape(nd, nt, nb)
-        peaks["magnitude"] = mag.reshape(nd, nt, nb)
         return (peaks, cnt.reshape(nd, nt)) if counts else peaks
 
 
@@ -1322,7 +1329,7 @@ class HierarchicalFilter(MatchedFilter):
 
         Windows are per block, so the ragged ones at a segment's edges need no
         grouping.  Returns a structured array of shape
-        ``(nblocks, ntemplates, nbins)``, or with ``raw=True`` the three plain
+        ``(nblocks, ntemplates, nbins)``, or with ``raw=True`` the two plain
         arrays ``(index, value, magnitude)`` of that shape -- which skips
         assembling the structured array, a real cost here because a whole
         segment's blocks come back at once.
@@ -1371,7 +1378,6 @@ class HierarchicalFilter(MatchedFilter):
         peaks = np.empty((nblk, nt, nb), dtype=PEAK_DTYPE)
         peaks["index"] = idx.reshape(nblk, nt, nb)
         peaks["value"] = val.reshape(nblk, nt, nb)
-        peaks["magnitude"] = mag.reshape(nblk, nt, nb)
         return peaks
 
     @property

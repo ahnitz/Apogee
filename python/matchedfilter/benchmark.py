@@ -221,7 +221,7 @@ def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
     filt.set_templates(tspec)
 
     peaks = filt.run(binsize=binsize, window=(ws, we))
-    thr = float(np.median(peaks["magnitude"])) * 4.0
+    thr = float(np.median(np.abs(peaks["value"]))) * 4.0
 
     ok = "not checked"
     if check:
@@ -232,7 +232,7 @@ def _one(n, nd, nt, binsize, window, reps, check, fftw_plan="measure"):
         same = np.array_equal(got["index"], ridx)
         scale = float(rmag.max())
         live = ridx >= 0
-        err = float(np.abs(got["magnitude"][live] - rmag[live]).max() / scale) if live.any() else 0.0
+        err = float(np.abs(np.abs(got["value"])[live] - rmag[live]).max() / scale) if live.any() else 0.0
         ok = f"indices {'match' if same else 'DIFFER'}, max rel err {err:.1e}"
         if not same or err > 1e-5:
             ok += "   <-- FAILED"
@@ -313,8 +313,8 @@ def _same_peaks(a, b, tol=1e-5):
     magnitudes agree to well inside single precision; an index that moved is
     only acceptable where the magnitude did not.
     """
-    ai, am = a[0], a[2]
-    bi, bm = b[0], b[2]
+    ai, am = a[0], np.abs(a[1])
+    bi, bm = b[0], np.abs(b[1])
     if not np.array_equal(ai >= 0, bi >= 0):
         return False
     m = ai >= 0

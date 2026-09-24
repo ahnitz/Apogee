@@ -137,7 +137,7 @@ def test_cpu_large_batch():
     sub_h = np.array([h[j] for _, j in idx])
     want = reference_peaks(sub_d, sub_h)
     for k, (i, j) in enumerate(idx):
-        rel = abs(peaks["magnitude"][i, j, 0] - want[k, k]) / want[k, k]
+        rel = abs(np.abs(peaks["value"])[i, j, 0] - want[k, k]) / want[k, k]
         assert rel < 1e-4, "pair (%d,%d): %.2e" % (i, j, rel)
 
 

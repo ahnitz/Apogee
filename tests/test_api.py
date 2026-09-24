@@ -145,10 +145,9 @@ def test_raw_output_matches_structured():
     filt.set_data(noise((nd, n), rng))
     filt.set_templates(noise((nt, n), rng))
     peaks = filt.run(binsize=1024, threshold=0.0).copy()
-    idx, val, mag = filt.run(binsize=1024, threshold=0.0, raw=True)
+    idx, val = filt.run(binsize=1024, threshold=0.0, raw=True)
     np.testing.assert_array_equal(peaks["index"], idx)
     np.testing.assert_array_equal(peaks["value"], val)
-    np.testing.assert_array_equal(peaks["magnitude"], mag)
 
 
 def test_shape_errors():
@@ -187,7 +186,7 @@ def test_hierarchical_is_identical_or_absent():
     assert not (fired & (a["index"] < 0)).any(), "invented a peak"
     np.testing.assert_array_equal(a["index"][fired], b["index"][fired])
     np.testing.assert_array_equal(a["value"][fired], b["value"][fired])
-    np.testing.assert_array_equal(a["magnitude"][fired], b["magnitude"][fired])
+    np.testing.assert_array_equal(np.abs(a["value"])[fired], np.abs(b["value"])[fired])
 
 
 def test_coarse_pass_rules_out_pure_noise():
@@ -706,8 +705,8 @@ def _ratio_filter_shaped_workload(pin=True):
                 if have["index"][t] < 0:
                     omitted += 1
                 elif (have["index"][t] != want["index"][t]
-                      or abs(have["magnitude"][t] - want["magnitude"][t])
-                      > 1e-4 * want["magnitude"][t]):
+                      or abs(np.abs(have["value"])[t] - np.abs(want["value"])[t])
+                      > 1e-4 * np.abs(want["value"])[t]):
                     differ += 1
             elif have["index"][t] >= 0:
                 invented += 1

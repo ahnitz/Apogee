@@ -73,7 +73,7 @@ def test_accepts_any_dlpack_producer():
     filt.set_data(x, index=0)
     filt.set_templates(x, index=0)
     peak = filt.run()[0, 0, 0]
-    assert peak["magnitude"] == pytest.approx(float(n * np.mean(np.abs(x) ** 2)), rel=1e-3)
+    assert np.abs(peak["value"]) == pytest.approx(float(n * np.mean(np.abs(x) ** 2)), rel=1e-3)
 
 
 def test_accelerator_resident_input_is_refused_not_copied():
@@ -105,4 +105,4 @@ def test_objects_without_dlpack_still_work():
     filt = mf.MatchedFilter(n)
     filt.set_data(Legacy(), index=0)
     filt.set_templates(Legacy(), index=0)
-    assert filt.run()[0, 0, 0]["magnitude"] > 0
+    assert abs(filt.run()[0, 0, 0]["value"]) > 0

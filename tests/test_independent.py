@@ -52,7 +52,7 @@ def test_matches_a_direct_sum_not_just_another_fft(n):
     for i in range(2):
         for j in range(2):
             want = direct_correlation(d[i], h[j])
-            got = pk["magnitude"][i, j]
+            got = np.abs(pk["value"])[i, j]
             scale = float(want.max())
             assert np.allclose(got, want, rtol=0, atol=3e-6 * scale), (i, j)
 
@@ -74,7 +74,7 @@ def test_self_correlation_peaks_at_zero_lag_with_the_norm_squared():
     pk = f.run(binsize=n, threshold=0.0)
     want = float(np.sum(np.abs(h.astype(np.complex128)) ** 2))
     assert int(pk["index"][0, 0, 0]) == 0
-    assert float(pk["magnitude"][0, 0, 0]) == pytest.approx(want, rel=1e-5)
+    assert float(np.abs(pk["value"])[0, 0, 0]) == pytest.approx(want, rel=1e-5)
 
 
 def test_flat_spectrum_correlates_to_a_single_lag():
@@ -90,7 +90,7 @@ def test_flat_spectrum_correlates_to_a_single_lag():
     f.set_data(d)
     f.set_templates(h)
     pk = f.run(binsize=1, threshold=0.0)
-    m = pk["magnitude"][0, 0]
+    m = np.abs(pk["value"])[0, 0]
     assert float(m[0]) == pytest.approx(float(n), rel=1e-5)
     assert float(np.max(m[1:])) < 1e-3 * n
 
@@ -148,7 +148,7 @@ def test_a_pair_gives_the_same_answer_alone_as_in_a_batch():
             one.set_templates(h[j][None, :])
             got = one.run(binsize=256, threshold=0.0)
             assert np.array_equal(got["index"][0, 0], ref["index"][i, j]), (i, j)
-            assert np.array_equal(got["magnitude"][0, 0], ref["magnitude"][i, j]), (i, j)
+            assert np.array_equal(np.abs(got["value"])[0, 0], np.abs(ref["value"])[i, j]), (i, j)
 
 
 def test_a_nan_in_one_segment_does_not_reach_the_others():
@@ -179,7 +179,7 @@ def test_a_nan_in_one_segment_does_not_reach_the_others():
         if i == 2:
             continue
         assert np.array_equal(got["index"][i], ref["index"][i]), i
-        assert np.array_equal(got["magnitude"][i], ref["magnitude"][i]), i
+        assert np.array_equal(np.abs(got["value"])[i], np.abs(ref["value"])[i]), i
 
 
 # ----------------------------------------------------------- denormals
@@ -206,7 +206,7 @@ def test_subnormal_inputs_do_not_produce_garbage():
         f.set_data(d[None, :])
         f.set_templates(h[None, :])
         pk = f.run(binsize=n, threshold=0.0)
-        m = float(pk["magnitude"][0, 0, 0])
+        m = float(np.abs(pk["value"])[0, 0, 0])
         i = int(pk["index"][0, 0, 0])
         assert np.isfinite(m), scale
         assert m >= 0.0, scale
@@ -234,7 +234,7 @@ def test_subnormal_behaviour_is_the_same_on_every_back_end():
         f.set_templates(h[None, :])
         pk = f.run(binsize=n, threshold=0.0)
         seen[isa] = (int(pk["index"][0, 0, 0]),
-                     float(pk["magnitude"][0, 0, 0]) > 0.0)
+                     float(np.abs(pk["value"])[0, 0, 0]) > 0.0)
     mf.set_target(None)          # None restores the dispatcher, not "auto"
     assert len(set(seen.values())) == 1, seen
 
@@ -278,7 +278,7 @@ def test_random_shapes_and_windows_agree_with_the_definition(case):
                     continue
                 k = int(np.argmax(seg))
                 gi = int(pk["index"][i, j, b])
-                gm = float(pk["magnitude"][i, j, b])
+                gm = float(np.abs(pk["value"])[i, j, b])
                 assert ws + b * binsize <= gi < ws + b * binsize + seg.size
                 # the reported lag must attain the bin maximum, which is
                 # what is promised -- ties make the index itself unspecified

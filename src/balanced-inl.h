@@ -544,7 +544,13 @@ static int bins_reserve(BP*p,size_t nb){
 template <bool STORE>
 static void binmax_one(BP*p,float thr,ap_peak*out,int conj,size_t ws,size_t we){
   const int N1=p->N1,N2=p->N2;
-  const float t2 = thr>0.f ? thr*thr : -1.f;
+  /* Seeded at 0, not -1: a maximum of exactly zero is not a peak. With -1
+     a bin whose every |v|^2 underflowed to zero still reported index 0 and
+     the value there, which is the WRONG sample -- the old `magnitude` field
+     flushing to zero was what warned a caller about that, and it is gone.
+     Zero now falls through to index -1, the same "nothing here" the
+     threshold path already uses. */
+  const float t2 = thr>0.f ? thr*thr : 0.f;
   const vf NEG=V_SET1(-1.f);
   const unsigned allm=(unsigned)((1ull<<AP_W)-1ull);
   float *const ser=p->ser; const size_t sstr=p->serstride;
@@ -611,7 +617,13 @@ static void binmax_core(BP*p,size_t binsize,float thr,ap_peak*out,int conj,
                             size_t ws,size_t we){
   const int N1=p->N1,N2=p->N2;
   const size_t nb=(we-ws+binsize-1)/binsize;
-  const float t2 = thr>0.f ? thr*thr : -1.f;
+  /* Seeded at 0, not -1: a maximum of exactly zero is not a peak. With -1
+     a bin whose every |v|^2 underflowed to zero still reported index 0 and
+     the value there, which is the WRONG sample -- the old `magnitude` field
+     flushing to zero was what warned a caller about that, and it is gone.
+     Zero now falls through to index -1, the same "nothing here" the
+     threshold path already uses. */
+  const float t2 = thr>0.f ? thr*thr : 0.f;
   const vf NEG=V_SET1(-1.f);
   const unsigned allm=(unsigned)((1ull<<AP_W)-1ull);  /* all lanes in window */
   /* Bin index is (k - ws)/binsize, and a runtime divide is ~20 cycles in a loop
