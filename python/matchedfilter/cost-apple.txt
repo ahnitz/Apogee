@@ -2,7 +2,7 @@
 #
 # device  Apple M2
 # arch    apple  (also used for: apple)
-# commit  unknown
+# commit  7e2201b
 #
 # Measured on a GPU, with the data already resident: host
 # transfers are not part of the configuration's cost and
