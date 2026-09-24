@@ -826,6 +826,7 @@ int ap_hmf_run_series(ap_hmf_plan *p,
   if(!p||nblocks<1||nt<1||!binsize) return 0;
   if(t0<0||t0+nt>p->nt) return -1;
   const size_t n=p->n;
+  const size_t nb0=ap_mf_nbins(p->full,binsize,win_start[0],win_end[0]);
   int total=0;
   /* Filter several blocks together where they share a window.  Blocks differ
      only at a segment's edges, so runs of equal windows are long. */
@@ -862,6 +863,14 @@ int ap_hmf_run_series(ap_hmf_plan *p,
          on demand.  dready stays 0 to say so. */
     }
     size_t nb=ap_mf_nbins(p->full,binsize,win_start[b0],win_end[b0]);
+    /* peaks is addressed at a single stride, so every window must produce the
+       same bin count. A shorter one at a segment's edge does not: it writes
+       where the next block's row begins and runs off the end of the caller's
+       buffer -- heap corruption from ordinary overlap-save input, since edge
+       blocks are exactly the ragged ones this call exists to accept.
+       Refusing is the honest answer; the shape the API returns has one nbins
+       in it and cannot express two. */
+    if(nb!=nb0) return -1;
     int r=ap_hmf_run(p,0,g,t0,nt,binsize,threshold,
                      peaks+(size_t)b0*nt*nb,counts?counts+(size_t)b0*nt:NULL,
                      win_start[b0],win_end[b0]);

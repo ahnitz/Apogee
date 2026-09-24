@@ -80,6 +80,42 @@ static PyObject *MF_run(MFObject *self,PyObject *args){
   if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"matchedfilter: matched filter failed"); return NULL; }
   return PyLong_FromLong(tot);
 }
+/* run_series(series, starts, wstart, wend, t0, nt, binsize, thr, idx,val,mag,cnt) */
+static PyObject *MF_run_series(MFObject *self,PyObject *args){
+  Py_buffer bs,bst,bws,bwe,bidx,bval,bmag,bcnt;
+  int t0,nt; Py_ssize_t binsize; double thr;
+  if(!PyArg_ParseTuple(args,"y*y*y*y*iindw*w*w*w*",&bs,&bst,&bws,&bwe,
+                       &t0,&nt,&binsize,&thr,&bidx,&bval,&bmag,&bcnt)) return NULL;
+  int nblocks=(int)(bst.len/(Py_ssize_t)sizeof(size_t));
+  size_t nseries=(size_t)(bs.len/(2*sizeof(float)));
+  size_t nb=ap_mf_nbins(self->p,(size_t)binsize,
+                        ((const size_t*)bws.buf)[0],
+                        ((const size_t*)bwe.buf)[0]);
+  Py_ssize_t need=(Py_ssize_t)nblocks*nt*(Py_ssize_t)nb;
+  ap_peak *pk=(ap_peak*)PyMem_Malloc((size_t)need*sizeof(ap_peak));
+  if(!pk){ PyBuffer_Release(&bs);PyBuffer_Release(&bst);PyBuffer_Release(&bws);
+           PyBuffer_Release(&bwe);PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
+           PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt); return PyErr_NoMemory(); }
+  int tot;
+  Py_BEGIN_ALLOW_THREADS
+  tot=ap_mf_run_series(self->p,(const float*)bs.buf,nseries,
+                       (const size_t*)bst.buf,(const size_t*)bws.buf,
+                       (const size_t*)bwe.buf,nblocks,t0,nt,(size_t)binsize,
+                       (float)thr,pk,(int*)bcnt.buf);
+  Py_END_ALLOW_THREADS
+  if(tot>=0){
+    long long *ix=(long long*)bidx.buf; float *vl=(float*)bval.buf,*mg=(float*)bmag.buf;
+    for(Py_ssize_t a=0;a<need;a++){
+      ix[a]=(long long)pk[a].index; vl[2*a]=pk[a].re; vl[2*a+1]=pk[a].im; mg[a]=pk[a].magnitude;
+    }
+  }
+  PyMem_Free(pk);
+  PyBuffer_Release(&bs);PyBuffer_Release(&bst);PyBuffer_Release(&bws);
+  PyBuffer_Release(&bwe);PyBuffer_Release(&bidx);PyBuffer_Release(&bval);
+  PyBuffer_Release(&bmag);PyBuffer_Release(&bcnt);
+  if(tot<0){ PyErr_SetString(PyExc_RuntimeError,"matchedfilter: run_series failed"); return NULL; }
+  return PyLong_FromLong(tot);
+}
 static PyObject *MF_nbins(MFObject *self,PyObject *args){
   Py_ssize_t bs,st,en;
   if(!PyArg_ParseTuple(args,"nnn",&bs,&st,&en)) return NULL;
@@ -89,6 +125,7 @@ static PyMethodDef MF_methods[]={
   {"set_data",(PyCFunction)MF_set_data,METH_VARARGS,"set_data(i, buffer)"},
   {"set_template",(PyCFunction)MF_set_template,METH_VARARGS,"set_template(i, buffer)"},
   {"run",(PyCFunction)MF_run,METH_VARARGS,"run(...) -> total crossings"},
+  {"run_series",(PyCFunction)MF_run_series,METH_VARARGS,"run_series(...)"},
   {"nbins",(PyCFunction)MF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},
   {NULL}
 };

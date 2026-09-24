@@ -79,6 +79,21 @@ int ap_mf_run_sel(ap_mf_plan *p, int d0, int nd, int t0, int nt,
                   size_t binsize, float threshold,
                   ap_peak *peaks, int *counts, size_t start, size_t end);
 
+/* Filter a time series over a caller-supplied block layout: block b covers
+   series[start[b] ...] and reports lags [win_start[b], win_end[b]).  Windows
+   are per block, so the ragged ones at a segment's edges need no grouping.
+
+   peaks is [block][template][bin] with bins as ap_mf_run.  A block whose
+   transform would run past nseries is zero-padded.  Blocks sharing a window
+   are filtered together, up to the plan's own ndata -- which is the grouping
+   knob, there being no second one.  Returns total crossings, or -1. */
+int ap_mf_run_series(ap_mf_plan *p,
+                     const float *series, size_t nseries,
+                     const size_t *start, const size_t *win_start,
+                     const size_t *win_end, int nblocks,
+                     int t0, int nt, size_t binsize, float threshold,
+                     ap_peak *peaks, int *counts);
+
 /* Interpolated coarse maximum, alongside the peak scan.  hlo/hhi are complex
    taps (2*ntap floats each) for the two half-sample offsets, ncand is how many
    of the largest grid samples to probe, and out receives one value per pair in

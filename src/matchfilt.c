@@ -52,6 +52,13 @@ struct ap_mf_plan {
   const float *iser;          /* the back end's series buffer */
   size_t istride;
   int ipause;                 /* skip it for calls that do not want it */
+  /* run_series staging, allocated on first use so a plan that never
+     filters a series does not carry 4n floats it will not touch.
+     ONE buffer pair serves a whole group: ap_mf_set_data split_stores
+     immediately rather than retaining the pointer, which is what lets
+     the flat path skip the per-slot spectrum array the hierarchical
+     one needs. */
+  float *sfwd,*sspec;         /* [2n] each */
 };
 
 ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
@@ -98,6 +105,7 @@ void ap_mf_destroy(ap_mf_plan *p){
   if(p->fft) ap_destroy(p->fft);
   free(p->dre);free(p->dim);free(p->tre);free(p->tim);
   free(p->pr);free(p->pi);free(p->scratch);
+  free(p->sfwd);free(p->sspec);
   free(p);
 }
 
@@ -265,6 +273,76 @@ int ap_mf_run(ap_mf_plan *p, int d0, int nd, int t0, int nt,
   if(start>=end) return 0;
   return run_pairs(p,d0,nd,t0,nt,NULL,nt,binsize,threshold,
                    peaks,counts,start,end);
+}
+
+/* Filter a time series over a caller-supplied block layout.
+ *
+ * The flat twin of ap_hmf_run_series, and it exists for the same reason: one
+ * call per segment rather than one per block removes the per-block round trip
+ * -- no separately planned forward transform, no spectrum handed back and
+ * forth. Until now only the hierarchical filter could express this, which made
+ * the wide interface unavailable to exactly the callers most likely to want
+ * it: flat needs no reference spectrum and no (n, snr, fd) tables, so it is
+ * what a non-gravitational-wave domain reaches for.
+ *
+ * Blocks sharing a window are filtered together, up to the plan's own nd.
+ * That is the grouping knob and there is no other: a flat plan's ndata is
+ * already how many segments it can hold, so inventing a second control would
+ * let the two disagree.
+ */
+int ap_mf_run_series(ap_mf_plan *p,
+                     const float *series,size_t nseries,
+                     const size_t *start,const size_t *win_start,
+                     const size_t *win_end,int nblocks,
+                     int t0,int nt,size_t binsize,float threshold,
+                     ap_peak *peaks,int *counts){
+  if(!p||nblocks<1||nt<1||!binsize) return 0;
+  if(!series||!start||!win_start||!win_end) return -1;
+  if(t0<0||t0+nt>p->nt) return -1;
+  const size_t n=p->n;
+  if(!p->sfwd){
+    p->sfwd=ap_alloc64(2*n*sizeof(float));
+    p->sspec=ap_alloc64(2*n*sizeof(float));
+    if(!p->sfwd||!p->sspec) return -1;
+  }
+  const size_t nb0=ap_mf_nbins(p,binsize,win_start[0],win_end[0]);
+  int total=0;
+  for(int b0=0;b0<nblocks;){
+    int g=1;
+    while(g<p->nd && b0+g<nblocks
+          && win_start[b0+g]==win_start[b0] && win_end[b0+g]==win_end[b0]) g++;
+    for(int j=0;j<g;j++){
+      const size_t s0=start[b0+j];
+      size_t have = s0<nseries ? nseries-s0 : 0;
+      if(have>n) have=n;
+      /* The caller's convention of pre-dividing the block spectrum by n is
+         kept, and applied on the way IN so it folds into a copy that has to
+         happen anyway. n is a power of two, so 1/n is exact and the transform
+         is linear: scaling before is bit-for-bit scaling after. */
+      { const float inv=1.0f/(float)n;
+        const float *src=series+2*s0;
+        for(size_t k=0;k<2*have;k++) p->sfwd[k]=src[k]*inv; }
+      if(have<n) memset(p->sfwd+2*have,0,2*(n-have)*sizeof(float));
+      ap_fft(p->fft,p->sfwd,p->sspec,AP_FORWARD);
+      if(ap_mf_set_data(p,j,p->sspec)) return -1;
+    }
+    size_t nb=ap_mf_nbins(p,binsize,win_start[b0],win_end[b0]);
+    /* peaks is addressed at a single stride, so every window must produce the
+       same bin count. A shorter one at a segment's edge does not: it writes
+       where the next block's row begins and runs off the end of the caller's
+       buffer -- heap corruption from ordinary overlap-save input, since edge
+       blocks are exactly the ragged ones this call exists to accept.
+       Refusing is the honest answer; the shape the API returns has one nbins
+       in it and cannot express two. */
+    if(nb!=nb0) return -1;
+    int r=ap_mf_run(p,0,g,t0,nt,binsize,threshold,
+                    peaks+(size_t)b0*nt*nb,counts?counts+(size_t)b0*nt:NULL,
+                    win_start[b0],win_end[b0]);
+    if(r<0) return -1;
+    total+=r;
+    b0+=g;
+  }
+  return total;
 }
 
 int ap_mf_run_sel(ap_mf_plan *p, int d0, int nd, int t0, int nt,

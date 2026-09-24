@@ -161,6 +161,7 @@ class MatchedFilter:
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
         self._buf = None
+        self._sbuf = None
         # Arrays the plan holds pointers into. The C side keeps the caller's
         # spectrum rather than copying it, so the wrapper must keep it alive.
         self._held = {}
@@ -446,6 +447,135 @@ class MatchedFilter:
         return (peaks, cnt.reshape(nd, nt)) if counts else peaks
 
 
+
+    def run_series(self, series, starts, win_start, win_end,
+                   binsize=None, threshold=0.0, templates=None, raw=False):
+        """Filter a time series over a caller-supplied block layout.
+
+        The caller keeps the overlap-save arithmetic -- where each block starts
+        and which span of its output is valid.  matchedfilter only executes
+        that plan, which removes the per-block round trip: no separately
+        planned forward FFT, no spectrum passed back and forth, and one call
+        per segment rather than one per block.
+
+        Windows are per block, so the ragged ones at a segment's edges need no
+        grouping.  Returns a structured array of shape
+        ``(nblocks, ntemplates, nbins)``, or with ``raw=True`` the two plain
+        arrays ``(index, value)`` of that shape.
+
+        Blocks sharing a window are filtered together, up to this filter's own
+        ``ndata``.  That is the grouping knob and there is no other: ndata is
+        already how many segments the plan can hold, and a second control
+        would only let the two disagree.  A filter built with ``ndata=1``
+        still gives the same answers, one block at a time.
+
+        THE RETURNED ARRAYS ARE REUSED BUFFERS, as with ``run``.  The next call
+        overwrites them; copy anything that has to outlive it.
+        """
+        ser = np.ascontiguousarray(series, dtype=np.complex64)
+        st = np.ascontiguousarray(starts, dtype=np.uintp)
+        ws = np.ascontiguousarray(win_start, dtype=np.uintp)
+        we = np.ascontiguousarray(win_end, dtype=np.uintp)
+        if not (st.size == ws.size == we.size):
+            raise ValueError("starts, win_start and win_end must be the same length")
+        if st.size < 1:
+            raise ValueError("run_series needs at least one block")
+        nblk = st.size
+        # Every window must give the same bin count: the result has ONE
+        # nbins in its shape and the C addresses peaks at a single stride, so
+        # a shorter window at a segment's edge writes into the next block's
+        # row and past the end of the buffer. That is reachable from ordinary
+        # overlap-save input, and it corrupted the heap rather than failing.
+        nbset = {self.nbins(binsize if binsize is not None else self.n,
+                            (int(a), int(b))) for a, b in zip(ws, we)}
+        if len(nbset) > 1:
+            raise ValueError(
+                "every block's window must give the same bin count; these "
+                "give %s. Use a binsize that divides each window equally, or "
+                "call run_series once per distinct window."
+                % sorted(nbset))
+        if self._gpu is not None:
+            return self._run_series_gpu(ser, st, ws, we, binsize, threshold,
+                                        templates, raw)
+        t0, nt = (0, self.ntemplates) if templates is None else (
+            int(templates[0]), int(templates[1]))
+        if nt < 1 or t0 < 0 or t0 + nt > self.ntemplates:
+            raise ValueError("templates sub-range out of bounds")
+        binsize = self.n if binsize is None else int(binsize)
+        nb = self._ensure().nbins(binsize, int(ws[0]), int(we[0]))
+        need = nblk * nt * nb
+        sb = self._sbuf
+        if sb is None or sb[0] != (nblk, nt, nb):
+            sb = self._sbuf = ((nblk, nt, nb),
+                               np.empty(need, dtype=np.int64),
+                               np.empty(need, dtype=np.complex64),
+                               np.empty(need, dtype=np.float32),
+                               np.empty(nblk * nt, dtype=np.int32))
+        _, idx, val, mag, cnt = sb
+        self._ensure().run_series(ser, st, ws, we, t0, nt, binsize,
+                                  float(threshold), idx, val, mag, cnt)
+        if raw:
+            return idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb)
+        peaks = np.empty((nblk, nt, nb), dtype=PEAK_DTYPE)
+        peaks["index"] = idx.reshape(nblk, nt, nb)
+        peaks["value"] = val.reshape(nblk, nt, nb)
+        return peaks
+
+    def _run_series_gpu(self, ser, st, ws, we, binsize, threshold,
+                        templates, raw):
+        """run_series on a flat GPU plan.
+
+        The C does the per-block forward transform inside the plan; here it is
+        done on the host, which is the same arithmetic and keeps the device
+        code to the one kernel that already exists.
+
+        The 1/n is applied here for the same reason the C applies it on the
+        way in: the caller's spectra are pre-divided by n, so a block
+        transformed without it would be scaled differently from one the caller
+        ingested through set_data, and only the series path would be wrong.
+        """
+        n = self.n
+        nblk = st.size
+        t0, nt = (0, self.ntemplates) if templates is None else (
+            int(templates[0]), int(templates[1]))
+        if nt < 1 or t0 < 0 or t0 + nt > self.ntemplates:
+            raise ValueError("templates sub-range out of bounds")
+        binsize = n if binsize is None else int(binsize)
+        H = self._gtmpl[t0:t0 + nt]
+
+        spec = np.zeros((nblk, n), dtype=np.complex64)
+        buf = np.zeros(n, dtype=np.complex64)
+        for b in range(nblk):
+            lo = int(st[b])
+            seg = ser[lo:lo + n]
+            buf[:] = 0
+            buf[:seg.size] = seg
+            spec[b] = np.fft.fft(buf) / n
+
+        nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
+        idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
+        val = np.zeros((nblk, nt, nb), dtype=np.complex64)
+        first = True
+        for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
+            rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
+            gi, gv = self._gpu.peaks(
+                n, np.ascontiguousarray(spec[rows]), H,
+                binsize=binsize, threshold=threshold, window=w,
+                upload_data=True, upload_tmpl=first or self._tdirty)
+            first = False
+            if gi.shape[2] != nb:
+                raise ValueError(
+                    "blocks in one call must produce the same bin count; "
+                    "window %s gives %d against %d" % (w, gi.shape[2], nb))
+            idx[rows] = gi
+            val[rows] = gv
+        self._tdirty = False
+        if raw:
+            return idx, val
+        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
+        peaks["index"] = idx
+        peaks["value"] = val
+        return peaks
 
 
 
@@ -1819,6 +1949,19 @@ class HierarchicalFilter(MatchedFilter):
         if not (st.size == ws.size == we.size):
             raise ValueError("starts, win_start and win_end must be the same length")
         nblk = st.size
+        # Every window must give the same bin count: the result has ONE
+        # nbins in its shape and the C addresses peaks at a single stride, so
+        # a shorter window at a segment's edge writes into the next block's
+        # row and past the end of the buffer. That is reachable from ordinary
+        # overlap-save input, and it corrupted the heap rather than failing.
+        nbset = {self.nbins(binsize if binsize is not None else self.n,
+                            (int(a), int(b))) for a, b in zip(ws, we)}
+        if len(nbset) > 1:
+            raise ValueError(
+                "every block's window must give the same bin count; these "
+                "give %s. Use a binsize that divides each window equally, or "
+                "call run_series once per distinct window."
+                % sorted(nbset))
         if self._gpu is not None:
             return self._run_series_gpu(ser, st, ws, we, binsize, threshold,
                                         templates, raw)
