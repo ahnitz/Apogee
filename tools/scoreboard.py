@@ -59,6 +59,9 @@ def _submit_only(ctx, reps):
     """Replay every recorded command buffer: compute with no host traffic."""
     vk = ctx.vk
     cmds = [b[4] for b in ctx._batches.values()]
+    cmds += [b[1] for b in getattr(ctx, "_hier", {}).values()]
+    if not cmds:
+        raise RuntimeError("nothing was recorded; the measurement would be a lie")
     arr = (V._vp * len(cmds))(*cmds)
     sub = V._SubmitInfo(4, None, 0, None, None, len(cmds), arr, 0, None)
 

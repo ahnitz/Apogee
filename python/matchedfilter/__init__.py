@@ -164,6 +164,8 @@ class MatchedFilter:
         self._gpu = None
         self._gpairs = 0
         self._gtrig = 0
+        self._ddirty = True
+        self._tdirty = True
         if self.device.kind == "gpu":
             self._start_gpu()
             return
@@ -194,6 +196,10 @@ class MatchedFilter:
         return self._mf
 
     def _gpu_set(self, store, spectra, index, what):
+        if what == "data":
+            self._ddirty = True
+        else:
+            self._tdirty = True
         if index is None:
             a = np.ascontiguousarray(_from_any(spectra), dtype=np.complex64)
             if a.shape != store.shape:
@@ -246,58 +252,38 @@ class MatchedFilter:
 
 
     def _gpu_hier(self, D, H, binsize, threshold, start, end):
-        """Coarse pass, then the flat filter on what survives.
+        """Coarse pass and refinement, in one command buffer on the device.
 
-        Shared by run() and run_series() so the two cannot drift: run_series
-        used to have no GPU branch at all, which meant it silently built a
-        CPU plan and ran there, returning entirely plausible results.
+        Shared by run() and run_series() so the two cannot drift.
+
+        Nothing is read back between the passes. The refining kernel
+        evaluates the coarse gate itself, so a dismissed pair's workgroup
+        exits immediately and no survivor list ever has to reach the host.
+        Doing that on the host cost more than the filtering did: 0.26 ms of
+        kernel work inside a 5.0 ms call.
         """
         band, f, margin, raw_thr, even_thr = self._gpu_calibration(threshold)
-        # Coarse templates: truncate, scale, and phase-ramp for the odd half.
-        s = 1.0 / np.sqrt(f) if f > 0 else 0.0
-        ct0 = (H[:, :band] * s).astype(np.complex64)
-        ramp = np.exp(1j * np.pi * np.arange(band) / band).astype(np.complex64)
-        ct1 = (ct0 * ramp).astype(np.complex64)
-        Dc = np.ascontiguousarray(D[:, :band])
+        # The coarse templates are a function of the templates and the band,
+        # so they are rebuilt only when the templates change.
+        ck = (band, f, id(H), H.shape)
+        if getattr(self, "_ckey", None) != ck or self._tdirty:
+            sc = 1.0 / np.sqrt(f) if f > 0 else 0.0
+            ct0 = (H[:, :band] * sc).astype(np.complex64)
+            ramp = np.exp(1j * np.pi * np.arange(band) / band).astype(np.complex64)
+            self._ct = (ct0, (ct0 * ramp).astype(np.complex64))
+            self._ckey = ck
+        ct0, ct1 = self._ct
 
-        # The coarse pass is the flat filter at `band`, one bin over the whole
-        # window, which is what makes the reported peak the maximum.
-        _, ev = self._gpu.peaks(band, Dc, ct0, binsize=band, threshold=0.0)
-        _, od = self._gpu.peaks(band, Dc, ct1, binsize=band, threshold=0.0)
-        even = np.abs(ev[:, :, 0])
-        odd = np.abs(od[:, :, 0])
+        idx, val = self._gpu.hier_peaks(
+            self.n, band, D, H, ct0, ct1, even_thr, raw_thr,
+            binsize=binsize, threshold=threshold, window=(start, end),
+            upload_data=self._ddirty, upload_tmpl=self._tdirty)
+        self._ddirty = self._tdirty = False
 
-        # The C dismisses on the even half alone before paying for the odd
-        # one, and takes the odd value only above raw_thr.
-        alive = even >= even_thr
-        best = np.where(odd >= raw_thr, np.maximum(even, odd), even)
-
-        # Escalate at raw_thr rather than at margin. Between the two sits the
-        # only window where the C's interpolation can change the verdict; it
-        # can only ever raise the statistic, so escalating the whole window is
-        # strictly MORE conservative than interpolating it. Measured at
-        # 0.9-2.2% of pairs, and it removes the 13-tap interpolator -- and the
-        # coarse series it would need resident -- from the device entirely.
-        escalate = alive & (best >= raw_thr)
-
-        # Refinement IS the flat filter, which is what makes the one-sided
-        # guarantee hold by construction rather than by agreement.
-        nb = self.nbins(binsize, (start, end))
-        nd, nt = D.shape[0], H.shape[0]
-        idx = np.full((nd, nt, nb), -1, dtype=np.int64)
-        val = np.zeros((nd, nt, nb), dtype=np.complex64)
-        self._last_refine = float(escalate.mean()) if escalate.size else 0.0
-        self._gpairs += escalate.size
-        for d in range(nd):
-            sel = np.flatnonzero(escalate[d])
-            if not sel.size:
-                continue
-            gi, gv = self._gpu.peaks(
-                self.n, D[d:d + 1], np.ascontiguousarray(H[sel]),
-                binsize=binsize, threshold=threshold, window=(start, end))
-            idx[d, sel] = gi[0]
-            val[d, sel] = gv[0]
-        self._gtrig += int((idx >= 0).any(axis=2).sum())
+        self._gpairs += idx.shape[0] * idx.shape[1]
+        fired = (idx >= 0).any(axis=2)
+        self._last_refine = float(fired.mean()) if fired.size else 0.0
+        self._gtrig += int(fired.sum())
         return idx, val
 
     def _run_gpu(self, binsize, threshold, start, end, data, templates,
@@ -317,7 +303,9 @@ class MatchedFilter:
 
         idx, val = self._gpu.peaks(
             self.n, self._gdata[d0:d0 + nd], self._gtmpl[t0:t0 + nt],
-            binsize=binsize, threshold=threshold, window=(start, end))
+            binsize=binsize, threshold=threshold, window=(start, end),
+            upload_data=self._ddirty, upload_tmpl=self._tdirty)
+        self._ddirty = self._tdirty = False
         if raw:
             r = (idx, val)
             return (r, (idx >= 0).sum(axis=2).astype(np.int32)) if counts else r
@@ -1307,6 +1295,8 @@ class HierarchicalFilter(MatchedFilter):
         self._gpu = None
         self._gpairs = 0
         self._gtrig = 0
+        self._ddirty = True
+        self._tdirty = True
         if self.device.kind == "gpu":
             # HierarchicalFilter overrides __init__, so it does NOT inherit
             # MatchedFilter's call to _start_gpu. Omitting this left device=

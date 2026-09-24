@@ -65,7 +65,11 @@ LDS_CAP = {
 }
 
 KERNEL = ROOT / "src" / "gpu" / "tierb.slang"
-ENTRY = "fusedTierB"
+#: Two entry points from one source. fusedTierB is the filter; gatedTierB is
+#: the same filter behind a coarse-pass gate it evaluates itself, so the
+#: hierarchical mode needs no host decision between the passes.
+ENTRIES = ("fusedTierB", "gatedTierB")
+ENTRY = ENTRIES[0]
 
 _STORAGE_CLASS = {2: "Uniform", 9: "PushConstant", 12: "StorageBuffer"}
 
@@ -133,17 +137,19 @@ def reflect(blob):
                 push_constant=push_constant)
 
 
-def compile_one(slangc, n, outdir):
-    src = outdir / ("mf_%d.slang" % n)
+def compile_one(slangc, n, outdir, entry=ENTRY):
+    src = outdir / ("mf_%d_%s.slang" % (n, entry))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n"
                    % (n, LDS_CAP[n]) + KERNEL.read_text())
-    spv = outdir / ("tierb_%d.spv" % n)
+    name = "tierb_%d.spv" % n if entry == ENTRY else "gated_%d.spv" % n
+    spv = outdir / name
     proc = subprocess.run(
-        [slangc, str(src), "-target", "spirv", "-entry", ENTRY,
+        [slangc, str(src), "-target", "spirv", "-entry", entry,
          "-stage", "compute", "-O3", "-o", str(spv)],
         capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError("slangc failed for n=%d:\n%s" % (n, proc.stderr))
+        raise RuntimeError("slangc failed for n=%d %s:\n%s"
+                           % (n, entry, proc.stderr))
     src.unlink()
     return spv
 
@@ -164,8 +170,12 @@ def main(argv=None):
     OUT.mkdir(parents=True, exist_ok=True)
     manifest = dict(entry=ENTRY, kernel=KERNEL.name, modules={})
     for n in TIER_B:
+        gated = compile_one(slangc, n, OUT, "gatedTierB")
+        ginfo = reflect(gated.read_bytes())
         spv = compile_one(slangc, n, OUT)
         info = reflect(spv.read_bytes())
+        info["gated"] = dict(file=gated.name, bytes=gated.stat().st_size,
+                             descriptors=len(ginfo["descriptors"]))
         info["file"] = spv.name
         info["bytes"] = spv.stat().st_size
         info["lds_cap"] = LDS_CAP[n]

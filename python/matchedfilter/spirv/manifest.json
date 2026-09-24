@@ -35,8 +35,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_64.spv",
+        "bytes": 16588,
+        "descriptors": 6
+      },
       "file": "tierb_64.spv",
-      "bytes": 15768,
+      "bytes": 15284,
       "lds_cap": 512
     },
     "128": {
@@ -72,8 +77,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_128.spv",
+        "bytes": 17176,
+        "descriptors": 6
+      },
       "file": "tierb_128.spv",
-      "bytes": 16356,
+      "bytes": 15872,
       "lds_cap": 512
     },
     "256": {
@@ -109,8 +119,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_256.spv",
+        "bytes": 19112,
+        "descriptors": 6
+      },
       "file": "tierb_256.spv",
-      "bytes": 18292,
+      "bytes": 17808,
       "lds_cap": 512
     },
     "512": {
@@ -146,8 +161,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_512.spv",
+        "bytes": 22932,
+        "descriptors": 6
+      },
       "file": "tierb_512.spv",
-      "bytes": 22192,
+      "bytes": 21628,
       "lds_cap": 512
     },
     "1024": {
@@ -183,8 +203,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_1024.spv",
+        "bytes": 23544,
+        "descriptors": 6
+      },
       "file": "tierb_1024.spv",
-      "bytes": 22804,
+      "bytes": 22240,
       "lds_cap": 512
     },
     "2048": {
@@ -220,8 +245,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_2048.spv",
+        "bytes": 24132,
+        "descriptors": 6
+      },
       "file": "tierb_2048.spv",
-      "bytes": 23392,
+      "bytes": 22828,
       "lds_cap": 1024
     },
     "4096": {
@@ -257,8 +287,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_4096.spv",
+        "bytes": 26068,
+        "descriptors": 6
+      },
       "file": "tierb_4096.spv",
-      "bytes": 25328,
+      "bytes": 24764,
       "lds_cap": 2048
     },
     "8192": {
@@ -294,8 +329,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_8192.spv",
+        "bytes": 29888,
+        "descriptors": 6
+      },
       "file": "tierb_8192.spv",
-      "bytes": 29228,
+      "bytes": 28584,
       "lds_cap": 8192
     },
     "16384": {
@@ -331,8 +371,13 @@
         }
       ],
       "push_constant": true,
+      "gated": {
+        "file": "gated_16384.spv",
+        "bytes": 30500,
+        "descriptors": 6
+      },
       "file": "tierb_16384.spv",
-      "bytes": 29840,
+      "bytes": 29196,
       "lds_cap": 8192
     }
   }

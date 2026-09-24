@@ -31,6 +31,10 @@ _DESC_STORAGE_BUFFER = 7
 _STAGE_COMPUTE = 0x20
 _BIND_POINT_COMPUTE = 1
 _ONE_TIME_SUBMIT = 0x1
+_STAGE_COMPUTE_BIT = 0x800
+_ACCESS_SHADER_READ, _ACCESS_SHADER_WRITE = 0x20, 0x40
+_NBIND_GATED = 6
+_PUSH_BYTES_GATED = 36
 _WHOLE_SIZE = 0xFFFFFFFFFFFFFFFF
 
 _u32, _u64, _vp = ctypes.c_uint32, ctypes.c_uint64, ctypes.c_void_p
@@ -138,6 +142,11 @@ _SubmitInfo = _struct("VkSubmitInfo",
                       ("signalSemaphoreCount", _u32), ("pSignalSemaphores", _vp))
 
 
+_MemBarrier = _struct("VkMemoryBarrier",
+                      ("sType", _u32), ("pNext", _vp),
+                      ("srcAccessMask", _u32), ("dstAccessMask", _u32))
+
+
 class VulkanError(RuntimeError):
     pass
 
@@ -205,6 +214,7 @@ class Context:
         self.vk = vk
         self._pipelines = {}
         self._batches = {}
+        self._hier = {}
 
         app = _vulkan._AppInfo(0, None, b"matchedfilter", 1, b"matchedfilter", 1,
                                (1 << 22) | (1 << 12))
@@ -273,6 +283,11 @@ class Context:
         raise VulkanError("no host-visible memory type available")
 
     # ---- pipeline ---------------------------------------------------------
+    def gated_pipeline(self, n):
+        """The coarse-gated refinement pipeline for length ``n``."""
+        return self._build_pipeline(("gated", n), "gated_%d.spv" % n,
+                                    _NBIND_GATED, _PUSH_BYTES_GATED)
+
     def pipeline(self, n):
         """Build (and cache) the compute pipeline for transform length ``n``.
 
@@ -280,20 +295,23 @@ class Context:
         which costs milliseconds -- far more than a dispatch -- and a batched
         workload calls this once and dispatches many times.
         """
-        if n in self._pipelines:
-            return self._pipelines[n]
+        return self._build_pipeline(n, "tierb_%d.spv" % n, _NBIND, _PUSH_BYTES)
+
+    def _build_pipeline(self, key, filename, nbind, push_bytes):
+        if key in self._pipelines:
+            return self._pipelines[key]
         vk = self.vk
-        blob = (_SPIRV / ("tierb_%d.spv" % n)).read_bytes()
+        blob = (_SPIRV / filename).read_bytes()
         code = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
         sm_info = _ShaderModule(16, None, 0, len(blob), ctypes.cast(code, _vp))
         module = _vp()
         _check(vk.vkCreateShaderModule(self.device, ctypes.byref(sm_info), None,
                                        ctypes.byref(module)), "vkCreateShaderModule")
 
-        bindings = (_LayoutBinding * _NBIND)(
+        bindings = (_LayoutBinding * nbind)(
             *[_LayoutBinding(i, _DESC_STORAGE_BUFFER, 1, _STAGE_COMPUTE, None)
-              for i in range(_NBIND)])
-        sl_info = _SetLayoutCreate(32, None, 0, _NBIND, bindings)
+              for i in range(nbind)])
+        sl_info = _SetLayoutCreate(32, None, 0, nbind, bindings)
         set_layout = _vp()
         _check(vk.vkCreateDescriptorSetLayout(self.device, ctypes.byref(sl_info),
                                               None, ctypes.byref(set_layout)),
@@ -303,7 +321,7 @@ class Context:
         # to a descriptor. Taking that from the compiled module rather than
         # the source is the difference between working and binding a buffer
         # the shader never reads.
-        push = _PushRange(_STAGE_COMPUTE, 0, _PUSH_BYTES)
+        push = _PushRange(_STAGE_COMPUTE, 0, push_bytes)
         layouts = (_vp * 1)(set_layout)
         pl_info = _PipelineLayoutCreate(30, None, 0, 1, ctypes.cast(layouts, _vp),
                                         1, ctypes.pointer(push))
@@ -321,8 +339,177 @@ class Context:
                                            ctypes.byref(pipe)),
                "vkCreateComputePipelines")
         vk.vkDestroyShaderModule(self.device, module, None)
-        self._pipelines[n] = (pipe, layout, set_layout)
-        return self._pipelines[n]
+        self._pipelines[key] = (pipe, layout, set_layout)
+        return self._pipelines[key]
+
+    def hier_peaks(self, n, band, data, tmpl, ct0, ct1, even_thr, raw_thr,
+                   binsize=None, threshold=0.0, window=None,
+                   upload_data=True, upload_tmpl=True):
+        """The whole hierarchical filter in ONE command buffer.
+
+        Three dispatches -- coarse even, coarse odd, then the gated
+        refinement -- with pipeline barriers between them and NO host in the
+        loop. The gate is evaluated by the refining kernel itself, so nothing
+        has to be read back to decide which pairs survive.
+
+        That readback was the entire problem: the kernel work measured 0.26 ms
+        inside a 5.0 ms call at n=16384, so 95% of the time was the host
+        deciding what the GPU already knew.
+        """
+        vk = self.vk
+        nd, nt = data.shape[0], tmpl.shape[0]
+        lo, hi = (0, n) if window is None else (int(window[0]), int(window[1]))
+        lo, hi = max(0, min(lo, n)), max(0, min(hi, n))
+        if lo >= hi:
+            raise ValueError("empty window (%d, %d)" % (lo, hi))
+        binsize = n if binsize is None else int(binsize)
+        nbins = -(-(hi - lo) // binsize)
+        if nbins > _MAX_BINS:
+            # Same split as peaks(): bins are contiguous in the window, so
+            # cutting the window on a bin boundary cuts the bins exactly.
+            span = _MAX_BINS * binsize
+            pi, pv = [], []
+            for a in range(lo, hi, span):
+                bnd = min(a + span, hi)
+                i2, v2 = self.hier_peaks(n, band, data, tmpl, ct0, ct1,
+                                         even_thr, raw_thr, binsize=binsize,
+                                         threshold=threshold, window=(a, bnd),
+                                         upload_data=upload_data,
+                                         upload_tmpl=upload_tmpl)
+                pi.append(i2); pv.append(v2)
+            return np.concatenate(pi, axis=2), np.concatenate(pv, axis=2)
+        shift = (binsize.bit_length() - 1) if binsize & (binsize - 1) == 0 else -1
+        t2 = float(threshold) ** 2 if threshold > 0 else 0.0
+
+        key = ("hier", n, band, nd, nt, nbins, binsize, shift, lo, hi,
+               int(np.float32(t2).view(np.uint32)),
+               float(even_thr), float(raw_thr))
+        batch = self._hier.get(key)
+        if batch is None:
+            batch = self._make_hier(key, n, band, nd, nt, nbins, binsize,
+                                    shift, lo, hi, t2, even_thr, raw_thr)
+            self._hier[key] = batch
+        bufs, cmd = batch
+        # Upload only what changed. A template bank is 67 MB at n=16384 with
+        # 512 templates, and re-sending it on every call dwarfed the
+        # filtering it was feeding.
+        if upload_data:
+            bufs["data"].write(np.ascontiguousarray(data, np.complex64))
+            bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
+        if upload_tmpl:
+            bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
+            bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
+            bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
+
+        cmds = (_vp * 1)(cmd)
+        submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)
+        _check(vk.vkQueueSubmit(self.queue, 1, ctypes.byref(submit), None),
+               "vkQueueSubmit")
+        _check(vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle")
+
+        out = nd * nt * nbins
+        idx = bufs["idx"].read(np.int32, out).astype(np.int64).reshape(nd, nt, nbins)
+        val = bufs["val"].read(np.float32, out * 2).view(
+            np.complex64).reshape(nd, nt, nbins)
+        return idx, val
+
+    def _descriptor_set(self, set_layout, bufs):
+        vk = self.vk
+        nbind = len(bufs)
+        sizes = (_PoolSize * 1)(_PoolSize(_DESC_STORAGE_BUFFER, nbind))
+        dp = _DescPoolCreate(33, None, 0, 1, 1, sizes)
+        pool = _vp()
+        _check(vk.vkCreateDescriptorPool(self.device, ctypes.byref(dp), None,
+                                         ctypes.byref(pool)),
+               "vkCreateDescriptorPool")
+        self._pools = getattr(self, "_pools", [])
+        self._pools.append(pool)
+        layouts = (_vp * 1)(set_layout)
+        da = _DescSetAlloc(34, None, pool, 1, ctypes.cast(layouts, _vp))
+        dset = _vp()
+        _check(vk.vkAllocateDescriptorSets(self.device, ctypes.byref(da),
+                                           ctypes.byref(dset)),
+               "vkAllocateDescriptorSets")
+        infos = (_DescBufferInfo * nbind)(
+            *[_DescBufferInfo(b.handle, 0, _WHOLE_SIZE) for b in bufs])
+        writes = (_WriteDescSet * nbind)(*[
+            _WriteDescSet(35, None, dset, i, 0, 1, _DESC_STORAGE_BUFFER, None,
+                          ctypes.pointer(infos[i]), None) for i in range(nbind)])
+        vk.vkUpdateDescriptorSets(self.device, nbind, writes, 0, None)
+        return dset
+
+    def _make_hier(self, key, n, band, nd, nt, nbins, binsize, shift, lo, hi,
+                   t2, even_thr, raw_thr):
+        vk = self.vk
+        cpipe, clayout, cset_layout = self.pipeline(band)
+        gpipe, glayout, gset_layout = self.gated_pipeline(n)
+        pairs = nd * nt
+        b = {
+            "data":  _Buffer(self, nd * n * 8),
+            "tmpl":  _Buffer(self, nt * n * 8),
+            "cdata": _Buffer(self, nd * band * 8),
+            "ct0":   _Buffer(self, nt * band * 8),
+            "ct1":   _Buffer(self, nt * band * 8),
+            "eidx":  _Buffer(self, pairs * 4),
+            "eval":  _Buffer(self, pairs * 8),
+            "oidx":  _Buffer(self, pairs * 4),
+            "oval":  _Buffer(self, pairs * 8),
+            "idx":   _Buffer(self, nd * nt * nbins * 4),
+            "val":   _Buffer(self, nd * nt * nbins * 8),
+        }
+        ds_even = self._descriptor_set(cset_layout,
+                                       [b["cdata"], b["ct0"], b["eidx"], b["eval"]])
+        ds_odd = self._descriptor_set(cset_layout,
+                                      [b["cdata"], b["ct1"], b["oidx"], b["oval"]])
+        ds_ref = self._descriptor_set(gset_layout,
+                                      [b["data"], b["tmpl"], b["idx"], b["val"],
+                                       b["eval"], b["oval"]])
+
+        cb = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
+        cmd = _vp()
+        _check(vk.vkAllocateCommandBuffers(self.device, ctypes.byref(cb),
+                                           ctypes.byref(cmd)),
+               "vkAllocateCommandBuffers")
+        _check(vk.vkBeginCommandBuffer(cmd, ctypes.byref(
+            _CmdBufBegin(42, None, 0, None))), "vkBeginCommandBuffer")
+
+        def coarse(ds):
+            vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, cpipe)
+            sets = (_vp * 1)(ds)
+            vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, clayout, 0, 1,
+                                       sets, 0, None)
+            # One bin over the whole coarse span: the reported peak IS the
+            # maximum, which is what the gate needs. Threshold 0 so nothing
+            # is suppressed before the gate can see it.
+            pc = (ctypes.c_uint32 * 7)(nt, 0, band, band,
+                                       band.bit_length() - 1, 1, 0)
+            vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0, _PUSH_BYTES,
+                                  ctypes.byref(pc))
+            vk.vkCmdDispatch(cmd, pairs, 1, 1)
+
+        def barrier():
+            mb = _MemBarrier(46, None, _ACCESS_SHADER_WRITE, _ACCESS_SHADER_READ)
+            vk.vkCmdPipelineBarrier(cmd, _STAGE_COMPUTE_BIT, _STAGE_COMPUTE_BIT,
+                                    0, 1, ctypes.byref(mb), 0, None, 0, None)
+
+        coarse(ds_even)
+        barrier()
+        coarse(ds_odd)
+        barrier()
+        vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, gpipe)
+        sets = (_vp * 1)(ds_ref)
+        vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, glayout, 0, 1,
+                                   sets, 0, None)
+        pc = (ctypes.c_uint32 * 9)(
+            nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins,
+            int(np.float32(t2).view(np.uint32)),
+            int(np.float32(even_thr).view(np.uint32)),
+            int(np.float32(raw_thr).view(np.uint32)))
+        vk.vkCmdPushConstants(cmd, glayout, _STAGE_COMPUTE, 0,
+                              _PUSH_BYTES_GATED, ctypes.byref(pc))
+        vk.vkCmdDispatch(cmd, pairs, 1, 1)
+        _check(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")
+        return b, cmd
 
     def _make_batch(self, key, n, nd, nt, nbins, binsize, shift, lo, hi, t2):
         """Buffers, descriptor set and a recorded command buffer for one shape."""
@@ -379,7 +566,8 @@ class Context:
         self._pools.append(pool)
         return (b_data, b_tmpl, b_idx, b_val, cmd)
 
-    def peaks(self, n, data, tmpl, binsize=None, threshold=0.0, window=None):
+    def peaks(self, n, data, tmpl, binsize=None, threshold=0.0, window=None,
+              upload_data=True, upload_tmpl=True):
         """Peak index and complex value per (data, template, bin).
 
         Mirrors MatchedFilter.run: bins are ``ceil((end-start)/binsize)``
@@ -409,7 +597,9 @@ class Context:
             for start in range(lo, hi, span):
                 stop = min(start + span, hi)
                 pi, pv = self.peaks(n, data, tmpl, binsize=binsize,
-                                    threshold=threshold, window=(start, stop))
+                                    threshold=threshold, window=(start, stop),
+                                    upload_data=upload_data,
+                                    upload_tmpl=upload_tmpl)
                 parts_i.append(pi)
                 parts_v.append(pv)
             return (np.concatenate(parts_i, axis=2),
@@ -438,8 +628,10 @@ class Context:
             self._batches[key] = batch
         b_data, b_tmpl, b_idx, b_val, cmd = batch
 
-        b_data.write(np.ascontiguousarray(data, np.complex64))
-        b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
+        if upload_data:
+            b_data.write(np.ascontiguousarray(data, np.complex64))
+        if upload_tmpl:
+            b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
 
         cmds = (_vp * 1)(cmd)
         submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)
@@ -463,6 +655,10 @@ class Context:
             for buf in (b_data, b_tmpl, b_idx, b_val):
                 buf.destroy()
         self._batches.clear()
+        for bufs, _cmd in self._hier.values():
+            for buf in bufs.values():
+                buf.destroy()
+        self._hier.clear()
         for pool in getattr(self, "_pools", []):
             vk.vkDestroyDescriptorPool(self.device, pool, None)
         self._pipelines.clear()
