@@ -51,6 +51,10 @@ _COARSE_TILE = {256: 4}
 _QUEUE_COMPUTE = 0x2
 _BUF_STORAGE = 0x20
 _MEM_DEVICE_LOCAL, _MEM_HOST_VISIBLE, _MEM_HOST_COHERENT = 0x1, 0x2, 0x4
+#: HOST_CACHED. The CPU reads the two output buffers and nothing else,
+#: and reading uncached device-visible memory runs at about 240 MB/s --
+#: measured, and enough to cost more than the kernel.
+_MEM_HOST_CACHED = 0x8
 _DESC_STORAGE_BUFFER = 7
 _STAGE_COMPUTE = 0x20
 _BIND_POINT_COMPUTE = 1
@@ -194,7 +198,7 @@ class _Buffer:
     kind of code that looks right and halves throughput.
     """
 
-    def __init__(self, ctx, nbytes):
+    def __init__(self, ctx, nbytes, readback=False):
         self.ctx, self.nbytes = ctx, max(int(nbytes), 4)
         vk = ctx.vk
         info = _BufferCreate(12, None, 0, self.nbytes, _BUF_STORAGE, 0, 0, None)
@@ -203,7 +207,7 @@ class _Buffer:
                                  ctypes.byref(self.handle)), "vkCreateBuffer")
         req = _MemReq()
         vk.vkGetBufferMemoryRequirements(ctx.device, self.handle, ctypes.byref(req))
-        alloc = _MemAlloc(5, None, req.size, ctx.memory_type(req.memoryTypeBits))
+        alloc = _MemAlloc(5, None, req.size, ctx.memory_type(req.memoryTypeBits, readback))
         self.memory = _vp()
         _check(vk.vkAllocateMemory(ctx.device, ctypes.byref(alloc), None,
                                    ctypes.byref(self.memory)), "vkAllocateMemory")
@@ -317,10 +321,23 @@ class Context:
                 return i
         raise VulkanError("device exposes no compute queue")
 
-    def memory_type(self, allowed_bits):
-        """Prefer device-local host-visible memory; require host-visible."""
+    def memory_type(self, allowed_bits, readback=False):
+        """A memory type for this buffer; host-visible either way.
+
+        Direction decides the preference, because the two wants are opposed.
+        A buffer the CPU WRITES wants DEVICE_LOCAL and host-visible -- the
+        resizable-BAR heap -- which is write-combined: streaming stores go
+        straight to the card. A buffer the CPU READS wants HOST_CACHED,
+        because reads from write-combined memory are uncached and crawl.
+
+        Measured on gfx1151: the peak outputs came back at 240 MB/s, so at
+        n=16384 with ten bins the 3.9 MB readback cost 16 ms against 24 ms
+        for the kernel that produced it. Same allocation, one flag.
+        """
         want = _MEM_HOST_VISIBLE | _MEM_HOST_COHERENT
-        for require in (want | _MEM_DEVICE_LOCAL, want):
+        order = ((want | _MEM_HOST_CACHED, want | _MEM_DEVICE_LOCAL, want)
+                 if readback else (want | _MEM_DEVICE_LOCAL, want))
+        for require in order:
             for i in range(self.mem_props.memoryTypeCount):
                 flags = self.mem_props.memoryTypes[i].propertyFlags
                 if allowed_bits & (1 << i) and (flags & require) == require:
@@ -529,8 +546,8 @@ class Context:
             "eval":  _Buffer(self, pairs * 8),
             "oidx":  _Buffer(self, pairs * 4),
             "oval":  _Buffer(self, pairs * 8),
-            "idx":   _Buffer(self, nd * nt * nbins * 4),
-            "val":   _Buffer(self, nd * nt * nbins * 8),
+            "idx":   _Buffer(self, nd * nt * nbins * 4, readback=True),
+            "val":   _Buffer(self, nd * nt * nbins * 8, readback=True),
         }
         # The tiled coarse kernel reports a magnitude per pair and nothing
         # else -- a maximum does not depend on the output ordering, so it
@@ -629,8 +646,8 @@ class Context:
         out = nd * nt * nbins
         b_data = _Buffer(self, nd * n * 8)
         b_tmpl = _Buffer(self, nt * n * 8)
-        b_idx = _Buffer(self, out * 4)
-        b_val = _Buffer(self, out * 8)
+        b_idx = _Buffer(self, out * 4, readback=True)
+        b_val = _Buffer(self, out * 8, readback=True)
 
         sizes = (_PoolSize * 1)(_PoolSize(_DESC_STORAGE_BUFFER, _NBIND))
         dp_info = _DescPoolCreate(33, None, 0, 1, 1, sizes)
