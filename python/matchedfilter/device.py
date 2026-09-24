@@ -158,8 +158,12 @@ def parse(spec):
 
     text = spec.strip().lower()
     if text == "auto":
-        ok, _ = _vulkan.available()
-        text = "gpu" if ok else "cpu"
+        # Any real GPU, whatever reaches it. Asking _vulkan directly meant
+        # "auto" chose the CPU on a Mac -- silently, with a Metal GPU
+        # present and usable -- and not having to know which backend your
+        # machine uses is the entire point of "auto".
+        text = "gpu" if any(d.kind == "gpu" and not d.is_software
+                            for d in devices()) else "cpu"
 
     kind, _, ordinal = text.partition(":")
     if kind not in ("cpu", "gpu"):
@@ -187,8 +191,23 @@ def parse(spec):
     for d in candidates:
         if not d.is_software:
             return d
-    ok, reason = _vulkan.available()
     raise RuntimeError(
         "no GPU available: %s. Pass device='gpu:<n>' to select a specific "
         "device (including a software one), or device='cpu'."
-        % (reason or "unknown"))
+        % _no_gpu_reason())
+
+
+def _no_gpu_reason():
+    """Why there is no GPU, from whichever backend this platform uses.
+
+    Quoting the Vulkan loader on a Mac is a non-answer: macOS has no Vulkan
+    driver and never will, so "no libvulkan" says nothing about whether the
+    machine has a GPU this library can drive.
+    """
+    import sys
+    if sys.platform == "darwin":
+        ok, why = _metal.available()
+        return why or ("a Metal device is present but was not usable"
+                       if ok else "no Metal device")
+    ok, why = _vulkan.available()
+    return why or "unknown"

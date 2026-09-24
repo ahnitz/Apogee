@@ -106,3 +106,52 @@ def test_objects_without_dlpack_still_work():
     filt.set_data(Legacy(), index=0)
     filt.set_templates(Legacy(), index=0)
     assert abs(filt.run()[0, 0, 0]["value"]) > 0
+
+
+def test_auto_is_not_vulkan_specific():
+    """'auto' means "a GPU if this machine has one", not "if Vulkan does".
+
+    It used to ask _vulkan.available() directly, so on macOS -- which has
+    no Vulkan driver and a perfectly good Metal one -- it silently chose the
+    CPU. Not having to know which backend your machine uses is the whole
+    point of asking for 'auto'.
+    """
+    import matchedfilter as mf
+    from matchedfilter import device as D
+
+    real = [d for d in mf.devices() if d.kind == "gpu" and not d.is_software]
+    got = D.parse("auto")
+    if real:
+        assert got.kind == "gpu", (
+            "this machine has %s but 'auto' chose %s" % (real[0], got))
+        assert not got.is_software
+    else:
+        assert got.kind == "cpu"
+
+
+def test_auto_picks_a_metal_gpu_when_that_is_the_only_backend(monkeypatch):
+    """The macOS case, on any machine: Vulkan absent, Metal present."""
+    from matchedfilter import device as D
+
+    metal_gpu = D.Device("gpu", 0, "Apple Paravirtual device", "metal")
+    cpu = D.Device("cpu", 0, "arm", "NEON")
+    monkeypatch.setattr(D, "devices", lambda: [cpu, metal_gpu])
+    monkeypatch.setattr(D._vulkan, "available", lambda: (False, "no libvulkan"))
+    got = D.parse("auto")
+    assert got.backend == "metal" and got.kind == "gpu", (
+        "'auto' chose %r with a Metal GPU available" % (got,))
+
+
+def test_no_gpu_says_why_in_the_platform_s_own_terms(monkeypatch):
+    """On a Mac, 'no libvulkan' is a non-answer about whether a GPU exists."""
+    import sys
+    from matchedfilter import device as D
+
+    monkeypatch.setattr(D, "devices",
+                        lambda: [D.Device("cpu", 0, "arm", "NEON")])
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(D._metal, "available",
+                        lambda: (False, "no Metal device"))
+    with pytest.raises(RuntimeError) as e:
+        D.parse("gpu")
+    assert "Metal" in str(e.value) and "libvulkan" not in str(e.value)
