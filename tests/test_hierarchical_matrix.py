@@ -69,9 +69,16 @@ def assert_one_sided(flat_peaks, hier_peaks, context=""):
     np.testing.assert_array_equal(flat_peaks["index"][fired],
                                   hier_peaks["index"][fired],
                                   err_msg="index differs %s" % context)
-    np.testing.assert_array_equal(flat_peaks["value"][fired],
-                                  hier_peaks["value"][fired],
-                                  err_msg="value differs %s" % context)
+    # Values to single precision, not bit-for-bit. Today refinement runs the
+    # same kernel and the result IS bit-identical, but requiring that would
+    # pin an implementation detail rather than the contract: a fused coarse
+    # and refine pass may sum in a different order, and that is a legitimate
+    # optimisation, not a regression. The goal is accuracy and speed, not
+    # reproducible rounding.
+    np.testing.assert_allclose(flat_peaks["value"][fired],
+                               hier_peaks["value"][fired],
+                               rtol=1e-5, atol=1e-5,
+                               err_msg="value differs %s" % context)
     return fired
 
 

@@ -31,7 +31,14 @@ OUT = ROOT / "python" / "matchedfilter" / "spirv"
 #:
 #: Keep in step with matchedfilter._GPU_SIZES, which is what device="gpu"
 #: checks before it builds a plan.
-TIER_B = (1024, 2048, 4096, 8192, 16384)
+TIER_B = (64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384)
+
+#: The short lengths are not transform sizes a caller asks for -- they are
+#: COARSE bands. The hierarchical mode's first pass is the ordinary filter at
+#: length `band`, so the same kernel has to exist there. The decomposition
+#: generalises down without change: at 512 the workgroup is 32 threads, two
+#: exchange levels and an innermost radix of 2.
+_COARSE_ONLY = (64, 128, 256, 512)
 
 KERNEL = ROOT / "src" / "gpu" / "tierb.slang"
 ENTRY = "fusedTierB"

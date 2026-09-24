@@ -1234,12 +1234,6 @@ class HierarchicalFilter(MatchedFilter):
                  band=None, oversample=None, taps=None, device=None):
         from .device import parse as _parse_device
         self.device = _parse_device(device)
-        if self.device.kind != "cpu":
-            raise NotImplementedError(
-                "the hierarchical mode does not run on %s yet; it needs the "
-                "coarse pass and the refinement dispatch, not just the flat "
-                "kernel. Use MatchedFilter for device='gpu', or "
-                "HierarchicalFilter on device='cpu'." % self.device)
         self.n = int(n)
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
@@ -1251,6 +1245,18 @@ class HierarchicalFilter(MatchedFilter):
         self._pending_ref = None
         self._pinned = None
         self._margin = None
+        self._fs_snr = None
+        self._last_refine = 0.0
+        self._gpu = None
+        if self.device.kind == "gpu":
+            # HierarchicalFilter overrides __init__, so it does NOT inherit
+            # MatchedFilter's call to _start_gpu. Omitting this left device=
+            # accepted, self.device reporting "gpu:0", and every run quietly
+            # going to the CPU -- which looked like a working port.
+            self._start_gpu()
+            self._defer = True
+            self._mf = None
+            return
         if band is None:
             # Defer: the band should be chosen from the reference, and the
             # reference arrives after construction in every caller we have.
@@ -1319,6 +1325,134 @@ class HierarchicalFilter(MatchedFilter):
             self._mf.set_reference(self._pending_ref)
         return self._mf
 
+    # ---- GPU -----------------------------------------------------------
+    #
+    # The port is tractable because of one fact src/hmf.c states outright:
+    # the coarse pass IS a matched filter on an m-point plan. It is not a
+    # bespoke decimation -- it is the ordinary flat filter at length `band`,
+    # on templates truncated to that band and scaled by 1/sqrt(f). So the
+    # coarse pass needs no kernel of its own; it is the kernel that already
+    # ships, at a shorter length.
+    #
+    # The second fact that makes it simple: with a reference set, the three
+    # coarse thresholds are SCALARS, not per-template. fpow and the recovery
+    # factors then come from the reference rather than from each template, so
+    # every template gets the same numbers -- verified across 32 templates
+    # with deliberately different power-law slopes.
+    def _start_gpu(self):
+        from . import _vkcompute
+        if self.n not in _GPU_SIZES:
+            raise ValueError(
+                "device='gpu' supports n in %s; got %d"
+                % (sorted(_GPU_SIZES), self.n))
+        self._gpu = _vkcompute.Context(self.device.index)
+        self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
+        self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
+        self._gcal = None
+
+    def _gpu_calibration(self, threshold):
+        """(band, f, margin, raw, even), from the CPU plan that owns the tables.
+
+        The calibration is derived by the C, not re-derived here. hmf_threshold
+        is a compiled table and the recovery factors are measured; a second
+        implementation of either would be a second thing to keep in step, and
+        the failure would be silent -- a mis-scaled coarse output still looks
+        like a plausible correlation.
+
+        One template is enough: with a reference set the numbers do not depend
+        on which.
+        """
+        key = (threshold, self.snr, self.fd, self._fs_snr)
+        if self._gcal is not None and self._gcal[0] == key:
+            return self._gcal[1]
+        cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd)
+        if self._fs_snr is not None:
+            cal.set_first_stage(self._fs_snr)
+        cal.set_reference(self._pending_ref)
+        cal.set_templates(self._gtmpl[0][None, :])
+        plan = cal._ensure()
+        band = cal.config[0]
+        margin, raw, even = plan.coarse_thresholds(float(threshold))
+        ref = np.asarray(self._pending_ref, dtype=np.float64)
+        f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
+        out = (band, f, margin, raw, even)
+        self._gcal = (key, out)
+        return out
+
+    def _run_gpu(self, binsize, threshold, start, end, data, templates,
+                 counts, raw_out):
+        """Coarse pass, then the flat filter on what survives.
+
+        Two dispatches for the coarse halves and one per data segment for the
+        refinement. That is more round trips than the fused kernel wants --
+        the survivor list goes to the host and back -- and it is the first
+        thing to remove once this is correct. Correctness first: a fused
+        kernel that is wrong is harder to diagnose than a slow one.
+        """
+        d0, nd = (0, self.ndata) if data is None else (int(data[0]), int(data[1]))
+        t0, nt = (0, self.ntemplates) if templates is None else (int(templates[0]), int(templates[1]))
+        if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
+           or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
+            raise ValueError("data/templates sub-range out of bounds")
+        if self._pending_ref is None:
+            raise ValueError("set_reference is required before running on a GPU")
+
+        band, f, margin, raw_thr, even_thr = self._gpu_calibration(threshold)
+        D = self._gdata[d0:d0 + nd]
+        H = self._gtmpl[t0:t0 + nt]
+
+        # Coarse templates: truncate, scale, and phase-ramp for the odd half.
+        s = 1.0 / np.sqrt(f) if f > 0 else 0.0
+        ct0 = (H[:, :band] * s).astype(np.complex64)
+        ramp = np.exp(1j * np.pi * np.arange(band) / band).astype(np.complex64)
+        ct1 = (ct0 * ramp).astype(np.complex64)
+        Dc = np.ascontiguousarray(D[:, :band])
+
+        # The coarse pass is the flat filter at `band`, one bin over the whole
+        # window, which is what makes the reported peak the maximum.
+        _, ev = self._gpu.peaks(band, Dc, ct0, binsize=band, threshold=0.0)
+        _, od = self._gpu.peaks(band, Dc, ct1, binsize=band, threshold=0.0)
+        even = np.abs(ev[:, :, 0])
+        odd = np.abs(od[:, :, 0])
+
+        # The C dismisses on the even half alone before paying for the odd
+        # one, and takes the odd value only above raw_thr.
+        alive = even >= even_thr
+        best = np.where(odd >= raw_thr, np.maximum(even, odd), even)
+
+        # Escalate at raw_thr rather than at margin. Between the two sits the
+        # only window where the C's interpolation can change the verdict; it
+        # can only ever raise the statistic, so escalating the whole window is
+        # strictly MORE conservative than interpolating it. Measured at
+        # 0.9-2.2% of pairs, and it removes the 13-tap interpolator -- and the
+        # coarse series it would need resident -- from the device entirely.
+        escalate = alive & (best >= raw_thr)
+
+        nb = self.nbins(binsize, (start, end))
+        peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
+        peaks["index"] = -1
+        peaks["value"] = 0
+        self._last_refine = float(escalate.mean()) if escalate.size else 0.0
+
+        # Refinement IS the flat filter, which is what makes the one-sided
+        # guarantee hold by construction rather than by agreement.
+        for d in range(nd):
+            sel = np.flatnonzero(escalate[d])
+            if not sel.size:
+                continue
+            idx, val = self._gpu.peaks(
+                self.n, D[d:d + 1], np.ascontiguousarray(H[sel]),
+                binsize=binsize, threshold=threshold, window=(start, end))
+            peaks["index"][d, sel] = idx[0]
+            peaks["value"][d, sel] = val[0]
+
+        if raw_out:
+            r = (peaks["index"], peaks["value"])
+            return (r, (peaks["index"] >= 0).sum(axis=2).astype(np.int32)) if counts else r
+        if counts:
+            return peaks, (peaks["index"] >= 0).sum(axis=2).astype(np.int32)
+        return peaks
+
     def set_first_stage(self, snr):
         """Calibrate the first stage against `snr` rather than the threshold.
 
@@ -1341,6 +1475,7 @@ class HierarchicalFilter(MatchedFilter):
 
         Pass ``None`` or a non-positive value to go back to deriving it.
         """
+        self._fs_snr = None if snr is None else float(snr)
         self._ensure().set_first_stage(0.0 if snr is None else float(snr))
 
     def set_reference(self, power):
@@ -1465,12 +1600,17 @@ class HierarchicalFilter(MatchedFilter):
     @property
     def config(self):
         """``(band, oversample, taps)`` the design table selected."""
+        if self._gpu is not None:
+            band, _f, _m, _r, _e = self._gpu_calibration(self.snr)
+            return band, 2, 0
         band, u, k = self._ensure().config()
         return band, u, k
 
     @property
     def stats(self):
         """``(pairs, triggers)`` accumulated since construction."""
+        if self._gpu is not None:
+            return (0, 0)          # no C plan to carry the counters
         return self._ensure().stats()
 
     @property
@@ -1485,6 +1625,11 @@ class HierarchicalFilter(MatchedFilter):
         Counted over the plan's whole lifetime, not per run.  To measure one
         workload, filter it with a plan that has seen nothing else.
         """
+        if self._gpu is not None:
+            # No C plan to accumulate counters, so this is the LAST run's
+            # rate rather than a lifetime one. Stated because the CPU's is
+            # a lifetime figure and comparing them silently would mislead.
+            return self._last_refine
         pairs, trig = self._ensure().stats()
         return trig / pairs if pairs else 0.0
 

@@ -343,9 +343,21 @@ class Context:
             raise ValueError("binsize must be >= 1")
         nbins = -(-(hi - lo) // binsize)
         if nbins > _MAX_BINS:
-            raise ValueError(
-                "%d bins exceeds the %d this kernel stages in shared memory; "
-                "use a larger binsize or device='cpu'" % (nbins, _MAX_BINS))
+            # The per-bin table lives in shared memory and holds _MAX_BINS
+            # entries. Bins are contiguous in the window, so splitting the
+            # WINDOW on a bin boundary splits the bins exactly -- each piece
+            # is an ordinary call and the results concatenate. No kernel
+            # change, and no limit left to explain to a caller.
+            span = _MAX_BINS * binsize
+            parts_i, parts_v = [], []
+            for start in range(lo, hi, span):
+                stop = min(start + span, hi)
+                pi, pv = self.peaks(n, data, tmpl, binsize=binsize,
+                                    threshold=threshold, window=(start, stop))
+                parts_i.append(pi)
+                parts_v.append(pv)
+            return (np.concatenate(parts_i, axis=2),
+                    np.concatenate(parts_v, axis=2))
         # Shift when the binsize is a power of two, divide when it is not --
         # the same split the CPU makes, and why no restriction is needed.
         shift = (binsize.bit_length() - 1) if binsize & (binsize - 1) == 0 else -1

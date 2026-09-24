@@ -179,6 +179,15 @@ int ap_hmf_run_series(ap_hmf_plan *p,
    The ratio is the measured trigger rate, which is what the speedup rides on. */
 void ap_hmf_stats(const ap_hmf_plan *p, long *pairs, long *triggers);
 
+/* The three coarse-pass thresholds this plan would use at `threshold`.
+   They are what a non-CPU backend needs in order to make the SAME decision:
+   dismiss below `even`, take the odd half above `raw`, escalate at or above
+   `margin`.  With set_reference they are scalars rather than per-template,
+   because the recovery factors and the band fraction then come from the
+   reference and not from each template.  Returns 0 on success. */
+int ap_hmf_coarse_thresholds(ap_hmf_plan *p, float threshold,
+                             float *margin, float *raw, float *even);
+
 /* The band / oversampling / taps / margin the table chose, for reporting. */
 void ap_hmf_config(const ap_hmf_plan *p, size_t *band, int *oversample, int *taps);
 

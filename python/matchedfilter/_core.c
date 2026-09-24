@@ -237,6 +237,13 @@ static PyObject *HMF_stats(HMFObject *self,PyObject *a){
   long pr=0,tg=0; (void)a; ap_hmf_stats(self->p,&pr,&tg);
   return Py_BuildValue("(ll)",pr,tg);
 }
+static PyObject *HMF_coarse_thresholds(HMFObject *self,PyObject *args){
+  float thr,margin=0,raw=0,even=0;
+  if(!PyArg_ParseTuple(args,"f",&thr)) return NULL;
+  if(ap_hmf_coarse_thresholds(self->p,thr,&margin,&raw,&even)<0){
+    PyErr_SetString(PyExc_RuntimeError,"coarse_thresholds failed"); return NULL; }
+  return Py_BuildValue("(fff)",margin,raw,even);
+}
 static PyObject *HMF_config(HMFObject *self,PyObject *a){
   size_t band=0; int u=0,k=0; (void)a; ap_hmf_config(self->p,&band,&u,&k);
   return Py_BuildValue("(nii)",(Py_ssize_t)band,u,k);
@@ -266,6 +273,7 @@ static PyMethodDef HMF_methods[]={
   {"run_series",(PyCFunction)HMF_run_series,METH_VARARGS,"run_series(...)"},
   {"stats",(PyCFunction)HMF_stats,METH_NOARGS,"stats() -> (pairs, triggers)"},
   {"config",(PyCFunction)HMF_config,METH_NOARGS,"config() -> (band, oversample, taps)"},
+  {"coarse_thresholds",(PyCFunction)HMF_coarse_thresholds,METH_VARARGS,NULL},
   {NULL}
 };
 static PyTypeObject HMFType={

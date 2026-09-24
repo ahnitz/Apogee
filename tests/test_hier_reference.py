@@ -53,17 +53,23 @@ def test_even_coarse_maximum_matches_the_c_implementation(tmp_path):
 
     if not dump.exists() or dump.stat().st_size == 0:
         pytest.skip("no pair survived the early-out, so nothing was dumped")
-    recs = np.frombuffer(dump.read_bytes(), dtype=np.float32).reshape(-1, 4)
+    # MF_HMF_DUMP: ce, co, best, margin, raw_thr, even_thr, d, t
+    recs = np.frombuffer(dump.read_bytes(), dtype=np.float32).reshape(-1, 8)
 
     f = ref.band_fraction(reference, band)
-    mine = np.array([ref.coarse_peak(D[d], H[t], band, f)[0]
-                     for d in range(nd) for t in range(nt)])
 
-    # Every dumped even value must appear among the mirror's, to float32.
-    for got in recs[:, 0]:
-        assert np.min(np.abs(mine - got)) <= 1e-4 * max(got, 1.0), (
-            "the C reported a coarse maximum of %.6f that the mirror never "
-            "produces; the mirror is describing a different algorithm" % got)
+    # The dump carries the pair id, so this compares the SAME pair rather
+    # than hunting for a nearby value -- which is ambiguous when coarse
+    # maxima cluster, and that ambiguity is indistinguishable from a mirror
+    # that computes the wrong thing.
+    for row in recs:
+        d, t = int(row[6]), int(row[7])
+        even, odd = ref.coarse_peak(D[d], H[t], band, f)
+        assert even == pytest.approx(row[0], rel=1e-5), (
+            "even coarse maximum disagrees for pair (%d,%d)" % (d, t))
+        if row[1] > 0:      # the C reports the odd half only above raw_thr
+            assert odd == pytest.approx(row[1], rel=1e-5), (
+                "odd coarse maximum disagrees for pair (%d,%d)" % (d, t))
 
 
 def test_band_fraction_uses_the_reference_not_the_template():

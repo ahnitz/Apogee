@@ -340,6 +340,24 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   free(p);
 }
 
+int ap_hmf_coarse_thresholds(ap_hmf_plan *p,float threshold,
+                             float *margin,float *raw,float *even)
+{
+  if(!p) return -1;
+  /* Exactly the derivation the run loop uses, so a backend that reads these
+     makes the same decision rather than a similar one. Template 0 stands for
+     all of them: with a reference set, fpow and the recovery factors come
+     from the reference, so every template gets the same three numbers. */
+  float T = p->fs_snr > 0.0f ? p->fs_snr
+                             : (threshold>p->snr ? threshold : p->snr);
+  float gt = p->tg[0];
+  float tc = hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->coarse_margin;
+  if(margin) *margin = tc;
+  if(raw)    *raw    = tc*p->tgraw [0]*0.999f;
+  if(even)   *even   = tc*p->tgraw1[0]*p->even_margin;
+  return 0;
+}
+
 size_t ap_hmf_nbins(const ap_hmf_plan *p,size_t binsize,size_t start,size_t end){
   return p ? ap_mf_nbins(p->full,binsize,start,end) : 0;
 }
@@ -987,8 +1005,13 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       }
       if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }
       float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
-      if(p->dump){ float rec[4]={ce.magnitude,bestmag,margin,
-                                 p->ibrk?p->ibuf[(size_t)d*nt+t]:0.f};
+      /* The pair id is part of the record.  Without it a reader has to match
+         rows by their even value, which is ambiguous whenever two pairs land
+         close together -- and that ambiguity is indistinguishable from a
+         mirror that computes the wrong thing. */
+      if(p->dump){ float rec[8]={ce.magnitude,co.magnitude,bestmag,margin,
+                                 raw_thr,even_thr,
+                                 (float)(d0+d),(float)(t0+t)};
                    fwrite(rec,sizeof rec,1,p->dump); }
       if(getenv("MF_HMF_TRACE") && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld margin=%.3f even_thr=%.3f "

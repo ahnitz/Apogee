@@ -2,6 +2,150 @@
   "entry": "fusedTierB",
   "kernel": "tierb.slang",
   "modules": {
+    "64": {
+      "local_size": [
+        4,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakIdx",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_64.spv",
+      "bytes": 15768
+    },
+    "128": {
+      "local_size": [
+        8,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakIdx",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_128.spv",
+      "bytes": 16356
+    },
+    "256": {
+      "local_size": [
+        16,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakIdx",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_256.spv",
+      "bytes": 18292
+    },
+    "512": {
+      "local_size": [
+        32,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakIdx",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_512.spv",
+      "bytes": 22192
+    },
     "1024": {
       "local_size": [
         64,

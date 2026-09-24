@@ -30,7 +30,11 @@ static const float PI = 3.14159265358979f;
 //: 128 KB at n=16384, over every device's limit, and already past Apple's
 //: 32 KB at n=4096. CH registers of every thread are in flight at once.
 static const uint CAP = 1024;                  // complex, = 8 KB
-static const uint CH  = (CAP / WG > 0) ? (CAP / WG) : 1;
+//: Clamped to R. The exchange runs R/CH chunks, so CH > R makes that zero
+//: and the exchange never happens -- the kernel then returns a transform of
+//: the wrong axis, silently, with plausible magnitudes. That is what it did
+//: at every length below 1024, where CAP/WG exceeds 16.
+static const uint CH  = ((CAP / WG) > R) ? R : ((CAP / WG > 0) ? (CAP / WG) : 1);
 //: Staged as uint so the per-bin peak table can alias this same memory once
 //: the transform is finished. A second array would have doubled LDS to 16 KB,
 //: and LDS is what caps how many workgroups a CU holds -- the 8 KB here was

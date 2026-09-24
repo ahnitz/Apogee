@@ -19,6 +19,10 @@ fit is exact, not approximate, for 1024 through 16384.
 #: [2, 2] and not [4]: dft4 leaves its pair bit-reversed. That is measured,
 #: not reasoned -- [4] was tried and does not reproduce the hardware.
 RADICES = {
+    64:    [16, 2, 2],
+    128:   [16, 8],
+    256:   [16, 16],
+    512:   [16, 16, 2],
     1024:  [16, 16, 2, 2],
     2048:  [16, 16, 8],
     4096:  [16, 16, 16],
