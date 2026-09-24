@@ -80,6 +80,17 @@ FAMILIES += [("Mac2", 2002), ("Common1", 3001), ("Common3", 3003),
              ("Metal3", 5001)]
 
 
+ISOLATION = """A failed pipeline WEDGES this driver, so each kernel runs alone.
+
+Measured on the Apple Paravirtual device: after the second over-limit
+kernel, every later pipeline creation failed regardless of content --
+including kernels the suite then ran correctly in a fresh process. Checking
+them in one process therefore reports a cascade of failures that are not
+real, and the order they happen to be checked in decides which ones look
+broken. Each stem gets its own process so one genuine failure cannot
+manufacture ten false ones."""
+
+
 def main():
     o = M._ObjC()
     devices = []
@@ -94,6 +105,10 @@ def main():
         return 1
 
     bad = 0
+    # With no argument: the device and the four minimal kernels only. A
+    # shipped kernel is checked only when named, one per process -- see
+    # ISOLATION.
+    stems = [pathlib.Path(sys.argv[1])] if len(sys.argv) > 1 else []
     for dev in devices:
         name = o.to_str(o.call(dev, b"name"))
         print("=== %s ===" % name)
@@ -131,7 +146,7 @@ def main():
                                  restype=ctypes.c_ulong))
                 print("  probe %-18s ok (max %d threads/group)" % (label, lim))
 
-        for lib_path in sorted(M._METAL_DIR.glob("*.metallib")):
+        for lib_path in stems:
             stem = lib_path.stem
             entry = "gatedTierB" if stem.startswith("gated") else "fusedTierB"
             err = ctypes.c_void_p()

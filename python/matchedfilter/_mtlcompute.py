@@ -46,6 +46,9 @@ def _manifest():
 _STORAGE_SHARED = 0
 
 
+from ._errors import UnsupportedSize      # noqa: F401  (re-export)
+
+
 class MetalError(RuntimeError):
     pass
 
@@ -285,7 +288,7 @@ class Context:
         limit = int(self.o.call(pso, b"maxTotalThreadsPerThreadgroup",
                                 restype=ctypes.c_ulong))
         if limit < n // 16:
-            raise MetalError(
+            raise UnsupportedSize(
                 "n=%d needs a %d-thread threadgroup and this pipeline allows "
                 "%d on %s; use a shorter transform or device='cpu'"
                 % (n, n // 16, limit, self.name))

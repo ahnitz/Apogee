@@ -171,6 +171,9 @@ _MemBarrier = _struct("VkMemoryBarrier",
                       ("srcAccessMask", _u32), ("dstAccessMask", _u32))
 
 
+from ._errors import UnsupportedSize      # noqa: F401  (re-export)
+
+
 class VulkanError(RuntimeError):
     pass
 
@@ -348,7 +351,7 @@ class Context:
         """
         info = _manifest().get("modules", {}).get(str(n))
         if info and info.get("local_size", [0])[0] > self.max_invocations:
-            raise VulkanError(
+            raise UnsupportedSize(
                 "n=%d needs a %d-thread workgroup and this device allows %d; "
                 "use a shorter transform or device='cpu'"
                 % (n, info["local_size"][0], self.max_invocations))

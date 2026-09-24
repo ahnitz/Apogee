@@ -252,9 +252,16 @@ jobs:
 
       # After the install, because it imports the package -- and with
       # always(), because the whole point of it is to explain a failure.
+      # One process per kernel: a failed pipeline wedges this driver, and
+      # checking them together turns one real failure into a cascade of
+      # invented ones whose membership depends on filename order.
       - name: What can this device do?
         if: always()
-        run: python tools/metal_probe.py
+        run: |
+          python tools/metal_probe.py
+          for lib in python/matchedfilter/metal/*.metallib; do
+            python tools/metal_probe.py "$lib" | tail -n +2
+          done
 
       - name: Run the suite
         run: python -m pytest tests -q

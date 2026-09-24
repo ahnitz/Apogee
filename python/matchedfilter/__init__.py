@@ -134,6 +134,9 @@ def _as_c64(a, n, what):
     return a
 
 
+from ._errors import UnsupportedSize      # noqa: E402
+
+
 class MatchedFilter:
     """Correlate a set of data segments against a set of templates.
 
