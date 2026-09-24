@@ -442,6 +442,7 @@ class Context:
                    t2, even_thr, raw_thr):
         vk = self.vk
         cpipe, clayout, cset_layout = self.pipeline(band)
+        gcpipe, gclayout, gcset_layout = self.gated_pipeline(band)
         gpipe, glayout, gset_layout = self.gated_pipeline(n)
         pairs = nd * nt
         b = {
@@ -459,8 +460,9 @@ class Context:
         }
         ds_even = self._descriptor_set(cset_layout,
                                        [b["cdata"], b["ct0"], b["eidx"], b["eval"]])
-        ds_odd = self._descriptor_set(cset_layout,
-                                      [b["cdata"], b["ct1"], b["oidx"], b["oval"]])
+        ds_odd_gated = self._descriptor_set(
+            gcset_layout,
+            [b["cdata"], b["ct1"], b["oidx"], b["oval"], b["eval"], b["eval"]])
         ds_ref = self._descriptor_set(gset_layout,
                                       [b["data"], b["tmpl"], b["idx"], b["val"],
                                        b["eval"], b["oval"]])
@@ -473,18 +475,40 @@ class Context:
         _check(vk.vkBeginCommandBuffer(cmd, ctypes.byref(
             _CmdBufBegin(42, None, 0, None))), "vkBeginCommandBuffer")
 
-        def coarse(ds):
+        def coarse_even(ds):
             vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, cpipe)
             sets = (_vp * 1)(ds)
             vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, clayout, 0, 1,
                                        sets, 0, None)
             # One bin over the whole coarse span: the reported peak IS the
-            # maximum, which is what the gate needs. Threshold 0 so nothing
-            # is suppressed before the gate can see it.
+            # maximum, which is what the gate needs.
             pc = (ctypes.c_uint32 * 7)(nt, 0, band, band,
                                        band.bit_length() - 1, 1, 0)
             vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0, _PUSH_BYTES,
                                   ctypes.byref(pc))
+            vk.vkCmdDispatch(cmd, pairs, 1, 1)
+
+        def coarse_odd(ds):
+            """The odd half, GATED on the even one.
+
+            The CPU never computes the odd half for a pair the even half has
+            already dismissed -- about 78% of them -- and computing it for
+            everything made the coarse pass cost twice what it needs to.
+
+            No new kernel: gatedTierB is exactly this shape. Handing it the
+            even buffer for BOTH of its coarse inputs with rawThr = 0 reduces
+            its test to `even >= evenThr`, which is the CPU's early-out.
+            """
+            vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, gcpipe)
+            sets = (_vp * 1)(ds)
+            vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, gclayout, 0, 1,
+                                       sets, 0, None)
+            pc = (ctypes.c_uint32 * 9)(
+                nt, 0, band, band, band.bit_length() - 1, 1, 0,
+                int(np.float32(even_thr).view(np.uint32)),
+                int(np.float32(0.0).view(np.uint32)))
+            vk.vkCmdPushConstants(cmd, gclayout, _STAGE_COMPUTE, 0,
+                                  _PUSH_BYTES_GATED, ctypes.byref(pc))
             vk.vkCmdDispatch(cmd, pairs, 1, 1)
 
         def barrier():
@@ -492,9 +516,9 @@ class Context:
             vk.vkCmdPipelineBarrier(cmd, _STAGE_COMPUTE_BIT, _STAGE_COMPUTE_BIT,
                                     0, 1, ctypes.byref(mb), 0, None, 0, None)
 
-        coarse(ds_even)
+        coarse_even(ds_even)
         barrier()
-        coarse(ds_odd)
+        coarse_odd(ds_odd_gated)
         barrier()
         vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, gpipe)
         sets = (_vp * 1)(ds_ref)
