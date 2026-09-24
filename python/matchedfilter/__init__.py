@@ -284,7 +284,19 @@ class MatchedFilter:
         band, f, margin, raw_thr, even_thr = self._gpu_calibration(threshold)
         # The coarse templates are a function of the templates and the band,
         # so they are rebuilt only when the templates change.
-        ck = (band, f, id(H), H.shape)
+        #
+        # Keyed on WHERE the templates are, not on the identity of the view
+        # object. H is a fresh slice of self._gtmpl on every call, so id(H)
+        # was a new number every time and this cache never hit once -- it
+        # rebuilt nt x band complex twice per run, which at 65536 pairs was
+        # 3.9 ms of numpy against 2.1 ms of GPU.
+        #
+        # id() was also unsound. CPython reuses the address of a freed
+        # object, so the next call's view can land on the previous one's id
+        # and hit the cache for a DIFFERENT template sub-range of the same
+        # shape. The data pointer cannot collide that way: it is the address
+        # of the templates themselves, so a different t0 is a different key.
+        ck = (band, f, H.ctypes.data, H.shape)
         if getattr(self, "_ckey", None) != ck or self._tdirty:
             sc = 1.0 / np.sqrt(f) if f > 0 else 0.0
             ct0 = (H[:, :band] * sc).astype(np.complex64)
@@ -299,10 +311,19 @@ class MatchedFilter:
             upload_data=self._ddirty, upload_tmpl=self._tdirty)
         self._ddirty = self._tdirty = False
 
+        # Refine-rate bookkeeping, in one reduction rather than three.
+        #
+        # This is a diagnostic -- refine_rate and stats read it -- and it
+        # used to cost three passes over the output on the hot path: a bool
+        # array, then mean(), then sum(). mean IS sum/size, so two of the
+        # three were free to remove. At 65536 pairs the block was about
+        # 0.1 ms against 0.31 ms of GPU, which is a lot to spend on a
+        # number nobody asked for.
         self._gpairs += idx.shape[0] * idx.shape[1]
         fired = (idx >= 0).any(axis=2)
-        self._last_refine = float(fired.mean()) if fired.size else 0.0
-        self._gtrig += int(fired.sum())
+        k = int(fired.sum())
+        self._last_refine = (k / fired.size) if fired.size else 0.0
+        self._gtrig += k
         return idx, val
 
     def _run_gpu(self, binsize, threshold, start, end, data, templates,

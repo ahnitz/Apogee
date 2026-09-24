@@ -380,7 +380,7 @@ class Context:
         self._check_completed(cmd)
 
         out = nd * nt * nbins
-        idx = b_idx.read(np.int32, out).astype(np.int64).reshape(nd, nt, nbins)
+        idx = b_idx.read(np.int32, out).reshape(nd, nt, nbins)
         val = b_val.read(np.float32, out * 2).view(
             np.complex64).reshape(nd, nt, nbins)
         return idx, val
@@ -520,8 +520,7 @@ class Context:
         self._check_completed(cmd)
 
         out = nd * nt * nbins
-        idx = bufs["idx"].read(np.int32, out).astype(np.int64).reshape(
-            nd, nt, nbins)
+        idx = bufs["idx"].read(np.int32, out).reshape(nd, nt, nbins)
         val = bufs["val"].read(np.float32, out * 2).view(
             np.complex64).reshape(nd, nt, nbins)
         return idx, val
