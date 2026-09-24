@@ -204,6 +204,7 @@ class Context:
             raise VulkanError(err)
         self.vk = vk
         self._pipelines = {}
+        self._batches = {}
 
         app = _vulkan._AppInfo(0, None, b"matchedfilter", 1, b"matchedfilter", 1,
                                (1 << 22) | (1 << 12))
@@ -323,6 +324,61 @@ class Context:
         self._pipelines[n] = (pipe, layout, set_layout)
         return self._pipelines[n]
 
+    def _make_batch(self, key, n, nd, nt, nbins, binsize, shift, lo, hi, t2):
+        """Buffers, descriptor set and a recorded command buffer for one shape."""
+        vk = self.vk
+        pipe, layout, set_layout = self.pipeline(n)
+        out = nd * nt * nbins
+        b_data = _Buffer(self, nd * n * 8)
+        b_tmpl = _Buffer(self, nt * n * 8)
+        b_idx = _Buffer(self, out * 4)
+        b_val = _Buffer(self, out * 8)
+
+        sizes = (_PoolSize * 1)(_PoolSize(_DESC_STORAGE_BUFFER, _NBIND))
+        dp_info = _DescPoolCreate(33, None, 0, 1, 1, sizes)
+        pool = _vp()
+        _check(vk.vkCreateDescriptorPool(self.device, ctypes.byref(dp_info),
+                                         None, ctypes.byref(pool)),
+               "vkCreateDescriptorPool")
+        set_layouts = (_vp * 1)(set_layout)
+        ds_info = _DescSetAlloc(34, None, pool, 1, ctypes.cast(set_layouts, _vp))
+        dset = _vp()
+        _check(vk.vkAllocateDescriptorSets(self.device, ctypes.byref(ds_info),
+                                           ctypes.byref(dset)),
+               "vkAllocateDescriptorSets")
+        bufs = (b_data, b_tmpl, b_idx, b_val)
+        infos = (_DescBufferInfo * _NBIND)(
+            *[_DescBufferInfo(b.handle, 0, _WHOLE_SIZE) for b in bufs])
+        writes = (_WriteDescSet * _NBIND)(*[
+            _WriteDescSet(35, None, dset, i, 0, 1, _DESC_STORAGE_BUFFER,
+                          None, ctypes.pointer(infos[i]), None)
+            for i in range(_NBIND)])
+        vk.vkUpdateDescriptorSets(self.device, _NBIND, writes, 0, None)
+
+        cb_info = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
+        cmd = _vp()
+        _check(vk.vkAllocateCommandBuffers(self.device, ctypes.byref(cb_info),
+                                           ctypes.byref(cmd)),
+               "vkAllocateCommandBuffers")
+        # NOT one-time-submit: this recording is replayed on every call.
+        begin = _CmdBufBegin(42, None, 0, None)
+        _check(vk.vkBeginCommandBuffer(cmd, ctypes.byref(begin)),
+               "vkBeginCommandBuffer")
+        vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, pipe)
+        sets = (_vp * 1)(dset)
+        vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, layout, 0, 1,
+                                   sets, 0, None)
+        pc = (ctypes.c_uint32 * 7)(
+            nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins,
+            int(np.float32(t2).view(np.uint32)))
+        vk.vkCmdPushConstants(cmd, layout, _STAGE_COMPUTE, 0, _PUSH_BYTES,
+                              ctypes.byref(pc))
+        vk.vkCmdDispatch(cmd, nd * nt, 1, 1)
+        _check(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")
+        self._pools = getattr(self, "_pools", [])
+        self._pools.append(pool)
+        return (b_data, b_tmpl, b_idx, b_val, cmd)
+
     def peaks(self, n, data, tmpl, binsize=None, threshold=0.0, window=None):
         """Peak index and complex value per (data, template, bin).
 
@@ -363,77 +419,39 @@ class Context:
         shift = (binsize.bit_length() - 1) if binsize & (binsize - 1) == 0 else -1
         t2 = float(threshold) ** 2 if threshold > 0 else 0.0
 
-        pipe, layout, set_layout = self.pipeline(n)
+        # Everything below the data itself is REUSED across calls. Rebuilding
+        # it cost 0.5 ms of the 0.65 ms a 1024-pair call took: buffers,
+        # descriptor pool and set, and the recorded command buffer. With them
+        # cached a call is a host copy, a submit and a read -- 0.14 ms, of
+        # which the dispatch is 0.07.
+        #
+        # The key carries the push constants because they are RECORDED into
+        # the command buffer. A call that changes the threshold or the window
+        # gets its own recording rather than silently running the previous
+        # one, which would be wrong rather than slow.
+        key = (n, nd, nt, nbins, binsize, shift, lo, hi,
+               int(np.float32(t2).view(np.uint32)))
+        batch = self._batches.get(key)
+        if batch is None:
+            batch = self._make_batch(key, n, nd, nt, nbins,
+                                     binsize, shift, lo, hi, t2)
+            self._batches[key] = batch
+        b_data, b_tmpl, b_idx, b_val, cmd = batch
+
+        b_data.write(np.ascontiguousarray(data, np.complex64))
+        b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
+
+        cmds = (_vp * 1)(cmd)
+        submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)
+        _check(vk.vkQueueSubmit(self.queue, 1, ctypes.byref(submit), None),
+               "vkQueueSubmit")
+        _check(vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle")
+
         out = nd * nt * nbins
-        b_data = _Buffer(self, data.size * 8)
-        b_tmpl = _Buffer(self, tmpl.size * 8)
-        b_idx = _Buffer(self, out * 4)
-        b_val = _Buffer(self, out * 8)
-        try:
-            b_data.write(np.ascontiguousarray(data, np.complex64))
-            b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
-
-            sizes = (_PoolSize * 1)(_PoolSize(_DESC_STORAGE_BUFFER, _NBIND))
-            dp_info = _DescPoolCreate(33, None, 0, 1, 1, sizes)
-            pool = _vp()
-            _check(vk.vkCreateDescriptorPool(self.device, ctypes.byref(dp_info),
-                                             None, ctypes.byref(pool)),
-                   "vkCreateDescriptorPool")
-            try:
-                set_layouts = (_vp * 1)(set_layout)
-                ds_info = _DescSetAlloc(34, None, pool, 1,
-                                        ctypes.cast(set_layouts, _vp))
-                dset = _vp()
-                _check(vk.vkAllocateDescriptorSets(self.device,
-                                                   ctypes.byref(ds_info),
-                                                   ctypes.byref(dset)),
-                       "vkAllocateDescriptorSets")
-                bufs = (b_data, b_tmpl, b_idx, b_val)
-                infos = (_DescBufferInfo * _NBIND)(
-                    *[_DescBufferInfo(b.handle, 0, _WHOLE_SIZE) for b in bufs])
-                writes = (_WriteDescSet * _NBIND)(*[
-                    _WriteDescSet(35, None, dset, i, 0, 1, _DESC_STORAGE_BUFFER,
-                                  None, ctypes.pointer(infos[i]), None)
-                    for i in range(_NBIND)])
-                vk.vkUpdateDescriptorSets(self.device, _NBIND, writes, 0, None)
-
-                cb_info = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
-                cmd = _vp()
-                _check(vk.vkAllocateCommandBuffers(self.device,
-                                                   ctypes.byref(cb_info),
-                                                   ctypes.byref(cmd)),
-                       "vkAllocateCommandBuffers")
-                begin = _CmdBufBegin(42, None, _ONE_TIME_SUBMIT, None)
-                _check(vk.vkBeginCommandBuffer(cmd, ctypes.byref(begin)),
-                       "vkBeginCommandBuffer")
-                vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, pipe)
-                sets = (_vp * 1)(dset)
-                vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, layout, 0, 1,
-                                           sets, 0, None)
-                pc = (ctypes.c_uint32 * 7)(
-                    nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins,
-                    int(np.float32(t2).view(np.uint32)))
-                vk.vkCmdPushConstants(cmd, layout, _STAGE_COMPUTE, 0,
-                                      _PUSH_BYTES, ctypes.byref(pc))
-                vk.vkCmdDispatch(cmd, nd * nt, 1, 1)
-                _check(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")
-
-                cmds = (_vp * 1)(cmd)
-                submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)
-                _check(vk.vkQueueSubmit(self.queue, 1, ctypes.byref(submit), None),
-                       "vkQueueSubmit")
-                _check(vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle")
-                vk.vkFreeCommandBuffers(self.device, self.command_pool, 1, cmds)
-            finally:
-                vk.vkDestroyDescriptorPool(self.device, pool, None)
-
-            idx = b_idx.read(np.int32, out).astype(np.int64).reshape(nd, nt, nbins)
-            val = b_val.read(np.float32, out * 2).view(
-                np.complex64).reshape(nd, nt, nbins)
-            return idx, val
-        finally:
-            for buf in (b_data, b_tmpl, b_idx, b_val):
-                buf.destroy()
+        idx = b_idx.read(np.int32, out).astype(np.int64).reshape(nd, nt, nbins)
+        val = b_val.read(np.float32, out * 2).view(
+            np.complex64).reshape(nd, nt, nbins)
+        return idx, val
 
     def destroy(self):
         vk = self.vk
@@ -441,6 +459,12 @@ class Context:
             vk.vkDestroyPipeline(self.device, pipe, None)
             vk.vkDestroyPipelineLayout(self.device, layout, None)
             vk.vkDestroyDescriptorSetLayout(self.device, set_layout, None)
+        for b_data, b_tmpl, b_idx, b_val, _cmd in self._batches.values():
+            for buf in (b_data, b_tmpl, b_idx, b_val):
+                buf.destroy()
+        self._batches.clear()
+        for pool in getattr(self, "_pools", []):
+            vk.vkDestroyDescriptorPool(self.device, pool, None)
         self._pipelines.clear()
         vk.vkDestroyCommandPool(self.device, self.command_pool, None)
         vk.vkDestroyDevice(self.device, None)

@@ -40,6 +40,30 @@ TIER_B = (64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384)
 #: exchange levels and an innermost radix of 2.
 _COARSE_ONLY = (64, 128, 256, 512)
 
+#: Exchange staging per transform length, in COMPLEX values, measured rather
+#: than modelled. The exchange runs R/CH chunks with CH = CAP/WG and each
+#: chunk costs two barriers, so too little staging is barrier-bound -- but
+#: staging is LDS, and LDS is what caps how many workgroups a CU holds, so
+#: too much costs occupancy. The optimum is two chunks almost everywhere.
+#:
+#: Measured on a Radeon 8060S at threshold 5.5, compute only, against one
+#: AVX-512 core (speedup at the chosen value in brackets):
+#:
+#:     n       4 KB   8 KB  16 KB  32 KB  64 KB
+#:     1024    0.81   0.84   0.87   0.84   0.90    -> 4 KB  [60.9x]
+#:     2048    1.09   0.93   1.13   1.12   1.19    -> 8 KB  [57.1x]
+#:     4096    1.68   1.27   1.13   1.38   1.35    -> 16 KB [44.2x]
+#:     8192    8.15   5.16   2.49   2.03   1.83    -> 64 KB [29.2x]
+#:     16384  15.92  15.91  12.78   7.56   6.35    -> 64 KB [16.5x]
+#:
+#: These are THIS device's numbers. 64 KB exceeds what Apple allows a
+#: threadgroup, so a Metal build will need its own column -- which is what
+#: the per-device tables in docs/plans/gpu-integration.md are for.
+LDS_CAP = {
+    64: 512, 128: 512, 256: 512, 512: 512,
+    1024: 512, 2048: 1024, 4096: 2048, 8192: 8192, 16384: 8192,
+}
+
 KERNEL = ROOT / "src" / "gpu" / "tierb.slang"
 ENTRY = "fusedTierB"
 
@@ -111,7 +135,8 @@ def reflect(blob):
 
 def compile_one(slangc, n, outdir):
     src = outdir / ("mf_%d.slang" % n)
-    src.write_text("#define NLEN %d\n" % n + KERNEL.read_text())
+    src.write_text("#define NLEN %d\n#define LDS_CAP %d\n"
+                   % (n, LDS_CAP[n]) + KERNEL.read_text())
     spv = outdir / ("tierb_%d.spv" % n)
     proc = subprocess.run(
         [slangc, str(src), "-target", "spirv", "-entry", ENTRY,
@@ -143,10 +168,11 @@ def main(argv=None):
         info = reflect(spv.read_bytes())
         info["file"] = spv.name
         info["bytes"] = spv.stat().st_size
+        info["lds_cap"] = LDS_CAP[n]
         manifest["modules"][str(n)] = info
-        print("  n=%-6d %-16s %5d bytes  wg=%s  %d descriptors%s"
+        print("  n=%-6d %-16s %5d bytes  wg=%-4s staging %2d KB  %d descriptors%s"
               % (n, spv.name, info["bytes"], info["local_size"][0],
-                 len(info["descriptors"]),
+                 LDS_CAP[n] * 8 // 1024, len(info["descriptors"]),
                  ", push constants" if info["push_constant"] else ""))
 
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

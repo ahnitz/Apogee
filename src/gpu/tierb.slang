@@ -29,7 +29,22 @@ static const float PI = 3.14159265358979f;
 //: 8 KB at every length, rather than sized to the transform -- which was
 //: 128 KB at n=16384, over every device's limit, and already past Apple's
 //: 32 KB at n=4096. CH registers of every thread are in flight at once.
-static const uint CAP = 1024;                  // complex, = 8 KB
+//: Staging capacity in complex values. The exchange runs R/CH chunks with
+//: CH = CAP/WG, and each chunk costs two barriers -- so a small CAP at a
+//: large workgroup is barrier-bound, not bandwidth-bound. Measured at
+//: threshold 5.5, 8192 pairs:
+//:
+//:     n=8192   8 KB 9.6x   16 KB 19.8x   32 KB 23.5x   64 KB 23.8x
+//:     n=16384  8 KB 6.6x   16 KB  8.3x   32 KB 14.1x   64 KB 16.2x
+//:
+//: So it follows the workgroup rather than being fixed. The ceiling is a
+//: PORTABILITY limit, not a performance one: 32 KB is what Apple allows a
+//: threadgroup, and this device would take 64. MF_LDS_KB overrides it at
+//: build time, which is how a per-device variant will be emitted.
+#ifndef LDS_CAP
+#define LDS_CAP 4096                           // complex, = 32 KB
+#endif
+static const uint CAP = (R * WG < LDS_CAP) ? (R * WG) : LDS_CAP;
 //: Clamped to R. The exchange runs R/CH chunks, so CH > R makes that zero
 //: and the exchange never happens -- the kernel then returns a transform of
 //: the wrong axis, silently, with plausible magnitudes. That is what it did

@@ -36,7 +36,8 @@
       ],
       "push_constant": true,
       "file": "tierb_64.spv",
-      "bytes": 15768
+      "bytes": 15768,
+      "lds_cap": 512
     },
     "128": {
       "local_size": [
@@ -72,7 +73,8 @@
       ],
       "push_constant": true,
       "file": "tierb_128.spv",
-      "bytes": 16356
+      "bytes": 16356,
+      "lds_cap": 512
     },
     "256": {
       "local_size": [
@@ -108,7 +110,8 @@
       ],
       "push_constant": true,
       "file": "tierb_256.spv",
-      "bytes": 18292
+      "bytes": 18292,
+      "lds_cap": 512
     },
     "512": {
       "local_size": [
@@ -144,7 +147,8 @@
       ],
       "push_constant": true,
       "file": "tierb_512.spv",
-      "bytes": 22192
+      "bytes": 22192,
+      "lds_cap": 512
     },
     "1024": {
       "local_size": [
@@ -180,7 +184,8 @@
       ],
       "push_constant": true,
       "file": "tierb_1024.spv",
-      "bytes": 22804
+      "bytes": 22804,
+      "lds_cap": 512
     },
     "2048": {
       "local_size": [
@@ -216,7 +221,8 @@
       ],
       "push_constant": true,
       "file": "tierb_2048.spv",
-      "bytes": 23392
+      "bytes": 23392,
+      "lds_cap": 1024
     },
     "4096": {
       "local_size": [
@@ -252,7 +258,8 @@
       ],
       "push_constant": true,
       "file": "tierb_4096.spv",
-      "bytes": 25328
+      "bytes": 25328,
+      "lds_cap": 2048
     },
     "8192": {
       "local_size": [
@@ -288,7 +295,8 @@
       ],
       "push_constant": true,
       "file": "tierb_8192.spv",
-      "bytes": 29228
+      "bytes": 29228,
+      "lds_cap": 8192
     },
     "16384": {
       "local_size": [
@@ -324,7 +332,8 @@
       ],
       "push_constant": true,
       "file": "tierb_16384.spv",
-      "bytes": 29660
+      "bytes": 29840,
+      "lds_cap": 8192
     }
   }
 }
