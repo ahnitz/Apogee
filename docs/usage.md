@@ -196,8 +196,9 @@ same kernel rather than two implementations to keep in step. The wheel
 carries compiled `.metallib` files; if one is missing or stale the runtime
 compiles the shipped `.metal` source instead rather than refusing.
 
-**macOS status.** Flat filtering runs and agrees with the CPU index for
-index at n=1024 through 8192, verified in CI on an Apple GPU. Two limits:
+**macOS status.** The whole suite passes on an Apple M2 — 367 passed, 0
+failed — and the GPU agrees with the CPU index for index. Two limits, and
+the second is stricter than CI alone would tell you:
 
 - Apple caps threadgroup memory at 32 KB and the fastest builds here use
   64 KB, so the two largest sizes fall back to a 32 KB build. Measured on
@@ -205,11 +206,19 @@ index at n=1024 through 8192, verified in CI on an Apple GPU. Two limits:
   and 1.29x at n=16384. Halving the staging doubles the exchange chunks
   and their barriers, and that costs more than the occupancy it buys — so
   this is a real penalty at those two sizes, not a formality.
-- n=16384 needs a 1024-thread threadgroup. What a device actually allows
-  depends on the compiled kernel's register use, not only on the hardware:
-  the paravirtual GPU in CI allows this kernel 576, so that length raises
-  `UnsupportedSize` there. Real Apple silicon has more headroom, but the
-  check is per pipeline and the answer is whatever the device says.
+- **n is capped at 4096 on Apple silicon.** What a device allows depends on
+  the compiled kernel's register use, not only on the hardware, and it is
+  asked per pipeline. Measured on the same kernel and commit:
+
+  | pipeline            | needs | paravirtual (CI) | Apple M2 |
+  |---------------------|-------|------------------|----------|
+  | `tierb_8192_lds32`  | 512   | 512 — runs       | **448 — refuses** |
+  | `tierb_16384_lds32` | 1024  | 576 — refuses    | 576 — refuses |
+
+  So n=8192 runs in CI and raises `UnsupportedSize` on a real M2. Testing
+  only against the paravirtual device would have shipped that as supported.
+  Raising the cap means fewer threads doing more points each — R=32 rather
+  than 16 — which is open work, not a device limit.
 
 A software rasteriser will not catch a mistake here. llvmpipe reports 32 KB
 and then runs a 64 KB kernel regardless, so the lavapipe CI path passes
