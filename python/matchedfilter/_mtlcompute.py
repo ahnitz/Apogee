@@ -21,6 +21,24 @@ import numpy as np
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _METAL_DIR = _HERE / "metal"
+_MANIFEST = _HERE / "spirv" / "manifest.json"
+
+_manifest_cache = None
+
+
+def _manifest():
+    """The build manifest, shared with the SPIR-V backend.
+
+    Both backends are generated from the same Slang source with the same
+    staging cap, so the recorded threadgroup-memory figure is the same
+    number for either -- there is no second manifest to keep in step.
+    """
+    global _manifest_cache
+    if _manifest_cache is None:
+        import json
+        _manifest_cache = (json.loads(_MANIFEST.read_text())
+                           if _MANIFEST.is_file() else {})
+    return _manifest_cache
 
 #: MTLResourceStorageModeShared: one allocation both CPU and GPU can see.
 #: Apple silicon is unified memory, so this is the natural mode rather than
@@ -118,6 +136,34 @@ class _Buffer:
             self.handle = None
 
 
+def describe_error(o, err):
+    """Everything the NSError carries, not only its one-line summary.
+
+    A pipeline that fails to build reports "Compilation failed" as its
+    localizedDescription and puts the actual back-end diagnostics in
+    userInfo, so the short form names the failure without ever saying
+    what it was -- which is exactly the report that cost a CI round
+    trip. `description` dumps the whole object, userInfo included.
+    """
+    if not err or not err.value:
+        return "no error object"
+    parts = []
+    for sel in (b"localizedDescription", b"localizedFailureReason",
+                b"localizedRecoverySuggestion", b"description"):
+        try:
+            got = o.to_str(o.call(err.value, sel))
+        except Exception:                      # selector not implemented
+            continue
+        got = (got or "").strip()
+        if got and not any(got in seen for seen in parts):
+            parts.append(got)
+    domain = o.to_str(o.call(err.value, b"domain"))
+    code = int(o.call(err.value, b"code", restype=ctypes.c_long))
+    parts.append("[domain=%s code=%d]" % (domain or "?", code))
+    return " | ".join(parts)
+
+
+
 class Context:
     """One Metal device, its queue, and the pipelines built on it."""
 
@@ -187,16 +233,37 @@ class Context:
         return lib
 
     def _error(self, err):
-        if not err or not err.value:
-            return "no error object"
-        desc = self.o.call(err.value, b"localizedDescription")
-        return self.o.to_str(desc) or "unknown"
+        return describe_error(self.o, err)
+
+    def _stem(self, n, entry):
+        """The kernel variant this device can actually hold.
+
+        Apple caps threadgroup memory at 32 KB. The tuned staging asks for
+        64 KB at n=16384 and exactly 32 KB at n=8192, so on Apple the
+        preferred build cannot create a pipeline at all -- and it reports
+        that as "Compilation failed", which names nothing. Choosing the
+        portable build here turns a dead end into a slower kernel.
+        """
+        base = ("tierb_%d" % n) if entry == "fusedTierB" else ("gated_%d" % n)
+        info = _manifest().get("modules", {}).get(str(n), {})
+        need = info.get("lds_bytes", 0)
+        if need <= self.max_shared_memory:
+            return base
+        alt = base + "_lds32"
+        if not any((_METAL_DIR / (alt + ext)).is_file()
+                   for ext in (".metallib", ".metal")):
+            raise MetalError(
+                "n=%d needs %d KB of threadgroup memory, %s offers %d KB, "
+                "and no portable build was shipped for it"
+                % (n, need // 1024, self.name,
+                   self.max_shared_memory // 1024))
+        return alt
 
     def pipeline(self, n, entry="fusedTierB"):
         key = (n, entry)
         if key in self._pipelines:
             return self._pipelines[key]
-        stem = ("tierb_%d" % n) if entry == "fusedTierB" else ("gated_%d" % n)
+        stem = self._stem(n, entry)
         lib = self._library(stem)
         fn = self.o.call(lib, b"newFunctionWithName:",
                          args=(self.o.nsstring(entry),),

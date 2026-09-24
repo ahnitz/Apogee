@@ -81,9 +81,10 @@ def _platform_note():
     """
     import sys
     if sys.platform == "darwin":
-        return (" -- macOS ships no Vulkan driver, and this build has no "
-                "Metal backend yet, so an Apple GPU is present but "
-                "unreachable rather than absent (see docs/plans/macos.md)")
+        return (" -- macOS ships no Vulkan driver. An Apple GPU is reached "
+                "through the Metal backend instead, which device='gpu' "
+                "selects on its own; only code asking for Vulkan by name "
+                "lands here (see docs/gpu-notes.md)")
     return ""
 
 

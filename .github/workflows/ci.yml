@@ -237,7 +237,10 @@ jobs:
         run: |
           python -m pip install -U pip numpy
           python tools/build_spirv.py
-          ls -la python/matchedfilter/metal/ | head
+          ls -la python/matchedfilter/metal/
+
+      - name: What can this device do?
+        run: python tools/metal_probe.py
 
       - name: Install and run the suite
         run: |

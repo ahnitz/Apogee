@@ -182,26 +182,29 @@ class MatchedFilter:
         # One flat-filter contract, two backends behind it. Both expose
         # peaks() with the same signature and the same conventions, so
         # nothing above this line knows which it got.
-        if getattr(self.device, "backend", None) == "metal":
-            from . import _mtlcompute
-            if self.n not in _GPU_SIZES:
-                raise ValueError(
-                    "device='gpu' supports n in %s; got %d"
-                    % (sorted(_GPU_SIZES), self.n))
-            self._gpu = _mtlcompute.Context(self.device.index)
-            self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
-            self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
-            return
-        from . import _vkcompute
+        #
+        # Only the Context differs. Everything after it is shared, and it is
+        # written once for that reason: when this was a branch per backend
+        # with its own copy of the tail, the hierarchical version's early
+        # return skipped the _gcal it was supposed to set, and every Metal
+        # call died in _gpu_calibration on a missing attribute.
         if self.n not in _GPU_SIZES:
             raise ValueError(
                 "device='gpu' supports n in %s; got %d. Larger transforms need "
                 "more than 1024 threads and are not implemented yet, so they "
                 "would have to be split across dispatches."
                 % (sorted(_GPU_SIZES), self.n))
-        self._gpu = _vkcompute.Context(self.device.index)
+        self._gpu = self._backend().Context(self.device.index)
         self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
         self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
+
+    def _backend(self):
+        """The compute module for this device: Metal on Apple, else Vulkan."""
+        if getattr(self.device, "backend", None) == "metal":
+            from . import _mtlcompute
+            return _mtlcompute
+        from . import _vkcompute
+        return _vkcompute
 
     # ---- ingest -------------------------------------------------------------
     def _ensure(self):
@@ -1450,25 +1453,13 @@ class HierarchicalFilter(MatchedFilter):
     # every template gets the same numbers -- verified across 32 templates
     # with deliberately different power-law slopes.
     def _start_gpu(self):
-        # One flat-filter contract, two backends behind it. Both expose
-        # peaks() with the same signature and the same conventions, so
-        # nothing above this line knows which it got.
-        if getattr(self.device, "backend", None) == "metal":
-            from . import _mtlcompute
-            if self.n not in _GPU_SIZES:
-                raise ValueError(
-                    "device='gpu' supports n in %s; got %d"
-                    % (sorted(_GPU_SIZES), self.n))
-            self._gpu = _mtlcompute.Context(self.device.index)
-            self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
-            self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
-            return
-        from . import _vkcompute
+        # Same one-contract-two-backends shape as the flat filter, plus the
+        # calibration cache. Written as one path for the reason given there.
         if self.n not in _GPU_SIZES:
             raise ValueError(
                 "device='gpu' supports n in %s; got %d"
                 % (sorted(_GPU_SIZES), self.n))
-        self._gpu = _vkcompute.Context(self.device.index)
+        self._gpu = self._backend().Context(self.device.index)
         self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
         self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
         self._gcal = None

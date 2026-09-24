@@ -247,6 +247,23 @@ def test_the_cpu_still_covers_the_larger_sizes(n):
     assert int(pk["index"][0, 0, 0]) == int(np.argmax(np.abs(z)))
 
 
+def _vulkan_or_skip():
+    """The tests below exercise the SPIR-V kernel CHOICE, which is Vulkan's.
+
+    Two staging variants per size exist only in the SPIR-V build, and the
+    selection between them is what these check. The Metal backend ships one
+    library per size and has nothing to choose, so on macOS there is no
+    question here to answer -- skipping says that, where failing would
+    report a missing Vulkan loader as a broken kernel selection.
+    """
+    from matchedfilter import _vulkan
+    ok, why = _vulkan.available()
+    if not ok:
+        pytest.skip(why or "no Vulkan loader on this platform")
+    from matchedfilter import _vkcompute
+    return _vkcompute
+
+
 def test_the_chosen_kernel_fits_the_device():
     """Never select a kernel asking for more shared memory than exists.
 
@@ -254,7 +271,7 @@ def test_the_chosen_kernel_fits_the_device():
     64 KB kernel anyway, so the CI fallback passes where real hardware --
     Apple in particular -- would fail to create the pipeline.
     """
-    from matchedfilter import _vkcompute as V
+    V = _vulkan_or_skip()
     import json, pathlib
     man = json.loads((pathlib.Path(V.__file__).parent / "spirv"
                       / "manifest.json").read_text())
@@ -277,7 +294,7 @@ def test_the_chosen_kernel_fits_the_device():
 @pytest.mark.parametrize("n", [8192, 16384])
 def test_both_staging_variants_agree(n):
     """The portable build must compute the same answer, only slower."""
-    from matchedfilter import _vkcompute as V
+    V = _vulkan_or_skip()
     rng = np.random.default_rng(n)
     d = (rng.standard_normal((2, n)) + 1j * rng.standard_normal((2, n))).astype(np.complex64)
     h = (rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))).astype(np.complex64)
@@ -338,7 +355,7 @@ def test_the_chosen_kernel_fits_the_invocation_limit():
     A device offering fewer must refuse by name rather than fail to create
     a pipeline on the user's machine.
     """
-    from matchedfilter import _vkcompute as V
+    V = _vulkan_or_skip()
     import json, pathlib
     man = json.loads((pathlib.Path(V.__file__).parent / "spirv"
                       / "manifest.json").read_text())

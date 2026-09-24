@@ -293,6 +293,18 @@ def main(argv=None):
             m, lib = compile_metal(slangc, n, LDS_CAP[n], entry, MSL)
             metal[entry] = dict(msl=m.name,
                                 metallib=lib.name if lib else None)
+            # Apple caps threadgroup memory at 32 KB, under what the tuned
+            # staging asks for at the top sizes. Without a build that fits,
+            # those kernels cannot create a pipeline on ANY Mac -- and the
+            # refusal arrives as "Compilation failed", naming nothing.
+            if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
+                sm, slib = compile_metal(slangc, n, PORTABLE_CAP, entry, MSL,
+                                         suffix="_lds32")
+                metal[entry]["portable"] = dict(
+                    msl=sm.name, metallib=slib.name if slib else None,
+                    lds_bytes=lds_bytes(n, PORTABLE_CAP))
+                print("  n=%-6d %-24s portable Metal variant, staging %d KB"
+                      % (n, sm.name, lds_bytes(n, PORTABLE_CAP) // 1024))
         info["metal"] = metal
         info["lds_cap"] = LDS_CAP[n]
         info["lds_bytes"] = lds_bytes(n, LDS_CAP[n])

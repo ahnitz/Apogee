@@ -416,11 +416,21 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_8192.metal",
-          "metallib": null
+          "metallib": null,
+          "portable": {
+            "msl": "tierb_8192_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
         },
         "gatedTierB": {
           "msl": "gated_8192.metal",
-          "metallib": null
+          "metallib": null,
+          "portable": {
+            "msl": "gated_8192_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
         }
       },
       "lds_cap": 8192,
@@ -473,11 +483,21 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_16384.metal",
-          "metallib": null
+          "metallib": null,
+          "portable": {
+            "msl": "tierb_16384_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
         },
         "gatedTierB": {
           "msl": "gated_16384.metal",
-          "metallib": null
+          "metallib": null,
+          "portable": {
+            "msl": "gated_16384_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
         }
       },
       "lds_cap": 8192,
