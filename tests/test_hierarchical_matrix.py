@@ -250,3 +250,63 @@ def test_omission_rate_meets_the_budget(device):
     # 3x absorbs binomial scatter at this trial count.
     assert rate <= fd * 3, "omitted %.3f%% against a %.3f%% budget" % (
         100 * rate, 100 * fd)
+
+
+def test_the_gpu_is_no_less_conservative_than_the_cpu():
+    """The GPU inherits the CPU's accuracy table. This is why that is safe.
+
+    Accuracy rows measure how often a configuration dismisses a signal it
+    should have kept. They are measured on the CPU algorithm, and the GPU
+    runs a different one: where the CPU interpolates the coarse peak, the
+    GPU escalates the whole interpolation window, so it refines a superset
+    of the CPU's pairs. A superset can only dismiss less, so the CPU's
+    measured rate is an upper bound for it and the shared table is safe.
+
+    That is an argument, not a guarantee, and it is the only thing standing
+    between one table and two. If a change makes the GPU dismiss anything
+    the CPU keeps, the argument is void and the GPU needs accuracy rows of
+    its own -- accuracy_table_for already resolves accuracy-gpu.txt when one
+    is shipped. This test is what says so.
+
+    Both devices see the SAME noise realisations, so this compares the
+    algorithms rather than two samples of the same distribution.
+    """
+    gpus = [d for d in DEVICES if d != "cpu"]
+    if not gpus:
+        from matchedfilter import _vulkan
+        pytest.skip(_vulkan.available()[1] or "no usable GPU")
+    n, trials, snr, fd = 4096, 400, 5.5, 1e-2
+    rng = np.random.default_rng(29)
+    power = inspiral_power(n)
+    H = template_with_power(n, power)
+    cflat, chier = build("cpu", n, 1, 1, power, snr=snr, fd=fd)
+    gflat, ghier = build(gpus[0], n, 1, 1, power, snr=snr, fd=fd)
+    for o in (cflat, chier, gflat, ghier):
+        o.set_templates(H[None, :])
+
+    ph = np.exp(2j * np.pi * np.arange(n) / n)
+    detected = cpu_omitted = gpu_omitted = gpu_only = 0
+    for i in range(trials):
+        D = noise((1, n), rng)
+        D[0] += (snr * H * ph ** ((37 * i) % n)).astype(np.complex64)
+        for o in (cflat, chier, gflat, ghier):
+            o.set_data(D)
+        if cflat.run(binsize=n, threshold=snr)["index"][0, 0, 0] < 0:
+            continue                      # the flat filter found nothing
+        detected += 1
+        c = chier.run(binsize=n, threshold=snr)["index"][0, 0, 0] < 0
+        g = ghier.run(binsize=n, threshold=snr)["index"][0, 0, 0] < 0
+        cpu_omitted += c
+        gpu_omitted += g
+        gpu_only += (g and not c)
+
+    assert detected > 100, "too few detections to say anything"
+    assert gpu_only == 0, (
+        "the GPU dismissed %d signal(s) the CPU kept, so it is no longer a "
+        "superset of the CPU's refinement and cannot borrow its accuracy "
+        "table; measure accuracy-gpu.txt with tools/hmf_tune.py"
+        % gpu_only)
+    assert gpu_omitted <= cpu_omitted, (
+        "GPU omitted %d of %d against the CPU's %d -- the bound the shared "
+        "accuracy table relies on no longer holds"
+        % (gpu_omitted, detected, cpu_omitted))

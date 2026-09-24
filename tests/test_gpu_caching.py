@@ -383,3 +383,43 @@ def test_the_chosen_kernel_fits_the_invocation_limit():
                         ctx._kernel_file(int(key))
         finally:
             ctx.destroy()
+
+
+def test_accuracy_table_resolution_order():
+    """Backend first, then any GPU, then the shipped default.
+
+    Accuracy describes the algorithm, and the GPU does not run the CPU's --
+    so this has to be resolvable even while one table still serves both.
+    Shipping accuracy-gpu.txt later must change what the GPU loads without
+    changing what the CPU loads, and that is what the ordering buys.
+    """
+    import os
+    from matchedfilter import accuracy_table_for
+    from matchedfilter.device import Device
+
+    cpu = Device("cpu", 0, "whatever", "AVX3")
+    vk = Device("gpu", 0, "some card", "vulkan")
+    mtl = Device("gpu", 0, "Apple", "metal")
+
+    for dev in (cpu, vk, mtl):
+        path, key = accuracy_table_for(dev)
+        assert key is None, "no per-path table ships yet, so all share one"
+        assert os.path.basename(path) == "accuracy.txt"
+
+    here = os.path.dirname(accuracy_table_for(cpu)[0])
+    for name, dev, want in (("accuracy-gpu.txt", vk, "gpu"),
+                            ("accuracy-vulkan.txt", vk, "vulkan")):
+        made = os.path.join(here, name)
+        open(made, "w").close()
+        try:
+            assert accuracy_table_for(dev)[1] == want
+            # The CPU must not pick up a GPU table.
+            assert accuracy_table_for(cpu)[1] is None
+        finally:
+            os.unlink(made)
+
+    os.environ["MF_ACCURACY"] = "/tmp/whatever.txt"
+    try:
+        assert accuracy_table_for(vk) == ("/tmp/whatever.txt", "MF_ACCURACY")
+    finally:
+        del os.environ["MF_ACCURACY"]

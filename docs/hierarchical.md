@@ -814,6 +814,29 @@ nearest-neighbour lookup on `(n, snr, fd)` that never saw the signal. They now
 come from two measured tables, `python/matchedfilter/accuracy.txt` and
 `cost.txt`, shipped as package data and read once when the plan is built.
 
+**Which table, for which device.** Cost is a property of the machine and is
+resolved per architecture — `cost-gfx11.txt` and so on, falling back to the
+shipped generic one. Accuracy is a property of the *algorithm*, and one
+table served every device for a long time on the grounds that the algorithm
+is the same everywhere. It is not: where the CPU interpolates the coarse
+peak, the GPU escalates the whole interpolation window, so it refines a
+superset of the CPU's pairs.
+
+Sharing the table is safe only in that direction. A superset can dismiss
+only less, so the CPU's measured rate is an upper bound for the GPU, which
+over-keeps the promise — measured, the CPU omits about 1.5% against a 1%
+budget and the GPU omits nothing. It is also leaving speed unclaimed,
+because it is calibrated for an algorithm more aggressive than the one it
+runs.
+
+That is an argument, not a guarantee, so it is resolved rather than
+assumed. `accuracy_table_for` looks for `accuracy-<backend>.txt`, then
+`accuracy-gpu.txt`, then the default, and
+`test_the_gpu_is_no_less_conservative_than_the_cpu` runs both paths over
+the same noise realisations and fails the moment the GPU dismisses anything
+the CPU keeps. When that happens the argument is void and the GPU needs
+rows of its own; there is now somewhere to put them.
+
 **What it is keyed on.** Two numbers per candidate band, both computed from
 the caller's reference:
 

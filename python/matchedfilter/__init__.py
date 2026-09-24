@@ -615,17 +615,56 @@ def cost_table_for(device):
     return os.path.join(here, "cost.txt"), None
 
 
-def _load_tuning_for(device):
-    """Tuning for one device: shared accuracy rows, per-device cost rows."""
+def accuracy_table_for(device):
+    """Path to the accuracy table describing the algorithm `device` runs.
+
+    Accuracy rows say how often a configuration DISMISSES a signal it should
+    have kept, so they describe the algorithm, not the machine -- which is
+    why one table served every device for a long time. That was never quite
+    true: the GPU does not run the CPU's algorithm. Where the CPU
+    interpolates the coarse peak, the GPU escalates the whole interpolation
+    window, so it refines a superset of the CPU's pairs and dismisses less.
+
+    Sharing the table is SAFE only in that direction. The CPU's measured
+    dismissal rate is an upper bound on a strictly more conservative path,
+    so the GPU inherits a promise it over-keeps -- measured, the CPU omits
+    about 1.5% against a 1% budget and the GPU omits nothing. It is also
+    leaving speed on the table, because it is calibrated for an algorithm
+    more aggressive than the one it runs.
+
+    Resolved rather than assumed, so the day the two diverge the other way
+    there is somewhere to put the answer. Most specific first: the backend,
+    then any GPU, then the shipped default. Both GPU backends run the same
+    Slang kernels, so "gpu" is the level that usually matters.
+
+    Returns ``(path, key)`` with key None for the default, so a caller can
+    say which was used rather than leaving it implied.
+    """
     here = os.path.dirname(__file__)
-    cost, _key = cost_table_for(device)
+    if os.environ.get("MF_ACCURACY"):
+        return os.environ["MF_ACCURACY"], "MF_ACCURACY"
+    keys = []
+    backend = getattr(device, "backend", None)
+    if getattr(device, "kind", None) == "gpu":
+        if backend:
+            keys.append(backend)
+        keys.append("gpu")
+    for key in keys:
+        candidate = os.path.join(here, "accuracy-%s.txt" % key)
+        if os.path.exists(candidate):
+            return candidate, key
+    return os.path.join(here, "accuracy.txt"), None
+
+
+def _load_tuning_for(device):
+    """Tuning for one device: accuracy for its algorithm, cost for its machine."""
+    cost, _ck = cost_table_for(device)
+    acc, _ak = accuracy_table_for(device)
     # cache=False: this must NOT become the process-wide table. It did, and
     # then every later caller -- including CPU plans -- got the GPU's cost
     # rows, which cover fewer transform lengths, so a CPU plan at a length
     # the GPU table does not carry failed with "no measured tuning".
-    return _load_tuning_paths(
-        [os.environ.get("MF_ACCURACY") or os.path.join(here, "accuracy.txt"),
-         cost], cache=False)
+    return _load_tuning_paths([acc, cost], cache=False)
 
 
 def _load_tuning(path=None):
