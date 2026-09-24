@@ -75,9 +75,12 @@ and failure modes without being asked. Both devices return the same fields,
 the same shapes and the same `index == -1` convention for a bin that nothing
 cleared, which is what lets one set of tests assert against both.
 
-The GPU path covers transform lengths 1024 to 16384. Longer transforms need
-more than one workgroup and are not implemented yet; `device="gpu"` says so
-rather than quietly running somewhere else.
+The GPU path covers transform lengths **1024 to 16384** — one workgroup
+carries a whole transform, and that is what 1024 threads reach. Longer
+transforms raise, naming the sizes that work, rather than quietly running
+somewhere else. The CPU covers 1024 to 1048576. See
+[Current capabilities](https://ahnitz.github.io/matchedfilter/using-it.html)
+for the rest of what the GPU backend does and does not do yet.
 
 ## The hierarchical mode
 

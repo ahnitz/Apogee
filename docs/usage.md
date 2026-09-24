@@ -146,6 +146,43 @@ A GPU that reports no devices on a machine that has one is usually a
 shadowed C++ runtime rather than a driver problem — `matchedfilter` says so
 in the error. See [the GPU notes](notes.html) for that and the rest.
 
+## Current capabilities
+
+The GPU backend is newer than the CPU one and deliberately covers less. What
+it does cover it holds to the same tests; where it does not, it refuses
+rather than falling back silently, so nothing is answered by a path you did
+not ask for.
+
+| | CPU | GPU |
+|---|---|---|
+| transform lengths | 1024 – 1048576 | **1024 – 16384** |
+| flat filter | yes | yes |
+| hierarchical filter | yes | yes |
+| `run_series` | yes | yes |
+| `binsize`, `window`, `threshold` | arbitrary | arbitrary |
+| bins per call | unlimited | unlimited (split internally past 2048) |
+| precision | float32 | float32 |
+| parallelism | single-threaded by design | the device |
+
+Why 16384 on the GPU: one workgroup carries a whole transform, and at
+`n/16` threads per workgroup 16384 is what 1024 threads reach. Longer
+transforms need the decomposition split across dispatches, which is not
+written. Asking for one raises, naming the sizes that work.
+
+Other things worth knowing, all work in progress:
+
+- **Input must be host-resident.** Arrays are accepted over DLPack from any
+  library, but an array already on an accelerator is refused rather than
+  copied down and back — see *Running on a GPU* above.
+- **The hierarchical mode escalates its interpolation window** instead of
+  interpolating it. That is strictly more conservative — it can only refine
+  pairs the CPU would have dismissed, never the reverse — and costs about
+  1–2% more escalation.
+- **Per-device tuning is measured on one device.** The kernel's shared-memory
+  staging was tuned on a Radeon 8060S; other devices will run correctly but
+  not necessarily at their best until they have their own measurements.
+- **No float64 path**, on either device, and none planned.
+
 ## Platforms
 
 One kernel source is compiled once per SIMD target the compiler can generate,

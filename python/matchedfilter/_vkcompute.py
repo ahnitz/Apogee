@@ -393,6 +393,7 @@ class Context:
             batch = self._make_hier(key, n, band, nd, nt, nbins, binsize,
                                     shift, lo, hi, t2, even_thr, raw_thr)
             self._hier[key] = batch
+            upload_data = upload_tmpl = True   # see the note in peaks()
         bufs, cmd = batch
         # Upload only what changed. A template bank is 67 MB at n=16384 with
         # 512 templates, and re-sending it on every call dwarfed the
@@ -672,6 +673,12 @@ class Context:
             batch = self._make_batch(key, n, nd, nt, nbins,
                                      binsize, shift, lo, hi, t2)
             self._batches[key] = batch
+            # A NEW batch has empty buffers. The caller's dirty flags describe
+            # whether the arrays changed, not whether THIS batch has ever seen
+            # them -- and a second call with a different binsize, window or
+            # threshold lands on a new batch with the flags already cleared.
+            # Every result then came back -1, from buffers nothing had filled.
+            upload_data = upload_tmpl = True
         b_data, b_tmpl, b_idx, b_val, cmd = batch
 
         if upload_data:
