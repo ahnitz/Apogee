@@ -48,6 +48,13 @@ native Metal on Apple silicon.
 
 ### Fixed
 
+- **`HierarchicalFilter.run_series(raw=True)` returned three arrays** where
+  every other entry point -- including that same method's GPU branch --
+  returned two. The method disagreed with itself depending on the device, so
+  a caller written against the CPU raised `expected 3, got 2` on a GPU. This
+  was the only thing stopping the hierarchical path running end to end under
+  pycbc. `raw=True` is now `(index, value)` everywhere; magnitude is
+  `np.abs(value)` exactly, which is why it is not returned.
 - **Heap overflow in `run_series`, on the shipped hierarchical path.** The
   output is addressed at a single stride taken from the first block, but the
   bin count was recomputed per group, so a window yielding fewer bins wrote

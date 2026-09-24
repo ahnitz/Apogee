@@ -1925,7 +1925,7 @@ class HierarchicalFilter(MatchedFilter):
         Windows are per block, so the ragged ones at a segment's edges need no
         grouping.  Returns a structured array of shape
         ``(nblocks, ntemplates, nbins)``, or with ``raw=True`` the two plain
-        arrays ``(index, value, magnitude)`` of that shape -- which skips
+        arrays ``(index, value)`` of that shape -- which skips
         assembling the structured array, a real cost here because a whole
         segment's blocks come back at once.
 
@@ -1984,8 +1984,12 @@ class HierarchicalFilter(MatchedFilter):
         self._ensure().run_series(ser, st, ws, we, t0, nt, binsize, float(threshold),
                             idx, val, mag, cnt)
         if raw:
-            return (idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb),
-                    mag.reshape(nblk, nt, nb))
+            # Two, as every other entry point returns -- including this
+            # method's own GPU branch, which is what made CPU and GPU
+            # disagree on one call and stopped hierarchical-on-GPU running
+            # end to end. A peak is where and what, nothing else; magnitude
+            # is np.abs(value) exactly, so returning it only copied.
+            return idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb)
         peaks = np.empty((nblk, nt, nb), dtype=PEAK_DTYPE)
         peaks["index"] = idx.reshape(nblk, nt, nb)
         peaks["value"] = val.reshape(nblk, nt, nb)

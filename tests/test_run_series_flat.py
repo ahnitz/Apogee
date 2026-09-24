@@ -167,3 +167,65 @@ def test_windows_with_different_bin_counts_are_refused(device, klass):
     f.set_templates(h)
     with pytest.raises(ValueError, match="same bin count"):
         f.run_series(series, starts, ws, we, binsize=N // 8, threshold=0.0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("klass", ["flat", "hier"])
+def test_raw_returns_two_arrays_on_every_path(device, klass):
+    """One arity for raw=True, across both classes and both devices.
+
+    HierarchicalFilter.run_series(raw=True) returned three arrays -- index,
+    value and magnitude -- where every other entry point, including its OWN
+    GPU branch, returned two. So the same method disagreed with itself
+    depending on the device, and a caller written against the CPU raised
+    "expected 3, got 2" the moment it moved to a GPU. That was the only thing
+    stopping the hierarchical path running end to end under pycbc.
+
+    The suite missed it because every test checked a backend against a
+    numerical reference rather than against the other backend through the
+    same call, and arity is invisible to that. This compares the paths to
+    each other, which is the shape of check that catches contract drift.
+    """
+    series, h, starts = fixture()
+    ws = np.zeros(starts.size, dtype=np.uintp)
+    we = np.full(starts.size, N // 2, dtype=np.uintp)
+    if klass == "flat":
+        f = mf.MatchedFilter(N, 4, NT, device=device)
+    else:
+        f = mf.HierarchicalFilter(N, 4, NT, snr=5.5, fd=1e-2, device=device)
+        f.set_reference(np.abs(h[0]) ** 2)
+    f.set_templates(h)
+    out = f.run_series(series, starts, ws, we, binsize=N, threshold=0.0,
+                       raw=True)
+    assert isinstance(out, tuple) and len(out) == 2, (
+        "%s/%s run_series(raw=True) returned %d arrays, not 2"
+        % (klass, device, len(out)))
+    idx, val = out
+    # And magnitude must be derivable, which is why it is not returned.
+    peaks = f.run_series(series, starts, ws, we, binsize=N, threshold=0.0)
+    np.testing.assert_array_equal(peaks["index"], idx)
+    np.testing.assert_array_equal(peaks["value"], val)
+
+
+@pytest.mark.parametrize("klass", ["flat", "hier"])
+def test_run_raw_arity_matches_run_series(klass):
+    """run and run_series must agree with each other about raw=True too."""
+    series, h, starts = fixture()
+    f = (mf.MatchedFilter(N, 4, NT, device="cpu") if klass == "flat"
+         else mf.HierarchicalFilter(N, 4, NT, snr=5.5, fd=1e-2, device="cpu"))
+    if klass == "hier":
+        f.set_reference(np.abs(h[0]) ** 2)
+    f.set_templates(h)
+    d = np.zeros((4, N), dtype=np.complex64)
+    for b in range(4):
+        buf = np.zeros(N, dtype=np.complex64)
+        seg = series[int(starts[b]):int(starts[b]) + N]
+        buf[:seg.size] = seg
+        d[b] = np.fft.fft(buf) / N
+    f.set_data(d)
+    a = f.run(binsize=N, threshold=0.0, raw=True)
+    ws = np.zeros(starts.size, dtype=np.uintp)
+    we = np.full(starts.size, N, dtype=np.uintp)
+    b = f.run_series(series, starts, ws, we, binsize=N, threshold=0.0, raw=True)
+    assert len(a) == len(b) == 2, (
+        "%s: run gives %d arrays, run_series gives %d" % (klass, len(a), len(b)))
