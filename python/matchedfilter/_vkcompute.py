@@ -41,6 +41,7 @@ _MAX_BINS = 2048
 #: VkPhysicalDeviceLimits contains 64-bit members; maxComputeSharedMemorySize
 #: sits 216 bytes into those limits.
 _OFF_SHARED_MEMORY = 296 + 216
+_OFF_MAX_INVOCATIONS = 296 + 232
 
 #: Bands with a tiled coarse kernel, and its tile. Everywhere else the
 #: general kernel is used, one pair per workgroup.
@@ -276,6 +277,13 @@ class Context:
         self.max_shared_memory = int(ctypes.cast(
             ctypes.byref(props, _OFF_SHARED_MEMORY),
             ctypes.POINTER(_u32))[0])
+        # n=16384 needs a 1024-thread workgroup, which is exactly the limit
+        # on Apple hardware and on this one. A device offering fewer cannot
+        # run the larger kernels at all, and should say so rather than fail
+        # to create a pipeline.
+        self.max_invocations = int(ctypes.cast(
+            ctypes.byref(props, _OFF_MAX_INVOCATIONS),
+            ctypes.POINTER(_u32))[0])
 
         self.mem_props = _MemProps()
         vk.vkGetPhysicalDeviceMemoryProperties(self.physical,
@@ -339,6 +347,11 @@ class Context:
         the pipeline on the user's machine.
         """
         info = _manifest().get("modules", {}).get(str(n))
+        if info and info.get("local_size", [0])[0] > self.max_invocations:
+            raise VulkanError(
+                "n=%d needs a %d-thread workgroup and this device allows %d; "
+                "use a shorter transform or device='cpu'"
+                % (n, info["local_size"][0], self.max_invocations))
         if info and info.get("lds_bytes", 0) > self.max_shared_memory:
             alt = info.get("portable")
             if alt is None:

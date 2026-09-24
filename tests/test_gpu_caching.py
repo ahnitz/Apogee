@@ -318,3 +318,28 @@ def test_cost_table_resolution_order():
     unknown = Device("gpu", 0, "Some Other GPU", "vulkan", arch=("nope",))
     path, key = cost_table_for(unknown)
     assert key is None and path.endswith("cost.txt")
+
+
+def test_the_chosen_kernel_fits_the_invocation_limit():
+    """n=16384 needs a 1024-thread workgroup, exactly Apple's limit.
+
+    A device offering fewer must refuse by name rather than fail to create
+    a pipeline on the user's machine.
+    """
+    from matchedfilter import _vkcompute as V
+    import json, pathlib
+    man = json.loads((pathlib.Path(V.__file__).parent / "spirv"
+                      / "manifest.json").read_text())
+    for dev in mf.devices():
+        if dev.kind != "gpu":
+            continue
+        ctx = V.Context(dev.index)
+        try:
+            for key, info in man["modules"].items():
+                if info["local_size"][0] <= ctx.max_invocations:
+                    ctx._kernel_file(int(key))          # must not raise
+                else:
+                    with pytest.raises(V.VulkanError, match="thread workgroup"):
+                        ctx._kernel_file(int(key))
+        finally:
+            ctx.destroy()
