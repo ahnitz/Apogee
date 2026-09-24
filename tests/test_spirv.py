@@ -18,6 +18,22 @@ import pytest
 
 import matchedfilter
 
+
+def _tools_dir():
+    """tools/ beside the TESTS, not beside the installed package.
+
+    Using matchedfilter.__file__ works only in a source checkout; against an
+    installed wheel the package sits in site-packages and tools/ is nowhere
+    near it.
+    """
+    here = pathlib.Path(__file__).resolve().parent
+    for base in (here.parent, here.parent.parent):
+        cand = base / "tools"
+        if (cand / "build_spirv.py").is_file():
+            return cand
+    return None
+
+
 SPIRV_DIR = pathlib.Path(matchedfilter.__file__).resolve().parent / "spirv"
 MANIFEST = SPIRV_DIR / "manifest.json"
 
@@ -48,7 +64,10 @@ def manifest():
 
 def test_every_tier_b_size_is_present(manifest):
     import sys
-    sys.path.insert(0, str(pathlib.Path(matchedfilter.__file__).parents[2] / "tools"))
+    tools = _tools_dir()
+    if tools is None:
+        pytest.skip("tools/ is not beside the tests (installed package?)")
+    sys.path.insert(0, str(tools))
     from build_spirv import TIER_B
     assert sorted(int(k) for k in manifest["modules"]) == sorted(TIER_B)
 
@@ -88,7 +107,10 @@ def test_host_binding_contract(manifest, n):
 def test_blobs_match_the_current_kernel_source(manifest, tmp_path):
     """Recompile and compare, so edited source cannot ship as an old blob."""
     import sys
-    sys.path.insert(0, str(pathlib.Path(matchedfilter.__file__).parents[2] / "tools"))
+    tools = _tools_dir()
+    if tools is None:
+        pytest.skip("tools/ is not beside the tests (installed package?)")
+    sys.path.insert(0, str(tools))
     import build_spirv
 
     slangc = build_spirv.find_slangc()
@@ -121,8 +143,11 @@ def test_every_kernel_has_a_portable_variant_when_it_needs_one(manifest):
 
 def test_declared_shared_memory_matches_the_kernels_own_arithmetic(manifest):
     """The manifest must not claim a size the shader does not ask for."""
-    import sys, pathlib
-    sys.path.insert(0, str(pathlib.Path(matchedfilter.__file__).parents[2] / "tools"))
+    import sys
+    tools = _tools_dir()
+    if tools is None:
+        pytest.skip("tools/ is not beside the tests (installed package?)")
+    sys.path.insert(0, str(tools))
     from build_spirv import lds_bytes, LDS_CAP
     for key, info in manifest["modules"].items():
         n = int(key)

@@ -12,7 +12,28 @@ import pytest
 import matchedfilter as mf
 
 import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+_TOOLS = None
+
+def _tools_dir():
+    """Locate tools/ from the TEST file, not from the installed package.
+
+    These tests used matchedfilter.__file__ to find it, which works only in
+    a source checkout -- against an installed wheel the package lives in
+    site-packages and tools/ is nowhere near it, so collection failed and
+    the suite could not be used to verify an install at all.
+    """
+    import pathlib
+    here = pathlib.Path(__file__).resolve().parent
+    for base in (here.parent, here.parent.parent):
+        cand = base / "tools"
+        if (cand / "gpu_output_order.py").is_file():
+            return cand
+    return None
+_TOOLS = _tools_dir()
+if _TOOLS is None:
+    pytest.skip("tools/ is not beside the tests (installed package?)",
+                allow_module_level=True)
+sys.path.insert(0, str(_TOOLS))
 import gpu_hier_reference as ref
 
 from test_api import inspiral_power, template_with_power, noise
