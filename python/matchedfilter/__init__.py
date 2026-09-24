@@ -179,6 +179,19 @@ class MatchedFilter:
     # convention -- is identical, which is what lets one test body assert
     # against both.
     def _start_gpu(self):
+        # One flat-filter contract, two backends behind it. Both expose
+        # peaks() with the same signature and the same conventions, so
+        # nothing above this line knows which it got.
+        if getattr(self.device, "backend", None) == "metal":
+            from . import _mtlcompute
+            if self.n not in _GPU_SIZES:
+                raise ValueError(
+                    "device='gpu' supports n in %s; got %d"
+                    % (sorted(_GPU_SIZES), self.n))
+            self._gpu = _mtlcompute.Context(self.device.index)
+            self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
+            self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
+            return
         from . import _vkcompute
         if self.n not in _GPU_SIZES:
             raise ValueError(
@@ -1437,6 +1450,19 @@ class HierarchicalFilter(MatchedFilter):
     # every template gets the same numbers -- verified across 32 templates
     # with deliberately different power-law slopes.
     def _start_gpu(self):
+        # One flat-filter contract, two backends behind it. Both expose
+        # peaks() with the same signature and the same conventions, so
+        # nothing above this line knows which it got.
+        if getattr(self.device, "backend", None) == "metal":
+            from . import _mtlcompute
+            if self.n not in _GPU_SIZES:
+                raise ValueError(
+                    "device='gpu' supports n in %s; got %d"
+                    % (sorted(_GPU_SIZES), self.n))
+            self._gpu = _mtlcompute.Context(self.device.index)
+            self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
+            self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
+            return
         from . import _vkcompute
         if self.n not in _GPU_SIZES:
             raise ValueError(

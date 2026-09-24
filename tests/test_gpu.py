@@ -121,7 +121,8 @@ def test_cpu_and_gpu_agree_pair_for_pair(n):
     """
     gpus = [d for d in DEVICES if d != "cpu"]
     if not gpus:
-        pytest.skip("no GPU on this machine")
+        from matchedfilter import _vulkan
+        pytest.skip(_vulkan.available()[1] or "no usable GPU")
     nd, nt, binsize = 3, 5, n // 8
     d, h = spectra(n, nd, nt, seed=n + 1)
 

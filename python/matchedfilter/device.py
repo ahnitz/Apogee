@@ -18,6 +18,7 @@ It is reachable, but only by naming it.
 """
 import os
 
+from . import _metal
 from . import _vulkan
 
 _VENDORS = {0x1002: "AMD", 0x10DE: "NVIDIA", 0x8086: "Intel",
@@ -117,8 +118,20 @@ def devices():
     undiscoverable -- but flagged, and ``"gpu"`` without an index skips them.
     """
     out = [_cpu_device()]
+
+    # Metal first, because on macOS it is the only way an Apple GPU can be
+    # seen at all -- there is no Vulkan driver there. Listing it does not
+    # claim it can be used: backend="metal" has no runtime yet and building
+    # a filter on it refuses, which is a better answer than reporting that
+    # a machine with a GPU has none.
+    for i, d in enumerate(_metal.enumerate_devices()[0]):
+        out.append(Device("gpu", i, d["name"], "metal",
+                          arch=("apple",)))
+
     found, _ = _vulkan.enumerate_devices()
+    base = len(out) - 1
     for i, d in enumerate(found):
+        i += base
         vendor = _VENDORS.get(d["vendor"])
         name = d["name"]
         if vendor and vendor.lower() not in name.lower():

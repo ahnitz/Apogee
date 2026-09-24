@@ -158,10 +158,23 @@ jobs:
           if [ -f slang.zip ]; then unzip -q slang.zip -d slangsdk; else tar xzf slang.tgz -C slangsdk; fi
           echo "MF_SLANGC=$(find "$PWD/slangsdk" -name slangc -type f | head -1)" >> "$GITHUB_ENV"
 
-      - name: Show what the toolchain sees
+      # The question this job exists to answer: does a hosted runner give
+      # the guest a GPU at all? These are virtual machines, and a Metal
+      # device is not guaranteed. Everything else here is downstream of it.
+      - name: Is there actually a GPU?
         run: |
           xcrun -sdk macosx metal --version || echo "no Apple metal compiler"
-          system_profiler SPDisplaysDataType | head -20 || true
+          system_profiler SPDisplaysDataType | head -30 || true
+          python - <<'EOF'
+          import ctypes, sys
+          try:
+              m = ctypes.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
+              m.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+              d = m.MTLCreateSystemDefaultDevice()
+              print("MTLCreateSystemDefaultDevice ->", hex(d) if d else "NULL")
+          except Exception as exc:
+              print("Metal unavailable:", exc)
+          EOF
 
       - name: Build the kernels, including .metallib
         run: |
@@ -172,8 +185,41 @@ jobs:
       - name: Install and run the suite
         run: |
           python -m pip install -e . pytest
-          python -c "import matchedfilter as mf; print(mf.devices())"
+          python -c "
+          import matchedfilter as mf
+          for d in mf.devices():
+              print(repr(d))
+          from matchedfilter import _metal
+          print('metal:', _metal.available())
+          "
           python -m pytest tests -q
+
+      # The end of the chain: does a shipped kernel actually run and give
+      # the right answer? A failure here is the useful outcome -- it says
+      # which link broke, and nothing on the development machine can.
+      - name: Run a kernel on the GPU
+        run: |
+          python - <<'EOF'
+          import numpy as np, matchedfilter as mf
+          gpus = [d for d in mf.devices() if d.kind == "gpu"]
+          if not gpus:
+              raise SystemExit("no GPU device was reported; nothing to run")
+          n = 4096
+          rng = np.random.default_rng(0)
+          d = (rng.standard_normal((2, n)) + 1j*rng.standard_normal((2, n))).astype(np.complex64)
+          h = (rng.standard_normal((3, n)) + 1j*rng.standard_normal((3, n))).astype(np.complex64)
+          out = {}
+          for dev in ("cpu", str(gpus[0])):
+              f = mf.MatchedFilter(n, 2, 3, device=dev)
+              f.set_data(d); f.set_templates(h)
+              out[dev] = f.run(binsize=512, threshold=0.0).copy()
+              print(dev, "ran")
+          a, b = out["cpu"], out[str(gpus[0])]
+          same = np.array_equal(a["index"], b["index"])
+          err = np.max(np.abs(np.abs(a["value"]) - np.abs(b["value"])))
+          print("indices match:", same, " max |value| difference:", err)
+          assert same, "the Metal kernel disagreed with the CPU"
+          EOF
 
       - name: Benchmark what runs
         run: |

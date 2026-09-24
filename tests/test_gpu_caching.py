@@ -30,7 +30,19 @@ def gpu_device():
 
 
 DEVICE = gpu_device()
-pytestmark = pytest.mark.skipif(DEVICE is None, reason="no GPU on this machine")
+def _why():
+    """The actual reason, not a guess.
+
+    "no GPU on this machine" was reported on a Mac, which has one -- the
+    library simply cannot reach it. A skip that misstates the cause sends
+    the reader looking in the wrong place.
+    """
+    from matchedfilter import _vulkan
+    ok, reason = _vulkan.available()
+    return reason or "no usable GPU"
+
+
+pytestmark = pytest.mark.skipif(DEVICE is None, reason=_why())
 
 N, ND, NT = 4096, 3, 8
 

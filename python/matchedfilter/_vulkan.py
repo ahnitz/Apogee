@@ -72,13 +72,29 @@ def _shadowing_hint():
     return ""
 
 
+def _platform_note():
+    """Why a platform might have no Vulkan at all, as opposed to no GPU.
+
+    "no GPU" is the wrong thing to tell a Mac user. There is a GPU; this
+    library has no way to reach it, which is a different statement and the
+    only one that tells them what to do about it.
+    """
+    import sys
+    if sys.platform == "darwin":
+        return (" -- macOS ships no Vulkan driver, and this build has no "
+                "Metal backend yet, so an Apple GPU is present but "
+                "unreachable rather than absent (see docs/plans/macos.md)")
+    return ""
+
+
 def _load():
     for name in ("libvulkan.so.1", "libvulkan.1.dylib", "vulkan-1.dll"):
         try:
             return ctypes.CDLL(name), None
         except OSError:
             continue
-    return None, "no Vulkan loader (libvulkan) found on this system"
+    return None, ("no Vulkan loader (libvulkan) found on this system"
+                  + _platform_note())
 
 
 def enumerate_devices():
