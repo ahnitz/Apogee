@@ -40,8 +40,8 @@ def main():
     # NDATA segments against NTMPL templates is one call. The batch is the
     # point: one segment against a large bank is the worst shape to hand a
     # GPU, because the bank gets streamed once per segment.
-    print("\n%-6s %-40s %12s" % ("device", "name", "us/pair"))
-    peaks = None
+    print("\n%-6s %-40s %10s %10s" % ("device", "name", "us/pair", "lag 0/0"))
+    got = {}
     for want in ("cpu", "auto"):
         f = mf.MatchedFilter(N, NDATA, NTMPL, device=want)
         f.set_data(data)
@@ -51,14 +51,28 @@ def main():
         for _ in range(5):
             peaks = f.run(binsize=N, threshold=0.0)
         per = (time.perf_counter() - t0) / 5 / (NDATA * NTMPL)
-        print("%-6s %-40s %10.2f" % (want, f.device.name[:40], per * 1e6))
+        # peaks is (ndata, ntemplates, nbins) with fields "index" (the lag)
+        # and "value" (complex). For the magnitude take np.abs(...["value"]).
+        # A bin nothing crossed comes back as index -1, so bin j is always at
+        # slot j and you can index by frequency without searching.
+        got[want] = (peaks["index"].copy(), peaks["value"].copy())
+        print("%-6s %-40s %10.2f %10d"
+              % (want, f.device.name[:40], per * 1e6, got[want][0][0, 0, 0]))
 
-    # peaks is (ndata, ntemplates, nbins) with fields "index" (the lag) and
-    # "value" (complex). For the magnitude take np.abs(peaks["value"]).
-    # A bin nothing crossed comes back as index -1, so bin j is always at
-    # slot j and you can index by frequency without searching.
-    print("\nloudest pair 0/0: lag %d, |value| %.5f"
-          % (peaks["index"][0, 0, 0], abs(peaks["value"][0, 0, 0])))
+    # Print BOTH devices and compare them. An earlier version of this file
+    # reported only the last one, so a reader comparing their output against
+    # someone else's could not tell a different machine from a different
+    # answer -- and the numbers DO differ between machines for a reason that
+    # is not the filter: change NDATA or NTMPL and pair 0/0 changes too,
+    # because the template array is drawn from the same stream as the data,
+    # so its size shifts every later draw.
+    same_lag = np.array_equal(got["cpu"][0], got["auto"][0])
+    close = np.allclose(np.abs(got["cpu"][1]), np.abs(got["auto"][1]),
+                        rtol=1e-4, atol=1e-6)
+    print("\nGPU agrees with CPU: lags identical=%s, magnitudes close=%s"
+          % (same_lag, close))
+    print("loudest pair 0/0: lag %d, |value| %.5f"
+          % (got["auto"][0][0, 0, 0], abs(got["auto"][1][0, 0, 0])))
 
     # ---- 3. a whole series --------------------------------------------
     # You own the overlap-save arithmetic -- where each block starts and
