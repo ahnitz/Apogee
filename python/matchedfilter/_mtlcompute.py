@@ -269,6 +269,52 @@ class Context:
                    self.max_shared_memory // 1024))
         return alt
 
+    def _pipeline_sized(self, stem, fn, want):
+        """Rebuild the pipeline having told the compiler the group size.
+
+        maxTotalThreadsPerThreadgroup is an INPUT to the descriptor form, not
+        only a report. Left alone the compiler optimises for occupancy and
+        stops wherever the registers land -- 576 for the n=16384 kernel on an
+        M2, against the 1024 it is dispatched at, so that length was refused
+        outright. Asked for 1024 it delivers 1024, spilling if it must.
+
+        ONLY when the default is short, which is the part worth stating.
+        Declaring it unconditionally also works, in the sense that every
+        pipeline builds and reports the size asked for -- and it changed the
+        answer at n=4096 on an M2, where the default allows 448 and nothing
+        needed asking. test_run_series_agrees_with_the_cpu failed
+        deterministically, three runs out of three, and passed again the
+        moment the descriptor was dropped. Constraining a kernel that did not
+        need constraining is not free, so it is not done.
+
+        Measured on an M2:
+
+            kernel               needs   default   declared
+            tierb_4096             256       448        --    (left alone)
+            tierb_8192_lds32       512       512        --    (left alone)
+            tierb_16384_lds32     1024       576      1024
+        """
+        desc = self.o.call(
+            self.o.call(self.o.objc.objc_getClass(
+                b"MTLComputePipelineDescriptor"), b"alloc"), b"init")
+        self.o.call(desc, b"setComputeFunction:", restype=None,
+                    args=(fn,), argtypes=(ctypes.c_void_p,))
+        self.o.call(desc, b"setMaxTotalThreadsPerThreadgroup:", restype=None,
+                    args=(want,), argtypes=(ctypes.c_ulong,))
+        err = ctypes.c_void_p()
+        pso = self.o.call(
+            self.device,
+            b"newComputePipelineStateWithDescriptor:options:reflection:error:",
+            args=(desc, 0, None, ctypes.byref(err)),
+            argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p,
+                      ctypes.c_void_p))
+        if not pso:
+            raise MetalError(
+                "%s needs a %d-thread threadgroup and asking for one failed: "
+                "%s" % (stem, want, self._error(err)))
+        return pso, int(self.o.call(pso, b"maxTotalThreadsPerThreadgroup",
+                                    restype=ctypes.c_ulong))
+
     def pipeline(self, n, entry="fusedTierB"):
         key = (n, entry)
         if key in self._pipelines:
@@ -280,6 +326,7 @@ class Context:
                          argtypes=(ctypes.c_void_p,))
         if not fn:
             raise MetalError("no function %r in %s" % (entry, stem))
+        want = n // 16
         err = ctypes.c_void_p()
         pso = self.o.call(self.device,
                           b"newComputePipelineStateWithFunction:error:",
@@ -288,17 +335,15 @@ class Context:
         if not pso:
             raise MetalError("could not build a pipeline for %s: %s"
                              % (stem, self._error(err)))
-        # A paravirtual device may allow fewer threads per threadgroup than
-        # real hardware, and n=16384 wants the full 1024. Asking the PIPELINE
-        # rather than the device is what matters: the limit depends on the
-        # compiled kernel's register use, not only on the hardware.
         limit = int(self.o.call(pso, b"maxTotalThreadsPerThreadgroup",
                                 restype=ctypes.c_ulong))
-        if limit < n // 16:
+        if limit < want:
+            pso, limit = self._pipeline_sized(stem, fn, want)
+        if limit < want:
             raise UnsupportedSize(
                 "n=%d needs a %d-thread threadgroup and this pipeline allows "
-                "%d on %s; use a shorter transform or device='cpu'"
-                % (n, n // 16, limit, self.name))
+                "%d on %s even when asked for %d; use a shorter transform or "
+                "device='cpu'" % (n, want, limit, self.name, want))
         self._pipelines[key] = pso
         return pso
 

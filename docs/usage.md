@@ -206,19 +206,19 @@ the second is stricter than CI alone would tell you:
   and 1.29x at n=16384. Halving the staging doubles the exchange chunks
   and their barriers, and that costs more than the occupancy it buys — so
   this is a real penalty at those two sizes, not a formality.
-- **n is capped at 4096 on Apple silicon.** What a device allows depends on
-  the compiled kernel's register use, not only on the hardware, and it is
-  asked per pipeline. Measured on the same kernel and commit:
+- **Every supported length runs** — n=1024 through 16384, verified against
+  the CPU index-for-index on an Apple M2, flat and hierarchical.
 
-  | pipeline            | needs | paravirtual (CI) | Apple M2 |
-  |---------------------|-------|------------------|----------|
-  | `tierb_8192_lds32`  | 512   | 512 — runs       | **448 — refuses** |
-  | `tierb_16384_lds32` | 1024  | 576 — refuses    | 576 — refuses |
+  It nearly did not. How many threads a device allows depends on the
+  compiled kernel's register use, not only on the hardware, and it is asked
+  per pipeline. Left alone, Apple's compiler optimises for occupancy and
+  stops wherever the registers land — 576 for the n=16384 kernel against
+  the 1024 it is dispatched at, so that length was refused outright. Asked
+  for 1024 via `MTLComputePipelineDescriptor` it delivers 1024.
 
-  So n=8192 runs in CI and raises `UnsupportedSize` on a real M2. Testing
-  only against the paravirtual device would have shipped that as supported.
-  Raising the cap means fewer threads doing more points each — R=32 rather
-  than 16 — which is open work, not a device limit.
+  The library asks only when the default is short. Declaring the size
+  unconditionally also builds every pipeline, and it *changed the answer* at
+  n=4096, where the default already allowed 448 and nothing needed asking.
 
 A software rasteriser will not catch a mistake here. llvmpipe reports 32 KB
 and then runs a 64 KB kernel regardless, so the lavapipe CI path passes
