@@ -25,7 +25,7 @@ The generated MSL uses `simd_max`, `simd_is_first`, `atomic_fetch_max_explicit`
 and `threadgroup` arrays. All are ordinary Metal; none are the sort of thing
 that turns into a rewrite.
 
-## Route A: bundle MoltenVK
+## Route B (NOT the plan of record): bundle MoltenVK
 
 MoltenVK implements Vulkan on Metal, is Apache 2.0, and exports the Vulkan
 entry points directly — so `libMoltenVK.dylib` can be `dlopen`ed in place of
@@ -51,7 +51,7 @@ which is the limit rather than comfortably inside it.
 
 Effort: packaging plus a loader path. The kernels do not change.
 
-## Route B: emit Metal directly
+## Route A: emit Metal directly -- the decided route
 
 `slangc -target metal` already produces MSL from the same source. Two pieces
 are missing:
@@ -67,14 +67,32 @@ are missing:
 Effort: larger, but no translation layer between the kernel and the device,
 and pipeline creation would be a blob load rather than a shader compile.
 
-## Which first
+## Which, and a correction
 
-Route A, because it reuses everything and the kernels are already known to be
-portable. Route B becomes worth it if MoltenVK's pipeline-creation cost or
-its subgroup coverage turns out to bite -- and by then the cost tables and
-the CI job from Route A still apply.
+**Native Metal.** This was already decided in `docs/plans/gpu.md` on evidence
+that an earlier draft of this page ignored, and reversed without saying so.
 
-**Neither can be developed blind.** There is no Apple hardware here, so the
-first step either way is a CI job that runs the existing suite on a macOS
-runner with MoltenVK installed, to find out what actually fails before
-choosing how much to build.
+The decision was not taken from Slang's documentation, which marks the Metal
+target work-in-progress. A probe kernel using shared memory, barriers, a wave
+reduction and an atomic was compiled to all four targets, and Metal lowered
+to NATIVE primitives -- `threadgroup array`, `threadgroup_barrier`,
+`simd_max`, native atomics -- rather than emulation. MoltenVK was weighed
+there and rejected for what it adds: a vendored dylib and a translation
+layer, on the one platform with no Vulkan story of its own.
+
+The argument for MoltenVK -- that it reuses `_vkcompute` and needs no kernel
+change -- conflates two things. The KERNEL is portable either way, and that
+is proven. Only the RUNTIME differs. The real choice is between a Vulkan
+runtime behind a shim and about 400 lines of Metal runtime written once, and
+the device layer was built as an interface per backend precisely so the
+second is ordinary work rather than a special case.
+
+**MoltenVK still has one use, and it is not shipping.** Installing it on a
+macOS CI runner -- `brew install molten-vk`, nothing vendored, nothing
+committed to -- runs the existing suite against Apple hardware today. That
+answers the questions no amount of reading settles: whether the subgroup
+operations are covered, whether `n=16384` gets its 1024-thread workgroup,
+whether the 32 KB staging variants are selected. Buying that information
+costs an afternoon and changes how much Metal runtime is worth writing.
+
+So: use MoltenVK to learn, ship native Metal.
