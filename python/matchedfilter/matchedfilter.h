@@ -161,7 +161,6 @@ int    ap_hmf_set_first_stage(ap_hmf_plan *p, float snr);
    reports, measured rather than modelled. Overrides the internal
    derivation entirely. Negative restores it. */
 int    ap_hmf_set_threshold(ap_hmf_plan *p, float t);
-int    ap_hmf_set_coarse_margin(ap_hmf_plan *p, float g);
 
 int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
 int    ap_hmf_set_template(ap_hmf_plan *p, int t, const float *spec);
@@ -175,7 +174,7 @@ int ap_hmf_run(ap_hmf_plan *p, int d0, int nd, int t0, int nt,
  *
  * The caller still owns the overlap-save arithmetic: it decides where each
  * block starts and which span of each block's output is valid.  matchedfilter only
- * executes that plan -- forward transform per block, margin, refine where needed
+ * executes that plan -- forward transform per block, gate, refine where needed
  * -- which removes the per-block round trip through the caller entirely: no
  * separately-planned forward FFT, no spectrum handed back and forth, and one
  * call per segment instead of one per block.
@@ -205,8 +204,7 @@ void ap_hmf_stats(const ap_hmf_plan *p, long *pairs, long *triggers);
    `margin`.  With set_reference they are scalars rather than per-template,
    because the recovery factors and the band fraction then come from the
    reference and not from each template.  Returns 0 on success. */
-int ap_hmf_coarse_thresholds(ap_hmf_plan *p, float threshold,
-                             float *margin, float *raw, float *even);
+int ap_hmf_coarse_thresholds(ap_hmf_plan *p, float threshold, float *thr);
 
 /* The band / oversampling / taps / margin the table chose, for reporting. */
 void ap_hmf_config(const ap_hmf_plan *p, size_t *band, int *taps);

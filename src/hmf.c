@@ -74,7 +74,7 @@ struct ap_hmf_plan {
      template, so one reference serves a whole bank -- and skips the
      per-template ingest measurement. */
   int    ref_on;
-  float  coarse_margin, gscale; int gcal;
+  float  gscale; int gcal;
   /* The CALIBRATED coarse threshold, in the units the coarse pass
      reports. Negative means none was supplied and the old modelled
      derivation is used -- which is the only reason that code still
@@ -103,7 +103,7 @@ struct ap_hmf_plan {
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
   unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
   long nbrk_fire,nbrk_rej;    /* pairs the bracket settled without the odd pass */
-  FILE *dump;          /* MF_HMF_DUMP: per-pair (even, combined, margin) */
+  FILE *dump;          /* MF_HMF_DUMP: per-pair (coarse, combined, thr) */
   long npre, ninterp, nskip;   /* diagnostics: pre-screen passes, interpolations run */
   float last_thr;
   float fs_snr;        /* explicit first-stage SNR; <=0 means derive it */
@@ -291,9 +291,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->gcal=0; p->gscale=1.40f;
   { const char *e=getenv("MF_GSCALE"); if(e) p->gscale=(float)atof(e); }
   { const char *e=getenv("MF_GCAL"); if(e) p->gcal=atoi(e); }
-  p->coarse_margin=1.0f;
   p->cal_thr=-1.0f;
-  { const char *e=getenv("MF_GATE_MARGIN"); if(e) p->coarse_margin=(float)atof(e); }
   p->prof = getenv("MF_HMF_PROF") ? 1 : 0;
   { const char *e=getenv("MF_HMF_DUMP"); p->dump = e ? fopen(e,"wb") : NULL; }
   return p;
@@ -321,28 +319,25 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   free(p);
 }
 
-int ap_hmf_coarse_thresholds(ap_hmf_plan *p,float threshold,
-                             float *margin,float *raw,float *even)
+int ap_hmf_coarse_thresholds(ap_hmf_plan *p,float threshold,float *thr)
 {
   if(!p) return -1;
-  /* Exactly the derivation the run loop uses, so a backend that reads these
+  /* Exactly the derivation the run loop uses, so a backend that reads this
      makes the same decision rather than a similar one. Template 0 stands for
      all of them: with a reference set, fpow and the recovery factors come
-     from the reference, so every template gets the same three numbers. */
+     from the reference, so every template gets the same number.
+
+     There is one threshold and this is it -- the value a coarse output is
+     tested against. It used to hand back three, but `even` was a remnant of
+     the even/odd split and was only ever kept equal to this one, and the
+     third was a pre-conversion design value that is NOT comparable to a
+     coarse output at all. Returning it invited exactly that comparison. */
   float T = p->fs_snr > 0.0f ? p->fs_snr
                              : (threshold>p->snr ? threshold : p->snr);
   float gt = p->tg[0];
-  float tc = p->cal_thr >= 0.0f
-             ? p->cal_thr / (p->tgraw[0]*0.999f)      /* so raw comes back as cal_thr */
-             : hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->coarse_margin;
-  /* One threshold. `margin` is the design value before conversion and is
-     NOT comparable to a coarse output; `raw` is the only number a backend
-     should test against, and `even` is kept equal to it so the GPU's
-     two-test predicate collapses to one without changing its answer. */
-  const float t1 = p->cal_thr>=0.0f ? p->cal_thr : tc*p->tgraw[0]*0.999f;
-  if(margin) *margin = p->cal_thr>=0.0f ? p->cal_thr : tc;
-  if(raw)    *raw    = t1;
-  if(even)   *even   = t1;
+  if(thr) *thr = p->cal_thr >= 0.0f
+                 ? p->cal_thr
+                 : hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->tgraw[0]*0.999f;
   return 0;
 }
 
@@ -366,7 +361,7 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
   }
   if(getenv("MF_HMF_DIAG"))
     fprintf(stderr,"    [diag] pairs=%ld pre-screen passes=%ld (%.1f/pair) "
-            "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% margin=%.3f\n",
+            "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% thr=%.3f\n",
             p->pairs,p->npre,(double)p->npre/(p->pairs?p->pairs:1),
             p->ninterp,(double)p->ninterp/(p->pairs?p->pairs:1),
             100.0*p->nskip/(p->pairs?p->pairs:1),p->last_thr);
@@ -400,10 +395,6 @@ int ap_hmf_set_threshold(ap_hmf_plan *p,float t){
   p->cal_thr=t; return 0;
 }
 
-int ap_hmf_set_coarse_margin(ap_hmf_plan *p,float g){
-  if(!p||!(g>0.f)) return -1;
-  p->coarse_margin=g; return 0;
-}
 int ap_hmf_set_first_stage(ap_hmf_plan *p,float snr){
   if(!p) return -1;
   p->fs_snr = snr > 0.0f ? snr : 0.0f;   /* <=0 restores the derived level */
@@ -860,7 +851,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
            in taps than the correlations it avoids -- measured at matched
            false dismissal, 1.66 ms against 1.53 ms. */
         rawg[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)
-                *p->coarse_margin*p->tgraw[t0+t]*0.999f;
+                *p->tgraw[t0+t]*0.999f;
         tcs[t]=rawg[t];
       }
     }
@@ -893,57 +884,41 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
-      const float margin = tcs[t]; p->last_thr=margin;
-      const float raw_thr  = rawg[t];
+      /* One threshold, one name. tcs and rawg are set equal on both paths
+         -- calibrated and modelled -- and this used to read them out under
+         three names (margin, raw_thr, even_thr) that were all this number.
+         `even_thr` was the even/odd split's, and the split is gone. */
+      const float thr = tcs[t]; p->last_thr=thr;
       int fire=0;
       /* Fused coarse pass: product, transform and maximum in one kernel, with
        * the product never reaching memory.  One bin spanning the whole coarse
        * window means the reported peak IS the maximum, so the separate scan
-       * that used to walk the materialised series disappears entirely.
-       * Threshold at raw_thr: below it, interpolation cannot reach the coarse threshold,
-       * so ap_mf_run returns index<0 and there is nothing more to do. */
+       * that used to walk the materialised series disappears entirely. */
       ap_peak ce;
-      /* Even half first, thresholded at graw1*margin rather than graw*margin.  The
-       * even samples alone are the U=1 series, so if their maximum falls below
-       * graw1*margin the true continuous peak cannot reach the coarse threshold no matter
-       * what the odd samples hold - and the odd transform, half the coarse
-       * cost, is skipped outright.  On noise that is the overwhelming majority
-       * of pairs.  It must be graw1 and not graw: graw describes the combined
-       * U=2 grid, which recovers more, so using it here would cut off peaks the
-       * odd half would have found. */
-      const float even_thr = raw_thr;   /* one threshold; see above */
       unsigned long long _t0 = p->prof ? ap_ticks() : 0;
       ce = p->cebuf[(size_t)d*nt+t];
-      if(ce.index>=0 && ce.magnitude<even_thr) ce.index=-1;   /* per-template margin */
+      if(ce.index>=0 && ce.magnitude<thr) ce.index=-1;
       if(ce.index<0){
         if(getenv("MF_HMF_TRACE") && p->pairs<6)
-          fprintf(stderr,"    [trace] pair=%ld margin=%.3f even_thr=%.3f "
-                  "even max BELOW even_thr\n",p->pairs,margin,even_thr);
-                                            /* cannot reach the coarse threshold: done */
+          fprintf(stderr,"    [trace] pair=%ld thr=%.3f coarse max BELOW thr\n",
+                  p->pairs,thr);
         p->nskip++;
         goto verdict;
       }
-      /* Bracket the odd transform.  The interpolated statistic S bounds the
-         combined maximum on both sides, and a bracket that does not straddle
-         the coarse threshold settles the pair without paying for the transform.  Every
-         pair it cannot settle still gets the transform, so the reported
-         triggers are unchanged. */
       if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }
-      /* There is no odd half. The coarse maximum IS the even maximum. */
       const float bestmag = ce.magnitude;
       /* The pair id is part of the record.  Without it a reader has to match
-         rows by their even value, which is ambiguous whenever two pairs land
+         rows by their coarse value, which is ambiguous whenever two pairs land
          close together -- and that ambiguity is indistinguishable from a
          mirror that computes the wrong thing. */
-      if(p->dump){ float rec[8]={ce.magnitude,0.0f,bestmag,margin,
-                                 raw_thr,even_thr,
+      if(p->dump){ float rec[8]={ce.magnitude,0.0f,bestmag,thr,
+                                 thr,thr,
                                  (float)(d0+d),(float)(t0+t)};
                    fwrite(rec,sizeof rec,1,p->dump); }
       if(getenv("MF_HMF_TRACE") && p->pairs<6)
-        fprintf(stderr,"    [trace] pair=%ld margin=%.3f even_thr=%.3f "
-                "coarse max=%.3f (even %.3f odd %.3f)\n",
-                p->pairs,margin,even_thr,bestmag,ce.magnitude,0.0f);
-      fire = bestmag>=margin;
+        fprintf(stderr,"    [trace] pair=%ld thr=%.3f coarse max=%.3f\n",
+                p->pairs,thr,bestmag);
+      fire = bestmag>=thr;
       verdict:
       if(fire){
         p->trig++;

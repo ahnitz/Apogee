@@ -276,12 +276,12 @@ static PyObject *HMF_stats(HMFObject *self,PyObject *a){
   long pr=0,tg=0; (void)a; ap_hmf_stats(self->p,&pr,&tg);
   return Py_BuildValue("(ll)",pr,tg);
 }
-static PyObject *HMF_coarse_thresholds(HMFObject *self,PyObject *args){
-  float thr,margin=0,raw=0,even=0;
+static PyObject *HMF_coarse_threshold(HMFObject *self,PyObject *args){
+  float thr,out=0;
   if(!PyArg_ParseTuple(args,"f",&thr)) return NULL;
-  if(ap_hmf_coarse_thresholds(self->p,thr,&margin,&raw,&even)<0){
-    PyErr_SetString(PyExc_RuntimeError,"coarse_thresholds failed"); return NULL; }
-  return Py_BuildValue("(fff)",margin,raw,even);
+  if(ap_hmf_coarse_thresholds(self->p,thr,&out)<0){
+    PyErr_SetString(PyExc_RuntimeError,"coarse_threshold failed"); return NULL; }
+  return PyFloat_FromDouble((double)out);
 }
 static PyObject *HMF_config(HMFObject *self,PyObject *a){
   size_t band=0; int k=0; (void)a; ap_hmf_config(self->p,&band,&k);
@@ -293,12 +293,6 @@ static PyObject *HMF_set_threshold(HMFObject *self,PyObject *args){
   double t; if(!PyArg_ParseTuple(args,"d",&t)) return NULL;
   if(ap_hmf_set_threshold(self->p,(float)t)<0){
     PyErr_SetString(PyExc_RuntimeError,"set_threshold failed"); return NULL; }
-  Py_RETURN_NONE;
-}
-static PyObject *HMF_set_coarse_margin(HMFObject *self,PyObject *args){
-  float g; if(!PyArg_ParseTuple(args,"f",&g)) return NULL;
-  if(ap_hmf_set_coarse_margin(self->p,g)<0){
-    PyErr_SetString(PyExc_RuntimeError,"set_coarse_margin failed"); return NULL; }
   Py_RETURN_NONE;
 }
 static PyObject *HMF_set_first_stage(HMFObject *self,PyObject *args){
@@ -315,13 +309,12 @@ static PyMethodDef HMF_methods[]={
   {"set_reference",(PyCFunction)HMF_set_reference,METH_VARARGS,"set_reference(buffer|None)"},
   {"set_first_stage",(PyCFunction)HMF_set_first_stage,METH_VARARGS,"set_first_stage(snr)"},
   {"set_threshold",(PyCFunction)HMF_set_threshold,METH_VARARGS,"set_threshold(t)"},
-  {"set_coarse_margin",(PyCFunction)HMF_set_coarse_margin,METH_VARARGS,"set_coarse_margin(g)"},
   {"run",(PyCFunction)HMF_run,METH_VARARGS,"run(...) -> total crossings"},
   {"nbins",(PyCFunction)HMF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},
   {"run_series",(PyCFunction)HMF_run_series,METH_VARARGS,"run_series(...)"},
   {"stats",(PyCFunction)HMF_stats,METH_NOARGS,"stats() -> (pairs, triggers)"},
   {"config",(PyCFunction)HMF_config,METH_NOARGS,"config() -> (band, 1, taps)"},
-  {"coarse_thresholds",(PyCFunction)HMF_coarse_thresholds,METH_VARARGS,NULL},
+  {"coarse_threshold",(PyCFunction)HMF_coarse_threshold,METH_VARARGS,NULL},
   {NULL}
 };
 static PyTypeObject HMFType={
