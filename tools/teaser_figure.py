@@ -280,13 +280,23 @@ def svg(results, out):
                      'fill="%s">%s</text>'
                      % (x + bw // 2, y0 + ph + 18 + len(_wrap(bar[1])) * 13,
                         MUT, bar[2]))
-    o.append('<text x="28" y="%d" font-size="11.5" fill="%s">FFTW and rocFFT '
-             'do the inverse transform ALONE; matchedfilter does the product, '
-             'the transform and the peak scan.</text>' % (H - 30, MUT))
-    o.append('<text x="28" y="%d" font-size="11.5" fill="%s">Only the peak per '
-             'bin is returned, so the 537 MB of correlation is never written — '
-             'on the GPU rocFFT is at the bandwidth limit (213 of 211 GB/s).'
-             '</text>' % (H - 14, MUT))
+    if _OVERRIDE:
+        # No FFTW or rocFFT bar in this panel, and the rocFFT bandwidth
+        # figure is a measurement of a different machine entirely.
+        f1 = ('matchedfilter does the product, the transform and the peak '
+              'scan; there are no external baselines in this panel.')
+        f2 = ('Only the peak per bin is returned, so the 537 MB of '
+              'correlation is never written.')
+    else:
+        f1 = ('FFTW and rocFFT do the inverse transform ALONE; matchedfilter '
+              'does the product, the transform and the peak scan.')
+        f2 = ('Only the peak per bin is returned, so the 537 MB of '
+              'correlation is never written — on the GPU rocFFT is at the '
+              'bandwidth limit (213 of 211 GB/s).')
+    o.append('<text x="28" y="%d" font-size="11.5" fill="%s">%s</text>'
+             % (H - 30, MUT, f1))
+    o.append('<text x="28" y="%d" font-size="11.5" fill="%s">%s</text>'
+             % (H - 14, MUT, f2))
     o.append("</svg>")
     with open(out, "w") as fh:
         fh.write("\n".join(o))
@@ -308,6 +318,13 @@ def _wrap(name):
     return name.split(", ") if ", " in name else [name]
 
 
+#: Set when plotting numbers measured elsewhere. The name helpers below
+#: probe the machine they RUN on, so without this the M2 panel was labelled
+#: with this box's "AMD RYZEN AI MAX+ 395 / Radeon 8060S" -- the one thing a
+#: hardware comparison must never get wrong.
+_OVERRIDE = None
+
+
 def _cpu_name():
     """The CPU model, however this platform reports it.
 
@@ -316,6 +333,8 @@ def _cpu_name():
     falling back to a bare "CPU" there would be the one case where the
     label is missing precisely because the hardware is interesting.
     """
+    if _OVERRIDE:
+        return _OVERRIDE[0]
     if sys.platform == "darwin":
         import subprocess
         try:
@@ -336,6 +355,8 @@ def _cpu_name():
 
 
 def _gpu_name():
+    if _OVERRIDE:
+        return _OVERRIDE[1]
     for d in mf.devices():
         if d.kind == "gpu" and not d.is_software:
             return d.name
@@ -349,6 +370,9 @@ def main(argv=None):
                     help="plot the stamped Apple M2 numbers instead of measuring "
                          "this machine (this box has no Metal)")
     args = ap.parse_args(argv)
+    if args.m2:
+        global _OVERRIDE
+        _OVERRIDE = ("Apple M2", "Apple M2")     # as the M2 itself reports them
     results = []
     for bar in (M2_BARS if args.m2 else BARS):
         ms = bar[3]()
