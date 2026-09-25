@@ -456,7 +456,7 @@ def compare_backends(isas, reps, n=4096, ntmpl=64, ntaps=1024,
         def build():
             q = mf.HierarchicalFilter(n, ndata=1, ntemplates=ntmpl,
                                       snr=threshold, fd=1e-3, band=512,
-                                      oversample=2, taps=8)
+                                      taps=8)
             q.set_reference(power); q.set_templates(h)
             return q
 
@@ -775,12 +775,12 @@ def main(argv=None):
                                   "data": hnd, "templates": hnt,
                                   "flat_ms": tf * 1e3, "hier_ms": th * 1e3,
                                   "speedup": speed, "refine_rate": rate,
-                                  "band": cfg[0], "oversample": cfg[1],
+                                  "band": cfg[0],
                                   "taps": cfg[2]})
         print("\nThe margin skips a pair when a cheap low-band estimate rules out\n"
               "any sample reaching the threshold, so the speedup grows with the\n"
               "threshold and falls to ~1 on data where everything triggers.\n"
-              "'chosen' is the first-stage band/oversample/taps the library\n"
+              "'chosen' is the first-stage band/taps the library\n"
               "selected from the reference and the threshold -- not a setting\n"
               "of this benchmark. It should narrow as the threshold rises.")
 

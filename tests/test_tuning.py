@@ -53,8 +53,8 @@ def test_explicit_configuration_is_always_honoured():
     """
     for n, band in ((8192, 2048), (4096, 1024)):
         hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=2, snr=5.0, fd=1e-3,
-                                   band=band, oversample=2, taps=8)
-        assert hf.config == (band, 2, 8)
+                                   band=band, taps=8)
+        assert hf.config == (band, 8)
         # and it works without a reference, which autotuning cannot do
         H = np.stack([template_with_power(n, inspiral_power(n))
                       for _ in range(2)])
@@ -80,7 +80,7 @@ def test_autotuning_uses_the_reference_where_it_has_rows():
         hf.set_reference(power)
         picks.append(hf.config)
     assert all(p is not None for p in picks)
-    assert all(b > 0 for b, _, _ in picks)
+    assert all(b > 0 for b, _ in picks)   # config is (band, taps)
 
 
 # ------------------------------------------------ SNR coverage and fallback

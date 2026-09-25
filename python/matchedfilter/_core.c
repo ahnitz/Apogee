@@ -148,13 +148,15 @@ static int HMF_init(HMFObject *self,PyObject *args,PyObject *kw){
   Py_ssize_t n; int nd,nt; double snr,fd; (void)kw;
   Py_ssize_t band=0; int u=0,k=0;
   if(!PyArg_ParseTuple(args,"niidd|nii",&n,&nd,&nt,&snr,&fd,&band,&u,&k)) return -1;
-  /* band/oversample/taps are required: the choice belongs to the measured
-     tuning tables, which the Python class reads and which refuse rather than
-     guess outside their coverage. */
+  /* band and taps are required: the choice belongs to the measured tuning
+     tables, which the Python class reads and which refuse rather than guess
+     outside their coverage. `u` is accepted and ignored -- the oversample is
+     gone and the argument is kept only so old callers still load. */
+  (void)u;
   if(!band){ PyErr_SetString(PyExc_ValueError,
-      "band, oversample and taps are required; HierarchicalFilter picks them "
+      "band and taps are required; HierarchicalFilter picks them "
       "from the tuning tables"); return -1; }
-  self->p = ap_hmf_create_ex((size_t)n,nd,nt,(float)snr,(float)fd,(size_t)band,u,k);
+  self->p = ap_hmf_create_ex((size_t)n,nd,nt,(float)snr,(float)fd,(size_t)band,k);
   if(!self->p){ PyErr_Format(PyExc_ValueError,
       "no hierarchical plan for n=%zd band=%zd u=%d k=%d",n,band,u,k); return -1; }
   self->n=n; self->nd=nd; self->nt=nt; return 0;
@@ -282,8 +284,16 @@ static PyObject *HMF_coarse_thresholds(HMFObject *self,PyObject *args){
   return Py_BuildValue("(fff)",margin,raw,even);
 }
 static PyObject *HMF_config(HMFObject *self,PyObject *a){
-  size_t band=0; int u=0,k=0; (void)a; ap_hmf_config(self->p,&band,&u,&k);
-  return Py_BuildValue("(nii)",(Py_ssize_t)band,u,k);
+  size_t band=0; int k=0; (void)a; ap_hmf_config(self->p,&band,&k);
+  /* Three values still, so the Python side is unchanged; the middle one is
+     a constant 1 where the oversample used to be. */
+  return Py_BuildValue("(nii)",(Py_ssize_t)band,1,k);
+}
+static PyObject *HMF_set_threshold(HMFObject *self,PyObject *args){
+  double t; if(!PyArg_ParseTuple(args,"d",&t)) return NULL;
+  if(ap_hmf_set_threshold(self->p,(float)t)<0){
+    PyErr_SetString(PyExc_RuntimeError,"set_threshold failed"); return NULL; }
+  Py_RETURN_NONE;
 }
 static PyObject *HMF_set_coarse_margin(HMFObject *self,PyObject *args){
   float g; if(!PyArg_ParseTuple(args,"f",&g)) return NULL;
@@ -304,12 +314,13 @@ static PyMethodDef HMF_methods[]={
   {"set_template",(PyCFunction)HMF_set_template,METH_VARARGS,"set_template(i, buffer)"},
   {"set_reference",(PyCFunction)HMF_set_reference,METH_VARARGS,"set_reference(buffer|None)"},
   {"set_first_stage",(PyCFunction)HMF_set_first_stage,METH_VARARGS,"set_first_stage(snr)"},
+  {"set_threshold",(PyCFunction)HMF_set_threshold,METH_VARARGS,"set_threshold(t)"},
   {"set_coarse_margin",(PyCFunction)HMF_set_coarse_margin,METH_VARARGS,"set_coarse_margin(g)"},
   {"run",(PyCFunction)HMF_run,METH_VARARGS,"run(...) -> total crossings"},
   {"nbins",(PyCFunction)HMF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},
   {"run_series",(PyCFunction)HMF_run_series,METH_VARARGS,"run_series(...)"},
   {"stats",(PyCFunction)HMF_stats,METH_NOARGS,"stats() -> (pairs, triggers)"},
-  {"config",(PyCFunction)HMF_config,METH_NOARGS,"config() -> (band, oversample, taps)"},
+  {"config",(PyCFunction)HMF_config,METH_NOARGS,"config() -> (band, 1, taps)"},
   {"coarse_thresholds",(PyCFunction)HMF_coarse_thresholds,METH_VARARGS,NULL},
   {NULL}
 };

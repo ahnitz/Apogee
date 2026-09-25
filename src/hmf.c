@@ -39,7 +39,6 @@
 #include "hmf_table.h"
 
 #define HMF_IK 6            /* half-width of the bracket taps: 13 in all */
-static void design_taps(const float *w, size_t m, int K, double delta, float *h);
 static float interp_abs(const float *ev,const float *od,size_t m,int U,
                         const float *w,int K,int i,long j);
 
@@ -48,7 +47,7 @@ static float interp_abs(const float *ev,const float *od,size_t m,int U,
 
 struct ap_hmf_plan {
   size_t n, m;                /* full length; coarse band (bins kept)           */
-  int U, K;                   /* coarse oversampling; interpolator taps         */
+  int K;                      /* interpolator taps                              */
   int nd, nt;
   float snr, fd;              /* design point                                   */
   ap_mf_plan *full;           /* refinement is the ordinary filter, unchanged   */
@@ -68,16 +67,21 @@ struct ap_hmf_plan {
   const float **dspec;        /* [nd]       caller's full spectra, ingested lazily */
   char *dready;               /* [nd]       1 once ingested into the full plan  */
   int dgroup;                 /* data segments filtered together; see create */
-  float *ct0, *ct1;           /* [nt][2m]   coarse templates: even, half-shifted*/
+  float *ct0;                 /* [nt][2m]   coarse templates                    */
   float *fpow;                /* [nt]       band power fraction per template    */
   /* Reference SNR distribution, or ref_on=0 to measure per template.  The
      output distribution is a property of the signal rather than of any one
      template, so one reference serves a whole bank -- and skips the
      per-template ingest measurement. */
   int    ref_on;
-  float  even_margin, coarse_margin, gscale; int gcal;
-  float  ref_f, ref_g, ref_graw, ref_graw1;
-  float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
+  float  coarse_margin, gscale; int gcal;
+  /* The CALIBRATED coarse threshold, in the units the coarse pass
+     reports. Negative means none was supplied and the old modelled
+     derivation is used -- which is the only reason that code still
+     exists. See ap_hmf_set_threshold. */
+  float  cal_thr;
+  float  ref_f, ref_g, ref_graw;
+  float *tg,*tgraw;           /* [nt]       per-template recovery factors       */
   float *shift;               /* [2m]       scratch for the measurement         */
   float *shift2;              /* [4m]       weighted template copies            */
   float *prod, *cev, *cod;    /* scratch: product and the two coarse halves     */
@@ -85,15 +89,13 @@ struct ap_hmf_plan {
   /* Bracketing the odd transform.  ibuf holds one interpolated coarse maximum
      per template, produced alongside the even pass; ilo/ihi bound its ratio to
      the true combined maximum.  See docs/hierarchical.md. */
-  float *ihlo, *ihhi;         /* [2*(2*IK+1)] complex taps, the two offsets */
   float *ibuf;                /* [nd*nt] */
   /* The interpolation taps are designed against the spectral shape of the
      product the coarse pass forms, |D|^2 |T|^2.  Neither factor may be
      assumed: the reference supplies the first and the caller's templates the
      second, so both are measured and the taps are rebuilt when either moves. */
-  float *refpow, *tpow; int ntpow, taps_stale;
-  float ilo, ihi; int ibrk, incand;
-  float *tcbuf,*rawbuf,*evenbuf; /* [nt] per-template coarse thresholds, derived once a run */
+  float *refpow, *tpow; int ntpow;
+  float *tcbuf,*rawbuf;       /* [nt] per-template coarse thresholds, per run   */
   ap_peak *cebuf;             /* [nd*nt] even coarse maxima, whole batch */
   int *firebuf;               /* [nt] which templates fired, for one segment */
   long pairs, trig;
@@ -117,25 +119,20 @@ static double sinc_(double x){ return fabs(x)<1e-12 ? 1.0 : sin(M_PI*x)/(M_PI*x)
 
 /* Build the polyphase bank.  U=1 is critically sampled: no window, because at
    critical sampling every window costs more than it buys (it attenuates exactly
-   the band-edge content that sharpens the peak).  U>1 has headroom, where Kaiser
+   the band-edge content that sharpens the peak).
    measures best. */
-static void build_taps(float *w, int K, int U){
+static void build_taps(float *w, int K){
   for(int i=0;i<HMF_NSUB;i++){
     double d=(double)(i+1)/(HMF_NSUB+1.0);
     double *b=malloc((size_t)K*sizeof(double)); double sum=0.0;
     for(int k=0;k<K;k++){
       double x=d-(double)(k-K/2+1);
       double v=sinc_(x);
-      if(U>1){
-        double t=((double)k-(K-1)/2.0)/((K-1)/2.0);
-        double a=1.0-t*t; if(a<0) a=0;
-        v*= bessel_i0(5.0*sqrt(a))/bessel_i0(5.0);
-      }
       b[k]=v; sum+=v;
     }
     for(int k=0;k<K;k++){
       double x=d-(double)(k-K/2+1);
-      double m=b[k]/sum, ph=M_PI*x/(double)U;
+      double m=b[k]/sum, ph=M_PI*x;
       w[2*((size_t)i*K+k)  ]=(float)(m*cos(ph));
       w[2*((size_t)i*K+k)+1]=(float)(m*sin(ph));
     }
@@ -170,37 +167,34 @@ static void prod_inter_nc(const float *d,const float *h,float *o,size_t m){
 /* Everything sized by the band, allocated as a unit.  The band itself is
    chosen by the Python class from the tuning table and handed in explicitly,
    so this only ever runs once, at construction. */
-static int alloc_band_state(ap_hmf_plan *p,size_t band,int U,int K,
+static int alloc_band_state(ap_hmf_plan *p,size_t band,int K,
                             int ndi,int ntmpl){
-  p->m=band; p->U=U; p->K=K;
+  p->m=band; p->K=K;
   p->coarse =ap_mf_create(band,ndi,2*ntmpl);
   p->cf     =ap_create(band);
   p->ct0    =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
-  p->ct1    =ap_alloc64((size_t)ntmpl*2*band*sizeof(float));
   p->shift  =ap_alloc64(2*band*sizeof(float));
   p->shift2 =ap_alloc64(4*band*sizeof(float));
   p->prod   =ap_alloc64(2*band*sizeof(float));
   p->cev    =ap_alloc64(2*band*sizeof(float));
-  p->cod    =ap_alloc64(2*band*sizeof(float));
   p->taps   =ap_alloc64((size_t)2*HMF_NSUB*K*sizeof(float));
   p->refpow =calloc(band,sizeof(float));
   p->tpow   =calloc(band,sizeof(float));
-  if(!p->coarse||!p->cf||!p->ct0||!p->ct1||!p->shift||!p->shift2||!p->prod||
-     !p->cev||!p->cod||!p->taps||!p->refpow||!p->tpow) return -1;
-  build_taps(p->taps,K,U);
+  if(!p->coarse||!p->cf||!p->ct0||!p->shift||!p->shift2||!p->prod||
+     !p->cev||!p->taps||!p->refpow||!p->tpow) return -1;
+  build_taps(p->taps,K);
   return 0;
 }
 
 ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
-                              size_t band,int oversample,int taps){
+                              size_t band,int taps){
   if(ndata<1||ntmpl<1||!ap_supported(n)) return NULL;
   if(band<1||band>=n||(band&(band-1))) return NULL;
-  if(oversample!=1&&oversample!=2) return NULL;
   if(taps<2||taps>64||(taps&1)) return NULL;
   if(!ap_supported(band)) return NULL;
   ap_hmf_plan *p=calloc(1,sizeof(*p));
   if(!p) return NULL;
-  p->n=n; p->m=band; p->U=oversample; p->K=taps;
+  p->n=n; p->m=band; p->K=taps;
   /* How many data segments to filter together.
    *
    * D x T is symmetric and the pair loop tiles both axes, so what matters is
@@ -232,7 +226,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   const int ndi = ndata>grp ? ndata : grp;
   p->nd=ndi; p->nt=ntmpl; p->snr=snr; p->fd=fd;
   p->full  =ap_mf_create(n,ndi,ntmpl);
-  if(alloc_band_state(p,band,oversample,taps,ndi,ntmpl)){ ap_hmf_destroy(p); return NULL; }
+  if(alloc_band_state(p,band,taps,ndi,ntmpl)){ ap_hmf_destroy(p); return NULL; }
   p->full_fft=ap_create(n);
   p->fwd =ap_alloc64(2*n*sizeof(float));
   p->spec=ap_alloc64((size_t)grp*2*n*sizeof(float));
@@ -241,16 +235,10 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->fpow=calloc((size_t)ntmpl,sizeof(float));
   p->tg=calloc((size_t)ntmpl,sizeof(float));
   p->tgraw=calloc((size_t)ntmpl,sizeof(float));
-  p->tgraw1=calloc((size_t)ntmpl,sizeof(float));
   p->tcbuf=calloc((size_t)ntmpl,sizeof(float));
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
-  p->evenbuf=calloc((size_t)ntmpl,sizeof(float));
   p->cebuf=calloc((size_t)ndi*ntmpl,sizeof(ap_peak));
   p->firebuf=calloc((size_t)ntmpl,sizeof(int));
-  p->ihlo=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
-  p->ihhi=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
-  p->ibuf=calloc((size_t)ndi*ntmpl,sizeof(float));
-  p->taps_stale=1;
   /* Bounds on the interpolated statistic against the true combined maximum.
      Derived on six captured segments and checked on six others, which violated
      at 0.19%, so they carry a margin -- only the lower one can lose a trigger;
@@ -278,14 +266,8 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      vectorised interp_max it needs was dead code, plumbed through dispatch.c
      and never called, which is why it used to measure 5x slower -- and the
      soundness criterion above in place of a fitted constant. */
-  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=0; p->incand=16;   /* MF_BRACKET=1 enables */
-  { const char *e;
-    if((e=getenv("MF_BRACKET"))) p->ibrk=atoi(e);
-    if((e=getenv("MF_BRACKET_LO"))) p->ilo=(float)atof(e);
-    if((e=getenv("MF_BRACKET_HI"))) p->ihi=(float)atof(e);
-    if((e=getenv("MF_BRACKET_C"))) p->incand=atoi(e); }
-  if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->dspec||!p->dready||!p->ct0||!p->ct1||!p->fpow||!p->tg||!p->tgraw||!p->tgraw1||!p->shift||!p->shift2||
-     !p->prod||!p->cev||!p->cod||!p->taps||!p->tcbuf||!p->rawbuf||!p->evenbuf||!p->cebuf||!p->firebuf||!p->ihlo||!p->ihhi||!p->ibuf||!p->refpow||!p->tpow){ ap_hmf_destroy(p); return NULL; }
+  if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->dspec||!p->dready||!p->ct0||!p->fpow||!p->tg||!p->tgraw||!p->shift||!p->shift2||
+     !p->prod||!p->cev||!p->taps||!p->tcbuf||!p->rawbuf||!p->cebuf||!p->firebuf||!p->refpow||!p->tpow){ ap_hmf_destroy(p); return NULL; }
   /* Safety factor on the even-pass threshold, over and above the measured graw1.
      The realisation model is a power-law reference filtered by a matched
      template; the ratio filter's product is shaped differently, and on 12
@@ -310,15 +292,14 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   { const char *e=getenv("MF_GSCALE"); if(e) p->gscale=(float)atof(e); }
   { const char *e=getenv("MF_GCAL"); if(e) p->gcal=atoi(e); }
   p->coarse_margin=1.0f;
+  p->cal_thr=-1.0f;
   { const char *e=getenv("MF_GATE_MARGIN"); if(e) p->coarse_margin=(float)atof(e); }
-  p->even_margin=0.92f;
-  { const char *e=getenv("MF_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
   p->prof = getenv("MF_HMF_PROF") ? 1 : 0;
   { const char *e=getenv("MF_HMF_DUMP"); p->dump = e ? fopen(e,"wb") : NULL; }
   return p;
 }
 
-/* There is no band-free constructor.  Choosing band, oversample and taps is
+/* There is no band-free constructor.  Choosing band and taps is
    the tuning tables' job, and they are measured; a compiled model that
    answered the same question was a second source of truth that could not be
    checked and did not promise the false-dismissal budget.  Callers either
@@ -332,11 +313,11 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   if(p->cf)   ap_destroy(p->cf);
   if(p->full_fft) ap_destroy(p->full_fft);
   free(p->fwd);free(p->spec);
-  free(p->dspec);free(p->dready);free(p->ct0);free(p->ct1);free(p->fpow);
+  free(p->dspec);free(p->dready);free(p->ct0);free(p->fpow);
   if(p->dump) fclose(p->dump);
-  free(p->ihlo);free(p->ihhi);free(p->ibuf);free(p->refpow);free(p->tpow);
-  free(p->tg);free(p->tgraw);free(p->tgraw1);free(p->shift);free(p->shift2);
-  free(p->prod);free(p->cev);free(p->cod);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->evenbuf);free(p->cebuf);free(p->firebuf);
+  free(p->refpow);free(p->tpow);
+  free(p->tg);free(p->tgraw);free(p->shift);free(p->shift2);
+  free(p->prod);free(p->cev);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->cebuf);free(p->firebuf);
   free(p);
 }
 
@@ -351,10 +332,17 @@ int ap_hmf_coarse_thresholds(ap_hmf_plan *p,float threshold,
   float T = p->fs_snr > 0.0f ? p->fs_snr
                              : (threshold>p->snr ? threshold : p->snr);
   float gt = p->tg[0];
-  float tc = hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->coarse_margin;
-  if(margin) *margin = tc;
-  if(raw)    *raw    = tc*p->tgraw [0]*0.999f;
-  if(even)   *even   = tc*p->tgraw1[0]*p->even_margin;
+  float tc = p->cal_thr >= 0.0f
+             ? p->cal_thr / (p->tgraw[0]*0.999f)      /* so raw comes back as cal_thr */
+             : hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->coarse_margin;
+  /* One threshold. `margin` is the design value before conversion and is
+     NOT comparable to a coarse output; `raw` is the only number a backend
+     should test against, and `even` is kept equal to it so the GPU's
+     two-test predicate collapses to one without changing its answer. */
+  const float t1 = p->cal_thr>=0.0f ? p->cal_thr : tc*p->tgraw[0]*0.999f;
+  if(margin) *margin = p->cal_thr>=0.0f ? p->cal_thr : tc;
+  if(raw)    *raw    = t1;
+  if(even)   *even   = t1;
   return 0;
 }
 
@@ -387,19 +375,31 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
             "of %ld pairs\n", p->nbrk_fire,100.0*p->nbrk_fire/(p->pairs?p->pairs:1),
             p->nbrk_rej,100.0*p->nbrk_rej/(p->pairs?p->pairs:1),p->pairs);
 }
-void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *oversample,int *taps){
+void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *taps){
   if(!p) return;
   if(band) *band=p->m;
-  if(oversample) *oversample=p->U;
   if(taps) *taps=p->K;
 }
 
-static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a1,
-                             float *gout,float *grawout,float *graw1out);
+static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,
+                             float *gout,float *grawout);
 
 /* Scale on the coarse threshold, and the strongest lever there is: it trades trigger
-   rate against dismissal directly, where band and oversample only do so
+   rate against dismissal directly, where band only does so
    through the statistic.  Read per run, so it applies at once. */
+/* Supply the coarse threshold directly, measured rather than modelled.
+ *
+ * The threshold used to be hmf_threshold(f*g^2, T, fd) -- a Rice model read
+ * from a compiled table -- multiplied by a margin the accuracy table had
+ * measured to correct it. Two models of one number, and when the answer was
+ * wrong there was no way to tell which had moved. The margin is what the
+ * tuner already bisects against measured dismissal, so the measurement can
+ * simply BE the threshold. */
+int ap_hmf_set_threshold(ap_hmf_plan *p,float t){
+  if(!p) return -1;
+  p->cal_thr=t; return 0;
+}
+
 int ap_hmf_set_coarse_margin(ap_hmf_plan *p,float g){
   if(!p||!(g>0.f)) return -1;
   p->coarse_margin=g; return 0;
@@ -425,16 +425,13 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
   p->ref_f=(float)(lo/tot);
   /* Recovery depends only on |H|^2, so a zero-phase template with magnitude
      sqrt(power) has exactly the right autocorrelation shape. */
-  float *a0=p->shift2, *a1=p->shift2+2*m;
+  float *a0=p->shift2;
   double s = lo>0 ? 1.0/sqrt(lo/tot) : 0.0;
   for(size_t k=0;k<m;k++){
-    double re=sqrt(power[k]>0?power[k]:0)*s, im=0.0;
-    a0[2*k]=(float)re; a0[2*k+1]=(float)im;
-    double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
-    a1[2*k]  =(float)(re*c-im*sn);
-    a1[2*k+1]=(float)(re*sn+im*c);
+    double re=sqrt(power[k]>0?power[k]:0)*s;
+    a0[2*k]=(float)re; a0[2*k+1]=0.0f;
   }
-  measure_recovery(p,0,a0,a1,&p->ref_g,&p->ref_graw,&p->ref_graw1);
+  measure_recovery(p,0,a0,&p->ref_g,&p->ref_graw);
 
   /* graw1 from the average spectrum is not a bound on a realisation.
    *
@@ -511,36 +508,35 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
         p->prod[2*k+1]=(float)(amp*(sin(ph)+nz*g2));
       }
       ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
-      for(size_t k=0;k<m;k++){
-        double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
-        float xr=p->prod[2*k], xi=p->prod[2*k+1];
-        p->shift[2*k]  =(float)(xr*c-xi*sn);
-        p->shift[2*k+1]=(float)(xr*sn+xi*c);
-      }
-      ap_fft(p->cf,p->shift,p->cod,AP_BACKWARD);
       float be=0.f,bo=0.f;
+      /* The odd half only exists when the coarse grid is oversampled. This
+         used to be computed and folded into `comb` UNCONDITIONALLY, so at
+         U=1 the recovery factor -- and therefore tgraw1, evenThr and every
+         threshold derived from them -- was priced against a half-sample grid
+         the runtime never computes. The measured consequence was a plan
+         whose thresholds did not match its own behaviour, and two accuracy
+         tables regenerated against it. */
       for(size_t j=0;j<m;j++){
         float e=p->cev[2*j]*p->cev[2*j]+p->cev[2*j+1]*p->cev[2*j+1];
-        float o=p->cod[2*j]*p->cod[2*j]+p->cod[2*j+1]*p->cod[2*j+1];
         if(e>be) be=e;
-        if(o>bo) bo=o;
       }
+      /* With no odd half the combined grid IS the even grid, so this is
+         exactly 1 by construction rather than by measurement. */
       float comb = be>bo?be:bo;
       rat[r] = comb>0.f ? sqrtf(be/comb) : 1.f;
       /* combined-grid and interpolated recovery of the signal's peak */
       { long bj=0; float bv=-1.f;
-        const int UU=p->U;
-        const size_t G=m*(size_t)UU;
+        const size_t G=m;
         for(size_t j=0;j<G;j++){
-          const float *z=(UU==1)?p->cev+2*j:((j&1)?p->cod+((j>>1)*2):p->cev+((j>>1)*2));
+          const float *z=p->cev+2*j;
           const float v=z[0]*z[0]+z[1]*z[1];
           if(v>bv){ bv=v; bj=(long)j; }
         }
         const float ball=sqrtf(bv>0?bv:0);
         float bi=ball;
         for(int i=0;i<HMF_NSUB;i++){
-          const float u1=interp_abs(p->cev,p->cod,m,p->U,p->taps,K2,i,bj-1);
-          const float u2=interp_abs(p->cev,p->cod,m,p->U,p->taps,K2,i,bj);
+          const float u1=interp_abs(p->cev,NULL,m,1,p->taps,K2,i,bj-1);
+          const float u2=interp_abs(p->cev,NULL,m,1,p->taps,K2,i,bj);
           if(u1>bi) bi=u1;
           if(u2>bi) bi=u2;
         }
@@ -571,15 +567,9 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
       fprintf(stderr,"    [diag] g: noiseless %.4f realisations %.4f -> %.4f | "
               "graw: noiseless %.4f realisations %.4f -> %.4f\n",
               g_noiseless,ratg[1],p->ref_g,r_noiseless,ratr[1],p->ref_graw);
-    float q=rat[1];
-    if(getenv("MF_HMF_DIAG"))
-      fprintf(stderr,"    [diag] graw1: scallop %.4f  realisations %.4f -> %.4f\n",
-              p->ref_graw1, q, q<p->ref_graw1?q:p->ref_graw1);
-    if(q<p->ref_graw1) p->ref_graw1=q;
     free(rat); free(ratg); free(ratr);
   }
   for(size_t k=0;k<m;k++) p->refpow[k]=power[k]>0?power[k]:0.f;
-  p->taps_stale=1;
   p->ref_on=1;
   return 0;
 }
@@ -619,62 +609,6 @@ static float interp_abs(const float *ev,const float *od,size_t m,int U,
  * argument.  Solved by plain elimination: it is (2K+1) square, once per
  * reference.
  */
-static void design_taps(const float *w, size_t m, int K, double delta, float *h)
-{
-  const int N = 2*K + 1;
-  double ar[2*HMF_IK+1][2*(2*HMF_IK+1)+2];   /* [row][2*col] real/imag, +rhs */
-  double cr[4*HMF_IK+1], ci[4*HMF_IK+1];
-  for (int d = -2*K; d <= 2*K; d++) {
-    double sr = 0, si = 0;
-    for (size_t k = 0; k < m; k++) {
-      const double a = 2.0*M_PI*(double)k*d/(double)m;
-      sr += w[k]*cos(a); si += w[k]*sin(a);
-    }
-    cr[d+2*K] = sr; ci[d+2*K] = si;
-  }
-  for (int i = 0; i < N; i++) {
-    for (int j = 0; j < N; j++) {
-      const int d = (j-K) - (i-K);
-      ar[i][2*j]   = cr[d+2*K];
-      ar[i][2*j+1] = ci[d+2*K];
-    }
-    double sr = 0, si = 0;
-    for (size_t k = 0; k < m; k++) {
-      const double a = 2.0*M_PI*(double)k*(delta - (i-K))/(double)m;
-      sr += w[k]*cos(a); si += w[k]*sin(a);
-    }
-    ar[i][2*N] = sr; ar[i][2*N+1] = si;
-  }
-  /* complex Gaussian elimination with partial pivoting */
-  for (int c = 0; c < N; c++) {
-    int piv = c; double best = 0;
-    for (int r = c; r < N; r++) {
-      const double v = ar[r][2*c]*ar[r][2*c] + ar[r][2*c+1]*ar[r][2*c+1];
-      if (v > best) { best = v; piv = r; }
-    }
-    if (best <= 0) { for (int i = 0; i < 2*N; i++) h[i] = 0.f; return; }
-    if (piv != c) for (int j = 0; j <= 2*N+1; j++) {
-      const double t = ar[c][j]; ar[c][j] = ar[piv][j]; ar[piv][j] = t; }
-    const double pr = ar[c][2*c], pi_ = ar[c][2*c+1], pm = pr*pr + pi_*pi_;
-    for (int r = 0; r < N; r++) {
-      if (r == c) continue;
-      const double xr = ar[r][2*c], xi = ar[r][2*c+1];
-      const double fr = (xr*pr + xi*pi_)/pm, fi = (xi*pr - xr*pi_)/pm;
-      if (fr == 0 && fi == 0) continue;
-      for (int j = c; j <= N; j++) {
-        const double br = ar[c][2*j], bi = ar[c][2*j+1];
-        ar[r][2*j]   -= fr*br - fi*bi;
-        ar[r][2*j+1] -= fr*bi + fi*br;
-      }
-    }
-  }
-  for (int i = 0; i < N; i++) {
-    const double pr = ar[i][2*i], pi_ = ar[i][2*i+1], pm = pr*pr + pi_*pi_;
-    const double xr = ar[i][2*N], xi = ar[i][2*N+1];
-    h[2*i]   = (float)((xr*pr + xi*pi_)/pm);
-    h[2*i+1] = (float)((xi*pr - xr*pi_)/pm);
-  }
-}
 
 
 
@@ -692,9 +626,9 @@ static void design_taps(const float *w, size_t m, int K, double delta, float *h)
  * itself it is exactly sum |Hn[f]|^2 over the kept band.  So the whole
  * measurement is nsub sub-offsets x two m-point transforms, per template.
  */
-static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a1,
-                             float *gout,float *grawout,float *graw1out){
-  const size_t m=p->m,n=p->n; const int U=p->U,K=p->K;
+static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,
+                             float *gout,float *grawout){
+  const size_t m=p->m,n=p->n; const int K=p->K;
   const size_t R=n/m;
   /* Offsets must span the coarsest grid being measured, which is the EVEN
      grid, spacing R -- not the combined U=2 grid, spacing R/U.
@@ -708,7 +642,7 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
   size_t stride=nstep/16; if(!stride) stride=1;
   double peak=0;
   for(size_t k=0;k<m;k++) peak+=(double)a0[2*k]*a0[2*k]+(double)a0[2*k+1]*a0[2*k+1];
-  if(peak<=0){ *gout=1.f; *grawout=0.7f; *graw1out=0.7f; return; }
+  if(peak<=0){ *gout=1.f; *grawout=0.7f; return; }
   const float pk=(float)peak;
   float gr=9.f,g1=9.f,gi=9.f;
   float *Ds=p->shift;
@@ -720,19 +654,18 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
       Ds[2*k+1]=(float)(a0[2*k]*sn+a0[2*k+1]*c);
     }
     prod_inter_nc(Ds,a0,p->prod,m); ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
-    if(U>1){ prod_inter_nc(Ds,a1,p->prod,m); ap_fft(p->cf,p->prod,p->cod,AP_BACKWARD); }
-    const size_t G=m*(size_t)U;
+    const size_t G=m;
     float be=0.f,ball=0.f; long bj=0;
     for(size_t j=0;j<G;j++){
-      const float *z=(U==1)?p->cev+2*j:((j&1)?p->cod+((j>>1)*2):p->cev+((j>>1)*2));
+      const float *z=p->cev+2*j;
       float v=sqrtf(z[0]*z[0]+z[1]*z[1]);
       if(v>ball){ ball=v; bj=(long)j; }
-      if(U==1||!(j&1)){ if(v>be) be=v; }
+      if(v>be) be=v;
     }
     float bi=ball;
     for(int i=0;i<HMF_NSUB;i++){
-      float u1=interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bj-1);
-      float u2=interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bj);
+      float u1=interp_abs(p->cev,NULL,m,1,p->taps,K,i,bj-1);
+      float u2=interp_abs(p->cev,NULL,m,1,p->taps,K,i,bj);
       if(u1>bi) bi=u1;
       if(u2>bi) bi=u2;
     }
@@ -744,7 +677,6 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
      1 would raise the coarse threshold above what the statistics justify. */
   *gout     = gi>1.f?1.f:gi;
   *grawout  = gr>1.f?1.f:gr;
-  *graw1out = g1>1.f?1.f:g1;
 }
 
 int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
@@ -770,30 +702,25 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
      the same W the reference describes.  Using the template's own fraction
      would mis-scale the coarse output and shift the coarse threshold off calibration. */
   double s = f>0.f ? 1.0/sqrt((double)f) : 0.0;
-  float *a0=p->ct0+(size_t)t*2*m, *a1=p->ct1+(size_t)t*2*m;
+  float *a0=p->ct0+(size_t)t*2*m;
   for(size_t k=0;k<m;k++){
     double re=spec[2*k]*s, im=spec[2*k+1]*s;
     a0[2*k]=(float)re; a0[2*k+1]=(float)im;
-    /* half-sample shift: H[f] * e^{+i pi f/m} gives the odd output samples */
-    double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
-    a1[2*k]  =(float)(re*c-im*sn);
-    a1[2*k+1]=(float)(re*sn+im*c);
   }
   { /* accumulate the supplied template's band shape; the taps are designed
        against it rather than against any assumption about its form */
     if(p->ntpow==0) for(size_t k=0;k<m;k++) p->tpow[k]=0.f;
     for(size_t k=0;k<m;k++) p->tpow[k]+=(float)(a0[2*k]*a0[2*k]+a0[2*k+1]*a0[2*k+1]);
-    p->ntpow++; p->taps_stale=1; }
-  if(ap_mf_set_template(p->coarse,t,        a0)) return -1;
-  if(ap_mf_set_template(p->coarse,p->nt+t,  a1)) return -1;
+    p->ntpow++; }
+  if(ap_mf_set_template(p->coarse,t,a0)) return -1;
   /* Recovery depends on the shape of the correlation peak, which is set by the
      OUTPUT spectrum |H|^2 w -- not by the template alone.  Measure it on a
      weighted copy; the stored template stays unweighted, because at run time
      the data supplies w itself. */
   if(p->ref_on){
-    p->tg[t]=p->ref_g; p->tgraw[t]=p->ref_graw; p->tgraw1[t]=p->ref_graw1;
+    p->tg[t]=p->ref_g; p->tgraw[t]=p->ref_graw;
   } else {
-    measure_recovery(p,t,a0,a1,&p->tg[t],&p->tgraw[t],&p->tgraw1[t]);
+    measure_recovery(p,t,a0,&p->tg[t],&p->tgraw[t]);
   }
   return 0;
 }
@@ -888,9 +815,9 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
   if(d0<0||d0+nd>p->nd||t0<0||t0+nt>p->nt) return -1;
   if(end>p->n) end=p->n;
   if(start>=end) return 0;
-  const size_t n=p->n,m=p->m; const int U=p->U,K=p->K;
+  const size_t n=p->n,m=p->m; const int K=p->K;
   const size_t nb=ap_mf_nbins(p->full,binsize,start,end);
-  (void)U;
+
   /* coarse index range covering the window; the grid step is n/G lags */
   /* Recalibrate the coarse threshold for the weakest signal that can actually be REPORTED,
      which is max(snr, threshold).  Two wrong ways to do this:
@@ -905,33 +832,37 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
      rather than per pair.  With D data segments and T templates the pair loop
      runs D*T times and this runs T times: the whole point of the D x T shape is
      that anything one-sided belongs outside the product. */
-  if(p->ibrk && p->taps_stale && p->ntpow>0){
-    float *w=malloc(m*sizeof(float));
-    if(w){
-      const float inv=1.0f/(float)p->ntpow;
-      for(size_t k=0;k<m;k++) w[k]=p->refpow[k]*p->tpow[k]*inv;
-      design_taps(w,m,HMF_IK,-0.5,p->ihlo);
-      design_taps(w,m,HMF_IK, 0.5,p->ihhi);
-      free(w);
-      ap_mf_set_interp(p->coarse,p->ihlo,p->ihhi,2*HMF_IK+1,p->incand,p->ibuf);
-      p->taps_stale=0;
-    }
-  }
-  float *tcs=p->tcbuf, *rawg=p->rawbuf, *eveng=p->evenbuf;
+  float *tcs=p->tcbuf, *rawg=p->rawbuf;
   {
     /* The SNR the first stage is calibrated against.  By default the search
        threshold (or the plan's, whichever is higher), but a caller may set it
        directly: the first stage then tests at that SNR while final triggers
        are still cut at `threshold`.  This only moves the level -- band,
-       oversample and taps are chosen when the plan is created and are not
+       band and taps are chosen when the plan is created and are not
        disturbed, so it is a threshold and not a different configuration. */
     float T = p->fs_snr > 0.0f ? p->fs_snr
                                : (threshold>p->snr ? threshold : p->snr);
     for(int t=0;t<nt;t++){
       float gt=p->tg[t0+t];
-      tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
-      rawg[t] =tcs[t]*p->tgraw [t0+t]*0.999f;
-      eveng[t]=tcs[t]*p->tgraw1[t0+t]*p->even_margin;
+      if(p->cal_thr >= 0.0f){
+        /* The calibrated threshold IS the decision. Setting margin == raw
+           closes the [raw, margin) window, which is the only place
+           interpolation can change an answer -- so it never runs. The
+           calibration measured the RAW coarse maximum against this number;
+           interpolating afterwards would refine a statistic the measurement
+           never used. */
+        tcs[t]=rawg[t]=p->cal_thr;
+      }else{
+        /* One threshold here too. tc is the bar a perfectly recovered peak
+           would clear; tgraw converts it into the units the coarse maximum
+           is actually reported in, and THAT is the decision. Firing at tc
+           and using interpolation to rescue the [raw, tc) window costs more
+           in taps than the correlations it avoids -- measured at matched
+           false dismissal, 1.66 ms against 1.53 ms. */
+        rawg[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)
+                *p->coarse_margin*p->tgraw[t0+t]*0.999f;
+        tcs[t]=rawg[t];
+      }
     }
   }
   /* Coarse lag window.  Even sample j maps to full lag j*R, odd to j*R + R/2,
@@ -949,8 +880,8 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
      branch, so they can overlap.  One threshold has to serve every template, so
      use the lowest: a template whose own margin is higher is filtered below, and
      a lower threshold only ever reports MORE peaks. */
-  float minev=eveng[0];
-  for(int t=1;t<nt;t++) if(eveng[t]<minev) minev=eveng[t];
+  float minev=rawg[0];
+  for(int t=1;t<nt;t++) if(rawg[t]<minev) minev=rawg[t];
   int total=0;
   { unsigned long long _eb = p->prof ? ap_ticks() : 0;
     if(ap_mf_run(p->coarse,d0,nd,t0,nt,cspan,minev,p->cebuf,NULL,
@@ -971,8 +902,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * that used to walk the materialised series disappears entirely.
        * Threshold at raw_thr: below it, interpolation cannot reach the coarse threshold,
        * so ap_mf_run returns index<0 and there is nothing more to do. */
-      ap_peak ce,co; int cc=0;
-      co.index=-1; co.magnitude=0.f;
+      ap_peak ce;
       /* Even half first, thresholded at graw1*margin rather than graw*margin.  The
        * even samples alone are the U=1 series, so if their maximum falls below
        * graw1*margin the true continuous peak cannot reach the coarse threshold no matter
@@ -981,7 +911,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * of pairs.  It must be graw1 and not graw: graw describes the combined
        * U=2 grid, which recovers more, so using it here would cut off peaks the
        * odd half would have found. */
-      const float even_thr = eveng[t];
+      const float even_thr = raw_thr;   /* one threshold; see above */
       unsigned long long _t0 = p->prof ? ap_ticks() : 0;
       ce = p->cebuf[(size_t)d*nt+t];
       if(ce.index>=0 && ce.magnitude<even_thr) ce.index=-1;   /* per-template margin */
@@ -998,56 +928,22 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
          the coarse threshold settles the pair without paying for the transform.  Every
          pair it cannot settle still gets the transform, so the reported
          triggers are unchanged. */
-      if(p->ibrk==1 && U>1){
-        const float S=p->ibuf[(size_t)d*nt+t];
-        float lower=S/p->ihi;
-        if(ce.magnitude>lower) lower=ce.magnitude;   /* exact, and free */
-        if(lower>=margin){ fire=1; p->nbrk_fire++; goto verdict; }
-        if(S/p->ilo<raw_thr){ p->nbrk_rej++; goto verdict; }
-      }
-      if(U>1){
-        ap_mf_interp_pause(p->coarse,1);
-        int rr=ap_mf_run(p->coarse,d0+d,1,p->nt+t0+t,1,cspan,raw_thr,&co,&cc,
-                         cstart,cend);
-        ap_mf_interp_pause(p->coarse,0);
-        if(rr<0) return -1;
-      }
       if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }
-      float bestmag = ce.magnitude>co.magnitude ? ce.magnitude : co.magnitude;
+      /* There is no odd half. The coarse maximum IS the even maximum. */
+      const float bestmag = ce.magnitude;
       /* The pair id is part of the record.  Without it a reader has to match
          rows by their even value, which is ambiguous whenever two pairs land
          close together -- and that ambiguity is indistinguishable from a
          mirror that computes the wrong thing. */
-      if(p->dump){ float rec[8]={ce.magnitude,co.magnitude,bestmag,margin,
+      if(p->dump){ float rec[8]={ce.magnitude,0.0f,bestmag,margin,
                                  raw_thr,even_thr,
                                  (float)(d0+d),(float)(t0+t)};
                    fwrite(rec,sizeof rec,1,p->dump); }
       if(getenv("MF_HMF_TRACE") && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld margin=%.3f even_thr=%.3f "
                 "coarse max=%.3f (even %.3f odd %.3f)\n",
-                p->pairs,margin,even_thr,bestmag,ce.magnitude,co.magnitude);
+                p->pairs,margin,even_thr,bestmag,ce.magnitude,0.0f);
       fire = bestmag>=margin;
-      if(!fire && bestmag>=raw_thr){
-        /* Rare: the raw maximum sits in [graw*margin, margin), the only window where
-           interpolation can change the answer.  Only here is the series worth
-           materialising, and only around the argmax -- which is exactly what the
-           table's recovery factor was measured on. */
-        p->npre++;
-        long bestj = (ce.magnitude>=co.magnitude) ? 2*(long)ce.index
-                                                  : 2*(long)co.index+1;
-        if(U==1) bestj=(long)ce.index;
-        prod_inter(Dc,p->ct0+(size_t)(t0+t)*2*m,p->prod,m);
-        ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
-        if(U>1){
-          prod_inter(Dc,p->ct1+(size_t)(t0+t)*2*m,p->prod,m);
-          ap_fft(p->cf,p->prod,p->cod,AP_BACKWARD);
-        }
-        for(int i=0;i<HMF_NSUB && !fire;i++){
-          p->ninterp+=2;
-          if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj-1) >= margin) fire=1;
-          else if(interp_abs(p->cev,p->cod,m,U,p->taps,K,i,bestj) >= margin) fire=1;
-        }
-      }
       verdict:
       if(fire){
         p->trig++;

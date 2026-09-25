@@ -36,7 +36,7 @@ def score(n,snr,nd=8,nt=32):
         if not dc: continue
         m=mf._margin_at_budget(dc,fd,floor)
         if m is None: continue
-        hf=mf.HierarchicalFilter(n,nd,nt,snr,fd,band=band,oversample=U,taps=K)
+        hf=mf.HierarchicalFilter(n,nd,nt,snr,fd,band=band,taps=K)
         hf.set_reference(p); hf._mf.set_coarse_margin(float(m)); hf.set_data(d); hf.set_templates(h)
         r=[per(lambda: flat.run(binsize=bs,threshold=snr,window=(ws,we)))/
            per(lambda: hf.run(binsize=bs,threshold=snr,window=(ws,we))) for _ in range(3)]

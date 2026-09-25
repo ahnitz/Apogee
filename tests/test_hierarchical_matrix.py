@@ -259,24 +259,28 @@ def test_omission_rate_meets_the_budget(device):
         100 * rate, 100 * fd)
 
 
-def test_the_gpu_is_no_less_conservative_than_the_cpu():
-    """The GPU inherits the CPU's accuracy table. This is why that is safe.
+def test_both_devices_meet_the_budget_at_the_band_they_choose():
+    """Each backend keeps its own promise, at its own configuration.
 
-    Accuracy rows measure how often a configuration dismisses a signal it
-    should have kept. They are measured on the CPU algorithm, and the GPU
-    runs a different one: where the CPU interpolates the coarse peak, the
-    GPU escalates the whole interpolation window, so it refines a superset
-    of the CPU's pairs. A superset can only dismiss less, so the CPU's
-    measured rate is an upper bound for it and the shared table is safe.
+    This used to assert that the GPU dismissed nothing the CPU kept. That
+    was the mechanism by which the GPU BORROWED the CPU's accuracy rows: it
+    ran a different algorithm -- the CPU interpolated the coarse peak where
+    the GPU escalated the whole window -- so it refined a superset, and a
+    superset can only dismiss less.
 
-    That is an argument, not a guarantee, and it is the only thing standing
-    between one table and two. If a change makes the GPU dismiss anything
-    the CPU keeps, the argument is void and the GPU needs accuracy rows of
-    its own -- accuracy_table_for already resolves accuracy-gpu.txt when one
-    is shipped. This test is what says so.
+    Neither half of that holds now. The CPU no longer interpolates, so the
+    algorithms are the same; and the threshold is looked up per
+    configuration from measured rows, so each backend is calibrated on the
+    band IT selects rather than inheriting anything. They do select
+    different bands -- 512 on this CPU, 256 on this GPU -- because cost is a
+    property of the machine and each reads its own cost table. That is the
+    design working, not drifting.
 
-    Both devices see the SAME noise realisations, so this compares the
-    algorithms rather than two samples of the same distribution.
+    So the subset relation is neither expected nor needed, and asserting it
+    was testing a mechanism that no longer exists. What has to hold is that
+    each device meets fd. Measured at the configurations they choose:
+    0.00043 on the CPU at band 512 and 0.00152 on the GPU at band 256,
+    against a budget of 1e-2.
     """
     gpus = [d for d in DEVICES if d != "cpu"]
     if not gpus:
@@ -308,12 +312,10 @@ def test_the_gpu_is_no_less_conservative_than_the_cpu():
         gpu_only += (g and not c)
 
     assert detected > 100, "too few detections to say anything"
-    assert gpu_only == 0, (
-        "the GPU dismissed %d signal(s) the CPU kept, so it is no longer a "
-        "superset of the CPU's refinement and cannot borrow its accuracy "
-        "table; measure accuracy-gpu.txt with tools/hmf_tune.py"
-        % gpu_only)
-    assert gpu_omitted <= cpu_omitted, (
-        "GPU omitted %d of %d against the CPU's %d -- the bound the shared "
-        "accuracy table relies on no longer holds"
-        % (gpu_omitted, detected, cpu_omitted))
+    # 3x the budget: at 400 trials a 1e-2 rate is ~4 events, so the Poisson
+    # error is ~50% and a tighter bound would fail on noise alone. It is the
+    # same allowance the other budget tests in this file use.
+    for label, omitted in (("cpu", cpu_omitted), ("gpu", gpu_omitted)):
+        assert omitted / detected <= fd * 3, (
+            "%s omitted %d of %d = %.4f against a %.4f budget"
+            % (label, omitted, detected, omitted / detected, fd))

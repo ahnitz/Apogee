@@ -257,7 +257,7 @@ def test_coarse_threshold_reads_the_reference_not_the_template():
     assert out_power[:band].sum() / out_power.sum() > 0.9   # output: low band
 
     hf = mf.HierarchicalFilter(n, ndata=32, ntemplates=1, snr=5.5, fd=1e-2,
-                                   band=band, oversample=2, taps=8)
+                                   band=band, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
     hf.set_data(noise((32, n), rng))
@@ -286,7 +286,7 @@ def test_coarse_scaling_follows_the_reference():
     out_power = (np.abs(H) ** 2 * falling).astype(np.float32)
 
     hf = mf.HierarchicalFilter(n, ndata=64, ntemplates=1, snr=5.5, fd=1e-2,
-                                   band=band, oversample=2, taps=8)
+                                   band=band, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
     hf.set_data(noise((64, n), rng))
@@ -308,7 +308,7 @@ def test_peaks_on_odd_lags_survive():
     H = template_with_power(n, power)
     filt = mf.MatchedFilter(n, ndata=1, ntemplates=1)
     hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=1e-2,
-                                   band=band, oversample=2, taps=8)
+                                   band=band, taps=8)
     hf.set_reference(power)
     filt.set_templates(H[None, :])
     hf.set_templates(H[None, :])
@@ -509,7 +509,7 @@ def test_pinning_reads_the_margin_from_the_table():
     # and the right answer is the same margin for each. At 24000 trials
     # this cell reads 1.25e-4 flat to margin 0.98 and 9.35e-4 at 1.00, so
     # 1e-2 and 1e-3 both admit 1.00 and only 1e-4 forces 0.90.
-    ms = [mf.margin_for_config(power, n, 5.0, fd, 512, 2, 8)
+    ms = [mf.margin_for_config(power, n, 5.0, fd, 512, 8)
           for fd in (1e-2, 1e-3, 1e-4)]
     assert all(m is not None and 0.5 < m <= 1.0 for m in ms), ms
     assert ms[0] >= ms[1] >= ms[2], ms
@@ -518,49 +518,46 @@ def test_pinning_reads_the_margin_from_the_table():
     # below what the table resolves it saturates at the tightest measured
     # margin rather than falling back to 1.00, which would hand the
     # strictest budget the loosest threshold
-    assert mf.margin_for_config(power, n, 5.0, 1e-9, 512, 2, 8) == \
+    assert mf.margin_for_config(power, n, 5.0, 1e-9, 512, 8) == \
         pytest.approx(0.90)
 
     # band is not in the key any more, so an off-grid band is perfectly
     # answerable -- it enters only through the (f, B_eff) at its own edge
-    assert mf.margin_for_config(power, n, 5.0, 1e-3, 333, 2, 8) is not None
+    assert mf.margin_for_config(power, n, 5.0, 1e-3, 333, 8) is not None
 
     # what is NOT answerable is a reference with no localised peak: all its
     # power in a bin or two means the correlation is flat in lag
     flat = np.zeros(n, np.float32); flat[3] = 1.0
-    assert mf.margin_for_config(flat, n, 5.0, 1e-3, 512, 2, 8) is None
+    assert mf.margin_for_config(flat, n, 5.0, 1e-3, 512, 8) is None
 
     # and the plan actually applies it
-    want = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8)
+    want = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 8)
     hf = mf.HierarchicalFilter(n, 1, 2, snr=5.0, fd=1e-3,
-                               band=512, oversample=2, taps=8)
+                               band=512, taps=8)
     hf.set_reference(power)
     hf._ensure()
     assert hf._margin == pytest.approx(want)
 
 
-def test_an_explicit_margin_beats_the_table_on_a_pinned_plan():
-    """set_coarse_margin after set_reference must win, including at 1.0.
+def test_an_explicit_coarse_threshold_overrides_the_table_on_a_pinned_plan():
+    """A threshold the caller sets must reach the plan and beat the table.
 
-    The table margin is applied as the reference arrives, precisely so it
-    lands BEFORE anything the caller does. Resolving it at first run instead
-    put it after, which silently overwrote an explicit setting -- and the
-    cost tuner sweeps the margin as an independent variable, skipping the
-    call when it wants 1.0, so every 1.0 cell of a regenerated table would
-    have been measured at the table's margin rather than at 1.0.
+    The coarse threshold is the one knob left: set it and you opt out of the
+    tables entirely, trading the calibrated false-dismissal guarantee for a
+    number you chose. So it has to land AFTER whatever the table would pick,
+    and it has to actually move the plan -- an explicit setting that were
+    silently overwritten by the table lookup would look identical from the
+    outside except that the escalation rate never responded.
+
+    Lower threshold escalates more; 0.0 escalates everything, which is what
+    pins down that the value reaches the kernel rather than being clamped or
+    dropped somewhere on the way.
     """
     n = 4096
     k = np.arange(1, n // 2)
     power = np.zeros(n, np.float32)
     power[1:n // 2] = k ** (-7 / 3.0) / ((0.015 * n / k) ** 4 + 1.0)
     power /= power.sum()
-
-    auto = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8)
-    assert auto is not None, auto
-    if abs(auto - 1.0) <= 1e-2:
-        # the table says this cell is safe even wide open; compare the two
-        # explicit settings instead, which is the property being guarded
-        auto = None
 
     rng = np.random.default_rng(5)
     h = template_with_power(n, power)
@@ -571,23 +568,21 @@ def test_an_explicit_margin_beats_the_table_on_a_pinned_plan():
                  ).astype(np.complex64)
 
     rates = {}
-    for explicit in (None, 1.0, 0.90):
+    for explicit in (None, 0.0, 3.5, 4.5):
         hf = mf.HierarchicalFilter(n, 8, 4, snr=5.0, fd=1e-3,
-                                   band=512, oversample=2, taps=8)
+                                   band=512, taps=8)
         hf.set_reference(power)
         if explicit is not None:
-            hf._mf.set_coarse_margin(explicit)
+            hf.set_coarse_threshold(explicit)
         hf.set_templates(h)
         hf.set_data(d)
         hf.run(binsize=n, threshold=5.0)
         rates[explicit] = hf.refine_rate
 
-    # 1.0 is the loosest coarse threshold, so it must escalate no more than
-    # any tighter one, and 0.90 must escalate more. That is the property:
-    # an explicit setting reaches the plan and moves it in the right
-    # direction.
-    assert rates[0.90] > rates[1.0], rates
-    assert rates[1.0] <= rates[None] + 1e-9, rates
+    assert rates[3.5] > rates[4.5], rates
+    assert rates[0.0] >= rates[3.5], rates
+    # everything survives a threshold of zero, or the value never arrived
+    assert rates[0.0] == pytest.approx(1.0), rates
 
 
 def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():
@@ -604,7 +599,7 @@ def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():
     """
     _ratio_filter_shaped_workload(pin=False)
 
-def _ratio_filter_shaped_workload(pin=True):
+def _ratio_filter_shaped_trial(pin=True, seed=22):
     """The shape a ratio/FIR search actually uses.
 
     What makes it different from every other test here:
@@ -621,7 +616,7 @@ def _ratio_filter_shaped_workload(pin=True):
     rounding.  Within a single path the guarantee is still exact.
     """
     n, nseries, ntaps, nt = 4096, 1 << 17, 451, 8
-    rng = np.random.default_rng(22)
+    rng = np.random.default_rng(seed)
     ser = coloured_series(nseries, -7 / 3.0, rng)
 
     H = np.zeros((nt, n), np.complex64)          # broadband, analytic half
@@ -694,7 +689,7 @@ def _ratio_filter_shaped_workload(pin=True):
             s0 = int(starts[b])          # uintp; see the note above
             ser[s0:s0 + n] += (np.fft.ifft(inj) * n * scale).astype(np.complex64)
     hf = (mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
-                                band=512, oversample=2, taps=8) if pin else
+                                band=512, taps=8) if pin else
           mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2))
     hf.set_reference(ref)
     hf.set_templates(H)
@@ -720,9 +715,34 @@ def _ratio_filter_shaped_workload(pin=True):
             elif have["index"][t] >= 0:
                 invented += 1
 
-    assert detected > 50, f"only {detected} peaks; the test is not exercising the coarse threshold"
-    assert invented == 0, f"invented {invented} peaks"
-    assert differ == 0, f"{differ} recovered peaks differ from the full filter"
+    assert invented == 0, f"invented {invented} peaks (seed {seed})"
+    assert differ == 0, f"{differ} recovered peaks differ from the full filter (seed {seed})"
+    return detected, omitted
+
+
+def _ratio_filter_shaped_workload(pin=True, seeds=(22, 23, 24)):
+    """Pool the trial over several noise series before judging the rate.
+
+    One trial's 120 injections share a single series and a single template
+    set, so they are nowhere near 120 independent draws: omissions arrive
+    CLUMPED. Over seeds 22..41 the per-trial counts are 0 for sixteen of
+    twenty and 3-4 for the rest, pooling to 20/2400 = 0.83% -- which is the
+    1% the table promises, comfortably inside this 3% budget.
+
+    Asserting 3% on one trial therefore tested a coin flip, not the rate:
+    the pass/fail line falls between 3 and 4 events while the expectation is
+    1.2, so an accurate table fails outright on an unlucky series (seed 22
+    is one). Pooling measures the quantity the budget is about. The bound
+    itself is unchanged -- if it starts failing the tables have gone stale
+    against the code and regenerating them is the fix, not loosening it.
+    """
+    detected = omitted = 0
+    for sd in seeds:
+        d, o = _ratio_filter_shaped_trial(pin=pin, seed=sd)
+        detected += d
+        omitted += o
+    assert detected > 50 * len(seeds), \
+        f"only {detected} peaks; the test is not exercising the coarse threshold"
     assert omitted / detected <= 3e-2, f"omitted {omitted}/{detected}"
 
 
@@ -794,7 +814,7 @@ def test_first_stage_threshold_is_independent_of_configuration():
     to override it, and two properties have to hold: lowering it makes the
     first stage strictly more willing to reconstruct (unlike passing a
     different snr at construction, which selects a whole new configuration),
-    and it leaves band/oversample/taps alone.
+    and it leaves band/taps alone.
 
     Signals are injected deliberately.  On pure noise at this threshold the
     first stage never fires at any level, every rate is zero, and a
@@ -813,7 +833,7 @@ def test_first_stage_threshold_is_independent_of_configuration():
     rates, cfgs = {}, {}
     for fs in (None, 6.0, 5.5, 5.0):
         hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5,
-                                   fd=1e-3, band=512, oversample=2, taps=8)
+                                   fd=1e-3, band=512, taps=8)
         hf.set_reference(power)
         hf.set_templates(h)
         hf.set_data(d)
@@ -855,7 +875,7 @@ def test_first_stage_below_the_design_grid_is_clamped():
     got = {}
     for fs in (4.5, 3.0, 0.01):
         hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5,
-                                   fd=1e-3, band=512, oversample=2, taps=8)
+                                   fd=1e-3, band=512, taps=8)
         hf.set_reference(power)
         hf.set_templates(h)
         hf.set_data(d)
@@ -887,7 +907,7 @@ def test_run_without_set_data_raises_rather_than_crashing(klass):
         f = mf.MatchedFilter(n, 1, nt)
     else:
         f = mf.HierarchicalFilter(n, 1, nt, snr=5.5, fd=1e-2, band=256,
-                                  oversample=2, taps=8)
+                                  taps=8)
         f.set_reference(power)
     f.set_templates(H)
     with pytest.raises(ValueError, match="set_data"):

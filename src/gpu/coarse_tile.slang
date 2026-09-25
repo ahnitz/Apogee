@@ -17,6 +17,14 @@
 // The same occupancy story as the exchange staging -- past 8 KB of shared
 // memory the resident workgroup count falls and takes the throughput with
 // it.
+//
+// RE-TESTED after the refine was compacted, because that sweep was taken
+// when the refine spent 1.4 ms launching a workgroup per pair to have it
+// exit, which could have swamped it. It did not: at 512x512 and n=4096,
+// TILE 4 gives 1.757 ms against 2.113 at 8 and 1.931 at 16. Launching
+// fewer workgroups is worth real time -- untiled costs 0.56 ms more than
+// tiled here -- but occupancy pushes back harder past TILE 4, so this is
+// the optimum and not an artefact of what used to dominate.
 #ifndef NBAND
 #define NBAND 256
 #endif

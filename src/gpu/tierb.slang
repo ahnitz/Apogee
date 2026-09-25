@@ -358,21 +358,19 @@ void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
                 RWStructuredBuffer<int> peakIdx,
                 RWStructuredBuffer<float2> peakVal,
-                StructuredBuffer<float2> coarseEven,
-                StructuredBuffer<float2> coarseOdd,
+                StructuredBuffer<float2> coarse,
                 uniform uint ntmpl, uniform uint winStart, uniform uint winEnd,
                 uniform uint binsize, uniform int binShift, uniform uint nbins,
-                uniform uint thrBits, uniform float evenThr, uniform float rawThr)
+                uniform uint thrBits, uniform float thr)
 {
     uint pair = gid.x, tid = lid.x;
-    float ev = length(coarseEven[pair]);
-    float od = length(coarseOdd[pair]);
-    // The CPU dismisses on the even half alone before paying for the odd,
-    // takes the odd value only above rawThr, and escalates at rawThr rather
-    // than at the margin -- escalating the interpolation window instead of
-    // interpolating it, which can only be more conservative.
-    float best = (od >= rawThr) ? max(ev, od) : ev;
-    if (!(ev >= evenThr && best >= rawThr)) {
+    // ONE coarse value against ONE threshold. There used to be two buffers
+    // and two thresholds: an even half and a half-sample-shifted odd half,
+    // with a cheap gate deciding whether the odd transform was worth
+    // computing. The coarse grid is critically sampled now -- there is no
+    // odd half, so there is nothing for a second threshold to gate, and
+    // this is the entire decision the coarse pass exists to make.
+    if (length(coarse[pair]) < thr) {
         for (uint b = tid; b < nbins; b += WG) {
             uint o = pair * nbins + b;
             peakIdx[o] = -1;
@@ -381,5 +379,67 @@ void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
         return;
     }
     filterPair(pair, tid, data, tmpl, peakIdx, peakVal, ntmpl,
+               winStart, winEnd, binsize, binShift, nbins, thrBits);
+}
+
+//: Compaction. One THREAD per pair, not one workgroup.
+//:
+//: The refine used to launch a workgroup for every pair so that each could
+//: read the coarse value, find itself below threshold, and exit. Measured at
+//: 512x512 pairs and n=4096 that cost 1.394 ms of a 2.4 ms call -- 57% of the
+//: work spent launching groups that do nothing, and it does not shrink with
+//: the band because it is not arithmetic.
+//:
+//: So the survivors are gathered first and the refine is dispatched over the
+//: list. The count lands in args[0], which is the X group count an indirect
+//: dispatch reads, so it never has to reach the host: one recorded command
+//: buffer still, exactly as before.
+//:
+//: The output has to be pre-cleared, because pairs that do not survive are
+//: now never visited and something must still write their -1.
+[shader("compute")][numthreads(256,1,1)]
+void compactPairs(uint3 gid: SV_DispatchThreadID,
+                  StructuredBuffer<float2> coarse,
+                  RWStructuredBuffer<uint> survivors,
+                  RWStructuredBuffer<uint> args,
+                  RWStructuredBuffer<int> peakIdx,
+                  RWStructuredBuffer<float2> peakVal,
+                  uniform uint pairs, uniform float thr, uniform uint nbins)
+{
+    uint pair = gid.x;
+    if (pair >= pairs) return;
+    if (length(coarse[pair]) >= thr) {
+        uint slot;
+        InterlockedAdd(args[0], 1u, slot);
+        survivors[slot] = pair;
+        return;
+    }
+    // Dismissed, and nothing will visit this pair again -- so its "nothing
+    // here" is written now. This walk is why the output needs no separate
+    // clear: a fill would touch every slot including the survivors' whose
+    // values the refine is about to overwrite, and on Metal there is no
+    // fill on a compute encoder at all.
+    for (uint b = 0; b < nbins; ++b) {
+        uint o = pair * nbins + b;
+        peakIdx[o] = -1;
+        peakVal[o] = float2(0.0f, 0.0f);
+    }
+}
+
+//: The refine, over a compacted list. Identical to gatedTierB except that
+//: the pair comes from the list rather than from the group id, and there is
+//: no gate left to apply -- being in the list IS having passed it.
+[shader("compute")][numthreads(WG,1,1)]
+void refineListed(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
+                  StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                  RWStructuredBuffer<int> peakIdx,
+                  RWStructuredBuffer<float2> peakVal,
+                  StructuredBuffer<uint> survivors,
+                  uniform uint ntmpl, uniform uint winStart, uniform uint winEnd,
+                  uniform uint binsize, uniform int binShift, uniform uint nbins,
+                  uniform uint thrBits)
+{
+    uint pair = survivors[gid.x];
+    filterPair(pair, lid.x, data, tmpl, peakIdx, peakVal, ntmpl,
                winStart, winEnd, binsize, binShift, nbins, thrBits);
 }

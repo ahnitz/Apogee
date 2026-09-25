@@ -1244,7 +1244,7 @@ def setup_section(runs, hier):
                      if f.get("data") and f.get("templates")})
     shape = ", ".join("%d data segments x %d templates = %d pairs"
                       % (d, t, d * t) for d, t in shapes)
-    cfgs = sorted({(h["band"], h["oversample"], h["taps"])
+    cfgs = sorted({(h["band"], h["taps"])
                    for h in hier if "band" in h})
     rows = [
         ("Workload", "%s. Pure noise -- the case the first pass is built for, "
@@ -1268,7 +1268,7 @@ def setup_section(runs, hier):
                         "this benchmark rather than an input to it, and it "
                         "should narrow as the threshold rises. Selected across "
                         "these runs: %s."
-                        % ", ".join("%d/%d/%d" % c for c in cfgs)),
+                        % ", ".join("%d/%d" % c for c in cfgs)),
         ("Comparing runners",
          "Don't. A speedup is a ratio of two machine-dependent times and they "
          "do not scale together: the arm64 runner's flat filter is 4.1x the "
@@ -1325,7 +1325,7 @@ def coverage_and_escalation(runs):
 def bench_hier_raw(runs):
     rows = [[html.escape(r["host"]["label"]), h["n"], "%g" % h.get("fd", 0),
              "%g" % h["snr"],
-             ("%d/%d/%d" % (h["band"], h["oversample"], h["taps"])
+             ("%d/%d" % (h["band"], h["taps"])
               if "band" in h else "-"),
              "%.3f" % h["flat_ms"], "%.3f" % _hier_ms(h),
              "<b>%.2fx</b>" % h["speedup"], "%.2f%%" % (_rate(h) * 100)]

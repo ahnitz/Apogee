@@ -246,8 +246,8 @@ def hierarchical():
     hf.set_data(data)
     peaks = hf.run(binsize=n, threshold=6.0)
 
-    band, oversample, taps = hf.config
-    print("it chose band %d, oversample %d, taps %d" % (band, oversample, taps))
+    band, taps = hf.config
+    print("it chose band %d, taps %d" % (band, taps))
     print("escalated to the full correlation: %.1f%% of pairs"
           % (100 * hf.refine_rate))
     for d_, t_, b_ in np.argwhere(peaks["index"] >= 0):

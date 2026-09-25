@@ -151,7 +151,7 @@ def device_batch(device, default=64):
 
 
 def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
-            margin=1.0, device=None):
+            margin=1.0, device=None, thr=None):
     """Measured (dismissal, seconds-per-pair) for one configuration.
 
     Both numbers come from the real filter.  Injections go into a batch of
@@ -182,7 +182,7 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
     H = template_with_power(n, power)
     flat = mf.MatchedFilter(n, ndata=batch, ntemplates=1, device=device)
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
-                               band=band, oversample=U, taps=K, device=device)
+                               band=band, taps=K, device=device)
     hf.set_reference(power)
     # Always, including 1.0. The margin is an independent variable of this
     # sweep, and a pinned plan now takes one from the table when the caller
@@ -195,7 +195,14 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
     # looks. A whole 7000-cell GPU sweep came back with every margin giving
     # the identical answer, which is exactly the shape this failure makes:
     # the strongest lever in the table doing nothing at all.
-    hf.set_coarse_margin(float(margin))
+    if thr is not None:
+        # An ABSOLUTE coarse threshold, which is what direct calibration
+        # bisects. It overrides the margin entirely: the margin is a
+        # multiplier on a MODELLED threshold, and the whole point of passing
+        # thr is that no model is involved.
+        hf.set_coarse_threshold(float(thr))
+    else:
+        hf.set_coarse_margin(float(margin))
     flat.set_templates(H[None, :])
     hf.set_templates(H[None, :])
 
@@ -609,7 +616,7 @@ def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,
     power = np.ascontiguousarray(power, dtype=np.float32)
     H = np.stack([template_with_power(n, power) for _ in range(nt)])
     hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=1e-3,
-                               band=band, oversample=U, taps=K)
+                               band=band, taps=K)
     hf.set_reference(power)
     # Always, including 1.0. The margin is an independent variable of this
     # sweep, and a pinned plan now takes one from the table when the caller
@@ -739,7 +746,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
         for cfg in chunk:
             band, U, K, margin = cfg
             hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=nt, snr=snr,
-                                       fd=1e-3, band=band, oversample=U, taps=K)
+                                       fd=1e-3, band=band, taps=K)
             hf.set_reference(power)
             # always, including 1.0 -- see the note at the top of the file
             hf.set_coarse_margin(float(margin))
