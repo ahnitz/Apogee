@@ -425,3 +425,36 @@ mistake; the gain is register capacity.
 
 Next: half2 through the coarse butterflies (cmul/cmulConj/r4/dft*), then
 multiple independent FFTs per thread in the freed register space.
+
+### half2 arithmetic: 4%, and it confirms the diagnosis a third time
+
+The coarse transform now runs in half2 under COARSE16 -- typedef C/CS over
+cmul, cmulConj, r4, dft2/4/8/16, innermost, exchange. Native fp16 is really
+emitted: the SPIR-V carries capability 9 (Float16), which the fp32 build
+does not. Magnitudes and peak output stay float, so the gate comparison and
+the reported value are unchanged in type.
+
+    per pair, band 512:  fp32 8.89 ns  ->  half2 8.52 ns   (4%)
+
+Against a 0.78 ns/pair fp16 peak that is still 11x off. Three levers have
+now been measured:
+
+    fp16 loads  (half the traffic)  -> nothing
+    fp16 math   (half the ALU work) -> 4%
+    fewer bytes in LDS              -> nothing
+
+None of them is the constraint, which leaves only the dependency structure:
+a lone wave walking a serial chain of FFT stages, each behind a barrier and
+an LDS round-trip, with no independent work to overlap. Halving the
+arithmetic cannot help a wave that is stalled on an exchange.
+
+So the remaining step is the one that targets it directly, and half2 is
+what makes it fit: MULTIPLE INDEPENDENT TRANSFORMS PER THREAD. r[16] in
+half2 costs 16 VGPRs where fp32 cost 32, so two or four transforms sit
+where one did. Their exchanges interleave and cover each other's latency;
+at n=256 four fit in register space (4x4) and the exchange can go away
+entirely, at n=512 two (2x2).
+
+This is the change that should move the number. Everything before it was
+either a prerequisite (packed inputs, half2 registers) or a falsified
+hypothesis (bandwidth, launch, occupancy-from-count, LDS size).

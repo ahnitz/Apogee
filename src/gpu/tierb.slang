@@ -73,13 +73,25 @@ static const uint CH  = ((CAP / WG) > R) ? R : ((CAP / WG > 0) ? (CAP / WG) : 1)
 #ifndef COARSE16
 #define COARSE16 0
 #endif
+//: The transform's own type. half2 halves register occupancy per point --
+//: R=16 complex drops from 32 VGPRs to 16 -- which is what lets independent
+//: transforms sit in registers together and cover each other's exchange
+//: latency. That latency, not bandwidth, is the coarse stage's 5.7x.
+#if COARSE16
+typedef half2 C;
+typedef half  CS;
+#else
+typedef float2 C;
+typedef float CS;
+#endif
+
 #if COARSE16
 typedef uint CVal;
-float2 cload(StructuredBuffer<CVal> b, uint i)
-{ uint p = b[i]; return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16)); }
+C cload(StructuredBuffer<CVal> b, uint i)
+{ uint p = b[i]; return C(CS(f16tof32(p & 0xFFFFu)), CS(f16tof32(p >> 16))); }
 #else
 typedef float2 CVal;
-float2 cload(StructuredBuffer<CVal> b, uint i) { return b[i]; }
+C cload(StructuredBuffer<CVal> b, uint i) { return b[i]; }
 #endif
 groupshared uint stg[CH * WG * 2];
 void stgPut(uint i, float2 v) { stg[2*i] = asuint(v.x); stg[2*i+1] = asuint(v.y); }
@@ -92,13 +104,13 @@ static uint _tid;
 //: hand-specialised kernel.
 static const uint NLEVELS = (WG <= 16) ? 1 : ((WG <= 256) ? 2 : 3);
 
-float2 cmul(float2 a, float2 b) { return float2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
-float2 cmulConj(float2 a, float2 b) { return float2(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
+C cmul(C a, C b) { return C(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+C cmulConj(C a, C b) { return C(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
 
-void r4(inout float2 a, inout float2 b, inout float2 c, inout float2 d)
+void r4(inout C a, inout C b, inout C c, inout C d)
 {
-    float2 t0=a+c, t1=a-c, t2=b+d, t3=b-d;
-    float2 j3 = float2(-t3.y, t3.x);
+    C t0=a+c, t1=a-c, t2=b+d, t3=b-d;
+    C j3 = C(-t3.y, t3.x);
     a=t0+t2; b=t1+j3; c=t0-t2; d=t1-j3;
 }
 
@@ -106,45 +118,45 @@ void r4(inout float2 a, inout float2 b, inout float2 c, inout float2 d)
 // or length here indexes the register array dynamically, which forces a
 // spill to scratch -- the first version did that and the driver crashed.
 // The innermost block size follows from NLEN, so it folds.
-void dft2(inout float2 r[16], uint o)
+void dft2(inout C r[16], uint o)
 {
-    float2 a=r[o], b=r[o+1]; r[o]=a+b; r[o+1]=a-b;
+    C a=r[o], b=r[o+1]; r[o]=a+b; r[o+1]=a-b;
 }
-void dft4(inout float2 r[16], uint o)
+void dft4(inout C r[16], uint o)
 {
     r4(r[o], r[o+1], r[o+2], r[o+3]);
-    float2 t=r[o+1]; r[o+1]=r[o+2]; r[o+2]=t;
+    C t=r[o+1]; r[o+1]=r[o+2]; r[o+2]=t;
 }
-void dft8(inout float2 r[16], uint o)
+void dft8(inout C r[16], uint o)
 {
     // radix-2, three stages, fully unrolled with static indices
     const float S = 0.70710678f;
-    float2 b[8];
+    C b[8];
     [unroll] for (uint s = 1; s < 8; s <<= 1) {
         [unroll] for (uint j = 0; j < 4; ++j) {
             uint k = j & (s-1), base = (j-k) << 1;
             float ang = PI * float(k) / float(s);
-            float2 w = float2(cos(ang), sin(ang));
-            float2 u = r[o+j], v = r[o+j+4], t = cmul(w, v);
+            C w = C(CS(cos(ang)), CS(sin(ang)));
+            C u = r[o+j], v = r[o+j+4], t = cmul(w, v);
             b[base+k] = u+t; b[base+k+s] = u-t;
         }
         [unroll] for (uint i = 0; i < 8; ++i) r[o+i] = b[i];
     }
 }
-void dft16(inout float2 r[16])
+void dft16(inout C r[16])
 {
-    const float2 W1 = float2( 0.92387953f,  0.38268343f);
-    const float2 W2 = float2( 0.70710678f,  0.70710678f);
-    const float2 W3 = float2( 0.38268343f,  0.92387953f);
-    const float2 W4 = float2( 0.0f,         1.0f       );
-    const float2 W6 = float2(-0.70710678f,  0.70710678f);
-    const float2 W9 = float2(-0.92387953f, -0.38268343f);
+    const C W1 = C( 0.92387953f,  0.38268343f);
+    const C W2 = C( 0.70710678f,  0.70710678f);
+    const C W3 = C( 0.38268343f,  0.92387953f);
+    const C W4 = C( 0.0f,         1.0f       );
+    const C W6 = C(-0.70710678f,  0.70710678f);
+    const C W9 = C(-0.92387953f, -0.38268343f);
     [unroll] for (uint n1 = 0; n1 < 4; ++n1) r4(r[n1], r[n1+4], r[n1+8], r[n1+12]);
     r[5]=cmul(r[5],W1);  r[9]=cmul(r[9],W2);   r[13]=cmul(r[13],W3);
     r[6]=cmul(r[6],W2);  r[10]=cmul(r[10],W4); r[14]=cmul(r[14],W6);
     r[7]=cmul(r[7],W3);  r[11]=cmul(r[11],W6); r[15]=cmul(r[15],W9);
     [unroll] for (uint k2 = 0; k2 < 4; ++k2) r4(r[4*k2], r[4*k2+1], r[4*k2+2], r[4*k2+3]);
-    float2 t;
+    C t;
     t=r[1];  r[1]=r[4];   r[4]=t;
     t=r[2];  r[2]=r[8];   r[8]=t;
     t=r[3];  r[3]=r[12];  r[12]=t;
@@ -156,7 +168,7 @@ void dft16(inout float2 r[16])
 //: Innermost block size: recurse TB /= 16 until it fits in a thread.
 static const uint INNER = (WG <= 16) ? WG : ((WG / 16 <= 16) ? WG / 16 : WG / 256);
 
-void innermost(inout float2 r[16])
+void innermost(inout C r[16])
 {
     if (INNER == 16)     { dft16(r); }
     else if (INNER == 8) { [unroll] for (uint b = 0; b < 2; ++b) dft8(r, b*8); }
@@ -172,7 +184,7 @@ void innermost(inout float2 r[16])
 //   scatter wrote   p = blk*len + i*span + lane
 //   so from p:      blk = p/len, i = (p%len)/span, lane = (p%len)%span
 //                   writer thread = blk*span + lane
-void exchange(inout float2 r[16], uint want[16], uint lgLen, uint lgSpan)
+void exchange(inout C r[16], uint want[16], uint lgLen, uint lgSpan)
 {
     // Every divisor here is a power of two, so these are shifts and masks.
     // Written as / and % they were integer divisions -- 16 of them per
@@ -183,8 +195,8 @@ void exchange(inout float2 r[16], uint want[16], uint lgLen, uint lgSpan)
     // it and warns, and a backend that leaves an unwritten register as
     // garbage rather than zero would turn that warning into a wrong
     // answer. Cheap insurance against a compiler we have not met.
-    float2 out[16];
-    [unroll] for (uint z = 0; z < R; ++z) out[z] = float2(0.0f, 0.0f);
+    C out[16];
+    [unroll] for (uint z = 0; z < R; ++z) out[z] = C(0.0f, 0.0f);
     uint spanMask = (1u << lgSpan) - 1u;
     uint lenMask  = (1u << lgLen) - 1u;
     [unroll] for (uint c = 0; c < R / CH; ++c) {
@@ -247,7 +259,7 @@ void filterPair(uint pair, uint tid,
 {
     _tid = tid;
     uint d = pair / ntmpl, t = pair % ntmpl;
-    float2 r[16];
+    C r[16];
 
     // level 0: gather this thread's stride-WG column straight from global
     [unroll] for (uint n2 = 0; n2 < R; ++n2) {
@@ -269,7 +281,7 @@ void filterPair(uint pair, uint tid,
         dft16(r);
         [unroll] for (uint k2 = 0; k2 < R; ++k2) {
             float ang = 2.0f * PI * float(lane * k2) / float(len);
-            r[k2] = cmul(r[k2], float2(cos(ang), sin(ang)));
+            r[k2] = cmul(r[k2], C(CS(cos(ang)), CS(sin(ang))));
         }
 
         // one assignment of want[], then one call: the branchy version
@@ -310,7 +322,8 @@ void filterPair(uint pair, uint tid,
         // Out-of-window samples are set to zero rather than branched around:
         // zero can never beat a seed of >= 0, so the window costs a select
         // and no divergence.
-        myMag[i] = live ? asuint(r[i].x*r[i].x + r[i].y*r[i].y) : 0u;
+        float _rx = float(r[i].x), _ry = float(r[i].y);
+        myMag[i] = live ? asuint(_rx*_rx + _ry*_ry) : 0u;
         uint off = idx - winStart;
         // Shift when the binsize is a power of two, divide when it is not --
         // the same split the CPU makes, and the reason no restriction on
@@ -341,7 +354,7 @@ void filterPair(uint pair, uint tid,
         if (myMag[i] > thrBits && stg[myBin[i]] == myMag[i]) {
             uint o = pair * nbins + myBin[i];
             peakIdx[o] = int(slotToIndex(tid * R + i));
-            peakVal[o] = r[i];
+            peakVal[o] = float2(float(r[i].x), float(r[i].y));
         }
     }
     // Bins nothing cleared: index -1 and a zero value, matching the CPU. No
