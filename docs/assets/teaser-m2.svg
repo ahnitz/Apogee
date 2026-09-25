@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 490" width="900" height="490" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect width="900" height="490" rx="8" fill="#0b0f19"/>
+<text x="28" y="34" font-size="17" font-weight="600" fill="#e8eef7">16384 correlations of 4096 points</text>
+<text x="28" y="55" font-size="12.5" fill="#94a3b8">correlations per second — taller is better. The two panels have DIFFERENT scales.</text>
+<text x="28" y="76" font-size="11" fill="#94a3b8"><tspan fill="#e8eef7">CPU</tspan><tspan dx="7">AMD RYZEN AI MAX+ 395 w/ Radeon 8060S</tspan><tspan dx="24" fill="#e8eef7">GPU</tspan><tspan dx="7">AMD Radeon 8060S Graphics (RADV GFX1151)</tspan></text>
+<text x="60" y="104" font-size="13" font-weight="600" fill="#e8eef7">CPU</text>
+<line x1="60" y1="370" x2="440" y2="370" stroke="#243044"/>
+<rect x="86" y="340.3" width="86" height="29.7" rx="3" fill="#4facfe"/>
+<text x="129" y="320.3" font-size="12.5" font-weight="600" text-anchor="middle" fill="#e8eef7">133k/s</text>
+<text x="129" y="333.3" font-size="10.5" text-anchor="middle" fill="#94a3b8">123.20 ms</text>
+<text x="129" y="388" font-size="11.5" text-anchor="middle" fill="#e8eef7">matchedfilter</text>
+<text x="129" y="401" font-size="9.5" text-anchor="middle" fill="#94a3b8">correlate + ifft + peak</text>
+<rect x="212" y="120.0" width="86" height="250.0" rx="3" fill="#38ef7d"/>
+<text x="255" y="100.0" font-size="12.5" font-weight="600" text-anchor="middle" fill="#e8eef7">1.1M/s</text>
+<text x="255" y="113.0" font-size="10.5" text-anchor="middle" fill="#94a3b8">14.64 ms</text>
+<text x="255" y="388" font-size="11.5" text-anchor="middle" fill="#e8eef7">matchedfilter</text>
+<text x="255" y="401" font-size="11.5" text-anchor="middle" fill="#e8eef7">hierarchical</text>
+<text x="255" y="414" font-size="9.5" text-anchor="middle" fill="#94a3b8">correlate + ifft + peak</text>
+<text x="510" y="104" font-size="13" font-weight="600" fill="#e8eef7">GPU</text>
+<line x1="510" y1="370" x2="890" y2="370" stroke="#243044"/>
+<rect x="536" y="331.0" width="86" height="39.0" rx="3" fill="#4facfe"/>
+<text x="579" y="311.0" font-size="12.5" font-weight="600" text-anchor="middle" fill="#e8eef7">1.4M/s</text>
+<text x="579" y="324.0" font-size="10.5" text-anchor="middle" fill="#94a3b8">12.03 ms</text>
+<text x="579" y="388" font-size="11.5" text-anchor="middle" fill="#e8eef7">matchedfilter</text>
+<text x="579" y="401" font-size="9.5" text-anchor="middle" fill="#94a3b8">correlate + ifft + peak</text>
+<rect x="662" y="120.0" width="86" height="250.0" rx="3" fill="#38ef7d"/>
+<text x="705" y="100.0" font-size="12.5" font-weight="600" text-anchor="middle" fill="#e8eef7">8.7M/s</text>
+<text x="705" y="113.0" font-size="10.5" text-anchor="middle" fill="#94a3b8">1.88 ms</text>
+<text x="705" y="388" font-size="11.5" text-anchor="middle" fill="#e8eef7">matchedfilter</text>
+<text x="705" y="401" font-size="11.5" text-anchor="middle" fill="#e8eef7">hierarchical</text>
+<text x="705" y="414" font-size="9.5" text-anchor="middle" fill="#94a3b8">correlate + ifft + peak</text>
+<text x="28" y="460" font-size="11.5" fill="#94a3b8">FFTW and rocFFT do the inverse transform ALONE; matchedfilter does the product, the transform and the peak scan.</text>
+<text x="28" y="476" font-size="11.5" fill="#94a3b8">Only the peak per bin is returned, so the 537 MB of correlation is never written — on the GPU rocFFT is at the bandwidth limit (213 of 211 GB/s).</text>
+</svg>

@@ -191,6 +191,23 @@ BARS = [
     ("GPU", "matchedfilter, hierarchical", "correlate + ifft + peak", lambda: gpu_ms("hier"), HIER),
 ]
 
+# Apple M2, measured 2026-09-25 on the same workload (N=4096, 16x1024 pairs,
+# snr 5.5, fd 1e-2), same build, 405 passed / 17 skipped.
+#
+# These are CONSTANTS rather than live timings because this figure is
+# generated on the Linux box, which has no Metal. Anything measured on
+# another machine has to be stamped and re-measured deliberately -- a live
+# number and a remembered one must not sit in the same chart unlabelled.
+M2 = {"cpu_flat": 123.204, "cpu_hier": 14.642,
+      "gpu_flat": 12.025, "gpu_hier": 1.878}
+
+M2_BARS = [
+    ("CPU", "matchedfilter", "correlate + ifft + peak", lambda: M2["cpu_flat"], FILTER),
+    ("CPU", "matchedfilter, hierarchical", "correlate + ifft + peak", lambda: M2["cpu_hier"], HIER),
+    ("GPU", "matchedfilter", "correlate + ifft + peak", lambda: M2["gpu_flat"], FILTER),
+    ("GPU", "matchedfilter, hierarchical", "correlate + ifft + peak", lambda: M2["gpu_hier"], HIER),
+]
+
 
 def svg(results, out):
     """Two panels, independent scales, throughput so taller is better.
@@ -328,9 +345,12 @@ def _gpu_name():
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="docs/assets/teaser.svg")
+    ap.add_argument("--m2", action="store_true",
+                    help="plot the stamped Apple M2 numbers instead of measuring "
+                         "this machine (this box has no Metal)")
     args = ap.parse_args(argv)
     results = []
-    for bar in BARS:
+    for bar in (M2_BARS if args.m2 else BARS):
         ms = bar[3]()
         print("  %-4s %-30s %-26s %8.2f ms" % (bar[0], bar[1], bar[2], ms))
         results.append((bar, ms))
