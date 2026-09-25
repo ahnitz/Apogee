@@ -469,9 +469,19 @@ void filterOne(uint pair, uint d, uint t, uint tid, C dreg[16],
         uint lane = tid & (TB - 1);
 
         dft16(r);
-        [unroll] for (uint k2 = 0; k2 < R; ++k2) {
-            float ang = 2.0f * PI * float(lane * k2) / float(len);
-            r[k2] = cmul(r[k2], C(CS(cos(ang)), CS(sin(ang))));
+        // Same recurrence as the SoA path: w_k = w_1^k, so one cos/sin per
+        // level rather than sixteen. Every band except 512 runs THIS path,
+        // so leaving it here would have confined the saving to one band.
+        {
+            float a1 = 2.0f * PI * float(lane) / float(len);
+            float wr = cos(a1), wi = sin(a1);
+            float cr = 1.0f, ci = 0.0f;
+            [unroll] for (uint k2 = 0; k2 < R; ++k2) {
+                r[k2] = cmul(r[k2], C(CS(cr), CS(ci)));
+                float nr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = nr;
+            }
         }
 
         // one assignment of want[], then one call: the branchy version

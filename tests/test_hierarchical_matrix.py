@@ -374,3 +374,64 @@ def test_hierarchical_matches_flat_on_the_same_device(device):
             "band %d dismissed %d of %d loud signals"
             % (band, dismissed, int((fi >= 0).sum())))
         assert disagree == 0, "band %d: %d peaks differ from flat" % (band, disagree)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_manual_overrides_reach_every_backend(device):
+    """Band and threshold are the ONLY manual overrides, and both must land.
+
+    The tables are the single source of truth for the autotuned route -- the
+    calibration table for the threshold, the cost table for the band. A
+    caller who sets either by hand is opting out of that, and the opt-out
+    has to reach whichever backend is running.
+
+    It did not. _gpu_calibration read choose_threshold directly and never
+    consulted _cal_thr, so set_coarse_threshold was silently DISCARDED on
+    the GPU while working on the CPU: the plan ran at the table's value with
+    no error. Nothing caught it because every other test either autotunes or
+    runs on the CPU, and a wrong-but-reasonable threshold still produces
+    correct peaks -- it just gates at the wrong place.
+    """
+    n, nt, nd = 4096, 8, 8
+    power = inspiral_power(n)
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+    D = noise((nd, n), np.random.default_rng(1))
+    for i in range(nd):                 # loud signal, or nothing clears the
+        D[i] += (9.0 * H[i % nt]).astype(np.complex64)   # REPORTING threshold
+
+    for band in (256, 512):
+        h = mf.HierarchicalFilter(n, nd, nt, snr=5.5, fd=1e-2,
+                                  band=band, taps=8, device=device)
+        h.set_reference(power)
+        h.set_templates(H)
+        h.set_data(D)
+        h.run(binsize=n, threshold=5.5)
+        assert h.config[0] == band, (
+            "%s: asked for band %d, got %s" % (device, band, h.config))
+
+    # Check the OUTPUT, not refine_rate: that counter is CPU-only and reads
+    # 0.0000 on the GPU whatever the threshold, so a test built on it passes
+    # vacuously on exactly the backend the bug was on.
+    #
+    # A threshold of 1e9 escalates nothing, so every peak is absent. A
+    # threshold of 0 escalates everything, so the result matches the flat
+    # filter. If the override is dropped, both collapse to the table value
+    # and the two look identical.
+    outs = {}
+    for thr in (0.0, 1e9):
+        h = mf.HierarchicalFilter(n, nd, nt, snr=5.5, fd=1e-2,
+                                  band=512, taps=8, device=device)
+        h.set_reference(power)
+        h.set_templates(H)
+        h.set_data(D)
+        h.set_coarse_threshold(thr)
+        outs[thr] = h.run(binsize=n, threshold=5.5)["index"].copy()
+
+    found_open = int((outs[0.0] >= 0).sum())
+    found_shut = int((outs[1e9] >= 0).sum())
+    assert found_shut == 0, (
+        "%s: threshold 1e9 should dismiss everything, kept %d"
+        % (device, found_shut))
+    assert found_open > 0, (
+        "%s: set_coarse_threshold(0) did not reach the backend -- nothing "
+        "escalated, so the table value is still in force" % device)
