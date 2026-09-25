@@ -357,3 +357,6 @@ int ap_mf_run_sel(ap_mf_plan *p, int d0, int nd, int t0, int nt,
   return run_pairs(p,d0,nd,t0,nt,tsel,nsel,binsize,threshold,
                    peaks,counts,start,end);
 }
+
+/* Debug accessor: how many data slots the plan actually has. */
+int ap_mf_ndata(const ap_mf_plan *p){ return p ? p->nd : -1; }

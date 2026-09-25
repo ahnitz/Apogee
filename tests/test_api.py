@@ -864,3 +864,31 @@ def test_first_stage_below_the_design_grid_is_clamped():
         got[fs] = hf.refine_rate
     assert got[3.0] == pytest.approx(got[4.5], rel=1e-6)
     assert got[0.01] == pytest.approx(got[4.5], rel=1e-6)
+
+
+@pytest.mark.parametrize("klass", ["flat", "hier"])
+def test_run_without_set_data_raises_rather_than_crashing(klass):
+    """run() with no data must be an error, not a segmentation fault.
+
+    ap_hmf_set_data stores the CALLER'S spectrum pointer, and the refine path
+    is the first thing to dereference it. With no set_data() that pointer was
+    NULL, so run() segfaulted -- but only once a pair actually fired, which
+    made it look intermittent rather than like a missing call. It took gdb to
+    see that the crash was in ap_mf_set_data called from ap_hmf_run, and a
+    printf to see that the spectrum it was handed was nil.
+
+    The flat filter never crashed here; it read its zeroed buffers and
+    returned zeros, which is its own kind of wrong. Both refuse now.
+    """
+    n, nt = 1024, 4
+    power = inspiral_power(n)
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+    if klass == "flat":
+        f = mf.MatchedFilter(n, 1, nt)
+    else:
+        f = mf.HierarchicalFilter(n, 1, nt, snr=5.5, fd=1e-2, band=256,
+                                  oversample=2, taps=8)
+        f.set_reference(power)
+    f.set_templates(H)
+    with pytest.raises(ValueError, match="set_data"):
+        f.run(binsize=n, threshold=5.5)

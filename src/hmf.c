@@ -1069,6 +1069,12 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        rather than a range. */
     if(nfire){
       if(!p->dready[d0+d]){
+        /* No spectrum was ever handed to this slot. ap_hmf_set_data stores
+           the CALLER'S pointer and the refine path is the first thing to
+           dereference it, so a run() with no set_data() reached here with
+           NULL and segfaulted -- and only when a pair actually fired, which
+           made it look intermittent. Refuse instead. */
+        if(!p->dspec[d0+d]) return -1;
         if(ap_mf_set_data(p->full,d0+d,p->dspec[d0+d])) return -1;
         p->dready[d0+d]=1;
       }

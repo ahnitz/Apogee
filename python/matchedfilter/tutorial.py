@@ -272,7 +272,13 @@ def refuses():
     try:
         hf.run(binsize=n, threshold=5.0)
     except ValueError as e:
-        print("ValueError:", str(e).split(" -- ")[1].split(". ")[0])
+        # Not every ValueError from run() carries the " -- " the tuning
+        # refusal uses. Indexing [1] blindly turned a perfectly clear
+        # error into an IndexError raised by the example itself, which
+        # is a worse failure than the one being demonstrated.
+        msg = str(e)
+        head = msg.split(" -- ")[1] if " -- " in msg else msg
+        print("ValueError:", head.split(". ")[0])
     print()
     print("An fd of 1e-6 is below what the shipped tables resolve, so it")
     print("declines. Passing band, oversample and taps yourself always works.")

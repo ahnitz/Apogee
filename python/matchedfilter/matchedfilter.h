@@ -54,6 +54,7 @@ typedef struct ap_mf_plan ap_mf_plan;
 
 ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl);
 void        ap_mf_destroy(ap_mf_plan *p);
+int         ap_mf_ndata(const ap_mf_plan *p);
 size_t      ap_mf_nbins(const ap_mf_plan *p, size_t binsize, size_t start, size_t end);
 
 /* Ingest.  spec is the segment's SPECTRUM: n interleaved complex float32, the

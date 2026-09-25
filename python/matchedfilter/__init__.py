@@ -162,6 +162,11 @@ class MatchedFilter:
         self.ntemplates = int(ntemplates)
         self._buf = None
         self._sbuf = None
+        #: Has any spectrum reached the plan? The hierarchical refine path
+        #: dereferences the stored pointer, so run() with no set_data() was a
+        #: SEGFAULT -- and only once a pair actually fired, which made it look
+        #: intermittent rather than like a missing call.
+        self._dataset = False
         # Arrays the plan holds pointers into. The C side keeps the caller's
         # spectrum rather than copying it, so the wrapper must keep it alive.
         self._held = {}
@@ -236,6 +241,7 @@ class MatchedFilter:
         segment, natural order.
         """
         if self._gpu is not None:
+            self._dataset = True
             return self._gpu_set(self._gdata, spectra, index, "data")
         if index is not None:
             a = _as_c64(spectra, self.n, "spectrum")
@@ -246,6 +252,7 @@ class MatchedFilter:
             # shows when the refine path runs. Hold a reference.
             self._held[int(index)] = a
             self._ensure().set_data(int(index), a)
+            self._dataset = True
             return
         a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ndata, self.n):
@@ -253,6 +260,7 @@ class MatchedFilter:
         self._held[-1] = a                      # see the note above
         for i in range(self.ndata):
             self._ensure().set_data(i, a[i])
+        self._dataset = True
 
     def set_templates(self, spectra, index=None):
         """Set one template spectrum (with ``index``) or all from a (ntemplates, n) array.
@@ -342,6 +350,12 @@ class MatchedFilter:
            or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
             raise ValueError("data/templates sub-range out of bounds")
 
+        if not self._dataset:
+            raise ValueError(
+                "no data: call set_data() before run(). The plan stores the "
+                "caller's spectrum pointer and the hierarchical refine path "
+                "is the first thing to dereference it, so this used to be a "
+                "segfault, and only once a pair fired.")
         idx, val = self._gpu.peaks(
             self.n, self._gdata[d0:d0 + nd], self._gtmpl[t0:t0 + nt],
             binsize=binsize, threshold=threshold, window=(start, end),
@@ -423,6 +437,12 @@ class MatchedFilter:
            or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
             raise ValueError("data/templates sub-range out of bounds")
         nb = self._ensure().nbins(binsize, start, end)
+        if not self._dataset:
+            raise ValueError(
+                "no data: call set_data() before run(). The plan stores the "
+                "caller's spectrum pointer and the hierarchical refine path "
+                "is the first thing to dereference it, so this used to be a "
+                "segfault, and only once a pair fired.")
         rows = nd * nt
         # Reuse the output buffers.  Six allocations per call is nothing beside
         # a 2^20 transform, but a caller driving small batches in a tight loop
@@ -481,6 +501,7 @@ class MatchedFilter:
         if st.size < 1:
             raise ValueError("run_series needs at least one block")
         nblk = st.size
+        self._dataset = True   # run_series supplies its own blocks
         # Every window must give the same bin count: the result has ONE
         # nbins in its shape and the C addresses peaks at a single stride, so
         # a shorter window at a segment's edge writes into the next block's
@@ -1563,6 +1584,11 @@ class HierarchicalFilter(MatchedFilter):
         self.fd = float(fd)
         self._buf = None
         self._sbuf = None
+        #: Has any spectrum reached the plan? The hierarchical refine path
+        #: dereferences the stored pointer, so run() with no set_data() was a
+        #: SEGFAULT -- and only once a pair actually fired, which made it look
+        #: intermittent rather than like a missing call.
+        self._dataset = False
         self._held = {}
         self._pending_ref = None
         self._pinned = None
@@ -1780,6 +1806,13 @@ class HierarchicalFilter(MatchedFilter):
             raise ValueError("data/templates sub-range out of bounds")
         if self._pending_ref is None:
             raise ValueError("set_reference is required before running on a GPU")
+        if not self._dataset:
+            raise ValueError(
+                "no data: call set_data() before run(). The plan stores the "
+                "caller's spectrum pointer and the hierarchical refine path "
+                "is the first thing to dereference it, so this used to be a "
+                "segfault, and only once a pair fired.")
+
 
         D = self._gdata[d0:d0 + nd]
         H = self._gtmpl[t0:t0 + nt]
@@ -1933,6 +1966,7 @@ class HierarchicalFilter(MatchedFilter):
         if not (st.size == ws.size == we.size):
             raise ValueError("starts, win_start and win_end must be the same length")
         nblk = st.size
+        self._dataset = True   # run_series supplies its own blocks
         # Every window must give the same bin count: the result has ONE
         # nbins in its shape and the C addresses peaks at a single stride, so
         # a shorter window at a segment's edge writes into the next block's
