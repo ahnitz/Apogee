@@ -616,3 +616,42 @@ ntemplates pairs and every template row by all ndata pairs. A workgroup
 that handles one data row against K templates loads 1+K rows instead of 2K.
 THAT is how global loads approach free, and it is different from PPG, which
 packs independent pairs each carrying their own two loads.
+
+### Block-of-4 pre-permutation: also rejected, and what is left standing
+
+Permuting blocked by FOUR (the uint4 width) rather than by R gives loads
+that are wide AND coalesced at once -- lane tid reads four consecutive
+complex while adjacent lanes read adjacent uint4s, 32 x 16 B = 8 fully used
+cache lines per instruction. It is the layout that should have worked.
+
+    band 512:  baseline 2.239   block-of-4 2.622 ms   still ~17% slower
+
+Timing is sound: uploads happen only when the batch is first built, so the
+permutation is preparation and sits outside the timed loop. It was checked
+rather than assumed.
+
+Stubbing, band 512, baseline 2.239 ms (results wrong, timing only):
+
+    exchange deleted        1.981   12%
+    innermost() deleted     2.34    free
+    slotToIndex deleted     2.285   free
+
+So the transform, the digit reversal and the exchange together are ~12%,
+and no load layout tried -- plain, permuted-by-16, permuted-by-4, scalar,
+uint4 -- moves the remainder. Note "88% is the loads" was an inference by
+ELIMINATION, never a measurement: the no-load variant timed 23.8 ms because
+a constant stub makes every lane produce the same magnitude and the peak
+table serialises on atomics. That inference is the weakest link left and
+deserves a proper test (vary only the band with work held fixed) before
+more layout work.
+
+Eliminated by measurement this session: bandwidth, launch overhead,
+occupancy-from-count, LDS footprint, ALU precision, lane utilisation at
+full-wave bands, load instruction count, load coalescing, exchange latency
+(capped at 12%, which also kills TPT), and digit reversal.
+
+The untouched lever is the one the pair GRID offers: every data row is read
+by all ntemplates pairs and every template by all ndata. One data row
+against K templates costs 1+K row loads instead of 2K, with the shared row
+staged once in LDS. PPG does not do this -- it packs independent pairs that
+each still carry their own two loads. That is the next thing to build.
