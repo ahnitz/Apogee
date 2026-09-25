@@ -891,3 +891,37 @@ Largest single removable item is now want[] + exchange index math -- 352
 VALU at band 512, 34% of the total. That is the pre-arranged-layout work.
 slotToIndex is SMALLER than previously recorded because the writeback
 consumer was always lazy; only the window test is eager.
+
+### What the GPU is NOT using (per CU: 32 waves, 1536 VGPR/SIMD, 64 KB LDS, 32 KB L1)
+
+    band  WG wav/wg  lanes  LDS/wg  wg/CU LDS/cap  waves/CU  occ  VGPR  L1
+     128   8   1      25%    1 KB     64 / 16         16     50%   50%  32 KB 1.0x
+     256  16   1      50%    2 KB     32 / 16         16     50%   50%  64 KB 2.0x
+     512  32   1     100%    4 KB     16 / 16         16     50%   50% 128 KB 4.0x
+    1024  64   2     100%    8 KB      8 / 16         16     50%   50% 128 KB 4.0x
+
+**Occupancy is 50% at EVERY band -- 16 waves of 32 -- but the binding
+constraint differs**, which is why no single fix generalised:
+
+  * 128/256: the 16-workgroup cap binds; LDS would allow 64 and 32 groups.
+    Free: 75%/50% of lanes AND 75%/50% of LDS.
+  * 512: LDS and the workgroup cap bind SIMULTANEOUSLY, both at 16.
+  * 1024: LDS binds alone, 8 groups x 2 waves.
+
+Idle everywhere: half the waves, half the VGPRs. L1 is 4x oversubscribed at
+512/1024 -- 128 KB resident working set against 32 KB.
+
+HOW TO SPEND IT
+
+  * **512/1024**: half2 LDS staging (4 KB -> 2 KB per pair) PLUS PPG=2.
+    Two waves per group at 4 KB gives 16 groups x 2 waves = 32 waves/CU,
+    full occupancy. NEITHER ALONE DOES IT -- halving LDS leaves 16 groups
+    of 1 wave, and PPG=2 alone doubles LDS back and leaves 8 groups of 2.
+    That is exactly why both measured neutral in isolation, and it is the
+    single most specific prediction on this list.
+  * **128/256**: PPG fills idle lanes and free LDS at once. Correct now
+    after the per-tile max fix; band 128 already runs at 87% issue
+    efficiency.
+  * **all bands**: the 50% free VGPRs are what dreg tiling needs, and
+    tiling halves L1 demand by sharing the data row across templates,
+    relieving the 4x oversubscription.
