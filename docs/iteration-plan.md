@@ -500,3 +500,23 @@ the wave was worth 2.3x where the wave was empty and nothing where it was
 already full, so the remaining gap at full-wave bands is NOT lane
 utilisation. It is still the serial exchange chain, and the untried lever
 is several independent transforms per THREAD rather than per workgroup.
+
+### Do NOT drop the execution barrier on the single-wave path
+
+The exchange runs two GroupMemoryBarrierWithGroupSync per level and R/CH=1
+at band 512, so on a 32-thread group they look like pure overhead: lanes of
+one wave are in lockstep, so only the memory fence should be needed.
+Replacing them with GroupMemoryBarrier() where WG*PPG <= 32 gives
+**61 test failures**.
+
+Vulkan does not guarantee that a 32-thread workgroup occupies a single
+wave, and nothing in the memory model makes the LDS writes visible to the
+other lanes without the execution sync. The subgroup size is a device
+property, not something the group width implies -- a driver may pick wave64
+or split the group, and then the exchange reads values that were never
+written.
+
+It was not worth it even if it had been sound: band 512 moved 2.390 ->
+2.318 ms, inside the ~7% run-to-run spread. If this is ever revisited it
+has to go through the subgroup extensions with a real size query, not an
+assumption about the group width.
