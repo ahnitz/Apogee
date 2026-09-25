@@ -202,10 +202,22 @@ void *create(size_t N){
      (128 KiB at 2^14, ~63 GB/s, which is L2 bandwidth), not set aliasing. */
   p->istr = (size_t)n2;
   /* ilay picks the [k2 block][n1][lane] intermediate layout, which makes
-     stage A's stores contiguous instead of strided by istr. Both stage A
-     and stage B implement it and the buffer is sized for it -- but nothing
-     ever set it, so the strided path has always been the only one used. */
-  { const char *e=getenv("MF_ILAY"); p->ilay = e?atoi(e):0; }
+     stage A's stores CONTIGUOUS instead of strided by istr, and lets stage
+     B read them back the same way.
+     Both stages implemented it and the buffer was already sized for it --
+     but nothing ever assigned p->ilay, and create() memsets the plan, so
+     the strided path was the only one that had ever run. Enabling it also
+     removes an imul against a struct field per stored vector: the strided
+     offset is (AP_W*g+i)*p->istr, which the contiguous form does not need.
+     Interleaved A/B, paired ratios old/new:
+       coarse band  512   1.056, faster in 4 of 6
+       coarse band 1024   1.049, faster in 4 of 6
+       coarse band 2048   1.051, faster in 6 of 6
+       flat  n=4096       1.089, faster in 5 of 6
+       flat  n=16384      1.085, faster in 5 of 6
+     19 of 24 pairs, every size faster on the mean. MF_ILAY=0 restores the
+     old layout for comparison. */
+  { const char *e=getenv("MF_ILAY"); p->ilay = e?atoi(e):1; }
   {
     { size_t sz=(size_t)n1*p->istr;
       size_t alt=(size_t)(n2/AP_W)*n1*AP_W;        /* [k2 block][n1][lane] */
