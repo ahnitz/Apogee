@@ -758,3 +758,35 @@ Two constraints this design MUST respect, both learned the hard way:
     nothing until the stalls go -- or the stub was dead-code eliminated,
     which this repo's own machine-notes warn about. RESOLVE THIS FIRST;
     the 2.70x above is not bankable until it is explained.
+
+### Per-band accounting: where the remaining 3-3.7x is
+
+Per THREAD per PAIR, VALU:
+
+    band  WG  LV  useful  slotIdx  want[]  exchIdx  mag/win  TOTAL  useful%
+     128   8   1     272      192      80       96       80    720     38%
+     256  16   1     272      192      80       96       80    720     38%
+     512  32   2     496      288     160      192       80   1216     41%
+    1024  64   2     496      288     160      192       80   1216     41%
+
+Only ~40% of the instructions are the transform. The overhead is LARGER at
+the big bands in absolute terms because NLEVELS goes 1 -> 2 at band 512,
+which doubles want[] and the exchange index math and grows NDIG -- while
+useful work per thread stays flat, since R is always 16. That is why the
+removal multiplier is better there:
+
+    band   now   -slotIdx  -want/exch  +half2   total
+     128   720      528         352      216    3.33x
+     256   720      528         352      216    3.33x
+     512  1216      928         576      328    3.71x
+    1024  1216      928         576      328    3.71x
+
+Three steps, each removing work rather than restructuring it:
+  1. window as a precomputed MASK -> slotToIndex leaves the per-pair path
+  2. pre-arranged layout -> the exchange reads contiguously, want[] goes
+  3. half2 on what remains
+
+Constraint carried forward: coalescing beats instruction count. Both
+pre-permutations tried so far LOST ~17% at band 512 by putting lanes a
+cache line apart. Lane adjacency is an input to the layout, not a
+discovery afterwards.

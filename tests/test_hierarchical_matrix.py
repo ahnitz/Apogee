@@ -319,3 +319,58 @@ def test_both_devices_meet_the_budget_at_the_band_they_choose():
         assert omitted / detected <= fd * 3, (
             "%s omitted %d of %d = %.4f against a %.4f budget"
             % (label, omitted, detected, omitted / detected, fd))
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_hierarchical_matches_flat_on_the_same_device(device):
+    """Loud signals must survive the coarse pass at EVERY band.
+
+    This is the check that caught PPG packing several pairs into one wave
+    while reducing the peak with WaveActiveMax across the whole wave: the
+    pairs sharing a wave received each other's maximum, only the loudest
+    could match its own value in the writeback, and the rest reported -1.
+    At band 128 that left 16 of 64 injections -- exactly one per group of
+    four -- and the kernel looked 2.27x faster because it was discarding
+    three quarters of the work.
+
+    Nothing else here would have seen it. The cross-device tests need a CPU
+    hierarchical plan, and there is none for n=4096 band=128, so they skip
+    the very band the bug lived in. Comparing against the FLAT filter on
+    the SAME device needs no plan and no table, which is what makes it work
+    at bands the CPU cannot run.
+
+    Bands are pinned deliberately rather than autotuned: the point is to
+    exercise the small ones, where WG = band/16 falls below a wave and the
+    packing that caused this is in play.
+    """
+    n, nt, nd = 4096, 8, 8
+    rng = np.random.default_rng(5)
+    power = inspiral_power(n)
+    H = np.stack([template_with_power(n, power) for _ in range(nt)])
+    D = noise((nd, n), rng)
+    for i in range(nd):                       # every pair gets a loud signal
+        D[i] += (9.0 * H[i % nt]).astype(np.complex64)
+
+    flat = mf.MatchedFilter(n, nd, nt, device=device)
+    flat.set_templates(H)
+    flat.set_data(D)
+    fa = flat.run(binsize=n, threshold=5.0)
+    assert (fa["index"] >= 0).sum() > nd * nt // 2, "the flat filter found nothing"
+
+    for band in (128, 256, 512):
+        try:
+            h = mf.HierarchicalFilter(n, nd, nt, snr=5.0, fd=1e-2,
+                                      band=band, taps=8, device=device)
+        except ValueError:
+            continue                          # no plan for this band here
+        h.set_reference(power)
+        h.set_templates(H)
+        h.set_data(D)
+        b = h.run(binsize=n, threshold=5.0)
+        fi, hi = fa["index"], b["index"]
+        dismissed = int(((fi >= 0) & (hi < 0)).sum())
+        disagree = int((((fi >= 0) & (hi >= 0)) & (fi != hi)).sum())
+        assert dismissed == 0, (
+            "band %d dismissed %d of %d loud signals"
+            % (band, dismissed, int((fi >= 0).sum())))
+        assert disagree == 0, "band %d: %d peaks differ from flat" % (band, disagree)
