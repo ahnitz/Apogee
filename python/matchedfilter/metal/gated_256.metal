@@ -363,8 +363,7 @@ struct EntryPointParams_0
     int binShift_0;
     uint nbins_0;
     uint thrBits_0;
-    float evenThr_0;
-    float rawThr_0;
+    float thr_0;
 };
 
 
@@ -376,8 +375,7 @@ struct KernelContext_0
     packed_float2 device* entryPointParams_tmpl_0;
     int device* entryPointParams_peakIdx_0;
     packed_float2 device* entryPointParams_peakVal_0;
-    packed_float2 device* entryPointParams_coarseEven_0;
-    packed_float2 device* entryPointParams_coarseOdd_0;
+    packed_float2 device* entryPointParams_coarse_0;
     uint _tid_0;
     array<uint, int(512)> threadgroup* stg_0;
 };
@@ -1187,7 +1185,7 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
 
 
 #line 359
-[[kernel]] void gatedTierB(uint3 gid_0 [[threadgroup_position_in_grid]], uint3 lid_0 [[thread_position_in_threadgroup]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_data_1 [[buffer(1)]], packed_float2 device* entryPointParams_tmpl_1 [[buffer(2)]], int device* entryPointParams_peakIdx_1 [[buffer(3)]], packed_float2 device* entryPointParams_peakVal_1 [[buffer(4)]], packed_float2 device* entryPointParams_coarseEven_1 [[buffer(5)]], packed_float2 device* entryPointParams_coarseOdd_1 [[buffer(6)]])
+[[kernel]] void gatedTierB(uint3 gid_0 [[threadgroup_position_in_grid]], uint3 lid_0 [[thread_position_in_threadgroup]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_data_1 [[buffer(1)]], packed_float2 device* entryPointParams_tmpl_1 [[buffer(2)]], int device* entryPointParams_peakIdx_1 [[buffer(3)]], packed_float2 device* entryPointParams_peakVal_1 [[buffer(4)]], packed_float2 device* entryPointParams_coarse_1 [[buffer(5)]])
 {
 
 #line 359
@@ -1209,10 +1207,7 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
     (&kernelContext_4)->entryPointParams_peakVal_0 = entryPointParams_peakVal_1;
 
 #line 359
-    (&kernelContext_4)->entryPointParams_coarseEven_0 = entryPointParams_coarseEven_1;
-
-#line 359
-    (&kernelContext_4)->entryPointParams_coarseOdd_0 = entryPointParams_coarseOdd_1;
+    (&kernelContext_4)->entryPointParams_coarse_0 = entryPointParams_coarse_1;
 
 #line 359
     threadgroup array<uint, int(512)> stg_1;
@@ -1220,92 +1215,50 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
 #line 359
     (&kernelContext_4)->stg_0 = &stg_1;
 
-#line 369
+#line 368
     uint pair_1 = gid_0.x;
 
-#line 369
+#line 368
     uint tid_1 = lid_0.x;
-    float ev_0 = length(float2(*(entryPointParams_coarseEven_1+pair_1)) );
-    float od_0 = length(float2(*(entryPointParams_coarseOdd_1+pair_1)) );
 
-#line 371
-    float best_0;
-
-#line 376
-    if(od_0 >= (entryPointParams_1->rawThr_0))
+#line 375
+    if((length(float2(*(entryPointParams_coarse_1+pair_1)) )) < (entryPointParams_1->thr_0))
     {
 
-#line 376
-        best_0 = max(ev_0, od_0);
-
-#line 376
-    }
-    else
-    {
-
-#line 376
-        best_0 = ev_0;
-
-#line 376
-    }
-
-#line 376
-    bool _S36;
-    if(ev_0 >= ((&kernelContext_4)->entryPointParams_0->evenThr_0))
-    {
-
-#line 377
-        _S36 = best_0 >= (entryPointParams_1->rawThr_0);
-
-#line 377
-    }
-    else
-    {
-
-#line 377
-        _S36 = false;
-
-#line 377
-    }
-
-#line 377
-    if(!_S36)
-    {
-
-#line 377
+#line 375
         uint b_5 = tid_1;
         for(;;)
         {
 
-#line 378
+#line 376
             if(b_5 < ((&kernelContext_4)->entryPointParams_0->nbins_0))
             {
             }
             else
             {
 
-#line 378
+#line 376
                 break;
             }
 
-#line 379
+#line 377
             uint o_2 = pair_1 * (&kernelContext_4)->entryPointParams_0->nbins_0 + b_5;
             *((&kernelContext_4)->entryPointParams_peakIdx_0+o_2) = int(-1);
 
-#line 380
+#line 378
             *((&kernelContext_4)->entryPointParams_peakVal_0+o_2) = packed_float2(float2(0.0f, 0.0f)) ;
 
-#line 378
+#line 376
             b_5 = b_5 + 16U;
 
-#line 378
+#line 376
         }
 
-#line 383
+#line 381
         return;
     }
 
-#line 383
+#line 381
     filterPair_0(pair_1, tid_1, (&kernelContext_4)->entryPointParams_data_0, (&kernelContext_4)->entryPointParams_tmpl_0, (&kernelContext_4)->entryPointParams_peakIdx_0, (&kernelContext_4)->entryPointParams_peakVal_0, (&kernelContext_4)->entryPointParams_0->ntmpl_0, (&kernelContext_4)->entryPointParams_0->winStart_0, (&kernelContext_4)->entryPointParams_0->winEnd_0, (&kernelContext_4)->entryPointParams_0->binsize_0, (&kernelContext_4)->entryPointParams_0->binShift_0, (&kernelContext_4)->entryPointParams_0->nbins_0, (&kernelContext_4)->entryPointParams_0->thrBits_0, &kernelContext_4);
 
 

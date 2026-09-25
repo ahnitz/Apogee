@@ -358,21 +358,19 @@ void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
                 RWStructuredBuffer<int> peakIdx,
                 RWStructuredBuffer<float2> peakVal,
-                StructuredBuffer<float2> coarseEven,
-                StructuredBuffer<float2> coarseOdd,
+                StructuredBuffer<float2> coarse,
                 uniform uint ntmpl, uniform uint winStart, uniform uint winEnd,
                 uniform uint binsize, uniform int binShift, uniform uint nbins,
-                uniform uint thrBits, uniform float evenThr, uniform float rawThr)
+                uniform uint thrBits, uniform float thr)
 {
     uint pair = gid.x, tid = lid.x;
-    float ev = length(coarseEven[pair]);
-    float od = length(coarseOdd[pair]);
-    // The CPU dismisses on the even half alone before paying for the odd,
-    // takes the odd value only above rawThr, and escalates at rawThr rather
-    // than at the margin -- escalating the interpolation window instead of
-    // interpolating it, which can only be more conservative.
-    float best = (od >= rawThr) ? max(ev, od) : ev;
-    if (!(ev >= evenThr && best >= rawThr)) {
+    // ONE coarse value against ONE threshold. There used to be two buffers
+    // and two thresholds: an even half and a half-sample-shifted odd half,
+    // with a cheap gate deciding whether the odd transform was worth
+    // computing. The coarse grid is critically sampled now -- there is no
+    // odd half, so there is nothing for a second threshold to gate, and
+    // this is the entire decision the coarse pass exists to make.
+    if (length(coarse[pair]) < thr) {
         for (uint b = tid; b < nbins; b += WG) {
             uint o = pair * nbins + b;
             peakIdx[o] = -1;

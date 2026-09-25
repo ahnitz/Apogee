@@ -574,8 +574,8 @@ class Context:
         # is how the odd pass was itself implemented.
         dispatch(refine,
                  (nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins, bits(t2),
-                  bits(even_thr), bits(raw_thr)),
-                 ("data", "tmpl", "idx", "val", "cval", "cval"), n)
+                  bits(raw_thr)),
+                 ("data", "tmpl", "idx", "val", "cval"), n)
 
         self.o.call(enc, b"endEncoding", restype=None)
         self.o.call(cmd, b"commit", restype=None)

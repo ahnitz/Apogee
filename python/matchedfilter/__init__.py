@@ -797,18 +797,22 @@ def accuracy_table_for(device):
     """Path to the accuracy table describing the algorithm `device` runs.
 
     Accuracy rows say how often a configuration DISMISSES a signal it should
-    have kept, so they describe the algorithm, not the machine -- which is
-    why one table served every device for a long time. That was never quite
-    true: the GPU does not run the CPU's algorithm. Where the CPU
-    interpolates the coarse peak, the GPU escalates the whole interpolation
-    window, so it refines a superset of the CPU's pairs and dismisses less.
+    have kept, so they describe the algorithm, not the machine. There used
+    to be a separate GPU table because the two did not run the same
+    algorithm: the CPU interpolated the coarse peak where the GPU escalated
+    the whole window. The CPU no longer interpolates -- it cost more in taps
+    than the correlations it saved -- so both now run the same three steps:
+    coarse pass, one threshold, refine.
 
-    Sharing the table is SAFE only in that direction. The CPU's measured
-    dismissal rate is an upper bound on a strictly more conservative path,
-    so the GPU inherits a promise it over-keeps -- measured, the CPU omits
-    about 1.5% against a 1% budget and the GPU omits nothing. It is also
-    leaving speed on the table, because it is calibrated for an algorithm
-    more aggressive than the one it runs.
+    Measured after that convergence, same reference and band with only the
+    device changing, the GPU still dismisses slightly LESS: 0.96, 0.86 and
+    0.90 of the CPU's rate at band 512 over margins 1.10 to 1.22, on 114 to
+    1156 events a cell. Small, systematic, and in the safe direction -- so
+    the CPU's rate is an upper bound on the GPU's and one table serves both.
+
+    The per-backend lookup stays even though nothing uses it now, because
+    the day they diverge the other way there has to be somewhere to put the
+    answer, and discovering that on a wrong result is expensive.
 
     Resolved rather than assumed, so the day the two diverge the other way
     there is somewhere to put the answer. Most specific first: the backend,
@@ -860,7 +864,12 @@ def _load_tuning(path=None):
         return _TUNING
     here = os.path.dirname(__file__)
     paths = [os.environ.get("MF_ACCURACY") or os.path.join(here, "accuracy.txt"),
-             os.environ.get("MF_COST") or os.path.join(here, "cost.txt")]
+             os.environ.get("MF_COST") or os.path.join(here, "cost.txt"),
+             # The measured coarse thresholds. Separate file because it is a
+             # different KIND of row -- a threshold rather than a rate or a
+             # cost -- and because it is the one that replaces a model.
+             os.environ.get("MF_THRESHOLD")
+             or os.path.join(here, "threshold.txt")]
     if path is not None:
         paths = [path]
     return _load_tuning_paths(paths, cache=path is None)
@@ -877,7 +886,7 @@ def _load_tuning_paths(paths, cache=True):
         if cache:
             _TUNING = cached
         return cached
-    fdr, cost, acc2, acc2r, meta = [], {}, {}, {}, {}
+    fdr, cost, acc2, acc2r, thr, meta = [], {}, {}, {}, {}, {}
     for one in paths:
       with open(one) as fh:
         for line in fh:
@@ -913,6 +922,16 @@ def _load_tuning_paths(paths, cache=True):
                 acc2.setdefault((int(f[1]), int(f[2]), round(float(f[3]), 2),
                                  round(float(f[6]), 3)), []).append(
                                      (float(f[4]), float(f[5]), float(f[7])))
+            elif f[0] == "THR":
+                # THR n snr f ratio fd threshold
+                #
+                # The measured coarse threshold. Not a margin on a model --
+                # the number itself, bisected against measured dismissal
+                # until it meets fd. Keyed on (f, ratio) because those are
+                # what the statistic depends on, both dimensionless.
+                thr.setdefault((int(f[1]), round(float(f[2]), 2),
+                                float(f[5])), []).append(
+                                    (float(f[3]), float(f[4]), float(f[6])))
             elif f[0] == "ACC2R":
                 # ACC2R n K snr f ratio margin dismissal
                 #
@@ -979,6 +998,7 @@ def _load_tuning_paths(paths, cache=True):
          "acc2": acc2,
          "acc2_snrs": {k: sorted(v) for k, v in acc2_snrs.items()},
          "acc2r": acc2r,
+         "thr": thr,
          "acc2r_snrs": {k: sorted(v) for k, v in acc2r_snrs.items()},
          "by_ns": by_ns, "snrs_at": snrs_at,
          "cost_cfg": {k: sorted(v) for k, v in cost_cfg.items()}}
@@ -1210,6 +1230,59 @@ def _idw(rows, f, be, k=4, power=2.0, log=False, floor=1e-12):
         return 10.0 ** (sum(w * v for w, v in ws) / sum(w for w, _ in ws))
     ws = [(d ** (-0.5 * power), v) for d, v in near]
     return sum(w * v for w, v in ws) / sum(w for w, _ in ws)
+
+
+def choose_threshold(power, n, snr, fd, band, tuning=None):
+    """The measured coarse threshold for this reference at this band.
+
+    Interpolates the THR table at the reference's own (f, ratio). No model,
+    no margin: the table stores the threshold that met `fd` when it was
+    measured, so selection reads it rather than deriving one and correcting
+    it. Returns None where nothing was measured, which makes the caller
+    refuse rather than guess.
+    """
+    t = _load_tuning() if tuning is None else tuning
+    rows_by_fd = t.get("thr", {})
+    if not rows_by_fd:
+        return None
+    f, be = _band_features(power, band)
+    if be <= 0:
+        return None
+    ratio = band / be
+    # Ask for a tighter budget than requested, by the same safety factor the
+    # margin path used. The table's rows are measurements with their own
+    # Poisson error, and interpolating between them in (f, ratio) adds more,
+    # so spending the budget exactly leaves nothing for either. A tighter
+    # budget gives a LOWER threshold, so this errs toward escalating.
+    want = fd / _FDR_SAFETY
+    cands = sorted({k[2] for k in rows_by_fd if k[0] == n})
+    if not cands:
+        return None
+    use_fd = max([c for c in cands if c <= want * 1.001] or [min(cands)])
+    snrs = sorted({k[1] for k in rows_by_fd if k[0] == n and k[2] == use_fd})
+    if not snrs:
+        return None
+    lo = max([x for x in snrs if x <= snr] or [snrs[0]])
+    rows = rows_by_fd.get((n, lo, use_fd)) or []
+    if not rows:
+        return None
+    # A BOUND, not an estimate. The threshold rises with both f and ratio --
+    # more in-band power and more samples across the peak both mean the
+    # coarse statistic recovers more, so more can be demanded of it. A row
+    # measured at f' <= f and ratio' <= ratio is therefore a threshold that
+    # was safe on a HARDER reference than this one, and remains safe here.
+    # The largest such row is the tightest bound available.
+    #
+    # Interpolating between rows instead gave 4 omissions in 120 against a
+    # 3% budget: an interpolated estimate carries the Poisson error of the
+    # rows either side of it and spends the budget that error needs.
+    safe = [rt for rf, rr, rt in rows if rf <= f * 1.001 and rr <= ratio * 1.001]
+    if safe:
+        return float(max(safe))
+    # Nothing measured is harder than this reference, so there is no bound
+    # to give. Refusing sends the caller to pin a configuration rather than
+    # handing back a number no measurement supports.
+    return None
 
 
 def _choose_v2(power, n, snr, fd, t):
@@ -1728,6 +1801,24 @@ class HierarchicalFilter(MatchedFilter):
         b, k, margin = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
                              self.snr, self.fd, int(b), 1, int(k))
+        # The MEASURED threshold for this reference at this band, if the
+        # table covers it. It replaces the modelled one outright -- no
+        # margin, no recovery factor, no Rice model -- so the number the
+        # coarse pass is compared against is the number that was measured
+        # to meet the budget.
+        if self._cal_thr is None and self._pending_ref is not None:
+            try:
+                tv = choose_threshold(self._pending_ref, self.n, self.snr,
+                                      self.fd, int(b))
+            except Exception:
+                tv = None
+            if tv is not None:
+                self._mf.set_threshold(float(tv))
+                # The margin no longer means anything -- it scaled a modelled
+                # threshold and there is no model now -- but it is still
+                # recorded and formatted downstream, so leave it at 1.0
+                # rather than None. set_threshold overrides it regardless.
+                margin = 1.0
         if self._cal_thr is not None:
             # A caller-supplied threshold overrides whatever the table chose,
             # and is applied before any margin below so it wins.
@@ -1768,16 +1859,20 @@ class HierarchicalFilter(MatchedFilter):
         self._gcal = None
 
     def _gpu_calibration(self, threshold):
-        """(band, f, margin, raw, even), from the CPU plan that owns the tables.
+        """(band, f, threshold, threshold, threshold) for this reference.
 
-        The calibration is derived by the C, not re-derived here. hmf_threshold
-        is a compiled table and the recovery factors are measured; a second
-        implementation of either would be a second thing to keep in step, and
-        the failure would be silent -- a mis-scaled coarse output still looks
-        like a plausible correlation.
+        The GPU runs the CPU's algorithm now -- coarse pass, one threshold,
+        refine -- so it reads the same measured threshold from the same
+        table. It used to build a 1x1 CPU plan purely to read three numbers
+        out of it, because the threshold was a Rice model plus measured
+        recovery factors and a second implementation of those would have
+        been a second thing to keep in step. There is no model left to keep
+        in step: choose_threshold IS the implementation.
 
-        One template is enough: with a reference set the numbers do not depend
-        on which.
+        The CPU plan is still built when the table cannot bound this
+        reference, because that is the path that still derives a threshold.
+        Three slots are returned where one number goes, so every caller and
+        both backends keep their shape.
         """
         key = (threshold, self.snr, self.fd, self._fs_snr, self._pinned,
                self._margin)
@@ -1807,6 +1902,23 @@ class HierarchicalFilter(MatchedFilter):
                 pin = dict(band=cfg[0], taps=cfg[1])
                 if margin is None and len(cfg) > 2:
                     margin = cfg[2]
+        # The measured threshold, read directly. No CPU plan, no model.
+        if pin.get("band") and self._pending_ref is not None:
+            tv = None
+            try:
+                tv = choose_threshold(self._pending_ref, self.n, self.snr,
+                                      self.fd, int(pin["band"]))
+            except Exception:
+                tv = None
+            if tv is not None:
+                band = int(pin["band"])
+                ref = np.asarray(self._pending_ref, dtype=np.float64)
+                f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
+                self._gcfg = (band, int(pin.get("taps") or 8))
+                out = (band, f, float(tv), float(tv), float(tv))
+                self._gcal = (key, out)
+                return out
+
         cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd, **pin)
         # Order matters: set_first_stage builds the plan, and building it
         # before the reference arrives means the band is chosen with nothing

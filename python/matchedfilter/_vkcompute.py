@@ -78,8 +78,8 @@ _BIND_POINT_COMPUTE = 1
 _ONE_TIME_SUBMIT = 0x1
 _STAGE_COMPUTE_BIT = 0x800
 _ACCESS_SHADER_READ, _ACCESS_SHADER_WRITE = 0x20, 0x40
-_NBIND_GATED = 6
-_PUSH_BYTES_GATED = 36
+_NBIND_GATED = 5   # data, tmpl, idx, val, coarse
+_PUSH_BYTES_GATED = 32  # 8 words: one threshold, not two
 _WHOLE_SIZE = 0xFFFFFFFFFFFFFFFF
 
 _u32, _u64, _vp = ctypes.c_uint32, ctypes.c_uint64, ctypes.c_void_p
@@ -598,7 +598,7 @@ class Context:
         # agree, which is how the odd pass itself was implemented.
         ds_ref = self._descriptor_set(gset_layout,
                                       [b["data"], b["tmpl"], b["idx"], b["val"],
-                                       b["cval"], b["cval"]])
+                                       b["cval"]])
 
         cb = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
         cmd = _vp()
@@ -661,10 +661,9 @@ class Context:
         sets = (_vp * 1)(ds_ref)
         vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, glayout, 0, 1,
                                    sets, 0, None)
-        pc = (ctypes.c_uint32 * 9)(
+        pc = (ctypes.c_uint32 * 8)(
             nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins,
             int(np.float32(t2).view(np.uint32)),
-            int(np.float32(even_thr).view(np.uint32)),
             int(np.float32(raw_thr).view(np.uint32)))
         vk.vkCmdPushConstants(cmd, glayout, _STAGE_COMPUTE, 0,
                               _PUSH_BYTES_GATED, ctypes.byref(pc))

@@ -37,8 +37,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_64.spv",
-        "bytes": 16588,
-        "descriptors": 6
+        "bytes": 16060,
+        "descriptors": 5
       },
       "file": "tierb_64.spv",
       "bytes": 15284,
@@ -92,8 +92,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_128.spv",
-        "bytes": 17176,
-        "descriptors": 6
+        "bytes": 16648,
+        "descriptors": 5
       },
       "file": "tierb_128.spv",
       "bytes": 15872,
@@ -147,8 +147,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_256.spv",
-        "bytes": 19112,
-        "descriptors": 6
+        "bytes": 18584,
+        "descriptors": 5
       },
       "file": "tierb_256.spv",
       "bytes": 17808,
@@ -202,8 +202,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_512.spv",
-        "bytes": 22932,
-        "descriptors": 6
+        "bytes": 22404,
+        "descriptors": 5
       },
       "file": "tierb_512.spv",
       "bytes": 21628,
@@ -257,8 +257,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_1024.spv",
-        "bytes": 23544,
-        "descriptors": 6
+        "bytes": 23016,
+        "descriptors": 5
       },
       "file": "tierb_1024.spv",
       "bytes": 22240,
@@ -312,8 +312,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_2048.spv",
-        "bytes": 24132,
-        "descriptors": 6
+        "bytes": 23604,
+        "descriptors": 5
       },
       "file": "tierb_2048.spv",
       "bytes": 22828,
@@ -367,8 +367,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_4096.spv",
-        "bytes": 26068,
-        "descriptors": 6
+        "bytes": 25540,
+        "descriptors": 5
       },
       "file": "tierb_4096.spv",
       "bytes": 24764,
@@ -422,8 +422,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_8192.spv",
-        "bytes": 29888,
-        "descriptors": 6,
+        "bytes": 29360,
+        "descriptors": 5,
         "portable": {
           "file": "gated_8192_lds32.spv",
           "lds_bytes": 32768
@@ -495,8 +495,8 @@
       "push_constant": true,
       "gated": {
         "file": "gated_16384.spv",
-        "bytes": 30500,
-        "descriptors": 6,
+        "bytes": 29972,
+        "descriptors": 5,
         "portable": {
           "file": "gated_16384_lds32.spv",
           "lds_bytes": 32768
