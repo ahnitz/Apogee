@@ -543,6 +543,12 @@ void refineListed(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                   uniform uint thrBits)
 {
     uint pair = survivors[gid.x];
+    // MUST be set on every path that reaches filterPair. Leaving it unset
+    // here read as 0 under SPIR-V and as garbage under MSL, which offset
+    // the whole staging window: the transform then read values never
+    // written, every coarse peak came back -1, and macOS CI dismissed a
+    // 12-sigma injection while Linux passed.
+    _stgBase = 0;
     filterPair(pair, lid.x, data, tmpl, peakIdx, peakVal, ntmpl,
                winStart, winEnd, binsize, binShift, nbins, thrBits);
 }

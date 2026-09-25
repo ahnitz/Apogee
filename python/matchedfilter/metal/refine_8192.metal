@@ -254,8 +254,8 @@ struct KernelContext_0
     int device* entryPointParams_peakIdx_0;
     packed_float2 device* entryPointParams_peakVal_0;
     uint device* entryPointParams_survivors_0;
-    uint _tid_0;
     uint _stgBase_0;
+    uint _tid_0;
     array<uint, int(16384)> threadgroup* stg_0;
 };
 
@@ -1407,10 +1407,16 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
 #line 540
     (&kernelContext_4)->stg_0 = &stg_1;
 
-#line 540
-    filterPair_0(entryPointParams_survivors_1[gid_0.x], lid_0.x, entryPointParams_data_1, entryPointParams_tmpl_1, entryPointParams_peakIdx_1, entryPointParams_peakVal_1, entryPointParams_1->ntmpl_0, entryPointParams_1->winStart_0, entryPointParams_1->winEnd_0, entryPointParams_1->binsize_0, entryPointParams_1->binShift_0, entryPointParams_1->nbins_0, entryPointParams_1->thrBits_0, &kernelContext_4);
+#line 549
+    uint pair_1 = entryPointParams_survivors_1[gid_0.x];
 
-#line 552
+#line 555
+    (&kernelContext_4)->_stgBase_0 = 0U;
+
+#line 555
+    filterPair_0(pair_1, lid_0.x, entryPointParams_data_1, entryPointParams_tmpl_1, entryPointParams_peakIdx_1, entryPointParams_peakVal_1, entryPointParams_1->ntmpl_0, entryPointParams_1->winStart_0, entryPointParams_1->winEnd_0, entryPointParams_1->binsize_0, entryPointParams_1->binShift_0, entryPointParams_1->nbins_0, entryPointParams_1->thrBits_0, &kernelContext_4);
+
+
     return;
 }
 
