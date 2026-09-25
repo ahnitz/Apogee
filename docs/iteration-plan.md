@@ -1043,3 +1043,45 @@ own. The next honest step is a full ISA disassembly (RADV_DEBUG=asm) to see
 the actual instruction mix and stall structure, rather than another
 source-level transform -- source-level reasoning has now mispredicted five
 consecutive changes.
+
+### The ISA says the fp16 never packed (RADV_DEBUG=asm, band 512)
+
+8456 instructions in the coarse kernel:
+
+    packed fp16   928   v_pk_add_f16 576, v_pk_mul_f16 352      full rate
+    scalar fp16   789   v_mov_b16 277, v_sub_f16 184,
+                        v_add_f16 184, v_mul_f16 144            HALF RATE
+    fp32          598   v_add_f32 216, v_mul_f32 196,
+                        v_sub_f32 186
+    address/int   933   lshl 282, add_u32 206, and_or 159,
+                        add_lshl 145, lshr 141
+    stalls/ctrl  1174   s_waitcnt 468, s_delay_alu 451,
+                        s_cbranch_execz 255
+
+**Nearly half the fp16 arithmetic is SCALAR, at half throughput.** The
+cause is the complex multiply. cmul(a,b) = (a.x*b.x - a.y*b.y,
+a.x*b.y + a.y*b.x) is a CROSS pattern: each output half needs a different
+combination of input halves, so it cannot lower to elementwise v_pk_*. The
+compiler emits scalar v_mul_f16 / v_add_f16 / v_sub_f16 instead.
+
+That is why "fp16 math" measured 4%: half of it never became fp16 math.
+The C = half2 typedef made the STORAGE half-width and left the ARITHMETIC
+unpacked.
+
+The 598 fp32 ops are the magnitude (float(r[i].x) promotes) and the cos/sin
+twiddles, both still single precision.
+
+s_delay_alu at 451 is the compiler inserting explicit dependency stalls --
+direct evidence of the ILP starvation that made [loop] lose 1.78 -> 2.05.
+
+FIX: split/SoA complex, which is what the CPU path already does. Hold TWO
+complex as (re0,re1) and (im0,im1) in two half2 registers rather than one
+complex as (re,im). A complex multiply is then pure elementwise packed:
+
+    re = ar*br - ai*bi      v_pk_mul + v_pk_fma
+    im = ar*bi + ai*br      v_pk_mul + v_pk_fma
+
+Four v_pk_* for TWO complex, against a cross pattern that packs none. This
+is a layout change to r[], dreg[] and the LDS stage -- not a new algorithm
+-- and it is the first change in this effort with direct ISA evidence
+behind it rather than a model.
