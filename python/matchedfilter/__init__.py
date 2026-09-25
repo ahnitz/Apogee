@@ -1843,7 +1843,10 @@ class HierarchicalFilter(MatchedFilter):
         Three slots are returned where one number goes, so every caller and
         both backends keep their shape.
         """
-        key = (threshold, self.snr, self.fd, self._fs_snr, self._pinned)
+        # _cal_thr belongs in the key: set_coarse_threshold changes the
+        # answer, so a cached result from before it must not be reused.
+        key = (threshold, self.snr, self.fd, self._fs_snr, self._pinned,
+               self._cal_thr)
         if self._gcal is not None and self._gcal[0] == key:
             return self._gcal[1]
         # An explicitly pinned configuration must be honoured. Building the
@@ -1870,11 +1873,20 @@ class HierarchicalFilter(MatchedFilter):
         # The measured threshold, read directly. No CPU plan, no model.
         if pin.get("band") and self._pending_ref is not None:
             tv = None
-            try:
-                tv = choose_threshold(self._pending_ref, self.n, self.snr,
-                                      self.fd, int(pin["band"]))
-            except Exception:
-                tv = None
+            if self._cal_thr is not None:
+                # A caller-set threshold is an instruction, not a hint, and
+                # it has to reach BOTH backends. It did not: this path went
+                # straight to the table, so set_coarse_threshold was
+                # silently ignored on the GPU and the plan ran at whatever
+                # the table said. Benchmarks that thought they had closed
+                # the gate were still refining.
+                tv = float(self._cal_thr)
+            else:
+                try:
+                    tv = choose_threshold(self._pending_ref, self.n, self.snr,
+                                          self.fd, int(pin["band"]))
+                except Exception:
+                    tv = None
             if tv is not None:
                 band = int(pin["band"])
                 ref = np.asarray(self._pending_ref, dtype=np.float64)
@@ -1896,6 +1908,8 @@ class HierarchicalFilter(MatchedFilter):
         plan = cal._ensure()
         band = cal.config[0]
         thr = plan.coarse_threshold(float(threshold))
+        if self._cal_thr is not None:
+            thr = float(self._cal_thr)   # same override on the fallback path
         ref = np.asarray(self._pending_ref, dtype=np.float64)
         f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
         self._gcfg = cal.config          # the real (band, taps)

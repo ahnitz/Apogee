@@ -1238,3 +1238,33 @@ interpolation was taken out at the Python and hmf.c level and left behind
 in matchfilt.c. Worth removing, but it touches the shared flat-filter path
 rather than the coarse stage alone, so it needs its own change with the
 full suite behind it -- not folded into a coarse-stage optimisation.
+
+### Stalls are not instruction count: two neutral results that say so
+
+After the SoA switchover the largest non-useful block was s_delay_alu 482 +
+s_waitcnt 381 = 863, 11.8%. Two attempts to relieve it:
+
+  * **Deeper tile (TILE_T 8).** VGPR 192 -> 216 and band 512 got WORSE,
+    1.49 -> 1.82 ms. More tile depth costs registers without adding
+    instruction-level parallelism, because SoA gives DATA parallelism --
+    two transforms per instruction -- not a second independent chain.
+  * **Dual-bank exchange staging.** Staging re and im together so one
+    barrier pair carries both. Instructions 7334 -> 7246 and ds_load_b32
+    213 -> 85, a real reduction -- and time UNCHANGED, 1.491 -> 1.498 ms.
+    Reverted: it doubles LDS, and the resource accounting says LDS is what
+    binds at band 1024. Spending a binding resource for no measured gain is
+    the wrong trade.
+
+Both say the same thing: at band 512 this kernel is no longer
+instruction-bound. Removing instructions stopped paying somewhere between
+the bitcast (which paid) and here.
+
+What DID pay, in order: one-bin specialisation, SoA switchover, bitcast
+staging, twiddle recurrence. All four DELETE work rather than rearranging
+it -- consistent with every earlier result in this effort.
+
+The remaining stalls need a different lever than instruction count: either
+independent work in flight (a second SoA group interleaved at the
+instruction level, which needs the two groups' exchanges to share barriers
+without serialising) or prefetch across the exchange. Neither is a
+source-level transform of the kind that has been tried.
