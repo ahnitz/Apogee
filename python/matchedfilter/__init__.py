@@ -1276,6 +1276,28 @@ def choose_threshold(power, n, snr, fd, band, tuning=None):
     # the threshold does, 4/120 at both 4.76 interpolated and 4.00 bounded,
     # so it is not the coarse gate at all. The bound fixed nothing and cost
     # throughput, so it is gone.
+    # REFUSE below the measured envelope. Inverse-distance weighting
+    # EXTRAPOLATES happily, and below the hull it extrapolates the threshold
+    # UPWARD -- the unsafe direction, because a gate set too high dismisses
+    # signal and nothing downstream can tell.
+    #
+    # Found at n=4096 band=128: f = 0.697 against a measured floor of 0.800
+    # and ratio 1.24 against 1.50, both outside. It returned 4.1170, ABOVE
+    # band 256's properly interpolated 4.0717 -- which is backwards, since
+    # band 128 captures less of the signal (f 0.697 vs 0.883) and so
+    # recovers less SNR in the coarse statistic. It looked fast (refine cost
+    # 0.007 ms against 0.150) because it was gating too hard.
+    #
+    # Above the hull is the safe direction and is clamped instead: the true
+    # threshold would be higher, so using the measured maximum only
+    # escalates more than necessary.
+    fs = [rf for rf, _, _ in rows]
+    rs = [rr for _, rr, _ in rows]
+    if f < min(fs) or ratio < min(rs):
+        return None                      # caller falls back; never guess a gate
+    f = min(f, max(fs))
+    ratio = min(ratio, max(rs))
+
     num = den = 0.0
     for rf, rr, rt in rows:
         d = (np.log(max(rf, 1e-9) / max(f, 1e-9)) ** 2
@@ -1895,6 +1917,27 @@ class HierarchicalFilter(MatchedFilter):
                 out = (band, f, float(tv))
                 self._gcal = (key, out)
                 return out
+
+        if (self._pinned is not None and pin.get("band")
+                and self._pending_ref is not None):
+            # Only for a band the CALLER pinned. An autotuned band whose
+            # threshold is refused just falls through to the modelled path
+            # -- selection proposing something uncalibrated is a table gap,
+            # not a user error, and raising there would break workloads
+            # that never asked for that band.
+            #
+            # The lookup refused: this (f, ratio) is below the measured
+            # rows and extrapolating a GATE is unsafe. Say so here rather
+            # than falling through to build a CPU plan, which raises
+            # "no hierarchical plan for n=... band=..." and points at the
+            # wrong thing entirely -- this is a GPU filter and the CPU plan
+            # is only being built to read a threshold off it.
+            raise ValueError(
+                "no calibrated coarse threshold for n=%d band=%d at "
+                "snr=%g fd=%g: the reference's (f, ratio) falls below the "
+                "measured rows, and a gate must not be extrapolated. "
+                "Use a larger band, or extend threshold.txt to cover it."
+                % (self.n, pin["band"], self.snr, self.fd))
 
         cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd, **pin)
         # Order matters: set_first_stage builds the plan, and building it

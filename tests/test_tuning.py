@@ -183,3 +183,40 @@ def test_autotuning_answers_above_the_table_and_refuses_below():
     p = _inspiral_power(4096)
     assert mf.choose_config(p, 4096, 9.0, 1e-3) is not None
     assert mf.choose_config(p, 4096, 4.0, 1e-3) is None
+
+
+def test_threshold_lookup_refuses_below_the_measured_envelope():
+    """Never EXTRAPOLATE a gate downward past the measured rows.
+
+    Inverse-distance weighting extrapolates happily, and below the table's
+    hull it pushes the threshold UP -- the unsafe direction, since a gate
+    set too high dismisses signal and nothing downstream reports it.
+
+    Measured at n=4096 band=128: f = 0.697 against a floor of 0.800 and
+    ratio 1.24 against 1.50. It returned 4.1170, ABOVE band 256's properly
+    interpolated 4.0717, which is backwards -- band 128 captures less of the
+    signal (f 0.697 against 0.883) so its coarse statistic recovers less
+    SNR and its threshold must be LOWER. It merely looked efficient: refine
+    cost 0.007 ms against 0.150, because it was over-gating.
+
+    Above the hull is safe and is clamped rather than refused.
+    """
+    n = 4096
+    ref = inspiral_power(n)
+
+    # Every band the lookup answers for must sit inside the hull, and the
+    # answer must rise with f: more signal energy in the band means the
+    # coarse statistic recovers more, so it supports a higher bar.
+    seen = []
+    for band in (128, 256, 512, 1024):
+        t = mf.choose_threshold(ref, n, 5.5, 1e-2, band)
+        if t is None:
+            continue                      # outside coverage: correctly refused
+        f, be = mf._band_features(ref.astype(np.float32), band)
+        seen.append((f, band, t))
+    assert len(seen) >= 2, "the table answered for fewer than two bands"
+    seen.sort()
+    for (f0, b0, t0), (f1, b1, t1) in zip(seen, seen[1:]):
+        assert t1 >= t0 - 1e-6, (
+            "threshold falls as f rises: band %d f=%.3f thr=%.4f "
+            "then band %d f=%.3f thr=%.4f" % (b0, f0, t0, b1, f1, t1))

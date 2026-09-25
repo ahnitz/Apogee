@@ -361,12 +361,16 @@ def test_hierarchical_matches_flat_on_the_same_device(device):
         try:
             h = mf.HierarchicalFilter(n, nd, nt, snr=5.0, fd=1e-2,
                                       band=band, taps=8, device=device)
+            h.set_reference(power)
+            h.set_templates(H)
+            h.set_data(D)
+            b = h.run(binsize=n, threshold=5.0)
         except ValueError:
-            continue                          # no plan for this band here
-        h.set_reference(power)
-        h.set_templates(H)
-        h.set_data(D)
-        b = h.run(binsize=n, threshold=5.0)
+            # Either no plan for this band, or no calibrated threshold for
+            # it -- both refuse at run time on the GPU, because the
+            # threshold is read when the reference is known. A band the
+            # library declines to gate is not a band to test.
+            continue
         fi, hi = fa["index"], b["index"]
         dismissed = int(((fi >= 0) & (hi < 0)).sum())
         disagree = int((((fi >= 0) & (hi >= 0)) & (fi != hi)).sum())
