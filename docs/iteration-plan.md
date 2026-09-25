@@ -925,3 +925,29 @@ HOW TO SPEND IT
   * **all bands**: the 50% free VGPRs are what dreg tiling needs, and
     tiling halves L1 demand by sharing the data row across templates,
     relieving the 4x oversubscription.
+
+#### Correction: the L1/VGPR table above assumed fp32 banks
+
+The coarse banks are stored PACKED fp16 (4 B per complex, `_pack_half2`),
+so the resident working set is half what that table says:
+
+    band  wg/CU | L1 fp32  L1 fp16  vs 32 KB | VGPR/wave fp32  fp16
+     128    16  |   32 KB    16 KB    0.5x   |        96        80
+     256    16  |   64 KB    32 KB    1.0x   |        96        80
+     512    16  |  128 KB    64 KB    2.0x   |        96        80
+    1024     8  |  128 KB    64 KB    2.0x   |        96        80
+
+Packing the banks HAS bought something real, it just never showed in the
+timing: L1 oversubscription halves, 4.0x -> 2.0x at the large bands, and at
+band 128 the whole resident working set now FITS in L1 -- 16 KB of 32.
+
+That is very likely part of why band 128 reaches 87% issue efficiency while
+the others sit near 60%: it is the only band whose working set fits.
+Measuring fp16 storage purely as bandwidth, and calling it a null result,
+missed the cache effect entirely.
+
+half2 registers also free 16 VGPR/wave (96 -> 80). Occupancy is capped by
+LDS and the workgroup limit rather than VGPRs, so that buys no waves
+directly -- but it is exactly the room dreg[16] needs for template tiling,
+which is the change that ran out of registers in fp32 and regressed band
+1024 to 9.7 ms.
