@@ -351,7 +351,15 @@ void filterPair(uint pair, uint tid,
     // than -1 also means a bin whose every |v|^2 underflowed reports index
     // -1 instead of naming the first sample, matching the CPU.
     GroupMemoryBarrierWithGroupSync();          // transform is done with stg
+#if COARSE16
+    // ONE BIN by construction on the coarse gate: cidx/cval are sized
+    // `pairs`, so the coarse stage reports one value per pair and never a
+    // per-bin table. Binning is the FINE stage's job and is unaffected.
+    // The window is KEPT -- winStart/winEnd still bound the search.
+    if (tid == 0) stg[_stgBase] = thrBits;
+#else
     for (uint b = tid; b < nbins; b += WG) stg[_stgBase+b] = thrBits;
+#endif
     GroupMemoryBarrierWithGroupSync();
 
     uint myMag[16];
@@ -368,10 +376,16 @@ void filterPair(uint pair, uint tid,
         // Shift when the binsize is a power of two, divide when it is not --
         // the same split the CPU makes, and the reason no restriction on
         // binsize is needed. A real division here is ~20 cycles.
+#if COARSE16
+        myBin[i] = 0u;            // one bin; `off` is unused here
+#else
         myBin[i] = live ? (binShift >= 0 ? (off >> uint(binShift)) : (off / binsize))
                         : 0u;
+#endif
+#if !COARSE16
         if (nbins > 1 && myMag[i] > thrBits)
             InterlockedMax(stg[_stgBase+myBin[i]], myMag[i]);
+#endif
     }
 
     // One bin over the whole window is the common case at the small sizes --
@@ -379,7 +393,11 @@ void filterPair(uint pair, uint tid,
     // bin, so they combine in REGISTERS first and the wave reduces once.
     // Reducing per register spends 16 wave operations where 1 will do, and
     // that single change was worth 2.48 -> 2.28 ms at n=4096.
+#if COARSE16
+    {                              // one bin: always this path
+#else
     if (nbins == 1) {
+#endif
         uint bestBits = thrBits;
         [unroll] for (uint i = 0; i < R; ++i) bestBits = max(bestBits, myMag[i]);
 #if PPG == 1
@@ -405,17 +423,28 @@ void filterPair(uint pair, uint tid,
     // one thread writes, at equal magnitude and different indices; any of
     // them is a correct argmax and the caller was promised no tie-break.
     [unroll] for (uint i = 0; i < R; ++i) {
+#if COARSE16
+        if (myMag[i] > thrBits && stg[_stgBase] == myMag[i]) {
+            uint o = pair;
+#else
         if (myMag[i] > thrBits && stg[_stgBase+myBin[i]] == myMag[i]) {
             uint o = pair * nbins + myBin[i];
+#endif
             peakIdx[o] = int(slotToIndex(tid * R + i));
             peakVal[o] = float2(float(r[i].x), float(r[i].y));
         }
     }
     // Bins nothing cleared: index -1 and a zero value, matching the CPU. No
     // value is offered for a sample that was never chosen.
+#if COARSE16
+    if (tid == 0 && stg[_stgBase] == thrBits) {
+        {
+            uint o = pair;
+#else
     for (uint b = tid; b < nbins; b += WG) {
         if (stg[_stgBase+b] == thrBits) {
             uint o = pair * nbins + b;
+#endif
             peakIdx[o] = -1;
             peakVal[o] = float2(0.0f, 0.0f);
         }

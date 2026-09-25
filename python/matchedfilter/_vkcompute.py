@@ -51,7 +51,7 @@ def _use_c16(band):
     and ~7% at 512, which is wide enough that one measurement either way
     would have supported the wrong answer.
     """
-    return band < 256
+    return True   # one-bin specialised coarse kernel; applies at every band
 
 
 def _pack_half2(a):

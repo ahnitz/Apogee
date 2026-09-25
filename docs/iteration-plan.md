@@ -816,3 +816,34 @@ Three independent reductions, not one:
 
 So on the coarse path the term goes to zero, and elsewhere it drops by ~7x
 without changing what is computed.
+
+### One-bin coarse specialisation: the first gain at the LARGE bands
+
+The coarse gate reports one value per pair -- cidx/cval are sized `pairs`,
+with no nbins factor -- so nbins is 1 there by construction. Binning is the
+FINE stage's job and is untouched. The window is KEPT: winStart/winEnd
+still bound the search, which is why this is a specialisation and not a
+loss of capability.
+
+Under COARSE16 that deletes, per pair: the per-bin seed loop, the bin
+index arithmetic (shift-or-divide per register), the nbins>1 atomic branch,
+the bin term in every output index, and the per-bin sweep that writes -1.
+The compiled kernel is smaller, 21408 bytes against 21656.
+
+    band       old      now      speedup
+     128     1.911    0.756 ms    2.53x
+     256     1.095    1.125       neutral
+     512     2.239    1.973       1.13x
+    1024     4.348    3.827       1.14x
+
+Bands 512 and 1024 improve for the first time. Every earlier attempt --
+fp16 loads, fp16 math, half2 LDS, permuted banks, wide loads, PPG -- was
+neutral or worse there. What is different is that this one DELETES work
+rather than moving it: the earlier changes all kept the same instructions
+and tried to make them cheaper.
+
+It also revises the accounting. slotToIndex in the writeback was ALREADY
+lazy -- inside `if (myMag[i] > thrBits && ...)` -- so the real per-pair cost
+was ~144 VALU, not the 288 recorded. The remaining eager consumer is the
+window test in the magnitude loop, which needs the index and is deliberately
+kept.
