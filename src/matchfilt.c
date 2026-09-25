@@ -45,13 +45,7 @@ struct ap_mf_plan {
   float *pr,*pi;       /* scratch for one product, split */
   float *scratch;      /* interleaved staging for ingest */
   /* Interpolated coarse maximum, when a caller asks for it.  See interp_max. */
-  const float *ihlo, *ihhi;   /* complex taps for the two half-sample offsets */
-  int iK, incand;
-  float ifrac;                /* candidate cut, as a fraction of the grid max */
-  float *iout;                /* [nd*nt] one interpolated maximum per pair */
-  const float *iser;          /* the back end's series buffer */
   size_t istride;
-  int ipause;                 /* skip it for calls that do not want it */
   /* run_series staging, allocated on first use so a plan that never
      filters a series does not carry 4n floats it will not touch.
      ONE buffer pair serves a whole group: ap_mf_set_data split_stores
@@ -168,36 +162,7 @@ int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
  * worst, so a handful suffices; an earlier attempt stopped at 16 and wrongly
  * concluded the route was closed.
  */
-void ap_mf_interp_pause(ap_mf_plan *p, int on) { if (p) p->ipause = on; }
 
-
-int ap_mf_set_interp(ap_mf_plan *p, const float *hlo, const float *hhi,
-                     int ntap, int ncand, float *out) {
-  if (!p) return -1;
-  if (!hlo || !hhi || ntap < 1 || !(ntap & 1) || ncand < 1) {
-    p->ihlo = NULL;
-    if (p->fft) ap_series_buf(p->fft, 0);
-    return 0;
-  }
-  if (ncand > AP_MF_MAXCAND) ncand = AP_MF_MAXCAND;
-  p->ihlo = hlo; p->ihhi = hhi; p->iK = ntap/2; p->incand = ncand; p->iout = out;
-  /* Candidates are the grid samples within `ifrac` of the grid maximum.
-     Below about 0.79 -- the band's worst-case recovery -- the cut is provably
-     free, since a sample under g of the maximum cannot interpolate above it
-     and the maximum is already in the running best.  0.95 is past that and is
-     an empirical choice: it costs a third of the pass and settles just as many
-     pairs, because the candidate that decides is the maximum and its
-     neighbours.  What it can do is make the statistic an UNDER-estimate, and
-     only one of the two bracket branches is unsafe in that direction -- the
-     reject.  Swept against the captures, the miss count is flat from 0.75 to
-     0.99, and the reject branch's own margin is the separate knob below. */
-  p->ifrac = 0.95f;
-  { const char *e = getenv("MF_IFRAC"); if (e) { float v = (float)atof(e);
-      if (v > 0.f && v < 1.f) p->ifrac = v; } }
-  p->iser = p->fft ? ap_series_buf(p->fft, 1) : NULL;
-  p->istride = p->fft ? ap_series_stride(p->fft) : 0;
-  return p->iser ? 0 : -1;
-}
 
 /* The pair loop.  `tsel` selects which templates to run: NULL means the
    contiguous range [0,nt), and otherwise tsel[0..nsel) holds local indices into
@@ -246,16 +211,11 @@ static int run_pairs(ap_mf_plan *p, int d0, int nd, int t0, int nt,
                             peaks+row*nb,&c,AP_BACKWARD,start,end);
       }
       if(r<0) return -1;
-      if(p->ihlo && p->iout && p->iser && !p->ipause){
-        /* The grid maximum this pass just found.  Candidates are taken
-           relative to it, which is what lets the scan be a vector compare
-           that almost never hits instead of a scalar walk of every lag. */
-        float ev=0.f;
-        for(size_t b=0;b<nb;b++) if(peaks[row*nb+b].magnitude>ev)
-          ev=peaks[row*nb+b].magnitude;
-        p->iout[row] = ap_interp_max(p->fft, start, end, ev, p->ihlo, p->ihhi,
-                                     p->iK, p->incand, p->ifrac);
-      }
+      /* The interpolation block that stood here was unreachable: p->ihlo is
+         set only by ap_mf_set_interp, and interpolation is not exposed to
+         Python at all, so it was permanently NULL. It was a remnant of the
+         U / oversample design, removed at the Python and hmf.c level and
+         left behind in the innermost pair loop. */
       if(counts) counts[row]=c;
       total += c;
     }
