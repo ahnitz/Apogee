@@ -91,7 +91,19 @@ int supported(size_t N){
      both widths - everything not listed measured within noise of balanced:
        2^12  128x32   AVX2 7.1% faster, AVX-512 10.3%
        2^18  1024x256 AVX2 9.1% faster, AVX-512  4.8%
-     Compiled in rather than searched: the same two win on both ISAs. */
+       2^9   16x32    AVX-512 11.8% faster than the balanced 32x16
+     Compiled in rather than searched: the same two win on both ISAs.
+
+     2^9 is the HIERARCHICAL sizes: the coarse pass transforms `band`
+     points, so it lands on 2^8..2^10 while the flat filter sits at 2^12
+     and above. Only the flat sizes had ever been tuned. Measured at band
+     512, six independent runs each of a median of nine, coarse only:
+       32x16 (balanced)  1.537 1.451 1.523 1.464 1.301 1.478
+       16x32             1.302 1.370 1.203 1.293 1.277 1.387
+     2^10 keeps the balanced 32x32 (16x64 and 64x16 both measured worse)
+     and 2^8 has no choice -- 16x16 is the only split with both halves at
+     or above the vector width. */
+  if(m==9) { n1=16;   n2=32;  }
   if(m==12){ n1=128;  n2=32;  }
   if(m==18){ n1=1024; n2=256; }
   return n1>=AP_W && n2>=AP_W;
@@ -107,7 +119,19 @@ void *create(size_t N){
      both widths - everything not listed measured within noise of balanced:
        2^12  128x32   AVX2 7.1% faster, AVX-512 10.3%
        2^18  1024x256 AVX2 9.1% faster, AVX-512  4.8%
-     Compiled in rather than searched: the same two win on both ISAs. */
+       2^9   16x32    AVX-512 11.8% faster than the balanced 32x16
+     Compiled in rather than searched: the same two win on both ISAs.
+
+     2^9 is the HIERARCHICAL sizes: the coarse pass transforms `band`
+     points, so it lands on 2^8..2^10 while the flat filter sits at 2^12
+     and above. Only the flat sizes had ever been tuned. Measured at band
+     512, six independent runs each of a median of nine, coarse only:
+       32x16 (balanced)  1.537 1.451 1.523 1.464 1.301 1.478
+       16x32             1.302 1.370 1.203 1.293 1.277 1.387
+     2^10 keeps the balanced 32x32 (16x64 and 64x16 both measured worse)
+     and 2^8 has no choice -- 16x16 is the only split with both halves at
+     or above the vector width. */
+  if(m==9) { n1=16;   n2=32;  }
   if(m==12){ n1=128;  n2=32;  }
   if(m==18){ n1=1024; n2=256; }
   { const char *e=getenv("MF_N1");
