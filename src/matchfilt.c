@@ -45,7 +45,6 @@ struct ap_mf_plan {
   float *pr,*pi;       /* scratch for one product, split */
   float *scratch;      /* interleaved staging for ingest */
   /* Interpolated coarse maximum, when a caller asks for it.  See interp_max. */
-  size_t istride;
   /* run_series staging, allocated on first use so a plan that never
      filters a series does not carry 4n floats it will not touch.
      ONE buffer pair serves a whole group: ap_mf_set_data split_stores

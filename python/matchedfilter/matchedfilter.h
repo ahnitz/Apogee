@@ -101,11 +101,10 @@ int ap_mf_run_series(ap_mf_plan *p,
    the same [nd][nt] order as ap_mf_run's peaks.  Pass a NULL tap pointer to
    turn it off.  See docs/hierarchical.md for why this brackets the second
    coarse transform rather than replacing it. */
-int ap_mf_set_interp(ap_mf_plan *p, const float *hlo, const float *hhi,
-                     int ntap, int ncand, float *out);
-/* Skip the interpolation for calls that do not want it, without tearing down
-   the configuration -- the second coarse transform reuses the same plan. */
-void ap_mf_interp_pause(ap_mf_plan *p, int on);
+/* ap_mf_set_interp and ap_mf_interp_pause are gone. Interpolation was
+   removed with the U / oversample design; the plan state and the innermost
+   loop block that used them were unreachable -- interpolation was never
+   exposed to Python -- so the whole path went with them. */
 
 /* Is this length supported?  1024, and the powers of two from 4096 to 2^20. */
 /* ---------------------------------------------------------------------------
