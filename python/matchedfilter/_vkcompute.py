@@ -36,6 +36,10 @@ def _manifest():
 #: halves occupancy, so this refuses rather than silently getting slower.
 _MAX_BINS = 2048
 
+#: Must match COARSE_TILE_T in tools/build_spirv.py -- the kernel is
+#: compiled with the tile baked in, so the dispatch has to agree.
+_COARSE_TILE_T = {512: 4}
+
 
 def _use_c16(band):
     """Half-width coarse path, only where filling a wave pays for it.
@@ -728,7 +732,10 @@ class Context:
                 vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0,
                                       _PUSH_BYTES, ctypes.byref(pc))
                 # PPG pairs per workgroup, so PPG times fewer groups.
-                vk.vkCmdDispatch(cmd, pairs // _ppg, 1, 1)
+                _tt = _COARSE_TILE_T.get(band, 1) if _use_c16(band) else 1
+                if pairs % (_ppg * _tt):
+                    _tt = 1
+                vk.vkCmdDispatch(cmd, pairs // (_ppg * _tt), 1, 1)
 
         def coarse_odd(ds):
             """The odd half, GATED on the even one.

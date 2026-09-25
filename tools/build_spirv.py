@@ -125,6 +125,23 @@ COARSE_BANDS = {256: 16, 512: 32, 1024: 32}
 #: it exit, which was 57% of the hierarchical call at 512x512.
 ENTRIES = ("fusedTierB", "gatedTierB", "compactPairs", "refineListed")
 ENTRY = ENTRIES[0]
+
+#: Templates per workgroup on the COARSE path, by band. The tile holds the
+#: thread's data slice in registers and reuses it across TILE_T templates,
+#: so loads per pair fall as 1/TILE_T -- but the registers come out of
+#: occupancy, and whether that is affordable depends on the band.
+#:
+#: Measured, coarse-only, 512x512 pairs:
+#:   band  T=1     T=2     T=4
+#:    128  0.735   0.751   0.811   -- no gain; already 87% issue efficient
+#:    256  1.118   1.099   1.102   -- flat
+#:    512  2.009   1.967   1.686   -- 1.19x, the clear win
+#:   1024  3.986   5.893   8.572   -- 2.1x WORSE
+#:
+#: Band 1024 is the one band already at 100% occupancy (WG=64 is a two-wave
+#: group), so every tile register comes straight out of waves. The model
+#: predicted exactly this and the measurement confirms it.
+COARSE_TILE_T = {512: 4}
 #: Artifact prefix per entry point. Two entries used to be distinguished by
 #: `entry == ENTRY`, which silently collides the moment there is a third.
 STEMS = {"fusedTierB": "tierb", "gatedTierB": "gated",
@@ -257,7 +274,7 @@ def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0,
     cap = LDS_CAP[n] if cap is None else cap
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   "#define PPG %d\n" % (n, cap, coarse16, ppg) + KERNEL.read_text())
+                   "#define PPG %d\n#define TILE_T %d\n" % (n, cap, coarse16, ppg, COARSE_TILE_T.get(n, 1) if coarse16 else 1) + KERNEL.read_text())
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(

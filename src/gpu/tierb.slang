@@ -290,22 +290,21 @@ uint slotToIndex(uint slot)
 //: The filter itself, as a plain function so more than one entry point can
 //: use it. Slang does not allow one entry point to call another, and the
 //: gated variant needs exactly this body after its early-out.
-void filterPair(uint pair, uint tid,
-                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
-                RWStructuredBuffer<int> peakIdx,
-                RWStructuredBuffer<float2> peakVal,
-                uint ntmpl, uint winStart, uint winEnd,
-                uint binsize, int binShift, uint nbins, uint thrBits)
+#ifndef TILE_T
+#define TILE_T 1
+#endif
+
+void filterOne(uint pair, uint d, uint t, uint tid, C dreg[16],
+               StructuredBuffer<CVal> tmpl,
+               RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
+               uint winStart, uint winEnd,
+               uint binsize, int binShift, uint nbins, uint thrBits)
 {
-    _tid = tid;
-    uint d = pair / ntmpl, t = pair % ntmpl;
     C r[16];
 
     // level 0: gather this thread's stride-WG column straight from global
-    [unroll] for (uint n2 = 0; n2 < R; ++n2) {
-        uint idx = tid + WG * n2;
-        r[n2] = cmulConj(cload(data, d*N + idx), cload(tmpl, t*N + idx));
-    }
+    [unroll] for (uint n2 = 0; n2 < R; ++n2)
+        r[n2] = cmulConj(dreg[n2], cload(tmpl, t*N + tid + WG * n2));
 
     [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
         uint want[16];                       // scoped per level
@@ -449,6 +448,33 @@ void filterPair(uint pair, uint tid,
             peakVal[o] = float2(0.0f, 0.0f);
         }
     }
+}
+
+
+
+void filterPair(uint pair, uint tid,
+                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
+                RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
+                uint ntmpl, uint winStart, uint winEnd,
+                uint binsize, int binShift, uint nbins, uint thrBits)
+{
+    _tid = tid;
+    // The host dispatches pairs/TILE_T groups, so this group owns TILE_T
+    // CONSECUTIVE pairs starting here. Without the scale the kernel walked
+    // pairs 0..pairs/TILE_T and simply never visited the rest -- which the
+    // flat-vs-hierarchical guard caught as dismissed signals.
+    //
+    // Consecutive pairs share a data row because d = pair/ntmpl, provided
+    // the run does not straddle a row end; the host drops to TILE_T=1 when
+    // the pair count is not a multiple of it.
+    uint p0 = pair * TILE_T;
+    uint d = p0 / ntmpl, t0 = p0 % ntmpl;
+    C dreg[16];
+    [unroll] for (uint n2 = 0; n2 < R; ++n2)
+        dreg[n2] = cload(data, d*N + tid + WG * n2);
+    [unroll] for (uint k = 0; k < TILE_T; ++k)
+        filterOne(p0 + k, d, t0 + k, tid, dreg, tmpl, peakIdx, peakVal,
+                  winStart, winEnd, binsize, binShift, nbins, thrBits);
 }
 
 [shader("compute")][numthreads(WG*PPG,1,1)]
