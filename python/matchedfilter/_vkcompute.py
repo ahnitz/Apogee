@@ -657,10 +657,12 @@ class Context:
                 "tierb_%d_c16%s.spv" % (band,
                     "p%d" % _ppg if _ppg > 1 else ""),
                 _NBIND, _PUSH_BYTES)
-        # gatedTierB stays full precision: in this path it is bound to the
-        # full-width data/tmpl set (`ds`), not to cdata/ct0. Only `cpipe`
-        # above reads the packed coarse buffers.
-        gcpipe, gclayout, gcset_layout = self.gated_pipeline(band)
+        # gatedTierB is NOT built. Its only caller was coarse_odd(), the
+        # last remnant of the even/odd split, which was never invoked after
+        # the odd half was removed -- so the kernel was compiled on every
+        # plan and never dispatched. RADV_DEBUG=shaderstats showed it at 256
+        # VGPRs with 18 SPILLED and 2304 bytes of scratch: the worst kernel
+        # in the build, existing only to be compiled.
         kpipe, klayout, kset_layout = self._build_pipeline(
             ("compact", n), "compact_%d.spv" % n, 5, 12)
         rpipe, rlayout, rset_layout = self._build_pipeline(
@@ -736,29 +738,6 @@ class Context:
                 if pairs % (_ppg * _tt):
                     _tt = 1
                 vk.vkCmdDispatch(cmd, pairs // (_ppg * _tt), 1, 1)
-
-        def coarse_odd(ds):
-            """The odd half, GATED on the even one.
-
-            The CPU never computes the odd half for a pair the even half has
-            already dismissed -- about 78% of them -- and computing it for
-            everything made the coarse pass cost twice what it needs to.
-
-            No new kernel: gatedTierB is exactly this shape. Handing it the
-            even buffer for BOTH of its coarse inputs with rawThr = 0 reduces
-            its test to `even >= evenThr`, which is the CPU's early-out.
-            """
-            vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, gcpipe)
-            sets = (_vp * 1)(ds)
-            vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, gclayout, 0, 1,
-                                       sets, 0, None)
-            pc = (ctypes.c_uint32 * 9)(
-                nt, 0, band, band, band.bit_length() - 1, 1, 0,
-                int(np.float32(even_thr).view(np.uint32)),
-                int(np.float32(0.0).view(np.uint32)))
-            vk.vkCmdPushConstants(cmd, gclayout, _STAGE_COMPUTE, 0,
-                                  _PUSH_BYTES_GATED, ctypes.byref(pc))
-            vk.vkCmdDispatch(cmd, pairs, 1, 1)
 
         def barrier():
             mb = _MemBarrier(46, None, _ACCESS_SHADER_WRITE, _ACCESS_SHADER_READ)

@@ -982,3 +982,44 @@ the ISA, not by counting source terms.
 That also explains the two tile results: 1xK bought 1.19x and 2D K=2 only
 1.07x, both consistent with the loads being the only thing left to
 amortise because the addressing was already shared.
+
+### The compiled kernel, measured (RADV_DEBUG=shaderstats)
+
+The source-instruction model mispredicted three changes in a row, so here
+is what the hardware actually gets, band 512:
+
+    kernel (by LDS)   SGPR  VGPR  spilled  scratch  code
+    coarse, LDS 2048   128   216      0        0    32988 B
+    gated,  LDS 4096   128   256     18     2304 B  11480 B
+    compact, LDS 0     128    12      0        0      296 B
+
+TWO findings, both of which invalidate earlier reasoning:
+
+1. **The coarse kernel uses 216 VGPRs, not the ~112 modelled.** At 216 the
+   part fits floor(1536/216) = 7 waves/SIMD = 14 waves/CU = 44% occupancy,
+   not the 50% assumed. REGISTER PRESSURE is the binding constraint, not
+   the 16-workgroup cap as recorded earlier.
+
+   This retro-explains every tile result: a K=2 tile adds ~64 VGPR -> 280
+   -> 5 waves/SIMD -> 31% occupancy, and K=4 pushes past the file and
+   SPILLS. The measured catastrophe at 2D K=4 (10.9 ms) was not a mystery;
+   the register model was simply wrong by 2x.
+
+2. **The gated kernel was dead and it was the worst kernel in the build.**
+   256 VGPRs, 18 SPILLED, 2304 bytes of scratch -- compiled for every plan
+   and never dispatched, because its only caller coarse_odd() was the last
+   remnant of the even/odd split and stopped being invoked when the odd
+   half was removed. Now not built at all.
+
+Also measured: forcing the tile loop NOT to unroll ([loop] instead of
+[unroll]) made band 512 WORSE, 1.78 -> 2.05 ms. The lost ILP costs more
+than the registers save, so the pressure cannot simply be scheduled away.
+
+WHAT THIS MEANS FOR THE PLAN
+
+Tiling cannot pay until the base register count comes down. The reducible
+term is myMag[16] -- 16 VGPRs held only so the writeback can find which
+lane owned the maximum. Recomputing the magnitude in the second pass costs
+~2 VALU per register and frees 16 VGPRs, which is the difference between
+7 and 8 waves/SIMD. That is the next thing to try, BEFORE any further tile
+work, and it should be verified with shaderstats rather than reasoned about.
