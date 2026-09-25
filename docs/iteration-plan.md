@@ -1291,3 +1291,59 @@ Tiling simply is not the lever. Its profile differs structurally -- WG =
 ONE exchange where band 512 has two. It needs its own disassembly rather
 than an assumption carried over from 512, and that is the next piece of
 work with a clear payoff attached.
+
+## CPU coarse stage: results and the negatives
+
+Cumulative, interleaved old/new so machine drift cancels (this box moves
+~18% between runs minutes apart, so sequential A/B is not usable here):
+
+    coarse band  512   1.455 -> 1.205 ms   1.218x   6 of 7 pairs
+    coarse band 1024   2.728 -> 2.568 ms   1.063x   7 of 7
+    coarse band 2048   5.941 -> 5.247 ms   1.132x   7 of 7
+    flat  n=4096       0.699 -> 0.639 ms   1.094x   6 of 6
+
+Band 512 is the band the CPU autotuner selects, and the flat filter gains
+too, so this is not confined to the hierarchical path.
+
+### What produced it
+
+Both wins were the same SHAPE: a knob that existed and had never been set
+for these sizes.
+
+  * **N1xN2 split.** create() hand-tuned 2^12 and 2^18 -- the FLAT filter's
+    sizes -- and left 2^8..2^11 on the balanced default. 16x32 at 2^9 and
+    128x16 at 2^11.
+  * **p->ilay.** The contiguous intermediate layout was implemented in both
+    stage A and stage B, the buffer was sized for it, and nothing ever
+    assigned the field. create() memsets the plan, so the strided path was
+    the only one that had ever run.
+
+Plus MF_HMF_TRACE being read via getenv inside the per-pair loop.
+
+### Negatives -- measured, do not retry
+
+  * **GMAJOR=0** (the non-group-major stageA_prod): 0.665 and 0.744 of the
+    default at bands 512 and 2048. The default path is right.
+  * **GBLK=4/8, BBLK=2**: within noise at coarse sizes. The existing rules,
+    though derived at 2^16+, happen to pick correctly here.
+  * **MF_NOSTORE**: no effect. The coarse plan has no series buffer.
+  * **Hoisting plan fields out of stageA_tail** to defeat aliasing: the
+    generated code was BYTE-IDENTICAL, 1245 instructions either way.
+    Strict aliasing already lets GCC prove a float store cannot touch an
+    int struct member, so it had hoisted them itself.
+  * **Dropping the unused arr/aii/axx accumulators from binmax_one**: they
+    sit inside `__builtin_expect(..., 0)` and almost never execute at a
+    real threshold. Worth ~0.
+
+### Method notes
+
+  * **Static disassembly of a function with runtime branches is
+    misleading.** stageA_prod_gm reads 1245 instructions before and after
+    the ilay change because both store paths are compiled in; only one runs.
+  * **I analysed dead code first.** The initial CPU instruction mix came
+    from fft64_prod, which has ZERO call sites. Sampling with gdb gave the
+    real set: stageA_prod_gm, codelet_prod, fftsr16, binmax_core.
+  * The coarse stage is now ~2.2x off single-core FMA peak, down from ~2.6x.
+    What remains is spread across the transform machinery rather than
+    concentrated anywhere: two 16x16 transposes per block in stageA_tail,
+    and the codelets themselves.
