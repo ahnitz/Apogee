@@ -291,3 +291,41 @@ third.
   bank. The open question is whether the accuracy parameterisation assumes
   bank homogeneity, which would be a larger finding than the original
   report.
+
+## fp16 coarse stage (next)
+
+Measured, committed under `tools/int8/`: fp16 is free for the coarse stage
+-- peak error sd 0.0012 sigma, with the gate and the noise escalation equal
+to float to three digits (4.300 / 0.0675). It beats bf16 by 9x and needs no
+table regeneration, so CPU and GPU can share one accuracy table. int8 is
+viable but needs its own recalibration AND a static clip at 6-8 sigma; at
+4 sigma it clips the signal peak and costs 3.6x escalation.
+
+Coarse cost is linear in coarse bytes above band 256 on the 8060S
+(1.120 / 2.237 / 4.349 ms at band 256 / 512 / 1024). That is the headroom.
+
+The design point that makes this easy: **the coarse stage is a gate, not a
+detector.** It does not need per-bin peaks. It needs "does anything in the
+window clear the threshold" -- one WaveActiveMax plus a start/end mask --
+because the fine stage re-derives localisation on the survivors anyway.
+
+That matters because `groupshared uint stg[CH*WG*2]` in `tierb.slang:57` is
+aliased as a per-bin peak table (275-323), and that aliasing was the only
+thing blocking half2 packing. Drop the bin machinery from the COARSE kernel
+and the constraint disappears: no `nbins <= CAP` proof, no single-bin
+variant, and the stage halves from 8 KB to 4 KB. The bin loops must stay in
+the flat/fine kernel, where per-bin peaks are the actual output.
+
+Steps:
+  1. Confirm the coarse path's output is used only for the gate decision,
+     not for reporting bins. This is the one assumption above that is NOT
+     yet verified.
+  2. Strip the bin machinery from the coarse kernel; keep it in flat/fine.
+  3. half2 staging: stg[CAP], f32tof16/f16tof32 in stgPut/stgGet.
+  4. Rebuild SPIR-V, run the GPU tests, re-measure the band sweep.
+
+Watch band 128: it costs 1.676 ms, MORE than band 256's 1.120. Cost is not
+monotonic in work below 256, which points at an occupancy or launch floor.
+LDS is what caps workgroups per CU, so step 3 is the change that should move
+it -- and whether it does tells us if fp16's win is bandwidth alone or
+bandwidth plus occupancy. Whatever that floor is, it caps the return.
