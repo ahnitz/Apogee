@@ -14,7 +14,7 @@ near-lossless -- flips a few. Hence the quantile-matched comparison below.
 import numpy as np, sys
 sys.path.insert(0, "tools/int8")
 from quant_study import (N, BAND, reference_power, whitened_product,
-                         rho_float, rho_monarch_int8, rho_bf16)
+                         rho_float, rho_monarch_int8, rho_bf16, rho_fp16)
 
 THR = 4.343
 NOISE, INJ = 400, 400
@@ -32,36 +32,39 @@ for KSIG in (4.0, 6.0, 8.0):
     SRQ = 127.0 / (pk / 6.0)
 
     def series(inject, m):
-        F, I, B = [], [], []
+        F, I, B, H = [], [], [], []
         for _ in range(m):
             P = whitened_product(N, BAND, power, rng, inject=inject)
             F.append(rho_float(P))
             I.append(rho_monarch_int8(P, SP, SW, SRQ)[0])
             B.append(rho_bf16(P))
-        return F, I, B
+            H.append(rho_fp16(P))
+        return F, I, B, H
 
     def comp_sd(a):
         v = np.concatenate(a)
         return float(np.std(np.concatenate([v.real, v.imag])))
 
     def maxes(inject, m):
-        F, I, B = series(inject, m)
+        F, I, B, H = series(inject, m)
         return (np.array([np.abs(x).max() for x in F]),
                 np.array([np.abs(x).max() for x in I]),
-                np.array([np.abs(x).max() for x in B]))
+                np.array([np.abs(x).max() for x in B]),
+                np.array([np.abs(x).max() for x in H]))
 
     # The gate is in units of the output's COMPONENT sigma -- that is what
     # threshold.txt calibrates. Normalising by the mean noise MAXIMUM
     # instead puts everything near 1.0, so every trial reads as dismissed
     # and the escalation rate reads as zero.
-    _nf, _ni, _nb = series(0.0, NOISE)
-    kf, ki, kb = comp_sd(_nf), comp_sd(_ni), comp_sd(_nb)
+    _nf, _ni, _nb, _nh = series(0.0, NOISE)
+    kf, ki, kb, kh = comp_sd(_nf), comp_sd(_ni), comp_sd(_nb), comp_sd(_nh)
     nF = np.array([np.abs(x).max() for x in _nf])
     nI = np.array([np.abs(x).max() for x in _ni])
     nB = np.array([np.abs(x).max() for x in _nb])
-    nF, nI, nB = nF / kf, nI / ki, nB / kb
-    sF, sI, sB = maxes(5.0, INJ)
-    sF, sI, sB = sF / kf, sI / ki, sB / kb
+    nH = np.array([np.abs(x).max() for x in _nh])
+    nF, nI, nB, nH = nF / kf, nI / ki, nB / kb, nH / kh
+    sF, sI, sB, sH = maxes(5.0, INJ)
+    sF, sI, sB, sH = sF / kf, sI / ki, sB / kb, sH / kh
 
     # harness check: bf16 must track float closely, or nothing below is real
     dev = float(np.std(sB - sF))
@@ -74,7 +77,7 @@ for KSIG in (4.0, 6.0, 8.0):
     # lands on the extreme tail and the comparison is pure noise.
     TARGET = 0.01
     out = []
-    for nm, s_, n_ in (("float", sF, nF), ("int8", sI, nI), ("bf16", sB, nB)):
+    for nm, s_, n_ in (("float", sF, nF), ("int8", sI, nI), ("bf16", sB, nB), ("fp16", sH, nH)):
         t = float(np.quantile(s_, TARGET))
         out.append((nm, t, float((n_ >= t).mean())))
     esc_f = out[0][2]
@@ -83,5 +86,5 @@ for KSIG in (4.0, 6.0, 8.0):
     for nm, t, e in out:
         print("   %-5s gate %.3f -> noise escalation %.4f  (%.2fx float)"
               % (nm, t, e, (e / esc_f) if esc_f else float("nan")))
-    print("   int8 peak error vs float: mean %+.4f sd %.4f | bf16 sd %.4f"
-          % (float((sI - sF).mean()), float((sI - sF).std()), dev))
+    print("   int8 peak error vs float: mean %+.4f sd %.4f | bf16 sd %.4f | fp16 sd %.4f"
+          % (float((sI - sF).mean()), float((sI - sF).std()), dev, float(np.std(sH - sF))))

@@ -118,6 +118,31 @@ def rho_monarch_int8(P, sp, sw, srq):
     return (orr + 1j * oi).ravel(), peak32
 
 
+def _f16(x):
+    return np.asarray(x, np.float16).astype(np.float32)
+
+
+def rho_fp16(P):
+    """Same pipeline in fp16. For a WHITENED product -- flat variance,
+    bounded range -- fp16's 10 mantissa bits strictly beat bf16's 7, and
+    range is a non-issue precisely because the product is whitened."""
+    x = P.reshape(N2, N1).T
+    xr, xi = _f16(x.real), _f16(x.imag)
+    j2 = np.outer(np.arange(N2), np.arange(N2))
+    w2 = np.exp(2j * np.pi * j2 / N2)
+    w2r, w2i = _f16(w2.real), _f16(w2.imag)
+    yr = _f16(xr @ w2r - xi @ w2i); yi = _f16(xr @ w2i + xi @ w2r)
+    n1 = np.arange(N1)[:, None]; k2 = np.arange(N2)[None, :]
+    tw = np.exp(2j * np.pi * n1 * k2 / BAND)
+    tr, ti = _f16(tw.real), _f16(tw.imag)
+    zr = _f16(yr * tr - yi * ti); zi = _f16(yr * ti + yi * tr)
+    j1 = np.outer(np.arange(N1), np.arange(N1))
+    w1 = np.exp(2j * np.pi * j1 / N1)
+    w1r, w1i = _f16(w1.real), _f16(w1.imag)
+    orr = _f16(w1r @ zr - w1i @ zi); oi = _f16(w1r @ zi + w1i @ zr)
+    return (orr + 1j * oi).ravel()
+
+
 def rho_bf16(P):
     # A[n1][n2] = x[n2*N1 + n1]. The obvious reshape(N1, N2) is the WRONG
     # decimation for the four-step and it is dangerously close to right:
