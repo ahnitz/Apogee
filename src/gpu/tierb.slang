@@ -147,6 +147,153 @@ static const uint NLEVELS = (WG <= 16) ? 1 : ((WG <= 256) ? 2 : 3);
 C cmul(C a, C b) { return C(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
 C cmulConj(C a, C b) { return C(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
 
+#if COARSE16
+typedef half2 H;
+
+//: Complex multiply by a twiddle that is the SAME for both transforms, so
+//: wr/wi broadcast to both lanes. Four v_pk_* and nothing else.
+void cmulw(inout H xr, inout H xi, CS wr, CS wi)
+{
+    H nr = xr * wr - xi * wi;
+    H ni = xr * wi + xi * wr;
+    xr = nr; xi = ni;
+}
+
+//: Correlate against a conjugated template: (ar,ai) * conj(br,bi).
+//: Both lanes are distinct transforms, so this is fully packed too.
+void cmulconjs(H ar, H ai, H br, H bi, out H pr, out H pi)
+{
+    pr = ar * br + ai * bi;
+    pi = ai * br - ar * bi;
+}
+
+//: Radix-4 butterfly.
+//:
+//: The ×i rotation is the quiet win. AoS needed C(-t3.y, t3.x) -- a
+//: cross-component swizzle, one of the v_mov_b16 the ISA dump is full of.
+//: In SoA it is a register RENAME plus a negate, and radix-4 is built from
+//: these: every ±i in the kernel becomes free.
+void r4s(inout H re[16], inout H im[16], uint a, uint b, uint c, uint d)
+{
+    H t0r = re[a] + re[c], t0i = im[a] + im[c];
+    H t1r = re[a] - re[c], t1i = im[a] - im[c];
+    H t2r = re[b] + re[d], t2i = im[b] + im[d];
+    H t3r = re[b] - re[d], t3i = im[b] - im[d];
+    H j3r = -t3i, j3i = t3r;                 // i * t3, free
+    re[a] = t0r + t2r; im[a] = t0i + t2i;
+    re[b] = t1r + j3r; im[b] = t1i + j3i;
+    re[c] = t0r - t2r; im[c] = t0i - t2i;
+    re[d] = t1r - j3r; im[d] = t1i - j3i;
+}
+
+void swap2(inout H re[16], inout H im[16], uint p, uint q)
+{
+    H t;
+    t = re[p]; re[p] = re[q]; re[q] = t;
+    t = im[p]; im[p] = im[q]; im[q] = t;
+}
+
+void dft2s(inout H re[16], inout H im[16], uint o)
+{
+    H ar = re[o], ai = im[o], br = re[o+1], bi = im[o+1];
+    re[o]   = ar + br; im[o]   = ai + bi;
+    re[o+1] = ar - br; im[o+1] = ai - bi;
+}
+
+void dft4s(inout H re[16], inout H im[16], uint o)
+{
+    r4s(re, im, o, o+1, o+2, o+3);
+    swap2(re, im, o+1, o+2);
+}
+
+void dft8s(inout H re[16], inout H im[16], uint o)
+{
+    H br[8], bi[8];
+    [unroll] for (uint s = 1; s < 8; s <<= 1) {
+        [unroll] for (uint j = 0; j < 4; ++j) {
+            uint k = j & (s-1), base = (j-k) << 1;
+            float ang = PI * float(k) / float(s);
+            H vr = re[o+j+4], vi = im[o+j+4];
+            cmulw(vr, vi, CS(cos(ang)), CS(sin(ang)));
+            H ur = re[o+j], ui = im[o+j];
+            br[base+k]   = ur + vr; bi[base+k]   = ui + vi;
+            br[base+k+s] = ur - vr; bi[base+k+s] = ui - vi;
+        }
+        [unroll] for (uint i = 0; i < 8; ++i) { re[o+i] = br[i]; im[o+i] = bi[i]; }
+    }
+}
+
+void dft16s(inout H re[16], inout H im[16])
+{
+    [unroll] for (uint n1 = 0; n1 < 4; ++n1) r4s(re, im, n1, n1+4, n1+8, n1+12);
+    // Same twiddles as the AoS form, now broadcast scalars rather than
+    // packed constants -- the multiply is elementwise in SoA.
+    cmulw(re[5],  im[5],  CS( 0.92387953f), CS( 0.38268343f));  // W1
+    cmulw(re[9],  im[9],  CS( 0.70710678f), CS( 0.70710678f));  // W2
+    cmulw(re[13], im[13], CS( 0.38268343f), CS( 0.92387953f));  // W3
+    cmulw(re[6],  im[6],  CS( 0.70710678f), CS( 0.70710678f));  // W2
+    cmulw(re[10], im[10], CS( 0.0f),        CS( 1.0f));         // W4 = i
+    cmulw(re[14], im[14], CS(-0.70710678f), CS( 0.70710678f));  // W6
+    cmulw(re[7],  im[7],  CS( 0.38268343f), CS( 0.92387953f));  // W3
+    cmulw(re[11], im[11], CS(-0.70710678f), CS( 0.70710678f));  // W6
+    cmulw(re[15], im[15], CS(-0.92387953f), CS(-0.38268343f));  // W9
+    [unroll] for (uint k2 = 0; k2 < 4; ++k2)
+        r4s(re, im, 4*k2, 4*k2+1, 4*k2+2, 4*k2+3);
+    swap2(re, im, 1, 4);   swap2(re, im, 2, 8);   swap2(re, im, 3, 12);
+    swap2(re, im, 6, 9);   swap2(re, im, 7, 13);  swap2(re, im, 11, 14);
+}
+
+//: |v|^2 for BOTH transforms in one packed multiply-add. The shipped
+//: kernel promotes to fp32 here (float(r[i].x) etc), which is 598 of the
+//: fp32 ops in the ISA dump; this keeps it in half and hands back one
+//: magnitude per lane.
+H mag2s(H re, H im) { return re * re + im * im; }
+
+
+//: Dual exchange. Two passes over the same stage -- re then im -- so the
+//: LDS sizing is untouched. Each stgPut stores one half2, which is the
+//: same element of BOTH transforms, so one pass moves both.
+void exchangeS(inout H re[16], inout H im[16], uint want[16],
+               uint lgLen, uint lgSpan)
+{
+    H outr[16], outi[16];
+    [unroll] for (uint z = 0; z < R; ++z) { outr[z] = H(0.0f); outi[z] = H(0.0f); }
+    uint spanMask = (1u << lgSpan) - 1u;
+    uint lenMask  = (1u << lgLen) - 1u;
+    [unroll] for (uint c = 0; c < R / CH; ++c) {
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint j = 0; j < CH; ++j) stgPut(j * WG + _tid, re[c * CH + j]);
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint d = 0; d < R; ++d) {
+            uint p = want[d];
+            uint b = p >> lgLen, rem = p & lenMask;
+            uint i = rem >> lgSpan, ln = rem & spanMask;
+            if (i >= c * CH && i < (c + 1) * CH)
+                outr[d] = stgGet((i - c * CH) * WG + (b << lgSpan) + ln);
+        }
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint j = 0; j < CH; ++j) stgPut(j * WG + _tid, im[c * CH + j]);
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint d = 0; d < R; ++d) {
+            uint p = want[d];
+            uint b = p >> lgLen, rem = p & lenMask;
+            uint i = rem >> lgSpan, ln = rem & spanMask;
+            if (i >= c * CH && i < (c + 1) * CH)
+                outi[d] = stgGet((i - c * CH) * WG + (b << lgSpan) + ln);
+        }
+    }
+    [unroll] for (uint d = 0; d < R; ++d) { re[d] = outr[d]; im[d] = outi[d]; }
+}
+
+void innermostS(inout H re[16], inout H im[16])
+{
+    if (INNER == 16)     { dft16s(re, im); }
+    else if (INNER == 8) { [unroll] for (uint b = 0; b < 2; ++b) dft8s(re, im, b*8); }
+    else if (INNER == 4) { [unroll] for (uint b = 0; b < 4; ++b) dft4s(re, im, b*4); }
+    else                 { [unroll] for (uint b = 0; b < 8; ++b) dft2s(re, im, b*2); }
+}
+#endif
+
 void r4(inout C a, inout C b, inout C c, inout C d)
 {
     C t0=a+c, t1=a-c, t2=b+d, t3=b-d;
