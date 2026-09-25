@@ -640,18 +640,12 @@ class Context:
             # 0.932 ms, 2.05x. Beyond a full wave it does not pay -- band
             # 512 is already WG 32 and PPG 4 changed nothing there, while
             # band 1024 regressed 4.348 -> 5.006 as the per-group stage grew.
-            # DISABLED. PPG packs several pairs into one wave when
-            # WG < 32, but the peak reduction is WaveActiveMax over the
-            # WHOLE wave -- so the pairs sharing it get each other's
-            # maximum, and only the loudest of the group can match its own
-            # value in the writeback. The rest report -1.
-            #
-            # Measured at band 128 (WG 8, PPG 4): 16 of 64 SNR-9 injections
-            # survive -- exactly one per group of four. The 2.27x it
-            # appeared to buy was the cost of discarding three quarters of
-            # the work. Re-enabling needs the reduction scoped to the lanes
-            # of ONE pair, not the wave.
-            _ppg = 1
+            # PPG = 512/band fills a wave32 where WG < 32. Safe now
+            # that the peak reduction is per-pair (see tierb.slang): each
+            # lane maxes into its own slot, so tiles cannot mix.
+            _ppg = max(1, min(4, 512 // band))
+            if (nd * nt) % _ppg:
+                _ppg = 1          # a partial group would index past the data
             if (nd * nt) % _ppg:
                 _ppg = 1          # a partial group would index past the data
             cpipe, clayout, cset_layout = self._build_pipeline(

@@ -253,11 +253,11 @@ def lds_bytes(n, cap):
     return ch * wg * 8
 
 
-def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0, ppg=1, tile=1):
+def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0, ppg=1):
     cap = LDS_CAP[n] if cap is None else cap
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   "#define PPG %d\n#define TILE_T %d\n" % (n, cap, coarse16, ppg, tile) + KERNEL.read_text())
+                   "#define PPG %d\n" % (n, cap, coarse16, ppg) + KERNEL.read_text())
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(
@@ -382,9 +382,6 @@ def main(argv=None):
             for _p in (2, 4):
                 compile_one(slangc, n, OUT, entry=centry,
                             suffix="_c16p%d" % _p, coarse16=1, ppg=_p)
-            # half2 registers make dreg affordable, so the tile can pay
-            compile_one(slangc, n, OUT, entry=centry, suffix="_c16t8",
-                        coarse16=1, ppg=1, tile=8)
             compile_metal(slangc, n, mcap, centry, MSL, suffix="_c16", coarse16=1)
 
         for entry in ENTRIES:
