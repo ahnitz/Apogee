@@ -689,3 +689,72 @@ PPG alone.
 
 Next: TILE_T with COARSE16 registers at band 512, and a tile that grows
 only while occupancy holds -- TILE_T=8 at band 1024 is clearly past it.
+
+### Operation accounting, and the design that reaches 4x
+
+Per THREAD per PAIR at band 512 (WG=32, R=16, NLEVELS=2):
+
+    FFT butterflies            360   VALU  <- useful
+    correlation cmulConj        48   VALU  <- useful
+    slotToIndex x2 passes      288   VALU
+    exchange index math        192   VALU
+    want[] construction        160   VALU
+    magnitude + window          80   VALU
+    global loads                32   VMEM
+    LDS write + read            64   LDS
+    barriers                     4
+
+    VALU total 1128, of which 408 (36%) is the actual transform.
+
+Sanity: 1128 wave-instructions x 262144 pairs / (40 CU x 2 SIMD x 2.9 GHz)
+= 1.27 ms issue-bound against 2.30 ms measured, so ~55% issue efficiency.
+Stripping to the useful 408 gives 0.46 ms, which IS the fp32 peak figure,
+as it must be. The model is the right order.
+
+**64% of the instructions are addressing, not arithmetic** -- and all of it
+is a property of the LAYOUT and the OUTPUT CONTRACT, both of which we
+choose. Three deletions, largest first:
+
+  1. **The coarse stage never needs an index, only a maximum.** A max is
+     order-independent, and the tiled coarse path already binds only
+     [cdata, ct0, cval] -- no cidx. slotToIndex is computed and discarded.
+     Its one real consumer is the window test.
+
+  2. **The window is a precomputed MASK.** live = idx in [winStart, winEnd)
+     depends on tid and the register slot, never on the pair or template.
+     Build a 16-bit mask once per workgroup, then per pair it is a select
+     before the max. That removes slotToIndex from the per-pair path
+     ENTIRELY rather than leaving it unused -- 288 -> ~0.
+
+  3. **want[] and the exchange index math are the layout talking.** They
+     compute where each register's value lives after each level's shuffle.
+     Because the banks are pre-arranged and the tile fixes the access
+     pattern, the LDS layout can be chosen so each level reads CONTIGUOUSLY
+     -- stgGet(base + j*WG + tid) with base a loop constant. The shuffle
+     moves into the pre-arrangement, paid once per row on upload and
+     amortised over the whole N x M grid.
+
+  4. Whatever survives is loop-invariant across the tile: it depends on tid
+     and the level, so TILE_T=8 divides it by eight.
+
+                                          VALU/pair   vs now
+    now                                      1128      1.00x
+    window mask (kills slotToIndex)           840      1.34x
+    + linear-layout exchange                  488      2.31x
+    + hoist remainder across TILE_T=8        ~418      2.70x
+    + half2 on the useful 408                ~214      5.3x
+
+Two constraints this design MUST respect, both learned the hard way:
+
+  * **Coalescing beats instruction count.** Block-of-16 and block-of-4
+    pre-permutations both LOST (17% at band 512) because they put lanes a
+    cache line apart. Any pre-arrangement has to keep adjacent lanes on
+    adjacent addresses. This is a design input, not something to discover
+    afterwards.
+
+  * **The stub measurements are suspect.** Deleting slotToIndex measured NO
+    gain despite being 25% of instructions. Either the kernel is stall-bound
+    at 55% issue efficiency -- in which case cutting instructions pays
+    nothing until the stalls go -- or the stub was dead-code eliminated,
+    which this repo's own machine-notes warn about. RESOLVE THIS FIRST;
+    the 2.70x above is not bankable until it is explained.
