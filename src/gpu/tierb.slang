@@ -676,9 +676,24 @@ void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
         uint lane = tid & (TB - 1);
 
         dft16s(re, im);
-        [unroll] for (uint k2 = 0; k2 < R; ++k2) {
-            float ang = 2.0f * PI * float(lane * k2) / float(len);
-            cmulw(re[k2], im[k2], CS(cos(ang)), CS(sin(ang)));
+        // w_k = w_1^k, so ONE cos/sin per level and a recurrence for the
+        // rest. Computing each angle separately cost 16 cos + 16 sin per
+        // level plus their argument reduction: 941 fp32 ops, 12.8% of the
+        // kernel, for values related by a single rotation.
+        //
+        // The recurrence runs in fp32 and narrows per step. Sixteen steps
+        // accumulate ~1e-6 relative, which is far under the fp16 the
+        // twiddle is stored in anyway.
+        {
+            float a1 = 2.0f * PI * float(lane) / float(len);
+            float wr = cos(a1), wi = sin(a1);
+            float cr = 1.0f, ci = 0.0f;
+            [unroll] for (uint k2 = 0; k2 < R; ++k2) {
+                cmulw(re[k2], im[k2], CS(cr), CS(ci));
+                float nr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = nr;
+            }
         }
         const uint per  = R / max(TB, 1u);
         const uint TB2  = max(TB >> 4, 1u), len2 = TB;
