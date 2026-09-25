@@ -847,3 +847,47 @@ lazy -- inside `if (myMag[i] > thrBits && ...)` -- so the real per-pair cost
 was ~144 VALU, not the 288 recorded. The remaining eager consumer is the
 window test in the magnitude loop, which needs the index and is deliberately
 kept.
+
+### Full accounting from first principles
+
+IRREDUCIBLE work per thread per pair, derived from the algorithm rather
+than from the code (FMA-counted VALU; complex mul = 2 mul + 2 fma = 4; a
+16-point DFT = 5*16*log2(16) flop = 160 VALU, once per level):
+
+    band      WG  lv | corr  fft  twid  mag  max | IRREDUCIBLE
+    128/256  8/16  1 |   64  160     0   32   21 |    277
+    512/1024 32/64 2 |   64  320    64   32   21 |    501
+
+OVERHEAD -- want[] (lv*80), exchange index math (lv*96), slotToIndex for
+the window (16*NDIG*3), window compare (32):
+
+    band       total  irreducible  overhead
+    128/256      581      277        52%
+    512/1024    1029      501        51%
+
+About half of every coarse instruction is addressing, at every size.
+
+ISSUE EFFICIENCY, correcting for waves per pair (band 1024 is two waves at
+WG=64, which the earlier table got wrong):
+
+    band  issue-bound  measured  efficiency
+     128      0.656     0.756       87%
+     256      0.656     1.125       58%
+     512      1.163     1.973       59%
+    1024      2.326     3.827       61%
+
+Band 128 is nearly issue-bound now, which is exactly why the one-bin
+deletion bought 2.53x there and 13% at band 512: at 87% efficiency removing
+instructions translates almost one-for-one, at 59% it does not.
+
+PATH:
+  1. delete the addressing (51%)            -> 2.05x on instruction count
+  2. half2 on the irreducible arithmetic    -> 4.1x in the limit
+  3. but 512/1024 run at ~60% issue efficiency, so a realistic landing is
+     2-3x; the remainder is stalls, not instruction count, and needs to be
+     understood rather than optimised around.
+
+Largest single removable item is now want[] + exchange index math -- 352
+VALU at band 512, 34% of the total. That is the pre-arranged-layout work.
+slotToIndex is SMALLER than previously recorded because the writeback
+consumer was always lazy; only the window test is eager.
