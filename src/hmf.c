@@ -352,9 +352,14 @@ int ap_hmf_coarse_thresholds(ap_hmf_plan *p,float threshold,
                              : (threshold>p->snr ? threshold : p->snr);
   float gt = p->tg[0];
   float tc = hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->coarse_margin;
+  /* One threshold. `margin` is the design value before conversion and is
+     NOT comparable to a coarse output; `raw` is the only number a backend
+     should test against, and `even` is kept equal to it so the GPU's
+     two-test predicate collapses to one without changing its answer. */
+  const float t1 = tc*p->tgraw[0]*0.999f;
   if(margin) *margin = tc;
-  if(raw)    *raw    = tc*p->tgraw [0]*0.999f;
-  if(even)   *even   = tc*p->tgraw1[0]*p->even_margin;
+  if(raw)    *raw    = t1;
+  if(even)   *even   = t1;
   return 0;
 }
 
@@ -511,20 +516,33 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
         p->prod[2*k+1]=(float)(amp*(sin(ph)+nz*g2));
       }
       ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
-      for(size_t k=0;k<m;k++){
-        double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
-        float xr=p->prod[2*k], xi=p->prod[2*k+1];
-        p->shift[2*k]  =(float)(xr*c-xi*sn);
-        p->shift[2*k+1]=(float)(xr*sn+xi*c);
-      }
-      ap_fft(p->cf,p->shift,p->cod,AP_BACKWARD);
       float be=0.f,bo=0.f;
+      /* The odd half only exists when the coarse grid is oversampled. This
+         used to be computed and folded into `comb` UNCONDITIONALLY, so at
+         U=1 the recovery factor -- and therefore tgraw1, evenThr and every
+         threshold derived from them -- was priced against a half-sample grid
+         the runtime never computes. The measured consequence was a plan
+         whose thresholds did not match its own behaviour, and two accuracy
+         tables regenerated against it. */
+      if(p->U>1){
+        for(size_t k=0;k<m;k++){
+          double c=cos(M_PI*(double)k/(double)m), sn=sin(M_PI*(double)k/(double)m);
+          float xr=p->prod[2*k], xi=p->prod[2*k+1];
+          p->shift[2*k]  =(float)(xr*c-xi*sn);
+          p->shift[2*k+1]=(float)(xr*sn+xi*c);
+        }
+        ap_fft(p->cf,p->shift,p->cod,AP_BACKWARD);
+      }
       for(size_t j=0;j<m;j++){
         float e=p->cev[2*j]*p->cev[2*j]+p->cev[2*j+1]*p->cev[2*j+1];
-        float o=p->cod[2*j]*p->cod[2*j]+p->cod[2*j+1]*p->cod[2*j+1];
         if(e>be) be=e;
-        if(o>bo) bo=o;
+        if(p->U>1){
+          float o=p->cod[2*j]*p->cod[2*j]+p->cod[2*j+1]*p->cod[2*j+1];
+          if(o>bo) bo=o;
+        }
       }
+      /* With no odd half the combined grid IS the even grid, so this is
+         exactly 1 by construction rather than by measurement. */
       float comb = be>bo?be:bo;
       rat[r] = comb>0.f ? sqrtf(be/comb) : 1.f;
       /* combined-grid and interpolated recovery of the signal's peak */
@@ -917,7 +935,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       p->taps_stale=0;
     }
   }
-  float *tcs=p->tcbuf, *rawg=p->rawbuf, *eveng=p->evenbuf;
+  float *tcs=p->tcbuf, *rawg=p->rawbuf;
   {
     /* The SNR the first stage is calibrated against.  By default the search
        threshold (or the plan's, whichever is higher), but a caller may set it
@@ -930,8 +948,13 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     for(int t=0;t<nt;t++){
       float gt=p->tg[t0+t];
       tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
+      /* ONE threshold on the coarse output. tgraw is how much the coarse
+         grid maximum under-reads the true peak, so this converts the design
+         threshold into the units the coarse pass actually reports in.
+         There used to be a second, `eveng`, gating whether to compute the
+         odd half -- a WORK question, not a correctness one. With no odd
+         half there is nothing to gate: the even series IS the answer. */
       rawg[t] =tcs[t]*p->tgraw [t0+t]*0.999f;
-      eveng[t]=tcs[t]*p->tgraw1[t0+t]*p->even_margin;
     }
   }
   /* Coarse lag window.  Even sample j maps to full lag j*R, odd to j*R + R/2,
@@ -949,8 +972,8 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
      branch, so they can overlap.  One threshold has to serve every template, so
      use the lowest: a template whose own margin is higher is filtered below, and
      a lower threshold only ever reports MORE peaks. */
-  float minev=eveng[0];
-  for(int t=1;t<nt;t++) if(eveng[t]<minev) minev=eveng[t];
+  float minev=rawg[0];
+  for(int t=1;t<nt;t++) if(rawg[t]<minev) minev=rawg[t];
   int total=0;
   { unsigned long long _eb = p->prof ? ap_ticks() : 0;
     if(ap_mf_run(p->coarse,d0,nd,t0,nt,cspan,minev,p->cebuf,NULL,
@@ -981,7 +1004,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
        * of pairs.  It must be graw1 and not graw: graw describes the combined
        * U=2 grid, which recovers more, so using it here would cut off peaks the
        * odd half would have found. */
-      const float even_thr = eveng[t];
+      const float even_thr = raw_thr;   /* one threshold; see above */
       unsigned long long _t0 = p->prof ? ap_ticks() : 0;
       ce = p->cebuf[(size_t)d*nt+t];
       if(ce.index>=0 && ce.magnitude<even_thr) ce.index=-1;   /* per-template margin */
