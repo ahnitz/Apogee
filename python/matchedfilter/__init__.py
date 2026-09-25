@@ -1266,23 +1266,26 @@ def choose_threshold(power, n, snr, fd, band, tuning=None):
     rows = rows_by_fd.get((n, lo, use_fd)) or []
     if not rows:
         return None
-    # A BOUND, not an estimate. The threshold rises with both f and ratio --
-    # more in-band power and more samples across the peak both mean the
-    # coarse statistic recovers more, so more can be demanded of it. A row
-    # measured at f' <= f and ratio' <= ratio is therefore a threshold that
-    # was safe on a HARDER reference than this one, and remains safe here.
-    # The largest such row is the tightest bound available.
+    # Inverse-distance in log(f), log(ratio) -- the two axes the threshold
+    # varies along, both dimensionless.
     #
-    # Interpolating between rows instead gave 4 omissions in 120 against a
-    # 3% budget: an interpolated estimate carries the Poisson error of the
-    # rows either side of it and spends the budget that error needs.
-    safe = [rt for rf, rr, rt in rows if rf <= f * 1.001 and rr <= ratio * 1.001]
-    if safe:
-        return float(max(safe))
-    # Nothing measured is harder than this reference, so there is no bound
-    # to give. Refusing sends the caller to pin a configuration rather than
-    # handing back a number no measurement supports.
-    return None
+    # This was briefly a conservative bound instead: the largest row measured
+    # at f' <= f and ratio' <= ratio, on the reasoning that a guarantee wants
+    # a bound rather than an estimate. It was introduced to fix a budget test
+    # failing at 4 omissions in 120 -- and that failure does not move when
+    # the threshold does, 4/120 at both 4.76 interpolated and 4.00 bounded,
+    # so it is not the coarse gate at all. The bound fixed nothing and cost
+    # throughput, so it is gone.
+    num = den = 0.0
+    for rf, rr, rt in rows:
+        d = (np.log(max(rf, 1e-9) / max(f, 1e-9)) ** 2
+             + np.log(max(rr, 1e-9) / max(ratio, 1e-9)) ** 2)
+        if d < 1e-12:
+            return float(rt)
+        w = 1.0 / d
+        num += w * rt
+        den += w
+    return float(num / den) if den else None
 
 
 def _choose_v2(power, n, snr, fd, t):
