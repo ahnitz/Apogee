@@ -39,7 +39,6 @@
 #include "hmf_table.h"
 
 #define HMF_IK 6            /* half-width of the bracket taps: 13 in all */
-static void design_taps(const float *w, size_t m, int K, double delta, float *h);
 static float interp_abs(const float *ev,const float *od,size_t m,int U,
                         const float *w,int K,int i,long j);
 
@@ -90,14 +89,12 @@ struct ap_hmf_plan {
   /* Bracketing the odd transform.  ibuf holds one interpolated coarse maximum
      per template, produced alongside the even pass; ilo/ihi bound its ratio to
      the true combined maximum.  See docs/hierarchical.md. */
-  float *ihlo, *ihhi;         /* [2*(2*IK+1)] complex taps, the two offsets */
   float *ibuf;                /* [nd*nt] */
   /* The interpolation taps are designed against the spectral shape of the
      product the coarse pass forms, |D|^2 |T|^2.  Neither factor may be
      assumed: the reference supplies the first and the caller's templates the
      second, so both are measured and the taps are rebuilt when either moves. */
-  float *refpow, *tpow; int ntpow, taps_stale;
-  float ilo, ihi; int ibrk, incand;
+  float *refpow, *tpow; int ntpow;
   float *tcbuf,*rawbuf;       /* [nt] per-template coarse thresholds, per run   */
   ap_peak *cebuf;             /* [nd*nt] even coarse maxima, whole batch */
   int *firebuf;               /* [nt] which templates fired, for one segment */
@@ -242,10 +239,6 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   p->rawbuf=calloc((size_t)ntmpl,sizeof(float));
   p->cebuf=calloc((size_t)ndi*ntmpl,sizeof(ap_peak));
   p->firebuf=calloc((size_t)ntmpl,sizeof(int));
-  p->ihlo=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
-  p->ihhi=calloc((size_t)2*(2*HMF_IK+1),sizeof(float));
-  p->ibuf=calloc((size_t)ndi*ntmpl,sizeof(float));
-  p->taps_stale=1;
   /* Bounds on the interpolated statistic against the true combined maximum.
      Derived on six captured segments and checked on six others, which violated
      at 0.19%, so they carry a margin -- only the lower one can lose a trigger;
@@ -273,14 +266,8 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
      vectorised interp_max it needs was dead code, plumbed through dispatch.c
      and never called, which is why it used to measure 5x slower -- and the
      soundness criterion above in place of a fitted constant. */
-  p->ilo=0.90f; p->ihi=1.10f; p->ibrk=0; p->incand=16;   /* MF_BRACKET=1 enables */
-  { const char *e;
-    if((e=getenv("MF_BRACKET"))) p->ibrk=atoi(e);
-    if((e=getenv("MF_BRACKET_LO"))) p->ilo=(float)atof(e);
-    if((e=getenv("MF_BRACKET_HI"))) p->ihi=(float)atof(e);
-    if((e=getenv("MF_BRACKET_C"))) p->incand=atoi(e); }
   if(!p->full||!p->coarse||!p->cf||!p->full_fft||!p->fwd||!p->spec||!p->dspec||!p->dready||!p->ct0||!p->fpow||!p->tg||!p->tgraw||!p->shift||!p->shift2||
-     !p->prod||!p->cev||!p->taps||!p->tcbuf||!p->rawbuf||!p->cebuf||!p->firebuf||!p->ihlo||!p->ihhi||!p->ibuf||!p->refpow||!p->tpow){ ap_hmf_destroy(p); return NULL; }
+     !p->prod||!p->cev||!p->taps||!p->tcbuf||!p->rawbuf||!p->cebuf||!p->firebuf||!p->refpow||!p->tpow){ ap_hmf_destroy(p); return NULL; }
   /* Safety factor on the even-pass threshold, over and above the measured graw1.
      The realisation model is a power-law reference filtered by a matched
      template; the ratio filter's product is shaped differently, and on 12
@@ -328,7 +315,7 @@ void ap_hmf_destroy(ap_hmf_plan *p){
   free(p->fwd);free(p->spec);
   free(p->dspec);free(p->dready);free(p->ct0);free(p->fpow);
   if(p->dump) fclose(p->dump);
-  free(p->ihlo);free(p->ihhi);free(p->ibuf);free(p->refpow);free(p->tpow);
+  free(p->refpow);free(p->tpow);
   free(p->tg);free(p->tgraw);free(p->shift);free(p->shift2);
   free(p->prod);free(p->cev);free(p->taps);free(p->tcbuf);free(p->rawbuf);free(p->cebuf);free(p->firebuf);
   free(p);
@@ -583,7 +570,6 @@ int ap_hmf_set_reference(ap_hmf_plan *p,const float *power){
     free(rat); free(ratg); free(ratr);
   }
   for(size_t k=0;k<m;k++) p->refpow[k]=power[k]>0?power[k]:0.f;
-  p->taps_stale=1;
   p->ref_on=1;
   return 0;
 }
@@ -623,62 +609,6 @@ static float interp_abs(const float *ev,const float *od,size_t m,int U,
  * argument.  Solved by plain elimination: it is (2K+1) square, once per
  * reference.
  */
-static void design_taps(const float *w, size_t m, int K, double delta, float *h)
-{
-  const int N = 2*K + 1;
-  double ar[2*HMF_IK+1][2*(2*HMF_IK+1)+2];   /* [row][2*col] real/imag, +rhs */
-  double cr[4*HMF_IK+1], ci[4*HMF_IK+1];
-  for (int d = -2*K; d <= 2*K; d++) {
-    double sr = 0, si = 0;
-    for (size_t k = 0; k < m; k++) {
-      const double a = 2.0*M_PI*(double)k*d/(double)m;
-      sr += w[k]*cos(a); si += w[k]*sin(a);
-    }
-    cr[d+2*K] = sr; ci[d+2*K] = si;
-  }
-  for (int i = 0; i < N; i++) {
-    for (int j = 0; j < N; j++) {
-      const int d = (j-K) - (i-K);
-      ar[i][2*j]   = cr[d+2*K];
-      ar[i][2*j+1] = ci[d+2*K];
-    }
-    double sr = 0, si = 0;
-    for (size_t k = 0; k < m; k++) {
-      const double a = 2.0*M_PI*(double)k*(delta - (i-K))/(double)m;
-      sr += w[k]*cos(a); si += w[k]*sin(a);
-    }
-    ar[i][2*N] = sr; ar[i][2*N+1] = si;
-  }
-  /* complex Gaussian elimination with partial pivoting */
-  for (int c = 0; c < N; c++) {
-    int piv = c; double best = 0;
-    for (int r = c; r < N; r++) {
-      const double v = ar[r][2*c]*ar[r][2*c] + ar[r][2*c+1]*ar[r][2*c+1];
-      if (v > best) { best = v; piv = r; }
-    }
-    if (best <= 0) { for (int i = 0; i < 2*N; i++) h[i] = 0.f; return; }
-    if (piv != c) for (int j = 0; j <= 2*N+1; j++) {
-      const double t = ar[c][j]; ar[c][j] = ar[piv][j]; ar[piv][j] = t; }
-    const double pr = ar[c][2*c], pi_ = ar[c][2*c+1], pm = pr*pr + pi_*pi_;
-    for (int r = 0; r < N; r++) {
-      if (r == c) continue;
-      const double xr = ar[r][2*c], xi = ar[r][2*c+1];
-      const double fr = (xr*pr + xi*pi_)/pm, fi = (xi*pr - xr*pi_)/pm;
-      if (fr == 0 && fi == 0) continue;
-      for (int j = c; j <= N; j++) {
-        const double br = ar[c][2*j], bi = ar[c][2*j+1];
-        ar[r][2*j]   -= fr*br - fi*bi;
-        ar[r][2*j+1] -= fr*bi + fi*br;
-      }
-    }
-  }
-  for (int i = 0; i < N; i++) {
-    const double pr = ar[i][2*i], pi_ = ar[i][2*i+1], pm = pr*pr + pi_*pi_;
-    const double xr = ar[i][2*N], xi = ar[i][2*N+1];
-    h[2*i]   = (float)((xr*pr + xi*pi_)/pm);
-    h[2*i+1] = (float)((xi*pr - xr*pi_)/pm);
-  }
-}
 
 
 
@@ -781,7 +711,7 @@ int ap_hmf_set_template(ap_hmf_plan *p,int t,const float *spec){
        against it rather than against any assumption about its form */
     if(p->ntpow==0) for(size_t k=0;k<m;k++) p->tpow[k]=0.f;
     for(size_t k=0;k<m;k++) p->tpow[k]+=(float)(a0[2*k]*a0[2*k]+a0[2*k+1]*a0[2*k+1]);
-    p->ntpow++; p->taps_stale=1; }
+    p->ntpow++; }
   if(ap_mf_set_template(p->coarse,t,a0)) return -1;
   /* Recovery depends on the shape of the correlation peak, which is set by the
      OUTPUT spectrum |H|^2 w -- not by the template alone.  Measure it on a
@@ -902,18 +832,6 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
      rather than per pair.  With D data segments and T templates the pair loop
      runs D*T times and this runs T times: the whole point of the D x T shape is
      that anything one-sided belongs outside the product. */
-  if(p->ibrk && p->taps_stale && p->ntpow>0){
-    float *w=malloc(m*sizeof(float));
-    if(w){
-      const float inv=1.0f/(float)p->ntpow;
-      for(size_t k=0;k<m;k++) w[k]=p->refpow[k]*p->tpow[k]*inv;
-      design_taps(w,m,HMF_IK,-0.5,p->ihlo);
-      design_taps(w,m,HMF_IK, 0.5,p->ihhi);
-      free(w);
-      ap_mf_set_interp(p->coarse,p->ihlo,p->ihhi,2*HMF_IK+1,p->incand,p->ibuf);
-      p->taps_stale=0;
-    }
-  }
   float *tcs=p->tcbuf, *rawg=p->rawbuf;
   {
     /* The SNR the first stage is calibrated against.  By default the search
@@ -935,8 +853,15 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
            never used. */
         tcs[t]=rawg[t]=p->cal_thr;
       }else{
-        tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
-        rawg[t]=tcs[t]*p->tgraw[t0+t]*0.999f;
+        /* One threshold here too. tc is the bar a perfectly recovered peak
+           would clear; tgraw converts it into the units the coarse maximum
+           is actually reported in, and THAT is the decision. Firing at tc
+           and using interpolation to rescue the [raw, tc) window costs more
+           in taps than the correlations it avoids -- measured at matched
+           false dismissal, 1.66 ms against 1.53 ms. */
+        rawg[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)
+                *p->coarse_margin*p->tgraw[t0+t]*0.999f;
+        tcs[t]=rawg[t];
       }
     }
   }
@@ -1019,23 +944,6 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                 "coarse max=%.3f (even %.3f odd %.3f)\n",
                 p->pairs,margin,even_thr,bestmag,ce.magnitude,0.0f);
       fire = bestmag>=margin;
-      if(!fire && bestmag>=raw_thr){
-        /* Rare: the raw maximum sits in [graw*margin, margin), the only window where
-           interpolation can change the answer.  Only here is the series worth
-           materialising, and only around the argmax -- which is exactly what the
-           table's recovery factor was measured on. */
-        p->npre++;
-        const long bestj = (long)ce.index;
-        prod_inter(Dc,p->ct0+(size_t)(t0+t)*2*m,p->prod,m);
-        ap_fft(p->cf,p->prod,p->cev,AP_BACKWARD);
-        for(int i=0;i<HMF_NSUB && !fire;i++){
-          p->ninterp+=2;
-          /* NULL odd series: interp_abs never reads it on a critically
-             sampled grid, which is the only grid there is now. */
-          if(interp_abs(p->cev,NULL,m,1,p->taps,K,i,bestj-1) >= margin) fire=1;
-          else if(interp_abs(p->cev,NULL,m,1,p->taps,K,i,bestj) >= margin) fire=1;
-        }
-      }
       verdict:
       if(fire){
         p->trig++;
