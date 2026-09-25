@@ -364,8 +364,8 @@ int ap_hmf_coarse_thresholds(ap_hmf_plan *p,float threshold,
      NOT comparable to a coarse output; `raw` is the only number a backend
      should test against, and `even` is kept equal to it so the GPU's
      two-test predicate collapses to one without changing its answer. */
-  const float t1 = tc*p->tgraw[0]*0.999f;
-  if(margin) *margin = tc;
+  const float t1 = p->cal_thr>=0.0f ? p->cal_thr : tc*p->tgraw[0]*0.999f;
+  if(margin) *margin = p->cal_thr>=0.0f ? p->cal_thr : tc;
   if(raw)    *raw    = t1;
   if(even)   *even   = t1;
   return 0;
@@ -968,16 +968,18 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                                : (threshold>p->snr ? threshold : p->snr);
     for(int t=0;t<nt;t++){
       float gt=p->tg[t0+t];
-      tcs[t]= p->cal_thr >= 0.0f
-              ? p->cal_thr / (p->tgraw[t0+t]*0.999f)
-              : hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
-      /* ONE threshold on the coarse output. tgraw is how much the coarse
-         grid maximum under-reads the true peak, so this converts the design
-         threshold into the units the coarse pass actually reports in.
-         There used to be a second, `eveng`, gating whether to compute the
-         odd half -- a WORK question, not a correctness one. With no odd
-         half there is nothing to gate: the even series IS the answer. */
-      rawg[t] =tcs[t]*p->tgraw [t0+t]*0.999f;
+      if(p->cal_thr >= 0.0f){
+        /* The calibrated threshold IS the decision. Setting margin == raw
+           closes the [raw, margin) window, which is the only place
+           interpolation can change an answer -- so it never runs. The
+           calibration measured the RAW coarse maximum against this number;
+           interpolating afterwards would refine a statistic the measurement
+           never used. */
+        tcs[t]=rawg[t]=p->cal_thr;
+      }else{
+        tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
+        rawg[t]=tcs[t]*p->tgraw[t0+t]*0.999f;
+      }
     }
   }
   /* Coarse lag window.  Even sample j maps to full lag j*R, odd to j*R + R/2,
