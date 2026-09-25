@@ -41,7 +41,7 @@
         "descriptors": 5
       },
       "file": "tierb_64.spv",
-      "bytes": 15288,
+      "bytes": 15312,
       "compact": {
         "file": "compact_64.spv",
         "descriptors": 5
@@ -112,7 +112,7 @@
         "descriptors": 5
       },
       "file": "tierb_128.spv",
-      "bytes": 15876,
+      "bytes": 15900,
       "compact": {
         "file": "compact_128.spv",
         "descriptors": 5
@@ -183,7 +183,7 @@
         "descriptors": 5
       },
       "file": "tierb_256.spv",
-      "bytes": 17812,
+      "bytes": 17836,
       "compact": {
         "file": "compact_256.spv",
         "descriptors": 5
@@ -254,7 +254,7 @@
         "descriptors": 5
       },
       "file": "tierb_512.spv",
-      "bytes": 21632,
+      "bytes": 21656,
       "compact": {
         "file": "compact_512.spv",
         "descriptors": 5
@@ -325,7 +325,7 @@
         "descriptors": 5
       },
       "file": "tierb_1024.spv",
-      "bytes": 22244,
+      "bytes": 22268,
       "compact": {
         "file": "compact_1024.spv",
         "descriptors": 5
@@ -396,7 +396,7 @@
         "descriptors": 5
       },
       "file": "tierb_2048.spv",
-      "bytes": 22832,
+      "bytes": 22856,
       "compact": {
         "file": "compact_2048.spv",
         "descriptors": 5
@@ -467,7 +467,7 @@
         "descriptors": 5
       },
       "file": "tierb_4096.spv",
-      "bytes": 24768,
+      "bytes": 24792,
       "compact": {
         "file": "compact_4096.spv",
         "descriptors": 5
@@ -542,7 +542,7 @@
         }
       },
       "file": "tierb_8192.spv",
-      "bytes": 28588,
+      "bytes": 28612,
       "compact": {
         "file": "compact_8192.spv",
         "descriptors": 5
@@ -645,7 +645,7 @@
         }
       },
       "file": "tierb_16384.spv",
-      "bytes": 29200,
+      "bytes": 29224,
       "compact": {
         "file": "compact_16384.spv",
         "descriptors": 5

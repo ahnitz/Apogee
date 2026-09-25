@@ -73,6 +73,24 @@ static const uint CH  = ((CAP / WG) > R) ? R : ((CAP / WG > 0) ? (CAP / WG) : 1)
 #ifndef COARSE16
 #define COARSE16 0
 #endif
+//: PPG: pairs per workgroup. One pair per workgroup makes a workgroup a
+//: SINGLE wave32 at band 512, and the 16-workgroups-per-CU cap then pins
+//: occupancy at 16 waves against a 32-wave capacity -- 50%, in every
+//: configuration measured (at small bands the workgroup cap binds, at
+//: large bands LDS does, and the product is the same 16 either way).
+//:
+//: That one number explains why halving traffic, halving LDS and halving
+//: ALU work each bought nothing: at 16 waves/CU there is not enough
+//: parallelism to hide a global load, and none of those touch parallelism.
+//: Packing K pairs per workgroup raises waves/workgroup WITHOUT raising
+//: LDS per wave, which is the only lever that moves it.
+//:
+//: Each pair gets its own staging region; every stg access is offset by
+//: _stgBase. At band 512 one pair is exactly one wave, so WaveActiveMax
+//: still reduces per pair.
+#ifndef PPG
+#define PPG 1
+#endif
 //: The transform's own type. half2 halves register occupancy per point --
 //: R=16 complex drops from 32 VGPRs to 16 -- which is what lets independent
 //: transforms sit in registers together and cover each other's exchange
@@ -93,9 +111,31 @@ C cload(StructuredBuffer<CVal> b, uint i)
 typedef float2 CVal;
 C cload(StructuredBuffer<CVal> b, uint i) { return b[i]; }
 #endif
-groupshared uint stg[CH * WG * 2];
-void stgPut(uint i, float2 v) { stg[2*i] = asuint(v.x); stg[2*i+1] = asuint(v.y); }
-float2 stgGet(uint i) { return float2(asfloat(stg[2*i]), asfloat(stg[2*i+1])); }
+//: Half-width staging is what makes PPG pay. Each pair needs its own
+//: region, so LDS scales with PPG -- at CH*WG*2 uints per pair, PPG=4 costs
+//: 16 KB and a CU fits 4 workgroups x 4 waves: still 16 waves, exactly what
+//: one pair per workgroup gave. Packing the stage to half halves the region,
+//: so PPG=4 costs 8 KB, a CU fits 8 workgroups x 4 waves = 32 waves, and
+//: occupancy finally doubles to the hardware's capacity.
+//:
+//: This is why halving LDS measured neutral on its own: it relieved a limit
+//: that was not binding until PPG made waves available to use it. The two
+//: changes are only worth anything together.
+#if COARSE16
+static const uint STGW = CH * WG;
+groupshared uint stg[STGW * PPG];
+static uint _stgBase;
+void stgPut(uint i, C v)
+{ stg[_stgBase+i] = (f32tof16(float(v.x)) & 0xFFFFu) | (f32tof16(float(v.y)) << 16); }
+C stgGet(uint i)
+{ uint p = stg[_stgBase+i]; return C(CS(f16tof32(p & 0xFFFFu)), CS(f16tof32(p >> 16))); }
+#else
+static const uint STGW = CH * WG * 2;
+groupshared uint stg[STGW * PPG];
+static uint _stgBase;
+void stgPut(uint i, float2 v) { stg[_stgBase+2*i] = asuint(v.x); stg[_stgBase+2*i+1] = asuint(v.y); }
+float2 stgGet(uint i) { return float2(asfloat(stg[_stgBase+2*i]), asfloat(stg[_stgBase+2*i+1])); }
+#endif
 static uint _tid;
 
 //: Levels until a block fits in one thread's registers. Known from NLEN,
@@ -311,7 +351,7 @@ void filterPair(uint pair, uint tid,
     // than -1 also means a bin whose every |v|^2 underflowed reports index
     // -1 instead of naming the first sample, matching the CPU.
     GroupMemoryBarrierWithGroupSync();          // transform is done with stg
-    for (uint b = tid; b < nbins; b += WG) stg[b] = thrBits;
+    for (uint b = tid; b < nbins; b += WG) stg[_stgBase+b] = thrBits;
     GroupMemoryBarrierWithGroupSync();
 
     uint myMag[16];
@@ -331,7 +371,7 @@ void filterPair(uint pair, uint tid,
         myBin[i] = live ? (binShift >= 0 ? (off >> uint(binShift)) : (off / binsize))
                         : 0u;
         if (nbins > 1 && myMag[i] > thrBits)
-            InterlockedMax(stg[myBin[i]], myMag[i]);
+            InterlockedMax(stg[_stgBase+myBin[i]], myMag[i]);
     }
 
     // One bin over the whole window is the common case at the small sizes --
@@ -343,7 +383,7 @@ void filterPair(uint pair, uint tid,
         uint bestBits = thrBits;
         [unroll] for (uint i = 0; i < R; ++i) bestBits = max(bestBits, myMag[i]);
         uint wm = WaveActiveMax(bestBits);
-        if (WaveIsFirstLane() && wm > thrBits) InterlockedMax(stg[0], wm);
+        if (WaveIsFirstLane() && wm > thrBits) InterlockedMax(stg[_stgBase], wm);
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -351,7 +391,7 @@ void filterPair(uint pair, uint tid,
     // one thread writes, at equal magnitude and different indices; any of
     // them is a correct argmax and the caller was promised no tie-break.
     [unroll] for (uint i = 0; i < R; ++i) {
-        if (myMag[i] > thrBits && stg[myBin[i]] == myMag[i]) {
+        if (myMag[i] > thrBits && stg[_stgBase+myBin[i]] == myMag[i]) {
             uint o = pair * nbins + myBin[i];
             peakIdx[o] = int(slotToIndex(tid * R + i));
             peakVal[o] = float2(float(r[i].x), float(r[i].y));
@@ -360,7 +400,7 @@ void filterPair(uint pair, uint tid,
     // Bins nothing cleared: index -1 and a zero value, matching the CPU. No
     // value is offered for a sample that was never chosen.
     for (uint b = tid; b < nbins; b += WG) {
-        if (stg[b] == thrBits) {
+        if (stg[_stgBase+b] == thrBits) {
             uint o = pair * nbins + b;
             peakIdx[o] = -1;
             peakVal[o] = float2(0.0f, 0.0f);
@@ -368,7 +408,7 @@ void filterPair(uint pair, uint tid,
     }
 }
 
-[shader("compute")][numthreads(WG,1,1)]
+[shader("compute")][numthreads(WG*PPG,1,1)]
 void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                 RWStructuredBuffer<int> peakIdx,
@@ -377,7 +417,23 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 uniform uint binsize, uniform int binShift, uniform uint nbins,
                 uniform uint thrBits)
 {
-    filterPair(gid.x, lid.x, data, tmpl, peakIdx, peakVal, ntmpl,
+    // lid spans PPG pairs of WG threads. Each slice is one pair, and at
+    // band 512 one pair is exactly one wave, so WaveActiveMax below still
+    // reduces per pair rather than across the group.
+    // One pair per group: the split is identity and _stgBase is always 0.
+    // Leaving the divide and the multiply in cost ~20% at band 512, where
+    // this path is the default -- the compiler cannot prove _sub == 0.
+    // Computed into locals rather than splitting the CALL across #if/#else,
+    // which the preprocessor rejects outright at some sizes.
+#if PPG == 1
+    uint _pr = gid.x, _t = lid.x;
+    _stgBase = 0;
+#else
+    uint _sub = lid.x / WG;
+    uint _pr = gid.x * PPG + _sub, _t = lid.x % WG;
+    _stgBase = _sub * STGW;
+#endif
+    filterPair(_pr, _t, data, tmpl, peakIdx, peakVal, ntmpl,
                winStart, winEnd, binsize, binShift, nbins, thrBits);
 }
 
@@ -393,7 +449,7 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
 //: dispatches in ONE command buffer with no host in the loop. Reading the
 //: coarse result back to choose survivors cost far more than the filtering
 //: did: 0.26 ms of kernel work inside a 5.0 ms call at n=16384.
-[shader("compute")][numthreads(WG,1,1)]
+[shader("compute")][numthreads(WG*PPG,1,1)]
 void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                 RWStructuredBuffer<int> peakIdx,
@@ -403,7 +459,14 @@ void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                 uniform uint binsize, uniform int binShift, uniform uint nbins,
                 uniform uint thrBits, uniform float thr)
 {
+#if PPG == 1
     uint pair = gid.x, tid = lid.x;
+    _stgBase = 0;
+#else
+    uint _sub = lid.x / WG;
+    uint pair = gid.x * PPG + _sub, tid = lid.x % WG;
+    _stgBase = _sub * STGW;
+#endif
     // ONE coarse value against ONE threshold. There used to be two buffers
     // and two thresholds: an even half and a half-sample-shifted odd half,
     // with a cheap gate deciding whether the odd transform was worth
@@ -469,7 +532,7 @@ void compactPairs(uint3 gid: SV_DispatchThreadID,
 //: The refine, over a compacted list. Identical to gatedTierB except that
 //: the pair comes from the list rather than from the group id, and there is
 //: no gate left to apply -- being in the list IS having passed it.
-[shader("compute")][numthreads(WG,1,1)]
+[shader("compute")][numthreads(WG*PPG,1,1)]
 void refineListed(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                   StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                   RWStructuredBuffer<int> peakIdx,

@@ -458,3 +458,45 @@ entirely, at n=512 two (2x2).
 This is the change that should move the number. Everything before it was
 either a prerequisite (packed inputs, half2 registers) or a falsified
 hypothesis (bandwidth, launch, occupancy-from-count, LDS size).
+
+### PPG: fill the wave. 2.3x at band 128, and the rule that bounds it
+
+`WG = band/16` with one pair per workgroup means a band under 512 runs a
+workgroup SMALLER than one wave32 -- at band 128, eight threads on a
+32-lane wave, three quarters of it idle. PPG packs 512/band pairs into a
+group so the lanes are full, each pair getting its own LDS region via
+_stgBase, and at band 512 one pair is still exactly one wave so
+WaveActiveMax keeps reducing per pair.
+
+    band   baseline   now      (means of 3 runs)
+     128    1.911    0.846     2.26x FASTER
+     256    1.095    1.107     neutral
+     512    2.239    2.390     -7%, inside the noise
+    1024    4.348    4.487     -3%, inside the noise
+
+The rule is PPG = 512/band, and it is bounded by exactly what it fixes:
+past a full wave there is nothing left to fill. PPG=4 at band 512 changed
+nothing and at band 1024 regressed 4.348 -> 5.006, because the per-group
+stage grows with PPG while the wave was already full. So the half-width
+coarse path is gated to band < 256 -- everywhere else keeps the fp32
+kernel, which measured faster.
+
+Two traps this round, both of which produced confident wrong readings:
+
+  * **Run-to-run variance is ~15% at band 128 and ~7% at 512.** Single
+    runs supported the opposite conclusion at 256 and 1024. Every number
+    above is a mean of three, and the -7%/-3% rows are reported as noise
+    rather than as regressions because they are inside that spread.
+
+  * **A PPG=1 build still paid for PPG.** The _sub divide and the
+    _stgBase multiply are identity at PPG=1, but the compiler cannot prove
+    _sub == 0, and leaving them in cost ~20% at band 512 -- on the DEFAULT
+    path, which does not use PPG at all. They are now behind `#if PPG == 1`.
+    Computing them into locals matters too: splitting the filterPair CALL
+    across #if/#else/#endif failed the preprocessor at n=64.
+
+Still 5.5x off fp16 peak at band 512 (8.5 ns/pair against 0.78). Filling
+the wave was worth 2.3x where the wave was empty and nothing where it was
+already full, so the remaining gap at full-wave bands is NOT lane
+utilisation. It is still the serial exchange chain, and the untried lever
+is several independent transforms per THREAD rather than per workgroup.

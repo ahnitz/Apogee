@@ -196,7 +196,7 @@ def reflect(blob):
                 push_constant=push_constant)
 
 
-def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0):
+def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0, ppg=1):
     """Emit Metal Shading Language, and a .metallib when one can be built.
 
     The MSL is generated anywhere -- it is Slang's own output and needs no
@@ -211,7 +211,8 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0):
     """
     src = outdir / ("mm_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   % (n, cap, coarse16) + KERNEL.read_text())
+                   "#define PPG %d\n"
+                   % (n, cap, coarse16, ppg) + KERNEL.read_text())
     stem = "%s_%d%s" % (STEMS[entry], n, suffix)
     msl = outdir / (stem + ".metal")
     proc = subprocess.run(
@@ -252,11 +253,11 @@ def lds_bytes(n, cap):
     return ch * wg * 8
 
 
-def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0):
+def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0, ppg=1):
     cap = LDS_CAP[n] if cap is None else cap
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   % (n, cap, coarse16) + KERNEL.read_text())
+                   "#define PPG %d\n" % (n, cap, coarse16, ppg) + KERNEL.read_text())
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(
@@ -372,6 +373,15 @@ def main(argv=None):
         # than a changed one, and the flat/refine paths keep full precision.
         for centry in ("fusedTierB", "gatedTierB"):
             compile_one(slangc, n, OUT, entry=centry, suffix="_c16", coarse16=1)
+            # PPG=4: four pairs per workgroup. With the half-width stage that
+            # is 8 KB per group, so a CU holds 8 groups x 4 waves = 32 waves
+            # against the 16 that one pair per group allowed. Kept as a
+            # SEPARATE build so the host can fall back when the pair count
+            # is not a multiple of 4 -- a partial group would run pairs off
+            # the end of the data buffer.
+            for _p in (2, 4):
+                compile_one(slangc, n, OUT, entry=centry,
+                            suffix="_c16p%d" % _p, coarse16=1, ppg=_p)
             compile_metal(slangc, n, mcap, centry, MSL, suffix="_c16", coarse16=1)
 
         for entry in ENTRIES:

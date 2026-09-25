@@ -37,6 +37,23 @@ def _manifest():
 _MAX_BINS = 2048
 
 
+def _use_c16(band):
+    """Half-width coarse path, only where filling a wave pays for it.
+
+    WG = band/16, so a band under 512 gives a workgroup SMALLER than one
+    wave32 and packing PPG = 512/band pairs into it fills the idle lanes.
+    Measured at band 128 (WG 8, PPG 4): 1.911 -> 0.865 ms, 2.2x.
+
+    At band 512 the workgroup is already a full wave and there is nothing
+    to fill, so the half2 conversions in the stage are pure added cost --
+    2.239 -> 2.615 ms, 17% SLOWER, and band 1024 11% slower. Those are
+    means of three runs; single runs on this part vary by ~15% at band 128
+    and ~7% at 512, which is wide enough that one measurement either way
+    would have supported the wrong answer.
+    """
+    return band < 256
+
+
 def _pack_half2(a):
     """complex64 -> one uint32 per value, real in the low half.
 
@@ -551,16 +568,16 @@ class Context:
         # filtering it was feeding.
         if upload_data:
             bufs["data"].write(np.ascontiguousarray(data, np.complex64))
-            if _COARSE_TILE.get(band):
-                bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
-            else:
+            if _use_c16(band) and not _COARSE_TILE.get(band):
                 bufs["cdata"].write(_pack_half2(data[:, :band]))
+            else:
+                bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
         if upload_tmpl:
             bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
-            if _COARSE_TILE.get(band):
-                bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
-            else:
+            if _use_c16(band) and not _COARSE_TILE.get(band):
                 bufs["ct0"].write(_pack_half2(ct0))
+            else:
+                bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
             bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
 
         cmds = (_vp * 1)(cmd)
@@ -604,16 +621,32 @@ class Context:
                    t2, even_thr, raw_thr):
         vk = self.vk
         tile = _COARSE_TILE.get(band)
+        _ppg = 1          # pairs per workgroup; raised only on the c16 path
         if tile:
             cpipe, clayout, cset_layout = self._build_pipeline(
                 ("coarse", band), "coarse_%d.spv" % band, 3, 8)
+        elif not _use_c16(band):
+            cpipe, clayout, cset_layout = self.pipeline(band)
         else:
             # The coarse ROLE, reading packed cdata/ct0. Not self.pipeline()
             # -- that is the flat filter's full-precision build of the same
             # entry, and handing it packed buffers makes it read 4-byte
             # elements as 8-byte ones: every peak comes back -1.
+            # Four pairs per workgroup where the count allows it. A partial
+            # group would index past the data buffer, so the fallback is not
+            # optional -- it is what makes the fast build safe to ship.
+            # Fill exactly one wave32 and no more. WG = band/16, so
+            # PPG = 32/WG = 512/band. Measured at band 128 (WG 8): 1.911 ->
+            # 0.932 ms, 2.05x. Beyond a full wave it does not pay -- band
+            # 512 is already WG 32 and PPG 4 changed nothing there, while
+            # band 1024 regressed 4.348 -> 5.006 as the per-group stage grew.
+            _ppg = max(1, min(4, 512 // band))
+            if (nd * nt) % _ppg:
+                _ppg = 1          # a partial group would index past the data
             cpipe, clayout, cset_layout = self._build_pipeline(
-                ("coarse16", band), "tierb_%d_c16.spv" % band,
+                ("coarse16", band, _ppg),
+                "tierb_%d_c16%s.spv" % (band,
+                    "p%d" % _ppg if _ppg > 1 else ""),
                 _NBIND, _PUSH_BYTES)
         # gatedTierB stays full precision: in this path it is bound to the
         # full-width data/tmpl set (`ds`), not to cdata/ct0. Only `cpipe`
@@ -627,8 +660,8 @@ class Context:
         b = {
             "data":  _Buffer(self, nd * n * 8),
             "tmpl":  _Buffer(self, nt * n * 8),
-            "cdata": _Buffer(self, nd * band * (8 if tile else 4)),
-            "ct0":   _Buffer(self, nt * band * (8 if tile else 4)),
+            "cdata": _Buffer(self, nd * band * (4 if _use_c16(band) and not tile else 8)),
+            "ct0":   _Buffer(self, nt * band * (4 if _use_c16(band) and not tile else 8)),
             "ct1":   _Buffer(self, nt * band * 8),
             "cidx":  _Buffer(self, pairs * 4),
             "cval":  _Buffer(self, pairs * 8),
@@ -689,7 +722,8 @@ class Context:
                                            band.bit_length() - 1, 1, 0)
                 vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0,
                                       _PUSH_BYTES, ctypes.byref(pc))
-                vk.vkCmdDispatch(cmd, pairs, 1, 1)
+                # PPG pairs per workgroup, so PPG times fewer groups.
+                vk.vkCmdDispatch(cmd, pairs // _ppg, 1, 1)
 
         def coarse_odd(ds):
             """The odd half, GATED on the even one.
