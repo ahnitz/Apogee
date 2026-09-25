@@ -201,6 +201,11 @@ void *create(size_t N){
      at every size.  The store is simply the cost of writing the intermediate
      (128 KiB at 2^14, ~63 GB/s, which is L2 bandwidth), not set aliasing. */
   p->istr = (size_t)n2;
+  /* ilay picks the [k2 block][n1][lane] intermediate layout, which makes
+     stage A's stores contiguous instead of strided by istr. Both stage A
+     and stage B implement it and the buffer is sized for it -- but nothing
+     ever set it, so the strided path has always been the only one used. */
+  { const char *e=getenv("MF_ILAY"); p->ilay = e?atoi(e):0; }
   {
     { size_t sz=(size_t)n1*p->istr;
       size_t alt=(size_t)(n2/AP_W)*n1*AP_W;        /* [k2 block][n1][lane] */

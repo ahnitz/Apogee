@@ -446,7 +446,7 @@ uint slotToIndex(uint slot)
 #endif
 
 void filterOne(uint pair, uint d, uint t, uint tid, C dreg[16],
-               StructuredBuffer<CVal> tmpl,
+               StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
                uint winStart, uint winEnd,
                uint binsize, int binShift, uint nbins, uint thrBits)
@@ -454,8 +454,19 @@ void filterOne(uint pair, uint d, uint t, uint tid, C dreg[16],
     C r[16];
 
     // level 0: gather this thread's stride-WG column straight from global
+#if COARSE16
     [unroll] for (uint n2 = 0; n2 < R; ++n2)
         r[n2] = cmulConj(dreg[n2], cload(tmpl, t*N + tid + WG * n2));
+#else
+    // No tile on this path, so nothing amortises a hoisted data slice --
+    // it is 16 live registers of pure cost. The FLAT filter and the refine
+    // stage both come through here, and holding dreg for them cost the
+    // flat filter 1.29 -> 2.93 ms at n=4096 before this guard.
+    [unroll] for (uint n2 = 0; n2 < R; ++n2) {
+        uint idx = tid + WG * n2;
+        r[n2] = cmulConj(cload(data, d*N + idx), cload(tmpl, t*N + idx));
+    }
+#endif
 
     [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
         uint want[16];                       // scoped per level
@@ -752,8 +763,12 @@ void filterPair(uint pair, uint tid,
     uint p0 = pair * TILE_T;
     uint d = p0 / ntmpl, t0 = p0 % ntmpl;
     C dreg[16];
+#if COARSE16
     [unroll] for (uint n2 = 0; n2 < R; ++n2)
         dreg[n2] = cload(data, d*N + tid + WG * n2);
+#else
+    [unroll] for (uint n2 = 0; n2 < R; ++n2) dreg[n2] = C(0.0f);
+#endif
 #if COARSE16 && (TILE_T % 2) == 0
     // Two at a time, in split/SoA form.
     [unroll] for (uint k = 0; k < TILE_T; k += 2)
@@ -761,7 +776,7 @@ void filterPair(uint pair, uint tid,
                   peakIdx, peakVal, winStart, winEnd, thrBits);
 #else
     [unroll] for (uint k = 0; k < TILE_T; ++k)
-        filterOne(p0 + k, d, t0 + k, tid, dreg, tmpl, peakIdx, peakVal,
+        filterOne(p0 + k, d, t0 + k, tid, dreg, data, tmpl, peakIdx, peakVal,
                   winStart, winEnd, binsize, binShift, nbins, thrBits);
 #endif
 }

@@ -37,11 +37,11 @@
       "push_constant": true,
       "gated": {
         "file": "gated_64.spv",
-        "bytes": 16812,
+        "bytes": 16460,
         "descriptors": 5
       },
       "file": "tierb_64.spv",
-      "bytes": 16060,
+      "bytes": 15708,
       "compact": {
         "file": "compact_64.spv",
         "descriptors": 5
@@ -108,11 +108,11 @@
       "push_constant": true,
       "gated": {
         "file": "gated_128.spv",
-        "bytes": 17400,
+        "bytes": 17048,
         "descriptors": 5
       },
       "file": "tierb_128.spv",
-      "bytes": 16648,
+      "bytes": 16296,
       "compact": {
         "file": "compact_128.spv",
         "descriptors": 5
@@ -179,11 +179,11 @@
       "push_constant": true,
       "gated": {
         "file": "gated_256.spv",
-        "bytes": 19336,
+        "bytes": 18984,
         "descriptors": 5
       },
       "file": "tierb_256.spv",
-      "bytes": 18584,
+      "bytes": 18232,
       "compact": {
         "file": "compact_256.spv",
         "descriptors": 5
@@ -250,11 +250,11 @@
       "push_constant": true,
       "gated": {
         "file": "gated_512.spv",
-        "bytes": 23312,
+        "bytes": 22960,
         "descriptors": 5
       },
       "file": "tierb_512.spv",
-      "bytes": 22560,
+      "bytes": 22208,
       "compact": {
         "file": "compact_512.spv",
         "descriptors": 5
@@ -321,11 +321,11 @@
       "push_constant": true,
       "gated": {
         "file": "gated_1024.spv",
-        "bytes": 23924,
+        "bytes": 23572,
         "descriptors": 5
       },
       "file": "tierb_1024.spv",
-      "bytes": 23172,
+      "bytes": 22820,
       "compact": {
         "file": "compact_1024.spv",
         "descriptors": 5
@@ -392,11 +392,11 @@
       "push_constant": true,
       "gated": {
         "file": "gated_2048.spv",
-        "bytes": 24512,
+        "bytes": 24160,
         "descriptors": 5
       },
       "file": "tierb_2048.spv",
-      "bytes": 23760,
+      "bytes": 23408,
       "compact": {
         "file": "compact_2048.spv",
         "descriptors": 5
@@ -463,11 +463,11 @@
       "push_constant": true,
       "gated": {
         "file": "gated_4096.spv",
-        "bytes": 26448,
+        "bytes": 26096,
         "descriptors": 5
       },
       "file": "tierb_4096.spv",
-      "bytes": 25696,
+      "bytes": 25344,
       "compact": {
         "file": "compact_4096.spv",
         "descriptors": 5
@@ -534,7 +534,7 @@
       "push_constant": true,
       "gated": {
         "file": "gated_8192.spv",
-        "bytes": 30424,
+        "bytes": 30072,
         "descriptors": 5,
         "portable": {
           "file": "gated_8192_lds32.spv",
@@ -542,7 +542,7 @@
         }
       },
       "file": "tierb_8192.spv",
-      "bytes": 29672,
+      "bytes": 29320,
       "compact": {
         "file": "compact_8192.spv",
         "descriptors": 5
@@ -637,7 +637,7 @@
       "push_constant": true,
       "gated": {
         "file": "gated_16384.spv",
-        "bytes": 31036,
+        "bytes": 30684,
         "descriptors": 5,
         "portable": {
           "file": "gated_16384_lds32.spv",
@@ -645,7 +645,7 @@
         }
       },
       "file": "tierb_16384.spv",
-      "bytes": 30284,
+      "bytes": 29932,
       "compact": {
         "file": "compact_16384.spv",
         "descriptors": 5
