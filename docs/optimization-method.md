@@ -152,7 +152,35 @@ STORAGE and left the ARITHMETIC unpacked, and nothing at source level said
 so. Packing requires the data layout to match the instruction -- for
 complex, that means split/SoA (re0,re1),(im0,im1) rather than (re,im).
 
-## 12. Commit hygiene while optimising
+## 12. Vectorisation is a LAYOUT property, not a type property
+
+`typedef half2 C` halved the storage and left the arithmetic unpacked: 789
+scalar half ops against 928 packed. Nothing at source level said so. A
+packed instruction needs its operands laid out the way the instruction
+consumes them -- elementwise, lane by lane -- and a complex multiply
+(ax*bx - ay*by, ax*by + ay*bx) is a CROSS pattern that never satisfies that
+in interleaved (re,im) form.
+
+The same trap is waiting on every SIMD target. AoS complex under AVX or
+NEON degrades into shuffles and scalar-width work in exactly this way; the
+CPU path here already uses split complex for precisely this reason. When
+adopting a narrower type for speed, verify in the disassembly that the
+arithmetic packed -- the declaration will not tell you.
+
+**And when you do go SoA, check WHICH axis to pair along.** The obvious
+choice is usually wrong. Pairing adjacent elements within one transform
+puts a radix-4 butterfly's operands (o, o+4, o+8, o+12) at the same
+component of four different registers, so every butterfly needs a component
+extract -- reintroducing the exact moves being eliminated. Pair across two
+INDEPENDENT problems instead: two transforms, two pairs, two rows. Then the
+lanes never interact, every operation is elementwise, and the register cost
+is identical to holding the two problems separately.
+
+Corollary: **a partial conversion is worse than either endpoint.** The
+boundary between AoS and SoA regions costs precisely the gather/scatter
+being removed, so this class of change has to land in one go or not at all.
+
+## 13. Commit hygiene while optimising
 
 `git add -A` swept an unrelated in-progress refactor into a commit and put
 a 40% regression on main for two commits. When experimenting, commit
