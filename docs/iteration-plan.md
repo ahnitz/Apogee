@@ -585,3 +585,34 @@ Order of work:
   2. load as uint4 in the coarse kernel, unpack 2 complex per 32 bits
   3. keep the fp32 path untouched -- it is the flat filter's, and it
      measured faster at full-wave bands
+
+### Permuted banks and wide loads: both REJECTED by measurement
+
+Two attempts to cut load instructions, both reverted:
+
+    band                    128     256     512    1024
+    baseline (old coarse)  1.911   1.095   2.239   4.348 ms
+    permuted, scalar loads 0.836   1.162   2.654   4.558
+    permuted, uint4 loads  0.803   1.139   2.628   4.556
+
+Permuting so a thread's R values are contiguous, then loading 4 complex per
+uint4 -- 4 load instructions per buffer where the scalar form needs 16 --
+made band 512 ~17% SLOWER, not faster.
+
+The reason is that the ORIGINAL layout was already optimal. `idx = tid +
+WG*n2` has the 32 lanes of a wave reading consecutive addresses, so one
+instruction touches 4 full cache lines, perfectly coalesced. Permuting puts
+the lanes 64 bytes apart: 32 distinct lines per instruction, each only
+partly used by that instruction. Fewer instructions, far worse coalescing,
+and coalescing won.
+
+So the load-issue-rate hypothesis is dead too. The stubbing result stands --
+88% of the kernel is the loads, the exchange is 12%, the arithmetic is free
+-- but the loads are already issued as efficiently as this layout allows.
+
+What that leaves is not making the loads cheaper but making them FEWER, and
+the pair grid is where the redundancy is: every data row is read by all
+ntemplates pairs and every template row by all ndata pairs. A workgroup
+that handles one data row against K templates loads 1+K rows instead of 2K.
+THAT is how global loads approach free, and it is different from PPG, which
+packs independent pairs each carrying their own two loads.
