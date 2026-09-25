@@ -126,7 +126,33 @@ fp32". Checking the SPIR-V capability list showed Float16 was genuinely
 emitted and the size match was coincidence. When a result surprises you,
 confirm the mechanism is what you think before concluding anything.
 
-## 11. Commit hygiene while optimising
+## 11. Read the compiled code before the fifth guess
+
+Source-level reasoning mispredicted five consecutive changes on the coarse
+stage. Two reads of the compiled output produced durable facts immediately:
+
+  * `RADV_DEBUG=shaderstats` -- VGPR/SGPR, spills, scratch, LDS, waves per
+    SIMD. Showed the kernel at 216 VGPRs where the model said ~112, which
+    meant REGISTER PRESSURE was binding rather than the workgroup cap, and
+    retro-explained every failed tile experiment. Also found a dead kernel
+    compiled for every plan and never dispatched -- 256 VGPRs, 18 spilled.
+  * `RADV_DEBUG=asm` + `MESA_SHADER_CACHE_DISABLE=1` -- the instruction mix.
+    Showed 789 SCALAR half ops against 928 packed: nearly half the fp16
+    arithmetic was running at half rate because a complex multiply is a
+    CROSS pattern that cannot lower to elementwise v_pk_*. That is why
+    "fp16 math" had measured 4% -- half of it was never fp16 math.
+
+Both reads took minutes and each invalidated a model that had survived
+several experiments. **When a model has mispredicted twice, stop testing
+predictions and go read what the hardware was given.** Note the shader
+cache will hide the dump on a re-run of an unchanged shader.
+
+Corollary: a type change can be storage-only. `typedef half2 C` halved the
+STORAGE and left the ARITHMETIC unpacked, and nothing at source level said
+so. Packing requires the data layout to match the instruction -- for
+complex, that means split/SoA (re0,re1),(im0,im1) rather than (re,im).
+
+## 12. Commit hygiene while optimising
 
 `git add -A` swept an unrelated in-progress refactor into a commit and put
 a 40% regression on main for two commits. When experimenting, commit
