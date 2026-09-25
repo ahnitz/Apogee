@@ -951,3 +951,34 @@ LDS and the workgroup limit rather than VGPRs, so that buys no waves
 directly -- but it is exactly the room dreg[16] needs for template tiling,
 which is the change that ran out of registers in fp32 and regressed band
 1024 to 9.7 ms.
+
+### The compiler already amortises pair-invariant work across an unrolled tile
+
+Hoisted want[] and the twiddle tables out of the per-pair path into
+per-thread arrays built once in filterPair, reasoning that both depend only
+on (tid, level) and that the twiddles are 16 cos + 16 sin per level of
+quarter-rate transcendentals -- a term the earlier accounting never counted
+at all.
+
+    band 512:  shipped 1.784   hoisted 1.817 ms   (6 runs each)
+    band 1024: shipped 3.843   hoisted 3.854
+
+No gain. filterOne is inlined into an [unroll]ed tile loop, so want[] and
+the twiddles are identical expressions in all TILE_T bodies and common
+subexpression elimination already removes them. Doing it by hand changes
+nothing except adding a duplicated code path.
+
+Unconditionally hoisting was actively WORSE at band 1024: 3.84 -> 4.32 ms,
+because that band runs TILE_T=1 with nothing to amortise over and sits at
+100% occupancy, so the 64 VGPRs of tables come straight out of waves.
+
+**This undermines the static instruction accounting.** The 51% "addressing
+overhead" is a count of instructions in the SOURCE; some fraction is
+already shared by the optimiser across the tile, so the headroom from
+removing it is smaller than the count suggests. Any future estimate built
+on that 51% needs to establish how much survives compilation -- by reading
+the ISA, not by counting source terms.
+
+That also explains the two tile results: 1xK bought 1.19x and 2D K=2 only
+1.07x, both consistent with the loads being the only thing left to
+amortise because the addressing was already shared.
