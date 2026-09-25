@@ -382,3 +382,46 @@ so tiling does not cut work -- it amortises LOADS over K^2 FFTs:
     packed format, and have the loader pick it for the coarse role only.
     The kernel side is already understood -- one typedef, one `cload`, and
     the single read site at tierb.slang:247.
+
+### Where the coarse stage actually loses 5.7x (measured)
+
+Per-pair cost at band 512, coarse only, varying the pair count:
+
+     4096 pairs  49.19 ns/pair
+    16384 pairs  14.84 ns/pair
+    65536 pairs   9.57 ns/pair
+   262144 pairs   9.52 ns/pair
+   affine: 8.89 ns/pair marginal + 0.165 ms fixed
+
+Theoretical compute per pair at fp32 peak is 1.56 ns (23k flop). The
+marginal cost is 8.89 ns and STAYS 5.7x off as pairs grow, while the fixed
+term is only 0.165 ms. That rules out, by measurement:
+
+  * bandwidth -- halving the coarse element changed nothing (see above)
+  * launch overhead -- the fixed term is small, not the 0.75 ms that
+    262144 launches at 2.85 ns would imply
+  * occupancy from too few workgroups -- 262144 of them is not too few
+
+What is left is the per-pair kernel. `WG = band/16` with ONE pair per
+workgroup makes a workgroup exactly one wave32 at band 512. The transform
+is then a serial chain of stages, each with an LDS round-trip and a
+barrier, run by a lone wave with NO independent work to overlap. It eats
+the exchange latency exposed, once per stage.
+
+### Why fp16 matters, and it is not the bytes
+
+half2 halves REGISTER occupancy per point: R=16 complex goes from 32 VGPRs
+to 16. That buys either twice the points per thread, or several independent
+FFTs resident in registers at once -- and independent transforms are
+exactly the ILP needed to cover each other's exchange latency. At small
+bands enough of the transform fits in registers that the LDS exchange
+disappears rather than being hidden: n=256 as 4x4 in register space, n=512
+as 2x2.
+
+So the packed coarse inputs already landed are not a failed bandwidth
+optimisation -- they are the input format that lets the transform stay in
+half all the way into registers. Measuring them by bandwidth was the
+mistake; the gain is register capacity.
+
+Next: half2 through the coarse butterflies (cmul/cmulConj/r4/dft*), then
+multiple independent FFTs per thread in the freed register space.
