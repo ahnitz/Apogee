@@ -381,3 +381,51 @@ void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     filterPair(pair, tid, data, tmpl, peakIdx, peakVal, ntmpl,
                winStart, winEnd, binsize, binShift, nbins, thrBits);
 }
+
+//: Compaction. One THREAD per pair, not one workgroup.
+//:
+//: The refine used to launch a workgroup for every pair so that each could
+//: read the coarse value, find itself below threshold, and exit. Measured at
+//: 512x512 pairs and n=4096 that cost 1.394 ms of a 2.4 ms call -- 57% of the
+//: work spent launching groups that do nothing, and it does not shrink with
+//: the band because it is not arithmetic.
+//:
+//: So the survivors are gathered first and the refine is dispatched over the
+//: list. The count lands in args[0], which is the X group count an indirect
+//: dispatch reads, so it never has to reach the host: one recorded command
+//: buffer still, exactly as before.
+//:
+//: The output has to be pre-cleared, because pairs that do not survive are
+//: now never visited and something must still write their -1.
+[shader("compute")][numthreads(256,1,1)]
+void compactPairs(uint3 gid: SV_DispatchThreadID,
+                  StructuredBuffer<float2> coarse,
+                  RWStructuredBuffer<uint> survivors,
+                  RWStructuredBuffer<uint> args,
+                  uniform uint pairs, uniform float thr)
+{
+    uint pair = gid.x;
+    if (pair >= pairs) return;
+    if (length(coarse[pair]) < thr) return;
+    uint slot;
+    InterlockedAdd(args[0], 1u, slot);
+    survivors[slot] = pair;
+}
+
+//: The refine, over a compacted list. Identical to gatedTierB except that
+//: the pair comes from the list rather than from the group id, and there is
+//: no gate left to apply -- being in the list IS having passed it.
+[shader("compute")][numthreads(WG,1,1)]
+void refineListed(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
+                  StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                  RWStructuredBuffer<int> peakIdx,
+                  RWStructuredBuffer<float2> peakVal,
+                  StructuredBuffer<uint> survivors,
+                  uniform uint ntmpl, uniform uint winStart, uniform uint winEnd,
+                  uniform uint binsize, uniform int binShift, uniform uint nbins,
+                  uniform uint thrBits)
+{
+    uint pair = survivors[gid.x];
+    filterPair(pair, lid.x, data, tmpl, peakIdx, peakVal, ntmpl,
+               winStart, winEnd, binsize, binShift, nbins, thrBits);
+}

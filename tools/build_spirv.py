@@ -119,8 +119,16 @@ COARSE_BANDS = {256: 16, 512: 32, 1024: 32}
 #: Two entry points from one source. fusedTierB is the filter; gatedTierB is
 #: the same filter behind a coarse-pass gate it evaluates itself, so the
 #: hierarchical mode needs no host decision between the passes.
-ENTRIES = ("fusedTierB", "gatedTierB")
+#: compactPairs turns the coarse results into a survivor list and the X
+#: group count an indirect dispatch reads; refineListed is the refine over
+#: that list. Together they replace launching one workgroup per pair to have
+#: it exit, which was 57% of the hierarchical call at 512x512.
+ENTRIES = ("fusedTierB", "gatedTierB", "compactPairs", "refineListed")
 ENTRY = ENTRIES[0]
+#: Artifact prefix per entry point. Two entries used to be distinguished by
+#: `entry == ENTRY`, which silently collides the moment there is a third.
+STEMS = {"fusedTierB": "tierb", "gatedTierB": "gated",
+         "compactPairs": "compact", "refineListed": "refine"}
 
 _STORAGE_CLASS = {2: "Uniform", 9: "PushConstant", 12: "StorageBuffer"}
 
@@ -204,8 +212,7 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix=""):
     src = outdir / ("mm_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n" % (n, cap)
                    + KERNEL.read_text())
-    stem = ("tierb_%d%s" % (n, suffix) if entry == ENTRY
-            else "gated_%d%s" % (n, suffix))
+    stem = "%s_%d%s" % (STEMS[entry], n, suffix)
     msl = outdir / (stem + ".metal")
     proc = subprocess.run(
         [slangc, str(src), "-target", "metal", "-entry", entry,
@@ -250,8 +257,7 @@ def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix=""):
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n"
                    % (n, cap) + KERNEL.read_text())
-    name = ("tierb_%d%s.spv" % (n, suffix) if entry == ENTRY
-            else "gated_%d%s.spv" % (n, suffix))
+    name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(
         [slangc, str(src), "-target", "spirv", "-entry", entry,
@@ -336,6 +342,25 @@ def main(argv=None):
                 file=gsmall.name, lds_bytes=lds_bytes(n, PORTABLE_CAP))
         info["file"] = spv.name
         info["bytes"] = spv.stat().st_size
+        # Compaction: gather the pairs that passed the coarse threshold and
+        # refine only those. The refine used to launch a workgroup per pair
+        # to have it exit -- 57% of the hierarchical call at 512x512 -- and
+        # that cost does not shrink with the band because it is not
+        # arithmetic. compactPairs is band-independent; refineListed needs
+        # the same portable variant the other n-length kernels do.
+        comp = compile_one(slangc, n, OUT, "compactPairs")
+        cinfo = reflect(comp.read_bytes())
+        info["compact"] = dict(file=comp.name,
+                               descriptors=len(cinfo["descriptors"]))
+        ref = compile_one(slangc, n, OUT, "refineListed")
+        rinfo = reflect(ref.read_bytes())
+        info["refine"] = dict(file=ref.name,
+                              descriptors=len(rinfo["descriptors"]))
+        if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
+            rsmall = compile_one(slangc, n, OUT, "refineListed",
+                                 cap=PORTABLE_CAP, suffix="_lds32")
+            info["refine"]["portable"] = dict(
+                file=rsmall.name, lds_bytes=lds_bytes(n, PORTABLE_CAP))
         # Metal, from the same source. Built for every size so a macOS wheel
         # carries the same coverage as a Linux one.
         metal = {}

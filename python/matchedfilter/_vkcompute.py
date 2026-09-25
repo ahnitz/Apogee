@@ -67,6 +67,7 @@ _COARSE_TILE = {256: 4}
 # --- enough of the Vulkan enums to dispatch -------------------------------
 _QUEUE_COMPUTE = 0x2
 _BUF_STORAGE = 0x20
+_BUF_INDIRECT = 0x100   # an indirect dispatch reads its group count from a buffer
 _MEM_DEVICE_LOCAL, _MEM_HOST_VISIBLE, _MEM_HOST_COHERENT = 0x1, 0x2, 0x4
 #: HOST_CACHED. The CPU reads the two output buffers and nothing else,
 #: and reading uncached device-visible memory runs at about 240 MB/s --
@@ -215,10 +216,10 @@ class _Buffer:
     kind of code that looks right and halves throughput.
     """
 
-    def __init__(self, ctx, nbytes, readback=False):
+    def __init__(self, ctx, nbytes, readback=False, usage=_BUF_STORAGE):
         self.ctx, self.nbytes = ctx, max(int(nbytes), 4)
         vk = ctx.vk
-        info = _BufferCreate(12, None, 0, self.nbytes, _BUF_STORAGE, 0, 0, None)
+        info = _BufferCreate(12, None, 0, self.nbytes, usage, 0, 0, None)
         self.handle = _vp()
         _check(vk.vkCreateBuffer(ctx.device, ctypes.byref(info), None,
                                  ctypes.byref(self.handle)), "vkCreateBuffer")
@@ -260,6 +261,14 @@ class Context:
         if vk is None:
             raise VulkanError(err)
         self.vk = vk
+        # VkDeviceSize is 64-bit. Without argtypes ctypes passes a Python int
+        # as a C int and the offset and size arrive truncated, which for a
+        # fill is silent corruption rather than an error.
+        vk.vkCmdFillBuffer.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                       ctypes.c_uint64, ctypes.c_uint64,
+                                       ctypes.c_uint32]
+        vk.vkCmdDispatchIndirect.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                             ctypes.c_uint64]
         self._pipelines = {}
         self._batches = {}
         self._hier = {}
@@ -374,6 +383,15 @@ class Context:
         """
         return self._build_pipeline(("gated", n), self._gated_file(n),
                                     _NBIND_GATED, _PUSH_BYTES_GATED)
+
+    def _refine_file(self, n):
+        """refineListed for `n`, portable build where the device needs it."""
+        info = (_manifest().get("modules", {}).get(str(n)) or {}).get("refine")
+        if info and info.get("portable") \
+                and _manifest()["modules"][str(n)].get("lds_bytes", 0) \
+                > self.max_shared_memory:
+            return info["portable"]["file"]
+        return "refine_%d.spv" % n
 
     def _gated_file(self, n):
         info = (_manifest().get("modules", {}).get(str(n)) or {}).get("gated")
@@ -567,7 +585,10 @@ class Context:
         else:
             cpipe, clayout, cset_layout = self.pipeline(band)
         gcpipe, gclayout, gcset_layout = self.gated_pipeline(band)
-        gpipe, glayout, gset_layout = self.gated_pipeline(n)
+        kpipe, klayout, kset_layout = self._build_pipeline(
+            ("compact", n), "compact_%d.spv" % n, 3, 8)
+        rpipe, rlayout, rset_layout = self._build_pipeline(
+            ("refine", n), self._refine_file(n), 5, _PUSH_BYTES)
         pairs = nd * nt
         b = {
             "data":  _Buffer(self, nd * n * 8),
@@ -577,6 +598,12 @@ class Context:
             "ct1":   _Buffer(self, nt * band * 8),
             "cidx":  _Buffer(self, pairs * 4),
             "cval":  _Buffer(self, pairs * 8),
+            # The compacted survivor list and the indirect group count.
+            # args is [groupCountX, 1, 1]; compactPairs atomically bumps
+            # [0], so the count never has to reach the host and this
+            # stays one recorded command buffer.
+            "surv":  _Buffer(self, pairs * 4),
+            "args":  _Buffer(self, 12, usage=_BUF_STORAGE | _BUF_INDIRECT),
             "idx":   _Buffer(self, nd * nt * nbins * 4, readback=True),
             "val":   _Buffer(self, nd * nt * nbins * 8, readback=True),
         }
@@ -596,9 +623,11 @@ class Context:
         # two-test predicate collapse to one comparison. No kernel rebuild:
         # the shader already computes exactly this when the two buffers
         # agree, which is how the odd pass itself was implemented.
-        ds_ref = self._descriptor_set(gset_layout,
-                                      [b["data"], b["tmpl"], b["idx"], b["val"],
-                                       b["cval"]])
+        ds_compact = self._descriptor_set(
+            kset_layout, [b["cval"], b["surv"], b["args"]])
+        ds_listed = self._descriptor_set(
+            rset_layout,
+            [b["data"], b["tmpl"], b["idx"], b["val"], b["surv"]])
 
         cb = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
         cmd = _vp()
@@ -655,19 +684,39 @@ class Context:
             vk.vkCmdPipelineBarrier(cmd, _STAGE_COMPUTE_BIT, _STAGE_COMPUTE_BIT,
                                     0, 1, ctypes.byref(mb), 0, None, 0, None)
 
+        # Pairs that do not survive are never visited now, so their -1 has
+        # to be written up front rather than by a workgroup that launches
+        # only to exit. That is the whole saving: 1.394 ms at 512x512.
+        vk.vkCmdFillBuffer(cmd, b["idx"].handle, 0, b["idx"].nbytes, 0xFFFFFFFF)
+        vk.vkCmdFillBuffer(cmd, b["val"].handle, 0, b["val"].nbytes, 0)
+        vk.vkCmdFillBuffer(cmd, b["args"].handle, 0, 4, 0)   # count starts at 0
+        vk.vkCmdFillBuffer(cmd, b["args"].handle, 4, 8, 1)   # y = z = 1
+        barrier()
+
         coarse(ds_coarse)
         barrier()
-        vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, gpipe)
-        sets = (_vp * 1)(ds_ref)
-        vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, glayout, 0, 1,
+
+        vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, kpipe)
+        sets = (_vp * 1)(ds_compact)
+        vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, klayout, 0, 1,
                                    sets, 0, None)
-        pc = (ctypes.c_uint32 * 8)(
+        kpc = (ctypes.c_uint32 * 2)(
+            pairs, int(np.float32(raw_thr).view(np.uint32)))
+        vk.vkCmdPushConstants(cmd, klayout, _STAGE_COMPUTE, 0, 8,
+                              ctypes.byref(kpc))
+        vk.vkCmdDispatch(cmd, (pairs + 255) // 256, 1, 1)
+        barrier()
+
+        vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, rpipe)
+        sets = (_vp * 1)(ds_listed)
+        vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, rlayout, 0, 1,
+                                   sets, 0, None)
+        pc = (ctypes.c_uint32 * 7)(
             nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins,
-            int(np.float32(t2).view(np.uint32)),
-            int(np.float32(raw_thr).view(np.uint32)))
-        vk.vkCmdPushConstants(cmd, glayout, _STAGE_COMPUTE, 0,
-                              _PUSH_BYTES_GATED, ctypes.byref(pc))
-        vk.vkCmdDispatch(cmd, pairs, 1, 1)
+            int(np.float32(t2).view(np.uint32)))
+        vk.vkCmdPushConstants(cmd, rlayout, _STAGE_COMPUTE, 0,
+                              _PUSH_BYTES, ctypes.byref(pc))
+        vk.vkCmdDispatchIndirect(cmd, b["args"].handle, 0)
         _check(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")
         return b, cmd
 
