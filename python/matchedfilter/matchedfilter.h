@@ -130,7 +130,7 @@ void ap_mf_interp_pause(ap_mf_plan *p, int on);
 typedef struct ap_hmf_plan ap_hmf_plan;
 
 ap_hmf_plan *ap_hmf_create_ex(size_t n, int ndata, int ntmpl, float snr, float fd,
-                              size_t band, int oversample, int taps);
+                              size_t band, int taps);
 void         ap_hmf_destroy(ap_hmf_plan *p);
 
 size_t ap_hmf_nbins(const ap_hmf_plan *p, size_t binsize, size_t start, size_t end);
@@ -154,7 +154,7 @@ int    ap_hmf_set_reference(ap_hmf_plan *p, const float *power);
 /* Calibrate the first stage against this SNR instead of the search threshold.
    Final triggers are still cut at the threshold passed to ap_hmf_run; this
    only sets where the cheap first pass decides a full reconstruction is
-   needed.  Pass <=0 to go back to deriving it.  Band, oversample and taps are
+   needed.  Pass <=0 to go back to deriving it.  Band and taps are
    fixed at plan creation and are unaffected. */
 int    ap_hmf_set_first_stage(ap_hmf_plan *p, float snr);
 /* Supply the coarse threshold directly, in the units the coarse pass
@@ -209,7 +209,7 @@ int ap_hmf_coarse_thresholds(ap_hmf_plan *p, float threshold,
                              float *margin, float *raw, float *even);
 
 /* The band / oversampling / taps / margin the table chose, for reporting. */
-void ap_hmf_config(const ap_hmf_plan *p, size_t *band, int *oversample, int *taps);
+void ap_hmf_config(const ap_hmf_plan *p, size_t *band, int *taps);
 
 int ap_supported(size_t n);
 
