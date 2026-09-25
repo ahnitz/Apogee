@@ -256,7 +256,13 @@ class Context:
         that as "Compilation failed", which names nothing. Choosing the
         portable build here turns a dead end into a slower kernel.
         """
-        base = ("tierb_%d" % n) if entry == "fusedTierB" else ("gated_%d" % n)
+        # One stem per entry point. This was a two-way choice -- fusedTierB
+        # or "the other one" -- which silently sends every new entry to the
+        # gated library, where its function does not exist. The same
+        # assumption was in the build script's artifact naming.
+        base = "%s_%d" % ({"fusedTierB": "tierb", "gatedTierB": "gated",
+                           "compactPairs": "compact",
+                           "refineListed": "refine"}[entry], n)
         info = _manifest().get("modules", {}).get(str(n), {})
         # The Metal column. Metal is built against its own staging cap
         # -- Apple and the Radeon want opposite answers -- so reading
@@ -512,6 +518,12 @@ class Context:
                 "ct1":   _Buffer(self, nt * band * 8),
                 "cidx":  _Buffer(self, pairs * 4),
                 "cval":  _Buffer(self, pairs * 8),
+                # Compacted survivors and the indirect threadgroup count.
+                # args is [groupsX, 1, 1]; compactPairs bumps [0] atomically,
+                # so the count stays on the device and this is still one
+                # command buffer with no host in the loop.
+                "surv":  _Buffer(self, pairs * 4),
+                "args":  _Buffer(self, 12),
                 "idx":   _Buffer(self, nd * nt * nbins * 4),
                 "val":   _Buffer(self, nd * nt * nbins * 8),
             }
@@ -531,13 +543,25 @@ class Context:
             bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
 
         coarse = self.pipeline(band)
-        gated_coarse = self.pipeline(band, "gatedTierB")
-        refine = self.pipeline(n, "gatedTierB")
+        compact = self.pipeline(n, "compactPairs")
+        refine = self.pipeline(n, "refineListed")
+
+        # Pairs that do not survive are never visited, so their -1 has to be
+        # there already. Metal has no fill on a compute encoder, and writing
+        # from the host is a 3 MB memcpy per call at 512x512 -- so the
+        # clear rides along in the compaction kernel, which walks every pair
+        # anyway. Only args needs a host write, and it is twelve bytes.
+        bufs["args"].write(np.array([0, 1, 1], dtype=np.uint32))
 
         cmd = self.o.call(self.queue, b"commandBuffer")
         enc = self.o.call(cmd, b"computeCommandEncoder")
 
-        def dispatch(pso, params, names, width):
+        def dispatch(pso, params, names, width, groups=pairs, tg=None):
+            # tg is the kernel's own numthreads. Deriving it from width
+            # works for the transform kernels, where it is width//16,
+            # and is wrong for compactPairs, which is numthreads(256)
+            # and has no transform length at all.
+            tg = (width // 16) if tg is None else tg
             self.o.call(enc, b"setComputePipelineState:", restype=None,
                         args=(pso,), argtypes=(ctypes.c_void_p,))
             blk = (ctypes.c_uint32 * len(params))(*params)
@@ -550,11 +574,23 @@ class Context:
                             args=(bufs[nm].handle, 0, slot),
                             argtypes=(ctypes.c_void_p, ctypes.c_ulong,
                                       ctypes.c_ulong))
-            self.o.call(enc, b"dispatchThreadgroups:threadsPerThreadgroup:",
-                        restype=None,
-                        args=(_MTLSize(pairs, 1, 1),
-                              _MTLSize(width // 16, 1, 1)),
-                        argtypes=(_MTLSize, _MTLSize))
+            if groups is None:
+                # Indirect: the threadgroup count is read from args on the
+                # device, so the survivor count never crosses to the host.
+                self.o.call(
+                    enc,
+                    b"dispatchThreadgroupsWithIndirectBuffer:"
+                    b"indirectBufferOffset:threadsPerThreadgroup:",
+                    restype=None,
+                    args=(bufs["args"].handle, 0,
+                          _MTLSize(tg, 1, 1)),
+                    argtypes=(ctypes.c_void_p, ctypes.c_ulong, _MTLSize))
+            else:
+                self.o.call(enc, b"dispatchThreadgroups:threadsPerThreadgroup:",
+                            restype=None,
+                            args=(_MTLSize(groups, 1, 1),
+                                  _MTLSize(tg, 1, 1)),
+                            argtypes=(_MTLSize, _MTLSize))
 
         def bits(x):
             return int(np.float32(x).view(np.uint32))
@@ -565,17 +601,19 @@ class Context:
                  (nt, 0, band, band, band.bit_length() - 1, 1, 0),
                  ("cdata", "ct0", "cidx", "cval"), band)
 
-        # The refinement. The EVEN buffer is bound to both coarse inputs:
-        # the odd half is gone -- the coarse grid is critically sampled, so
-        # the even series is the whole answer -- and with the two buffers
-        # equal the kernel's `od` equals its `ev`, `best` reduces to `ev`,
-        # and its two-test predicate collapses to one comparison. No kernel
-        # rebuild; the shader already computes this when they agree, which
-        # is how the odd pass was itself implemented.
+        # Compaction: one THREAD per pair, gathering the survivors and
+        # writing the -1 for everyone else. The refine used to launch a
+        # threadgroup for every pair so that each could read the coarse
+        # value and exit; on Vulkan that was 1.394 ms of a 2.437 ms call.
+        dispatch(compact,
+                 (pairs, bits(raw_thr), nbins),
+                 ("cval", "surv", "args", "idx", "val"), 0,
+                 groups=(pairs + 255) // 256, tg=256)
+
+        # The refine, over the compacted list, sized on the device.
         dispatch(refine,
-                 (nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins, bits(t2),
-                  bits(raw_thr)),
-                 ("data", "tmpl", "idx", "val", "cval"), n)
+                 (nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins, bits(t2)),
+                 ("data", "tmpl", "idx", "val", "surv"), n, groups=None)
 
         self.o.call(enc, b"endEncoding", restype=None)
         self.o.call(cmd, b"commit", restype=None)

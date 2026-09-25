@@ -44,7 +44,7 @@
       "bytes": 15284,
       "compact": {
         "file": "compact_64.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_64.spv",
@@ -115,7 +115,7 @@
       "bytes": 15872,
       "compact": {
         "file": "compact_128.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_128.spv",
@@ -186,7 +186,7 @@
       "bytes": 17808,
       "compact": {
         "file": "compact_256.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_256.spv",
@@ -257,7 +257,7 @@
       "bytes": 21628,
       "compact": {
         "file": "compact_512.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_512.spv",
@@ -328,7 +328,7 @@
       "bytes": 22240,
       "compact": {
         "file": "compact_1024.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_1024.spv",
@@ -399,7 +399,7 @@
       "bytes": 22828,
       "compact": {
         "file": "compact_2048.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_2048.spv",
@@ -470,7 +470,7 @@
       "bytes": 24764,
       "compact": {
         "file": "compact_4096.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_4096.spv",
@@ -545,7 +545,7 @@
       "bytes": 28584,
       "compact": {
         "file": "compact_8192.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_8192.spv",
@@ -648,7 +648,7 @@
       "bytes": 29196,
       "compact": {
         "file": "compact_16384.spv",
-        "descriptors": 3
+        "descriptors": 5
       },
       "refine": {
         "file": "refine_16384.spv",

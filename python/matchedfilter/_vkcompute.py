@@ -586,7 +586,7 @@ class Context:
             cpipe, clayout, cset_layout = self.pipeline(band)
         gcpipe, gclayout, gcset_layout = self.gated_pipeline(band)
         kpipe, klayout, kset_layout = self._build_pipeline(
-            ("compact", n), "compact_%d.spv" % n, 3, 8)
+            ("compact", n), "compact_%d.spv" % n, 5, 12)
         rpipe, rlayout, rset_layout = self._build_pipeline(
             ("refine", n), self._refine_file(n), 5, _PUSH_BYTES)
         pairs = nd * nt
@@ -624,7 +624,8 @@ class Context:
         # the shader already computes exactly this when the two buffers
         # agree, which is how the odd pass itself was implemented.
         ds_compact = self._descriptor_set(
-            kset_layout, [b["cval"], b["surv"], b["args"]])
+            kset_layout, [b["cval"], b["surv"], b["args"],
+                          b["idx"], b["val"]])
         ds_listed = self._descriptor_set(
             rset_layout,
             [b["data"], b["tmpl"], b["idx"], b["val"], b["surv"]])
@@ -687,8 +688,10 @@ class Context:
         # Pairs that do not survive are never visited now, so their -1 has
         # to be written up front rather than by a workgroup that launches
         # only to exit. That is the whole saving: 1.394 ms at 512x512.
-        vk.vkCmdFillBuffer(cmd, b["idx"].handle, 0, b["idx"].nbytes, 0xFFFFFFFF)
-        vk.vkCmdFillBuffer(cmd, b["val"].handle, 0, b["val"].nbytes, 0)
+        # Only the twelve bytes of args. The output needs no clear: the
+        # compaction kernel walks every pair and writes the -1 for the ones
+        # it dismisses, so filling 3 MB here would only be overwriting
+        # slots the refine is about to fill anyway.
         vk.vkCmdFillBuffer(cmd, b["args"].handle, 0, 4, 0)   # count starts at 0
         vk.vkCmdFillBuffer(cmd, b["args"].handle, 4, 8, 1)   # y = z = 1
         barrier()
@@ -700,9 +703,9 @@ class Context:
         sets = (_vp * 1)(ds_compact)
         vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, klayout, 0, 1,
                                    sets, 0, None)
-        kpc = (ctypes.c_uint32 * 2)(
-            pairs, int(np.float32(raw_thr).view(np.uint32)))
-        vk.vkCmdPushConstants(cmd, klayout, _STAGE_COMPUTE, 0, 8,
+        kpc = (ctypes.c_uint32 * 3)(
+            pairs, int(np.float32(raw_thr).view(np.uint32)), nbins)
+        vk.vkCmdPushConstants(cmd, klayout, _STAGE_COMPUTE, 0, 12,
                               ctypes.byref(kpc))
         vk.vkCmdDispatch(cmd, (pairs + 255) // 256, 1, 1)
         barrier()

@@ -1367,41 +1367,41 @@ void filterPair_0(uint pair_0, uint tid_0, packed_float2 device* data_0, packed_
 }
 
 
-#line 421
+#line 435
 [[kernel]] void refineListed(uint3 gid_0 [[threadgroup_position_in_grid]], uint3 lid_0 [[thread_position_in_threadgroup]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_data_1 [[buffer(1)]], packed_float2 device* entryPointParams_tmpl_1 [[buffer(2)]], int device* entryPointParams_peakIdx_1 [[buffer(3)]], packed_float2 device* entryPointParams_peakVal_1 [[buffer(4)]], uint device* entryPointParams_survivors_1 [[buffer(5)]])
 {
 
-#line 421
+#line 435
     thread KernelContext_0 kernelContext_4;
 
-#line 421
+#line 435
     (&kernelContext_4)->entryPointParams_0 = entryPointParams_1;
 
-#line 421
+#line 435
     (&kernelContext_4)->entryPointParams_data_0 = entryPointParams_data_1;
 
-#line 421
+#line 435
     (&kernelContext_4)->entryPointParams_tmpl_0 = entryPointParams_tmpl_1;
 
-#line 421
+#line 435
     (&kernelContext_4)->entryPointParams_peakIdx_0 = entryPointParams_peakIdx_1;
 
-#line 421
+#line 435
     (&kernelContext_4)->entryPointParams_peakVal_0 = entryPointParams_peakVal_1;
 
-#line 421
+#line 435
     (&kernelContext_4)->entryPointParams_survivors_0 = entryPointParams_survivors_1;
 
-#line 421
+#line 435
     threadgroup array<uint, int(16384)> stg_1;
 
-#line 421
+#line 435
     (&kernelContext_4)->stg_0 = &stg_1;
 
-#line 421
+#line 435
     filterPair_0(entryPointParams_survivors_1[gid_0.x], lid_0.x, entryPointParams_data_1, entryPointParams_tmpl_1, entryPointParams_peakIdx_1, entryPointParams_peakVal_1, entryPointParams_1->ntmpl_0, entryPointParams_1->winStart_0, entryPointParams_1->winEnd_0, entryPointParams_1->binsize_0, entryPointParams_1->binShift_0, entryPointParams_1->nbins_0, entryPointParams_1->thrBits_0, &kernelContext_4);
 
-#line 433
+#line 447
     return;
 }
 

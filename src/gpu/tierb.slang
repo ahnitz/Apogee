@@ -402,14 +402,28 @@ void compactPairs(uint3 gid: SV_DispatchThreadID,
                   StructuredBuffer<float2> coarse,
                   RWStructuredBuffer<uint> survivors,
                   RWStructuredBuffer<uint> args,
-                  uniform uint pairs, uniform float thr)
+                  RWStructuredBuffer<int> peakIdx,
+                  RWStructuredBuffer<float2> peakVal,
+                  uniform uint pairs, uniform float thr, uniform uint nbins)
 {
     uint pair = gid.x;
     if (pair >= pairs) return;
-    if (length(coarse[pair]) < thr) return;
-    uint slot;
-    InterlockedAdd(args[0], 1u, slot);
-    survivors[slot] = pair;
+    if (length(coarse[pair]) >= thr) {
+        uint slot;
+        InterlockedAdd(args[0], 1u, slot);
+        survivors[slot] = pair;
+        return;
+    }
+    // Dismissed, and nothing will visit this pair again -- so its "nothing
+    // here" is written now. This walk is why the output needs no separate
+    // clear: a fill would touch every slot including the survivors' whose
+    // values the refine is about to overwrite, and on Metal there is no
+    // fill on a compute encoder at all.
+    for (uint b = 0; b < nbins; ++b) {
+        uint o = pair * nbins + b;
+        peakIdx[o] = -1;
+        peakVal[o] = float2(0.0f, 0.0f);
+    }
 }
 
 //: The refine, over a compacted list. Identical to gatedTierB except that
