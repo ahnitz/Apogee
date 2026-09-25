@@ -1023,3 +1023,23 @@ lane owned the maximum. Recomputing the magnitude in the second pass costs
 ~2 VALU per register and frees 16 VGPRs, which is the difference between
 7 and 8 waves/SIMD. That is the next thing to try, BEFORE any further tile
 work, and it should be verified with shaderstats rather than reasoned about.
+
+#### myMag[16] -> liveMask: registers fell, time did not
+
+Replaced the 16 stored magnitudes with a 1-register live mask, recomputing
+|v|^2 in the writeback (2 VALU per register; r[] is live there anyway for
+peakVal). Registers fell substantially -- the coarse kernel reported 96
+VGPRs against 216 -- and band 512 got SLOWER: 1.758 -> 1.878 ms over three
+runs each.
+
+So freeing registers is not automatically a win here. The occupancy the
+kernel gains does not pay for the recomputation, which says the kernel is
+not purely occupancy-starved at 44% -- consistent with [loop] also losing
+(1.78 -> 2.05) when it traded ILP for registers.
+
+Two changes now point the same way: at band 512 this kernel is limited by
+something that neither more waves nor fewer instructions relieves on its
+own. The next honest step is a full ISA disassembly (RADV_DEBUG=asm) to see
+the actual instruction mix and stall structure, rather than another
+source-level transform -- source-level reasoning has now mispredicted five
+consecutive changes.
