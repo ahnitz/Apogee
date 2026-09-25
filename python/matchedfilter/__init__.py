@@ -521,18 +521,36 @@ class MatchedFilter:
         peaks["value"] = val.reshape(nblk, nt, nb)
         return peaks
 
+    def _series_window(self, spec, H, binsize, threshold, w0, w1, first):
+        """One dispatch for the blocks sharing a window. Returns (index, value).
+
+        The only thing the two filters do differently in run_series, which is
+        why everything around it is shared.
+        """
+        gi, gv = self._gpu.peaks(
+            self.n, spec, H, binsize=binsize, threshold=threshold,
+            window=(w0, w1), upload_data=True,
+            upload_tmpl=first or self._tdirty)
+        self._tdirty = False
+        return gi, gv
+
     def _run_series_gpu(self, ser, st, ws, we, binsize, threshold,
                         templates, raw):
-        """run_series on a flat GPU plan.
+        """run_series on a GPU plan, flat or hierarchical.
 
         The C does the per-block forward transform inside the plan; here it is
         done on the host, which is the same arithmetic and keeps the device
         code to the one kernel that already exists.
 
-        The 1/n is applied here for the same reason the C applies it on the
-        way in: the caller's spectra are pre-divided by n, so a block
-        transformed without it would be scaled differently from one the caller
-        ingested through set_data, and only the series path would be wrong.
+        Blocks are grouped by window, because a window is a dispatch parameter
+        rather than per-pair data: blocks sharing one can go in a single call,
+        and only the ragged ones at a segment's edges are left on their own.
+
+        This was written twice, once per filter class, differing in one call.
+        The copies then drifted: the hierarchical one lost the 1/n and handed
+        its coarse gate spectra n times too large, which is the whole of
+        round 0 in docs/iteration-plan.md. Two implementations of one
+        algorithm is how that happens, so there is one.
         """
         n = self.n
         nblk = st.size
@@ -543,14 +561,25 @@ class MatchedFilter:
         binsize = n if binsize is None else int(binsize)
         H = self._gtmpl[t0:t0 + nt]
 
-        spec = np.zeros((nblk, n), dtype=np.complex64)
-        buf = np.zeros(n, dtype=np.complex64)
-        for b in range(nblk):
-            lo = int(st[b])
-            seg = ser[lo:lo + n]
-            buf[:] = 0
-            buf[:seg.size] = seg
-            spec[b] = np.fft.fft(buf) / n
+        # One strided gather and one batched transform, rather than a Python
+        # loop calling np.fft.fft per block. Blocks may run off the end of the
+        # series; the missing tail is zero, as the C's padding makes it.
+        #
+        # The 1/n is the caller's convention and the C applies it on the way
+        # in. Omitting it handed the coarse gate spectra n times too large --
+        # _gpu_hier saw |D|max 304.633 against run()'s 0.0743734 at n=4096,
+        # exactly 4096 -- so every pair cleared a threshold calibrated for
+        # the real scale.
+        if nblk:
+            grid = (st[:, None].astype(np.int64)
+                    + np.arange(n, dtype=np.int64)[None, :])
+            inside = grid < ser.size
+            # np.minimum keeps the gather in bounds; `inside` zeroes the tail.
+            blocks = np.where(inside, ser[np.minimum(grid, max(ser.size - 1, 0))],
+                              np.complex64(0))
+            spec = (np.fft.fft(blocks, axis=1) / n).astype(np.complex64)
+        else:
+            spec = np.zeros((0, n), dtype=np.complex64)
 
         nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
         idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
@@ -558,10 +587,9 @@ class MatchedFilter:
         first = True
         for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
             rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
-            gi, gv = self._gpu.peaks(
-                n, np.ascontiguousarray(spec[rows]), H,
-                binsize=binsize, threshold=threshold, window=w,
-                upload_data=True, upload_tmpl=first or self._tdirty)
+            gi, gv = self._series_window(
+                np.ascontiguousarray(spec[rows]), H, binsize, threshold,
+                w[0], w[1], first)
             first = False
             if gi.shape[2] != nb:
                 raise ValueError(
@@ -569,7 +597,6 @@ class MatchedFilter:
                     "window %s gives %d against %d" % (w, gi.shape[2], nb))
             idx[rows] = gi
             val[rows] = gv
-        self._tdirty = False
         if raw:
             return idx, val
         peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
@@ -1862,63 +1889,12 @@ class HierarchicalFilter(MatchedFilter):
         if abs(self._margin - 1.0) > 1e-9:
             self._mf.set_coarse_margin(self._margin)
 
-    def _run_series_gpu(self, ser, st, ws, we, binsize, threshold,
-                        templates, raw):
-        """run_series on a GPU plan.
+    def _series_window(self, spec, H, binsize, threshold, w0, w1, first):
+        """The hierarchical dispatch: coarse gate, then refine what survives.
 
-        The C does the per-block forward transform inside the plan; here it is
-        done on the host, which is the same arithmetic and keeps the device
-        code to the one kernel that already exists.
-
-        Blocks are grouped by window, because a window is a dispatch parameter
-        rather than per-pair data: blocks sharing one can go in a single call,
-        and only the ragged ones at a segment's edges are left on their own.
+        Everything else in run_series is the base class's.
         """
-        n = self.n
-        nblk = st.size
-        t0, nt = (0, self.ntemplates) if templates is None else (
-            int(templates[0]), int(templates[1]))
-        binsize = n if binsize is None else int(binsize)
-        H = self._gtmpl[t0:t0 + nt]
-
-        # One forward transform per block. Blocks may run off the end of the
-        # series; the missing tail is zero, as the C's padding makes it.
-        #
-        # The 1/n is the caller's convention and the C applies it on the way
-        # in. Omitting it here handed the coarse gate spectra n times too
-        # large, so every pair cleared a threshold calibrated for the real
-        # scale and the GPU reported peaks on pure noise that the CPU
-        # correctly dismissed. Measured at n=4096: _gpu_hier received
-        # |D|max 304.633 by this route against 0.0743734 by run(), a ratio
-        # of exactly 4096.
-        spec = np.zeros((nblk, n), dtype=np.complex64)
-        for b in range(nblk):
-            lo = int(st[b])
-            seg = ser[lo:lo + n]
-            buf = np.zeros(n, dtype=np.complex64)
-            buf[:seg.size] = seg
-            spec[b] = np.fft.fft(buf) / n
-
-        nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
-        idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
-        val = np.zeros((nblk, nt, nb), dtype=np.complex64)
-        for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
-            rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
-            gi, gv = self._gpu_hier(np.ascontiguousarray(spec[rows]), H,
-                                    binsize, threshold, w[0], w[1])
-            if gi.shape[2] != nb:
-                raise ValueError(
-                    "blocks in one call must produce the same bin count; "
-                    "window %s gives %d against %d" % (w, gi.shape[2], nb))
-            idx[rows] = gi
-            val[rows] = gv
-
-        if raw:
-            return idx, val
-        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
-        peaks["index"] = idx
-        peaks["value"] = val
-        return peaks
+        return self._gpu_hier(spec, H, binsize, threshold, w0, w1)
 
     def run_series(self, series, starts, win_start, win_end,
                    binsize=None, threshold=0.0, templates=None, raw=False):

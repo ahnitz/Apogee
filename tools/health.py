@@ -147,32 +147,41 @@ def run_series_split():
     f = mf.MatchedFilter(N, NB, NT, device=dev)
     f.set_templates(h_)
     f.run_series(ser, st, ws, we, binsize=N, threshold=0.0)
-    t0 = time.perf_counter()
-    for _ in range(5):
-        f.run_series(ser, st, ws, we, binsize=N, threshold=0.0)
-    whole = (time.perf_counter() - t0) / 5
 
-    t0 = time.perf_counter()                     # the host loop, as written
-    for _ in range(5):
+    def best(fn, reps=7):
+        """Best of N. These terms are noisy enough that a single sample
+        reported 1.41x and then 1.07x for the same change."""
+        out = float("inf")
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            fn()
+            out = min(out, time.perf_counter() - t0)
+        return out
+
+    whole = best(lambda: f.run_series(ser, st, ws, we, binsize=N, threshold=0.0))
+
+    def loop():                                  # what it used to do
         spec = np.zeros((NB, N), dtype=np.complex64)
         buf = np.zeros(N, dtype=np.complex64)
         for b in range(NB):
             lo = int(st[b]); seg = ser[lo:lo + N]
             buf[:] = 0; buf[:seg.size] = seg
             spec[b] = np.fft.fft(buf) / N
-    loop = (time.perf_counter() - t0) / 5
 
-    t0 = time.perf_counter()                     # the same thing batched
-    for _ in range(5):
-        idx = st[:, None].astype(np.int64) + np.arange(N)[None, :]
-        blk = np.where(idx < ser.size, ser[np.minimum(idx, ser.size - 1)], 0)
-        np.fft.fft(blk, axis=1) / N
-    batch = (time.perf_counter() - t0) / 5
+    def batched():                               # what it does now
+        grid = st[:, None].astype(np.int64) + np.arange(N, dtype=np.int64)[None, :]
+        inside = grid < ser.size
+        blk = np.where(inside, ser[np.minimum(grid, ser.size - 1)], np.complex64(0))
+        (np.fft.fft(blk, axis=1) / N).astype(np.complex64)
 
-    print("  whole call              %8.3f ms" % (whole * 1e3))
-    print("  host per-block fft loop %8.3f ms   %.0f%% of the call" % (loop * 1e3, 100 * loop / whole))
-    print("  the same, batched       %8.3f ms   %.2fx" % (batch * 1e3, loop / max(batch, 1e-9)))
-    print("  -> and it is SERIAL with the device: nothing overlaps the transfer")
+    lp, bt = best(loop), best(batched)
+    print("  whole call                 %8.3f ms" % (whole * 1e3))
+    print("  host transform, batched    %8.3f ms   %.0f%% of the call   <- shipped"
+          % (bt * 1e3, 100 * bt / whole))
+    print("  host transform, old loop   %8.3f ms   %.2fx slower"
+          % (lp * 1e3, lp / max(bt, 1e-9)))
+    print("  -> still SERIAL with the device: nothing overlaps the transfer,")
+    print("     which is the remaining prize, not the batching")
 
 
 def main():

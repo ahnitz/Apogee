@@ -64,14 +64,15 @@ Radeon 8060S; they are the baseline to beat, not targets in themselves.
 ```
 backend duplication            6 methods written twice (destroy hier_peaks
                                peaks pipeline read write)
-filter-class duplication       6 overrides (__init__ _ensure _run_gpu
-                               _run_series_gpu _start_gpu run_series)
+filter-class duplication       6 overrides, but _run_series_gpu is now ONE
+                               implementation; the override is a 3-line hook
 environment knobs              33 total, 27 untested, 20 undocumented
 thin API coverage              MatchedFilter.nbins,
                                HierarchicalFilter.set_coarse_margin
 magnitude plumbing             ap_peak still carries it; 4 buffers allocated
 descriptors per dropped filter +0   (was +4 before fe24469)
-GPU run_series host fraction   38-47% of the call, serial with the device
+GPU run_series host transform  1.38x faster batched (round 3); still
+                               24-46% of the call and still serial
 ```
 
 ---
@@ -145,15 +146,22 @@ non-dev knobs.
 
 ### B. The host half of `run_series`
 
-**Evidence:** 38-47% of a GPU `run_series` call is the host-side per-block
-forward transform, in a Python loop, **serial with the device**.
+**Evidence:** the host-side forward transform is 24-46% of a GPU
+`run_series` call and **serial with the device**.
 
-The batching win alone is noisy -- measured 1.41x and 1.07x on two runs of
-the same probe -- so do not sell this on batching. The real prize is that
-nothing currently overlaps host transform, upload, and dispatch.
+Step 1 landed in round 3, together with D's merge -- the batching had to go
+somewhere, and there were two somewheres until the merge. Measured best-of-7
+on a Radeon 8060S: host transform 1.38x faster batched (0.79-0.87 ms against
+1.09-1.20 ms), stable across three runs.
 
-1. Replace the per-block Python loop with one strided gather and one batched
-   `np.fft.fft(..., axis=1)`. Cheap, and it makes step 2 possible.
+The earlier figures of 1.41x and then 1.07x for the same change were single
+samples. `health.py` now takes best-of-7, which is why the number stopped
+moving. **Do not sell this on batching**: 1.38x on a term that is a third of
+the call is not the prize. Nothing overlaps host transform, upload and
+dispatch, and that is.
+
+1. ~~Replace the per-block Python loop with one strided gather and one
+   batched `np.fft.fft(..., axis=1)`.~~ Done, round 3.
 2. Chunk the blocks and pipeline: transform chunk *k+1* on the host while
    chunk *k* is on the device. Needs the upload to be per-chunk rather than
    per-call.
@@ -190,10 +198,12 @@ in both classes -- written that way knowingly, in 505347d, and now due.
 1. **One host orchestration, two thin device layers.** `peaks`, `hier_peaks`,
    `destroy`, `pipeline`, `read`, `write` differ only in which API they call.
    Extract the shared sequencing; leave backend-specific buffer and
-   dispatch calls behind a small interface.
-2. **Collapse `_run_series_gpu`.** The flat and hierarchical versions differ
-   in one call (`self._gpu.peaks` vs `self._gpu_hier`) and in nothing else
-   structurally.
+   dispatch calls behind a small interface. STILL OPEN.
+2. ~~**Collapse `_run_series_gpu`.**~~ Done, round 3. One implementation in
+   the base class; `HierarchicalFilter` overrides a three-line
+   `_series_window` hook and nothing else. This is the duplication that
+   produced round 0's bug -- the two copies drifted and one lost its `1/n` --
+   so the merge is the fix for the cause, where round 2 fixed the symptom.
 3. The six test-side helpers were already consolidated into
    `conftest.usable_gpu` and `conftest.vulkan_runs` (c3c8dbd). Keep new ones
    out.
