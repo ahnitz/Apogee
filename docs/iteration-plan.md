@@ -1085,3 +1085,51 @@ Four v_pk_* for TWO complex, against a cross pattern that packs none. This
 is a layout change to r[], dreg[] and the LDS stage -- not a new algorithm
 -- and it is the first change in this effort with direct ISA evidence
 behind it rather than a model.
+
+### The SoA rewrite: pair ACROSS transforms, not within one
+
+The ISA says 789 of the half ops are scalar because complex multiply is a
+cross pattern. The fix is split/SoA, but the obvious form of it does not
+work and the reason matters:
+
+**Wrong: pair adjacent complex within one transform.** half2 holds complex
+2j and 2j+1. But a radix-4 butterfly combines elements o, o+4, o+8, o+12 --
+which land at the SAME COMPONENT of four different registers. Every
+butterfly then needs component extraction, which is the v_mov_b16 traffic
+we are trying to remove. Partial SoA pays the movs and gets no packing.
+
+**Right: pair across two INDEPENDENT transforms.**
+
+    re[i] = half2( re of pair A element i , re of pair B element i )
+    im[i] = half2( im of pair A element i , im of pair B element i )
+
+Now every operation is elementwise across the two transforms:
+
+    butterfly add   re[a] + re[b]                    v_pk_add_f16
+    butterfly sub   re[a] - re[b]                    v_pk_add_f16
+    twiddle mul     re*wr - im*wi , re*wi + im*wr    4x v_pk_*  (wr, wi
+                                                     broadcast: the twiddle
+                                                     is the same for both)
+    correlation     same shape as the twiddle multiply
+
+Nothing needs a swizzle or a component extract, because the two lanes of
+every register belong to different transforms and never interact.
+
+REGISTER COST IS NEUTRAL: 16 complex x 2 transforms held as re[16]+im[16]
+half2 is 32 VGPRs -- exactly what two separate C r[16] cost today. The
+rewrite buys packing for free in registers.
+
+And the independent transforms are already there: TILE_T gives 4 pairs per
+group, so process them two at a time.
+
+SCOPE: cmul, cmulConj, r4, dft2/4/8/16, innermost, exchange all change
+signature from `C r[16]` to `(half2 re[16], half2 im[16])`, plus the load,
+the magnitude, the stage and peakVal. It is a rewrite of the complex
+representation, ~9 functions, and it must be done in one go -- a partial
+conversion is strictly worse than either endpoint, because the boundary
+between AoS and SoA regions costs exactly the movs being eliminated.
+
+EXPECTED: 789 scalar half ops -> ~0, and the 598 fp32 ops (magnitude
+promotion, cos/sin twiddles) become fp16 or hoist. Against 8456 total
+instructions that is the largest single item identified in this effort, and
+the first with ISA evidence rather than a model behind it.
