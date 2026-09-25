@@ -329,3 +329,56 @@ monotonic in work below 256, which points at an occupancy or launch floor.
 LDS is what caps workgroups per CU, so step 3 is the change that should move
 it -- and whether it does tells us if fp16's win is bandwidth alone or
 bandwidth plus occupancy. Whatever that floor is, it caps the return.
+
+### Roofline: why fp16 alone cannot reach the target
+
+Measured on the 8060S, coarse-only, band 512, 512x512 pairs, 2.196 ms:
+
+    work 6.85 GFLOP   traffic 2.15 GB
+    achieved 3.12 TFLOP/s   978 GB/s
+    arithmetic intensity 3.19 FLOP/byte
+
+That is ~21% of this part's ~14.8 TFLOP/s fp32 peak, and the kernel is
+BANDWIDTH bound, not compute bound. At AI 3.19, sustaining 50 TOPS would
+demand 15.7 TB/s. No precision change reaches that: fp16 halves traffic and
+buys ~2x, landing near 6 TFLOP/s.
+
+The lever is arithmetic intensity, and it is reuse. The FFT (5*N*log2(N) =
+23040 flop/pair) dwarfs the correlation (3072) and is per-pair regardless,
+so tiling does not cut work -- it amortises LOADS over K^2 FFTs:
+
+    scheme            loads    FFTs    AI fp32   AI fp16
+    now (1 pair/wg)   2 vec      1       3.2       6.4
+    8x8 tile         16 vec     64      25.5      51
+    16x16 tile       32 vec    256      51       102
+
+**fp16 + an 8x8 tile puts AI near 51 FLOP/byte, which at ~1 TB/s sustains
+~50 TFLOP/s.** Neither change gets there alone. That is the target config.
+
+### Measured this round (all reverted; main is green)
+
+  * **LDS half2 staging: NEUTRAL.** A/B at bands 128-4096, differences in
+    both directions and within noise. Occupancy is not LDS-limited at these
+    sizes -- the coarse stage is 2-4 KB, far under what caps waves/CU. The
+    f32tof16 conversions roughly cancel the saving. Do not revisit without
+    a reason beyond "LDS is smaller".
+
+  * **Band 128 is NOT a launch or LDS floor.** `WG = NLEN/16`, so band 128
+    runs 8-thread workgroups against wave32 -- 25% lane utilisation, and
+    3.5x worse per unit work. 256 -> WG 16, 512 -> WG 32. The fix is
+    packing multiple FFTs per threadgroup so the wave is full, which is the
+    same change the tiling above wants.
+
+  * **fp16 global storage is blocked by a role collision, not by numerics.**
+    Ranges are benign (no over/underflow; template dynamic range 22, fp16
+    rounding error 1.8e-4). But `fusedTierB` serves TWO roles: the flat
+    filter, reading full-precision data/tmpl, AND the untiled coarse stage,
+    reading cdata/ct0. Keying the element format on the entry name therefore
+    changes both, and the untiled path is the common one -- `_COARSE_TILE`
+    tiles only band 256. Packing the buffers made every coarse peak read as
+    -1: not precision, just a kernel reading 4-byte elements as 8-byte ones.
+
+    Fix: build a SUFFIXED coarse variant of fusedTierB compiled for the
+    packed format, and have the loader pick it for the coarse role only.
+    The kernel side is already understood -- one typedef, one `cload`, and
+    the single read site at tierb.slang:247.
