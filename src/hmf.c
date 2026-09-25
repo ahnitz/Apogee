@@ -102,6 +102,7 @@ struct ap_hmf_plan {
   /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
   unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
+  int trace;                   /* MF_HMF_TRACE, read ONCE at plan time */
   FILE *dump;          /* MF_HMF_DUMP: per-pair (coarse, combined, thr) */
   long nskip;                  /* pairs the coarse gate dismissed */
   float last_thr;
@@ -292,6 +293,11 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   { const char *e=getenv("MF_GCAL"); if(e) p->gcal=atoi(e); }
   p->cal_thr=-1.0f;
   p->prof = getenv("MF_HMF_PROF") ? 1 : 0;
+  /* Read once. These sat inside the per-pair loop, and && evaluates
+     left to right, so getenv ran for EVERY pair -- 3.8% of runtime by
+     sampling. balanced-inl.h carries a comment about exactly this bug
+     being fixed in stageA_prod_gm; the same pattern was left here. */
+  p->trace = getenv("MF_HMF_TRACE") ? 1 : 0;
   { const char *e=getenv("MF_HMF_DUMP"); p->dump = e ? fopen(e,"wb") : NULL; }
   return p;
 }
@@ -898,7 +904,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
       ce = p->cebuf[(size_t)d*nt+t];
       if(ce.index>=0 && ce.magnitude<thr) ce.index=-1;
       if(ce.index<0){
-        if(getenv("MF_HMF_TRACE") && p->pairs<6)
+        if(p->trace && p->pairs<6)
           fprintf(stderr,"    [trace] pair=%ld thr=%.3f coarse max BELOW thr\n",
                   p->pairs,thr);
         p->nskip++;
@@ -914,7 +920,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                                  thr,thr,
                                  (float)(d0+d),(float)(t0+t)};
                    fwrite(rec,sizeof rec,1,p->dump); }
-      if(getenv("MF_HMF_TRACE") && p->pairs<6)
+      if(p->trace && p->pairs<6)
         fprintf(stderr,"    [trace] pair=%ld thr=%.3f coarse max=%.3f\n",
                 p->pairs,thr,bestmag);
       fire = bestmag>=thr;

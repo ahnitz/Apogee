@@ -1268,3 +1268,26 @@ independent work in flight (a second SoA group interleaved at the
 instruction level, which needs the two groups' exchanges to share barriers
 without serialising) or prefetch across the exchange. Neither is a
 source-level transform of the kind that has been tried.
+
+### Band 256 takes no tile, and it is the band the teaser runs on
+
+Best-of-7 at band 256, 262144 pairs:
+
+    TILE_T   1       2       4
+            1.116   1.109   1.111 ms
+
+Genuinely indifferent at every depth. An earlier comparison of MEANS
+suggested a small regression; that was the noise, and best-of-N settles it.
+
+This matters more than the flatness suggests: the teaser workload
+(n=4096, 16x1024) autotunes to **band 256**, so it is the band the headline
+number actually runs on -- which is why the teaser barely moved while band
+512 improved 1.5x and band 1024 1.19x.
+
+The headroom is there. Per unit work band 256 is ~1.67x LESS efficient than
+band 512: 4.23 ns/pair for 2048 band*log(band) against 5.68 ns for 4608.
+Tiling simply is not the lever. Its profile differs structurally -- WG =
+256/16 = 16 threads with PPG 2 filling the wave, and NLEVELS = 1, so it has
+ONE exchange where band 512 has two. It needs its own disassembly rather
+than an assumption carried over from 512, and that is the next piece of
+work with a clear payoff attached.
