@@ -655,3 +655,37 @@ by all ntemplates pairs and every template by all ndata. One data row
 against K templates costs 1+K row loads instead of 2K, with the shared row
 staged once in LDS. PPG does not do this -- it packs independent pairs that
 each still carry their own two loads. That is the next thing to build.
+
+### Template tiling works, and register pressure is the price
+
+The kernel never tiled. `d = pair/ntmpl`, `t = pair%ntmpl`, one pair per
+workgroup, each loading BOTH rows -- so every data row was re-read by all
+ntmpl pairs referencing it. The batched grid was in the API and unused.
+
+Prototyped: hoist this thread's data slice into `C dreg[16]`, loop TILE_T
+consecutive pairs (which share a data row by construction), dispatch
+pairs/TILE_T. Loads go from 2*TILE_T*R to R + TILE_T*R -- 144 against 256
+at TILE_T=8.
+
+    band                    128     256     512    1024
+    baseline               1.911   1.095   2.239   4.348 ms
+    refactor, TILE_T=1     0.908   1.113   3.177   9.664
+    tiled,    TILE_T=8     0.707   1.125   2.338   7.295
+
+Read the middle row first: at TILE_T=1 the refactor is PURE COST -- same
+loads, plus 16 live registers for dreg -- and it costs 42% at band 512 and
+2.2x at band 1024, where WG=64 already strains the register file. Tiling
+then earns most of that back (3.177 -> 2.338 at band 512), which proves the
+load saving is real and substantial.
+
+But it only breaks even against baseline, because dreg in fp32 costs 32
+VGPRs. The fix is the one thing not yet combined with it: under COARSE16 a
+C is half2, so dreg costs 16 VGPRs instead of 32. fp16 is what makes the
+tile affordable -- not bandwidth, not ALU rate, REGISTER FOOTPRINT for the
+reused row.
+
+Band 128 already gains outright: 1.911 -> 0.707, 2.70x, up from 2.44x with
+PPG alone.
+
+Next: TILE_T with COARSE16 registers at band 512, and a tile that grows
+only while occupancy holds -- TILE_T=8 at band 1024 is clearly past it.
