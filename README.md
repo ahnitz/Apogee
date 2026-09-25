@@ -70,8 +70,22 @@ peaks = filt.run(binsize=1024, threshold=5.5)
 peaks["index"], peaks["value"]        # where, and what
 ```
 
-Most searches threshold the filter output and throw the rest away. Saying so
-up front lets the filter skip work that could not have produced a peak.
+### Why it is faster
+
+A frequency-domain matched filter is not usually limited by arithmetic. It is
+limited by **memory**: the inverse transform writes out a full correlation —
+`n` complex samples for every (data, template) pair — and the peak scan reads
+all of it back. For 16384 pairs of 4096 points that is 537 MB written and read
+to find a few thousand numbers.
+
+Most searches then threshold that output and throw the rest away. Saying so up
+front is the whole trick: this library **fuses the product, the transform and
+the peak scan into one pass**, so the correlation never reaches memory at all —
+only the peak per bin comes out. The arithmetic is the same as anyone else's.
+The traffic is what disappears, and the traffic was the cost.
+
+The optional hierarchical mode goes further: a cheap decimated pass rules most
+pairs out before the full correlation runs on them at all.
 
 ## What it does
 
