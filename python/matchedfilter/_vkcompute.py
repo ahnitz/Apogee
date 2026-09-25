@@ -38,7 +38,7 @@ _MAX_BINS = 2048
 
 #: Must match COARSE_TILE_T in tools/build_spirv.py -- the kernel is
 #: compiled with the tile baked in, so the dispatch has to agree.
-_COARSE_TILE_T = {128: 2, 512: 4, 1024: 2}
+_COARSE_TILE_T = {128: 2, 256: 2, 512: 4, 1024: 2}
 
 
 def _use_c16(band):
@@ -102,7 +102,15 @@ _OFF_MAX_INVOCATIONS = 296 + 232
 #:
 #: The tile must match the TILE the kernel was compiled with, or the
 #: dispatch covers the wrong number of pairs.
-_COARSE_TILE = {256: 4}
+#: EMPTY. This selected a separate fp32 tiled coarse kernel (coarse_N.spv)
+#: that predates the fp16 work, and band 256 was still routed to it -- so
+#: the band the teaser autotunes to ran with ZERO fp16 instructions while
+#: every other band had been converted. Disassembly found it: 4125
+#: instructions, 1351 fp32, no v_pk_* at all.
+#:
+#: On the converted kernel band 256 goes 1.109 -> 0.868 ms. Kept as an
+#: empty dict rather than deleted so the selection point stays visible.
+_COARSE_TILE = {}
 
 # --- enough of the Vulkan enums to dispatch -------------------------------
 _QUEUE_COMPUTE = 0x2

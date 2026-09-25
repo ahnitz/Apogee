@@ -92,6 +92,7 @@ int supported(size_t N){
        2^12  128x32   AVX2 7.1% faster, AVX-512 10.3%
        2^18  1024x256 AVX2 9.1% faster, AVX-512  4.8%
        2^9   16x32    AVX-512 11.8% faster than the balanced 32x16
+       2^11  128x16   AVX-512  7.0% faster than the balanced 64x32
      Compiled in rather than searched: the same two win on both ISAs.
 
      2^9 is the HIERARCHICAL sizes: the coarse pass transforms `band`
@@ -100,10 +101,17 @@ int supported(size_t N){
      512, six independent runs each of a median of nine, coarse only:
        32x16 (balanced)  1.537 1.451 1.523 1.464 1.301 1.478
        16x32             1.302 1.370 1.203 1.293 1.277 1.387
-     2^10 keeps the balanced 32x32 (16x64 and 64x16 both measured worse)
-     and 2^8 has no choice -- 16x16 is the only split with both halves at
-     or above the vector width. */
+     2^10 keeps the balanced 32x32: 16x64 and 64x16 measured 3.065 and
+     3.049 against 2.802, six runs each. 2^8 has no choice -- 16x16 is the
+     only split with both halves at or above the vector width, and 2^7 is
+     below the floor, which is why the CPU has no band-128 plan at all.
+
+     2^11, six runs each: 64x32 (balanced) median 5.954, 16x128 5.696,
+     32x64 6.028, 128x16 5.540 -- and 128x16's worst run, 5.639, beats the
+     balanced split's best, 5.867. The winning n1 is not monotonic in m, so
+     these are measured per size rather than derived. */
   if(m==9) { n1=16;   n2=32;  }
+  if(m==11){ n1=128;  n2=16;  }
   if(m==12){ n1=128;  n2=32;  }
   if(m==18){ n1=1024; n2=256; }
   return n1>=AP_W && n2>=AP_W;
@@ -120,6 +128,7 @@ void *create(size_t N){
        2^12  128x32   AVX2 7.1% faster, AVX-512 10.3%
        2^18  1024x256 AVX2 9.1% faster, AVX-512  4.8%
        2^9   16x32    AVX-512 11.8% faster than the balanced 32x16
+       2^11  128x16   AVX-512  7.0% faster than the balanced 64x32
      Compiled in rather than searched: the same two win on both ISAs.
 
      2^9 is the HIERARCHICAL sizes: the coarse pass transforms `band`
@@ -128,10 +137,17 @@ void *create(size_t N){
      512, six independent runs each of a median of nine, coarse only:
        32x16 (balanced)  1.537 1.451 1.523 1.464 1.301 1.478
        16x32             1.302 1.370 1.203 1.293 1.277 1.387
-     2^10 keeps the balanced 32x32 (16x64 and 64x16 both measured worse)
-     and 2^8 has no choice -- 16x16 is the only split with both halves at
-     or above the vector width. */
+     2^10 keeps the balanced 32x32: 16x64 and 64x16 measured 3.065 and
+     3.049 against 2.802, six runs each. 2^8 has no choice -- 16x16 is the
+     only split with both halves at or above the vector width, and 2^7 is
+     below the floor, which is why the CPU has no band-128 plan at all.
+
+     2^11, six runs each: 64x32 (balanced) median 5.954, 16x128 5.696,
+     32x64 6.028, 128x16 5.540 -- and 128x16's worst run, 5.639, beats the
+     balanced split's best, 5.867. The winning n1 is not monotonic in m, so
+     these are measured per size rather than derived. */
   if(m==9) { n1=16;   n2=32;  }
+  if(m==11){ n1=128;  n2=16;  }
   if(m==12){ n1=128;  n2=32;  }
   if(m==18){ n1=1024; n2=256; }
   { const char *e=getenv("MF_N1");
