@@ -738,6 +738,18 @@ def md(text):
                           "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % inline(c) for c in r)
                                   for r in body)))
             i = j; continue
+        # A raw HTML block passes through untouched. Without this the
+        # paragraph fallback below ran it through inline(), which starts
+        # with html.escape() -- so the README's centred banner and its
+        # <img>/<sub> captions rendered as LITERAL TEXT on the site, tags
+        # and all. Markdown's rule is the practical one: a line beginning
+        # with "<" at column zero opens a block that runs to a blank line.
+        if ln.lstrip().startswith("<") and not ln.lstrip().startswith("<-"):
+            buf = []
+            while i < len(lines) and lines[i].strip():
+                buf.append(lines[i]); i += 1
+            out.append("\n".join(buf))
+            continue
         m = _re.match(r"^(#{1,4})\s+(.*)", ln)
         if m:
             lvl = len(m.group(1))
