@@ -1,3 +1,7 @@
+#define NLEN 1024
+#define LDS_CAP 1024
+#define COARSE16 1
+#define PPG 1
 // Tier B: every transform length one workgroup can carry.
 //
 // L = TB*16 with TB threads holding 16 points each: a 16-point DFT per

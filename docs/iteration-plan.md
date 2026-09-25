@@ -1196,3 +1196,45 @@ Worth confirming they are not allocated for plans that never calibrate.
 
   1. 2D tiling and the other structural items
   2. SWAR last -- the CPU equivalent of fp16 for the coarse stage
+
+### CPU: 2D tiling already exists, and what that means
+
+matchfilt.c:227 already blocks BOTH axes -- `for(dt..nd step tile) for(tt..
+nsel step tile)` with `p->tile = 8`, tunable at runtime via MF_MFTILE. So
+the tiling I recommended from the GPU work is already there.
+
+But it is CACHE blocking, not work amortisation. Each pair still makes its
+own ap_binmax_prod call, so the 696 scalar addressing ops (23% of
+fft64_prod) are paid PER PAIR and the tile does nothing about them. The GPU
+analogue -- amortising pair-invariant work across a tile -- would require
+pushing the tile INTO the codelet so one call handles several pairs, which
+is a much deeper change than the loop-level blocking that exists.
+
+**The tile default looks mistuned for the coarse stage.** Its comment
+records measurements at 16x16 pairs and n=2^12; the coarse stage has a much
+smaller working set (a band-512 row is 4 KB). Swept at 4096 pairs
+(nd=32, nt=128), band 512, median of 7:
+
+    tile   1      2      4      8     16     32     64
+    ms   1.644  1.553  1.619  1.566  1.486  1.578  1.479
+
+tile 16 and 64 beat the default 8 by ~5%. That is small and shape
+dependent -- the existing comment says 8 was never worse on the shapes
+tested THEN -- so this is recorded rather than changed. Retuning it
+properly needs the cost-table tooling, which is currently broken by the
+set_coarse_margin removal. Same stale-tuning class as the GPU cost tables.
+
+### CPU dead code: the interpolation path is unreachable
+
+matchfilt.c:248 guards an ap_interp_max call on `p->ihlo && p->iout &&
+p->iser && !p->ipause`, in the INNERMOST pair loop. p->ihlo is set only by
+ap_mf_set_interp, and `grep -c interp python/matchedfilter/_core.c` is 0 --
+interpolation is not exposed to Python at all. So ihlo is permanently NULL
+and the whole block is unreachable, along with ap_interp_max, the candidate
+scan, and the iK/incand/ifrac/iser/ipause state that supports it.
+
+This is the same remnant family as the four zero counters already removed:
+interpolation was taken out at the Python and hmf.c level and left behind
+in matchfilt.c. Worth removing, but it touches the shared flat-filter path
+rather than the coarse stage alone, so it needs its own change with the
+full suite behind it -- not folded into a coarse-stage optimisation.
