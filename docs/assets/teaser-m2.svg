@@ -2,7 +2,7 @@
 <rect width="900" height="490" rx="8" fill="#0b0f19"/>
 <text x="28" y="34" font-size="17" font-weight="600" fill="#e8eef7">16384 correlations of 4096 points</text>
 <text x="28" y="55" font-size="12.5" fill="#94a3b8">correlations per second — taller is better. The two panels have DIFFERENT scales.</text>
-<text x="28" y="76" font-size="11" fill="#94a3b8"><tspan fill="#e8eef7">CPU</tspan><tspan dx="7">Apple M2</tspan><tspan dx="24" fill="#e8eef7">GPU</tspan><tspan dx="7">Apple M2</tspan></text>
+<text x="28" y="76" font-size="11" fill="#94a3b8"><tspan fill="#e8eef7">CPU</tspan><tspan dx="7">Apple M2 CPU</tspan><tspan dx="24" fill="#e8eef7">GPU</tspan><tspan dx="7">Apple M2 integrated GPU</tspan></text>
 <text x="60" y="104" font-size="13" font-weight="600" fill="#e8eef7">CPU</text>
 <line x1="60" y1="370" x2="440" y2="370" stroke="#243044"/>
 <rect x="86" y="340.3" width="86" height="29.7" rx="3" fill="#4facfe"/>

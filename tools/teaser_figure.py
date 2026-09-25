@@ -372,7 +372,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.m2:
         global _OVERRIDE
-        _OVERRIDE = ("Apple M2", "Apple M2")     # as the M2 itself reports them
+        # The M2 reports "Apple M2" for BOTH its CPU and its GPU, which in
+        # a two-panel comparison reads as one unlabelled chip twice over --
+        # the reader cannot tell which side is which silicon. Same die, but
+        # the panels are comparing its CPU cores against its GPU, so say so.
+        _OVERRIDE = ("Apple M2 CPU", "Apple M2 integrated GPU")
     results = []
     for bar in (M2_BARS if args.m2 else BARS):
         ms = bar[3]()
