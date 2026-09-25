@@ -650,7 +650,6 @@ void peakLane(uint pair, uint tid, uint lane, H magv[16], H re[16], H im[16],
 //: fill one lane each. Every operation from here to the magnitude is
 //: elementwise and packs.
 void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
-               CS twr[NLEVELS][16], CS twi[NLEVELS][16],
                C dreg[16], StructuredBuffer<CVal> tmpl,
                RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
                uint winStart, uint winEnd, uint thrBits)
@@ -677,12 +676,10 @@ void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
         uint lane = tid & (TB - 1);
 
         dft16s(re, im);
-        // Twiddles from the per-thread table. The angle 2*PI*lane*k2/len
-        // depends on tid and the level only, never on the pair, and each
-        // one cost a float multiply, a divide, a cos, a sin and a narrow
-        // -- paid once per PAIR before, for identical values.
-        [unroll] for (uint k2 = 0; k2 < R; ++k2)
-            cmulw(re[k2], im[k2], twr[lvl][k2], twi[lvl][k2]);
+        [unroll] for (uint k2 = 0; k2 < R; ++k2) {
+            float ang = 2.0f * PI * float(lane * k2) / float(len);
+            cmulw(re[k2], im[k2], CS(cos(ang)), CS(sin(ang)));
+        }
         const uint per  = R / max(TB, 1u);
         const uint TB2  = max(TB >> 4, 1u), len2 = TB;
         uint blk2 = tid / TB2, lane2 = tid % TB2;
@@ -733,20 +730,9 @@ void filterPair(uint pair, uint tid,
     [unroll] for (uint n2 = 0; n2 < R; ++n2)
         dreg[n2] = cload(data, d*N + tid + WG * n2);
 #if COARSE16 && (TILE_T % 2) == 0
-    CS twr[NLEVELS][16], twi[NLEVELS][16];
-    [ForceUnroll] for (uint lv = 0; lv < NLEVELS; ++lv) {
-        const uint TBw  = WG >> (4 * lv);
-        const uint lenw = N  >> (4 * lv);
-        uint lanew = tid & (TBw - 1);
-        [unroll] for (uint k2 = 0; k2 < R; ++k2) {
-            float ang = 2.0f * PI * float(lanew * k2) / float(lenw);
-            twr[lv][k2] = CS(cos(ang));
-            twi[lv][k2] = CS(sin(ang));
-        }
-    }
     // Two at a time, in split/SoA form.
     [unroll] for (uint k = 0; k < TILE_T; k += 2)
-        filterTwo(p0 + k, p0 + k + 1, t0 + k, t0 + k + 1, tid, twr, twi, dreg, tmpl,
+        filterTwo(p0 + k, p0 + k + 1, t0 + k, t0 + k + 1, tid, dreg, tmpl,
                   peakIdx, peakVal, winStart, winEnd, thrBits);
 #else
     [unroll] for (uint k = 0; k < TILE_T; ++k)
