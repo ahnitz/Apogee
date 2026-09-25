@@ -28,8 +28,11 @@ import hmf_tune as t
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 4096
 BAND = max(256, min(1024, N // 4))
 SNRS = [5.0, 5.5, 6.0, 6.5]
-FS = [0.80, 0.90, 0.95, 0.98, 0.995]
-RATIOS = [1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0]
+#: Extended down to 0.60: band 128 at n=4096 sits at f=0.697,
+#: below the old 0.80 floor, so its gate was being extrapolated.
+FS = [0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.995]
+#: and down to 1.2: band 128 sits at ratio 1.24.
+RATIOS = [1.2, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0]
 FDS = [1e-2, 1e-3]
 TRIALS = 6000
 WORKERS = max(2, (os.cpu_count() or 8) - 2)
@@ -55,8 +58,30 @@ def cell(job):
 
 
 if __name__ == "__main__":
-    jobs = [(s, f, r, d) for s in SNRS for f in FS
-            for r in RATIOS for d in FDS]
+    # Only the cells the table is MISSING, by default. A full sweep
+    # re-measures 280 cells to add 21; --only-new computes the new ones and
+    # leaves the existing rows alone, which is safe because each cell is an
+    # independent bisection -- nothing in the table depends on its
+    # neighbours.
+    if "--only-new" in sys.argv:
+        have = set()
+        try:
+            for ln in open("python/matchedfilter/threshold.txt"):
+                if ln.startswith("THR"):
+                    w = ln.split()
+                    if int(w[1]) == N:
+                        have.add((float(w[2]), float(w[3]), float(w[4]), w[5]))
+        except OSError:
+            pass
+        def fdkey(d):
+            return "%.0e" % d
+        jobs = [(s, f, r, d) for s in SNRS for f in FS for r in RATIOS
+                for d in FDS if (s, f, r, fdkey(d)) not in have]
+        print("%d cells already measured; %d new"
+              % (len(have), len(jobs)), flush=True)
+    else:
+        jobs = [(s, f, r, d) for s in SNRS for f in FS
+                for r in RATIOS for d in FDS]
     print("%d cells x %d trials x 9 bisection steps, %d workers"
           % (len(jobs), TRIALS, WORKERS), flush=True)
     t0 = time.perf_counter()
