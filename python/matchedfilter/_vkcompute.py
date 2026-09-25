@@ -38,7 +38,7 @@ _MAX_BINS = 2048
 
 #: Must match COARSE_TILE_T in tools/build_spirv.py -- the kernel is
 #: compiled with the tile baked in, so the dispatch has to agree.
-_COARSE_TILE_T = {512: 4}
+_COARSE_TILE_T = {128: 2, 512: 4, 1024: 2}
 
 
 def _use_c16(band):

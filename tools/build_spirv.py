@@ -141,7 +141,7 @@ ENTRY = ENTRIES[0]
 #: Band 1024 is the one band already at 100% occupancy (WG=64 is a two-wave
 #: group), so every tile register comes straight out of waves. The model
 #: predicted exactly this and the measurement confirms it.
-COARSE_TILE_T = {512: 4}
+COARSE_TILE_T = {128: 2, 512: 4, 1024: 2}
 #: Artifact prefix per entry point. Two entries used to be distinguished by
 #: `entry == ENTRY`, which silently collides the moment there is a third.
 STEMS = {"fusedTierB": "tierb", "gatedTierB": "gated",
