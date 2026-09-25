@@ -25,7 +25,8 @@ sys.path.insert(0, "tools")
 sys.path.insert(0, "tests")
 import hmf_tune as t
 
-N, BAND = 4096, 1024
+N = int(sys.argv[1]) if len(sys.argv) > 1 else 4096
+BAND = max(256, min(1024, N // 4))
 SNRS = [5.0, 5.5, 6.0, 6.5]
 FS = [0.80, 0.90, 0.95, 0.98, 0.995]
 RATIOS = [1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0]
@@ -68,7 +69,7 @@ if __name__ == "__main__":
                 print("  %d/%d  %.0fs  eta %.0fs"
                       % (i + 1, len(jobs), el, el/(i+1)*(len(jobs)-i-1)),
                       flush=True)
-    out = "tools/regen/threshold_4096.txt"
+    out = "tools/regen/threshold_%d.txt" % N
     with open(out, "w") as fh:
         fh.write("# THR n snr f ratio fd threshold\n")
         fh.write("# The coarse threshold, measured. Not modelled, not corrected.\n")

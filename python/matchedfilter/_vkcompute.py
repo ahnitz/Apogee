@@ -575,10 +575,8 @@ class Context:
             "cdata": _Buffer(self, nd * band * 8),
             "ct0":   _Buffer(self, nt * band * 8),
             "ct1":   _Buffer(self, nt * band * 8),
-            "eidx":  _Buffer(self, pairs * 4),
-            "eval":  _Buffer(self, pairs * 8),
-            "oidx":  _Buffer(self, pairs * 4),
-            "oval":  _Buffer(self, pairs * 8),
+            "cidx":  _Buffer(self, pairs * 4),
+            "cval":  _Buffer(self, pairs * 8),
             "idx":   _Buffer(self, nd * nt * nbins * 4, readback=True),
             "val":   _Buffer(self, nd * nt * nbins * 8, readback=True),
         }
@@ -586,17 +584,21 @@ class Context:
         # else -- a maximum does not depend on the output ordering, so it
         # needs no index and no digit reversal.
         if tile:
-            ds_even = self._descriptor_set(cset_layout,
-                                           [b["cdata"], b["ct0"], b["eval"]])
+            ds_coarse = self._descriptor_set(cset_layout,
+                                           [b["cdata"], b["ct0"], b["cval"]])
         else:
-            ds_even = self._descriptor_set(cset_layout,
-                                           [b["cdata"], b["ct0"], b["eidx"], b["eval"]])
-        ds_odd_gated = self._descriptor_set(
-            gcset_layout,
-            [b["cdata"], b["ct1"], b["oidx"], b["oval"], b["eval"], b["eval"]])
+            ds_coarse = self._descriptor_set(cset_layout,
+                                           [b["cdata"], b["ct0"], b["cidx"], b["cval"]])
+        # The refine reads the EVEN buffer for both coarse inputs. The odd
+        # half is gone -- the coarse grid is critically sampled and the even
+        # series is the whole answer -- so binding eval twice makes the
+        # kernel's `od` equal its `ev`, `best` reduce to `ev`, and its
+        # two-test predicate collapse to one comparison. No kernel rebuild:
+        # the shader already computes exactly this when the two buffers
+        # agree, which is how the odd pass itself was implemented.
         ds_ref = self._descriptor_set(gset_layout,
                                       [b["data"], b["tmpl"], b["idx"], b["val"],
-                                       b["eval"], b["oval"]])
+                                       b["cval"], b["cval"]])
 
         cb = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
         cmd = _vp()
@@ -606,7 +608,7 @@ class Context:
         _check(vk.vkBeginCommandBuffer(cmd, ctypes.byref(
             _CmdBufBegin(42, None, 0, None))), "vkBeginCommandBuffer")
 
-        def coarse_even(ds):
+        def coarse(ds):
             vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, cpipe)
             sets = (_vp * 1)(ds)
             vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, clayout, 0, 1,
@@ -653,9 +655,7 @@ class Context:
             vk.vkCmdPipelineBarrier(cmd, _STAGE_COMPUTE_BIT, _STAGE_COMPUTE_BIT,
                                     0, 1, ctypes.byref(mb), 0, None, 0, None)
 
-        coarse_even(ds_even)
-        barrier()
-        coarse_odd(ds_odd_gated)
+        coarse(ds_coarse)
         barrier()
         vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, gpipe)
         sets = (_vp * 1)(ds_ref)

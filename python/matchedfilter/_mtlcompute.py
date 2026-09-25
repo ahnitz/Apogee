@@ -510,10 +510,8 @@ class Context:
                 "cdata": _Buffer(self, nd * band * 8),
                 "ct0":   _Buffer(self, nt * band * 8),
                 "ct1":   _Buffer(self, nt * band * 8),
-                "eidx":  _Buffer(self, pairs * 4),
-                "eval":  _Buffer(self, pairs * 8),
-                "oidx":  _Buffer(self, pairs * 4),
-                "oval":  _Buffer(self, pairs * 8),
+                "cidx":  _Buffer(self, pairs * 4),
+                "cval":  _Buffer(self, pairs * 8),
                 "idx":   _Buffer(self, nd * nt * nbins * 4),
                 "val":   _Buffer(self, nd * nt * nbins * 8),
             }
@@ -565,24 +563,19 @@ class Context:
         # peak IS the maximum -- which is all the gate needs.
         dispatch(coarse,
                  (nt, 0, band, band, band.bit_length() - 1, 1, 0),
-                 ("cdata", "ct0", "eidx", "eval"), band)
+                 ("cdata", "ct0", "cidx", "cval"), band)
 
-        # Coarse odd, gated on the even half. The CPU never computes the odd
-        # half for a pair the even half already dismissed -- about 78% of
-        # them -- and computing it for all of them doubles the coarse pass.
-        # This needs no new kernel: handing gatedTierB the even buffer for
-        # BOTH coarse inputs with rawThr = 0 reduces its test to
-        # `even >= evenThr`, which is the CPU's early-out exactly.
-        dispatch(gated_coarse,
-                 (nt, 0, band, band, band.bit_length() - 1, 1, 0,
-                  bits(even_thr), bits(0.0)),
-                 ("cdata", "ct1", "oidx", "oval", "eval", "eval"), band)
-
-        # The refinement, gated on both halves.
+        # The refinement. The EVEN buffer is bound to both coarse inputs:
+        # the odd half is gone -- the coarse grid is critically sampled, so
+        # the even series is the whole answer -- and with the two buffers
+        # equal the kernel's `od` equals its `ev`, `best` reduces to `ev`,
+        # and its two-test predicate collapses to one comparison. No kernel
+        # rebuild; the shader already computes this when they agree, which
+        # is how the odd pass was itself implemented.
         dispatch(refine,
                  (nt, lo, hi, binsize, shift & 0xFFFFFFFF, nbins, bits(t2),
                   bits(even_thr), bits(raw_thr)),
-                 ("data", "tmpl", "idx", "val", "eval", "oval"), n)
+                 ("data", "tmpl", "idx", "val", "cval", "cval"), n)
 
         self.o.call(enc, b"endEncoding", restype=None)
         self.o.call(cmd, b"commit", restype=None)
