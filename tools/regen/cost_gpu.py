@@ -61,7 +61,7 @@ def measure(n, band, margin, snr, reps=8):
                  ).astype(np.complex64)
 
     f = mf.HierarchicalFilter(n, nd, nt, snr=snr, fd=1e-2, band=band,
-                              oversample=2, taps=8, device="gpu")
+                              taps=8, device="gpu")
     f.set_reference(reference)
     f.set_templates(H)
     f.set_coarse_margin(margin)

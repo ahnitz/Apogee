@@ -93,11 +93,11 @@ def test_site_pages_are_linked_and_complete():
            "hierarchical": [
                {"n": 4096, "snr": 5.0, "fd": 1e-3, "flat_ms": 2.0,
                 "hier_ms": 1.0, "speedup": 2.0, "refine_rate": 0.0,
-                "band": 1024, "oversample": 2, "taps": 8},
+                "band": 1024, "taps": 8},
                # a row that escalated, so the "where it fired" table renders
                {"n": 4096, "snr": 5.5, "fd": 1e-3, "flat_ms": 2.0,
                 "hier_ms": 1.5, "speedup": 1.33, "refine_rate": 0.12,
-                "band": 512, "oversample": 2, "taps": 8},
+                "band": 512, "taps": 8},
                # and one the tables did not cover, which carries NO speedup
                # and NO rate at all. This shape crashed the CI page build.
                {"n": 16384, "snr": 6.5, "fd": 1e-3, "uncovered": "not tuned"}]}

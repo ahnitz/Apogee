@@ -182,7 +182,7 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
     H = template_with_power(n, power)
     flat = mf.MatchedFilter(n, ndata=batch, ntemplates=1, device=device)
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
-                               band=band, oversample=U, taps=K, device=device)
+                               band=band, taps=K, device=device)
     hf.set_reference(power)
     # Always, including 1.0. The margin is an independent variable of this
     # sweep, and a pinned plan now takes one from the table when the caller
@@ -609,7 +609,7 @@ def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,
     power = np.ascontiguousarray(power, dtype=np.float32)
     H = np.stack([template_with_power(n, power) for _ in range(nt)])
     hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=1e-3,
-                               band=band, oversample=U, taps=K)
+                               band=band, taps=K)
     hf.set_reference(power)
     # Always, including 1.0. The margin is an independent variable of this
     # sweep, and a pinned plan now takes one from the table when the caller
@@ -739,7 +739,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
         for cfg in chunk:
             band, U, K, margin = cfg
             hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=nt, snr=snr,
-                                       fd=1e-3, band=band, oversample=U, taps=K)
+                                       fd=1e-3, band=band, taps=K)
             hf.set_reference(power)
             # always, including 1.0 -- see the note at the top of the file
             hf.set_coarse_margin(float(margin))

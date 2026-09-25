@@ -694,7 +694,7 @@ def _uncovered_message(n, snr, fd):
             "cover n=%s, snr=%s, and a threshold ABOVE that range is answered "
             "conservatively; below or between it is not, because a lower "
             "threshold is a harder problem and nothing measured bounds it. "
-            "Either pass band/oversample/taps explicitly, or generate "
+            "Either pass band/taps explicitly, or generate "
             "coverage with tools/hmf_tune.py and point MF_ACCURACY and "
             "MF_COST at it. See docs/hierarchical.md."
             % (n, snr, fd, where, ns, snrs or "none at this n"))
@@ -877,7 +877,7 @@ def _load_tuning_paths(paths, cache=True):
         if cache:
             _TUNING = cached
         return cached
-    fdr, cost, acc2, meta = [], {}, {}, {}
+    fdr, cost, acc2, acc2r, meta = [], {}, {}, {}, {}
     for one in paths:
       with open(one) as fh:
         for line in fh:
@@ -913,6 +913,27 @@ def _load_tuning_paths(paths, cache=True):
                 acc2.setdefault((int(f[1]), int(f[2]), round(float(f[3]), 2),
                                  round(float(f[6]), 3)), []).append(
                                      (float(f[4]), float(f[5]), float(f[7])))
+            elif f[0] == "ACC2R":
+                # ACC2R n K snr f ratio margin dismissal
+                #
+                # The successor key. ACC2 sampled B_eff absolutely, 2 to 128,
+                # and measured every cell at band 1024 -- so a real reference,
+                # whose B_eff is 154 to 384, was extrapolated on every lookup.
+                # Worse, what scalloping depends on is neither band nor B_eff
+                # but their RATIO:
+                #
+                #   peak width in lag ~ n/B_eff, lag step = n/band
+                #   samples across the peak = band/B_eff, with no n in it
+                #
+                # ACC2 covered ratio 8 to 512. The reference this library
+                # exists for sits at 1.66 (band 256), 2.83 (512), 5.33 (1024).
+                # The oversample doubled that and hid it; without the
+                # oversample, 1.66 samples across a peak is critically
+                # undersampled and dismissal goes 12x. Measured at the ratio,
+                # keyed on the ratio.
+                acc2r.setdefault((int(f[1]), int(f[2]), round(float(f[3]), 2),
+                                  round(float(f[6]), 3)), []).append(
+                                      (float(f[4]), float(f[5]), float(f[7])))
             elif f[0] == "COST":
                 cost.setdefault((int(f[1]), int(f[2]), int(f[3]), int(f[4]),
                                  float(f[5]), float(f[8])), []).append(
@@ -951,9 +972,14 @@ def _load_tuning_paths(paths, cache=True):
     acc2_snrs = {}
     for (an, aK, asnr, amg) in acc2:
         acc2_snrs.setdefault(an, set()).add(asnr)
+    acc2r_snrs = {}
+    for (an, aK, asnr, amg) in acc2r:
+        acc2r_snrs.setdefault(an, set()).add(asnr)
     t = {"fdr": fdr, "cost": cost, "meta": meta, "paths": paths,
          "acc2": acc2,
          "acc2_snrs": {k: sorted(v) for k, v in acc2_snrs.items()},
+         "acc2r": acc2r,
+         "acc2r_snrs": {k: sorted(v) for k, v in acc2r_snrs.items()},
          "by_ns": by_ns, "snrs_at": snrs_at,
          "cost_cfg": {k: sorted(v) for k, v in cost_cfg.items()}}
     _store_tuning(t, tuple(paths))
@@ -1196,7 +1222,7 @@ def _choose_v2(power, n, snr, fd, t):
     and a bound is not what this needs. What it needs is an estimate plus a
     measured safety factor.
     """
-    snrs = t["acc2_snrs"].get(n)
+    snrs = t.get("acc2r_snrs", {}).get(n) or t["acc2_snrs"].get(n)
     if not snrs:
         return None
     use, _why = _snr_rows_for(snr, snrs)
@@ -1215,14 +1241,21 @@ def _choose_v2(power, n, snr, fd, t):
         f, be = _band_features(power, band)
         if be < _BEFF_MIN:
             continue                       # no peak to localise; see _BEFF_MIN
+        # Samples across the correlation peak: peak width in lag is ~n/B_eff
+        # and the coarse lag step is n/band, so this is the dimensionless
+        # quantity scalloping depends on -- no n in it. ACC2R is keyed on it.
+        ratio = (band / be) if be > 0 else float("inf")
+        use_r = bool(t.get("acc2r_snrs", {}).get(n))
         for (U, K) in sorted(kus):
-            margins = sorted({m for (an, aK, asnr, m) in t["acc2"]
+            src = t["acc2r"] if use_r else t["acc2"]
+            margins = sorted({m for (an, aK, asnr, m) in src
                               if an == n and aK == K and asnr in use})
             curve = []
             for mg in margins:
                 # worst over the SNR rows that speak for this threshold
                 est = [x for x in
-                       (_idw(t["acc2"].get((n, K, s_, mg)) or [], f, be,
+                       (_idw(src.get((n, K, s_, mg)) or [], f,
+                             ratio if use_r else be,
                              log=True, floor=floor) for s_ in use)
                        if x is not None]
                 if est:
@@ -1248,12 +1281,16 @@ def _choose_v2(power, n, snr, fd, t):
                 continue
             c = _idw(crows, f, be)
             if c is not None and c < bcost:
-                best, bcost, bcfg = (band, U, K), c, (band, U, K, round(mg, 4))
+                # U is gone from the interface. The shipped cost rows still
+                # carry the column because every one of them was measured at
+                # U=2; it is a lookup detail here and disappears when the
+                # tables are regenerated without it.
+                best, bcost, bcfg = (band, K), c, (band, K, round(mg, 4))
     return bcfg
 
 
 def choose_config(power, n, snr, fd, tuning=None):
-    """Cheapest (band, oversample, taps) whose measured dismissal meets `fd`.
+    """Cheapest (band, taps) whose measured dismissal meets `fd`.
 
     Each candidate is judged on the accumulation at its OWN band edge, since
     two references agreeing elsewhere disagree there.  The two features move
@@ -1289,7 +1326,7 @@ def choose_config(power, n, snr, fd, tuning=None):
     answer in the budget's name.
     """
     t = _load_tuning() if tuning is None else tuning
-    if t.get("acc2_snrs", {}).get(n):
+    if t.get("acc2r_snrs", {}).get(n) or t.get("acc2_snrs", {}).get(n):
         return _choose_v2(power, n, snr, fd, t)
     # --- everything below is the OLD key, kept only for lengths the
     # re-keyed table does not cover yet. Delete it once ACC2 covers every
@@ -1495,11 +1532,11 @@ def _snr_rows_for(snr, covered, tol=1e-6):
     return (lo, hi), "between measured thresholds %g and %g" % (lo, hi)
 
 
-def margin_for_config(power, n, snr, fd, band, oversample, taps, tuning=None):
+def margin_for_config(power, n, snr, fd, band, taps, tuning=None):
     """Measured coarse margin for a configuration the CALLER chose.
 
     `choose_config` resolves a margin as part of picking a configuration, so
-    a caller who pins band/oversample/taps used to get none at all -- an
+    a caller who pins band/taps used to get none at all -- an
     implicit 1.00, leaving the coarse threshold to the compiled model in
     src/hmf_table.h, whose recovery factors come from the reference's MEAN
     spectrum and bound no single realisation. On the FIR-shaped workload
@@ -1568,13 +1605,13 @@ class HierarchicalFilter(MatchedFilter):
     tolerated false-dismissal probability for such a signal.  Lowering either
     costs speed, because the coarse threshold has to open wider.  Band, oversampling and tap
     count come from a compiled-in measured table - matchedfilter does not tune the
-    margin against your data - and can be pinned with ``band`` / ``oversample`` /
+    margin against your data - and can be pinned with ``band`` /
     ``taps`` for testing.  How the work is *arranged*, on the other hand, is
     chosen here and not by the caller: see :meth:`run_series`.
     """
 
     def __init__(self, n, ndata=1, ntemplates=1, snr=5.5, fd=1e-2,
-                 band=None, oversample=None, taps=None, device=None):
+                 band=None, taps=None, device=None):
         from .device import parse as _parse_device
         self.device = _parse_device(device)
         self.n = int(n)
@@ -1611,7 +1648,7 @@ class HierarchicalFilter(MatchedFilter):
             # configuration got the table's choice instead and config()
             # reported the substitute rather than what was asked for.
             if band is not None:
-                self._pinned = (int(band), int(oversample or 2), int(taps or 8))
+                self._pinned = (int(band), int(taps or 8))
             self._start_gpu()
             self._defer = True
             self._mf = None
@@ -1625,9 +1662,9 @@ class HierarchicalFilter(MatchedFilter):
             self._defer = True
         else:
             self._defer = False
-            self._pinned = (int(band), int(oversample or 2), int(taps or 8))
+            self._pinned = (int(band), int(taps or 8))
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr,
-                                 self.fd, *self._pinned)
+                                 self.fd, self._pinned[0], 1, self._pinned[1])
 
     def _ensure(self):
         """Build the plan, choosing its configuration if that was deferred.
@@ -1685,9 +1722,9 @@ class HierarchicalFilter(MatchedFilter):
                         "with no low-frequency cutoff."
                         % (self.n, _BEFF_MIN))
             raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
-        b, u, k, margin = cfg
+        b, k, margin = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
-                             self.snr, self.fd, int(b), int(u), int(k))
+                             self.snr, self.fd, int(b), 1, int(k))
         # the coarse threshold is the strongest lever and is tuned with the rest; it is
         # read per run, so setting it here is enough
         self._margin = float(margin)
@@ -1747,8 +1784,7 @@ class HierarchicalFilter(MatchedFilter):
         pin = {}
         margin = self._margin
         if self._pinned is not None:
-            pin = dict(band=self._pinned[0], oversample=self._pinned[1],
-                       taps=self._pinned[2])
+            pin = dict(band=self._pinned[0], taps=self._pinned[1])
         else:
             # Choose the configuration with THIS DEVICE's cost rows. Letting
             # the calibration plan choose for itself used the shipped table,
@@ -1761,9 +1797,9 @@ class HierarchicalFilter(MatchedFilter):
             except Exception:
                 cfg = None
             if cfg is not None:
-                pin = dict(band=cfg[0], oversample=cfg[1], taps=cfg[2])
-                if margin is None and len(cfg) > 3:
-                    margin = cfg[3]
+                pin = dict(band=cfg[0], taps=cfg[1])
+                if margin is None and len(cfg) > 2:
+                    margin = cfg[2]
         cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd, **pin)
         # Order matters: set_first_stage builds the plan, and building it
         # before the reference arrives means the band is chosen with nothing
@@ -1784,7 +1820,7 @@ class HierarchicalFilter(MatchedFilter):
         margin, raw, even = plan.coarse_thresholds(float(threshold))
         ref = np.asarray(self._pending_ref, dtype=np.float64)
         f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
-        self._gcfg = cal.config          # the real (band, oversample, taps)
+        self._gcfg = cal.config          # the real (band, taps)
         out = (band, f, margin, raw, even)
         self._gcal = (key, out)
         return out
@@ -1853,7 +1889,7 @@ class HierarchicalFilter(MatchedFilter):
         suggestion, not a constraint -- it comes from an offline sweep whose
         recovery factors are measured against a mean spectrum, so it is not
         reliable everywhere (see docs/hierarchical.md).  Callers who know
-        better should say so here.  Band, oversample and taps are fixed when
+        better should say so here.  Band and taps are fixed when
         the plan is built and are not affected.
 
         The design table's SNR grid starts at 4.5, and the level is
@@ -2015,12 +2051,12 @@ class HierarchicalFilter(MatchedFilter):
 
     @property
     def config(self):
-        """``(band, oversample, taps)`` the design table selected."""
+        """``(band, taps)`` the design table selected."""
         if self._gpu is not None:
             self._gpu_calibration(self.snr)
             return self._gcfg
-        band, u, k = self._ensure().config()
-        return band, u, k
+        band, _u, k = self._ensure().config()
+        return band, k
 
     @property
     def cost_table(self):

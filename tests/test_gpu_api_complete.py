@@ -188,9 +188,8 @@ def test_reported_configuration_is_real(filt):
     had no way to tell whether the port was misconfigured or the report was.
     """
     f = filt[0]
-    band, oversample, taps = f.config
+    band, taps = f.config
     assert band in (128, 256, 512, 1024, 2048)
-    assert oversample >= 1
     assert taps > 0, "taps reported as %r" % (taps,)
 
 

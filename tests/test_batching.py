@@ -40,7 +40,7 @@ def test_data_passed_as_a_temporary_survives_the_run():
     power = np.ascontiguousarray(power, dtype=np.float32)
     rng = np.random.default_rng(1)
     hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=1, snr=5.0, fd=1e-3,
-                               band=1024, oversample=2, taps=8)
+                               band=1024, taps=8)
     hf.set_reference(power)
     hf.set_templates(template_with_power(n, power)[None, :])
     for _ in range(10):
@@ -61,7 +61,7 @@ def test_many_data_segments_and_templates():
     rng = np.random.default_rng(4)
     for nt, nd in ((1, 1), (1, 16), (16, 1), (8, 8), (32, 8), (16, 16)):
         hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.0,
-                                   fd=1e-3, band=1024, oversample=2, taps=8)
+                                   fd=1e-3, band=1024, taps=8)
         hf.set_reference(power)
         hf.set_templates(np.stack([template_with_power(n, power)
                                    for _ in range(nt)]))

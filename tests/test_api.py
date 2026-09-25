@@ -257,7 +257,7 @@ def test_coarse_threshold_reads_the_reference_not_the_template():
     assert out_power[:band].sum() / out_power.sum() > 0.9   # output: low band
 
     hf = mf.HierarchicalFilter(n, ndata=32, ntemplates=1, snr=5.5, fd=1e-2,
-                                   band=band, oversample=2, taps=8)
+                                   band=band, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
     hf.set_data(noise((32, n), rng))
@@ -286,7 +286,7 @@ def test_coarse_scaling_follows_the_reference():
     out_power = (np.abs(H) ** 2 * falling).astype(np.float32)
 
     hf = mf.HierarchicalFilter(n, ndata=64, ntemplates=1, snr=5.5, fd=1e-2,
-                                   band=band, oversample=2, taps=8)
+                                   band=band, taps=8)
     hf.set_reference(out_power)
     hf.set_templates(H[None, :])
     hf.set_data(noise((64, n), rng))
@@ -308,7 +308,7 @@ def test_peaks_on_odd_lags_survive():
     H = template_with_power(n, power)
     filt = mf.MatchedFilter(n, ndata=1, ntemplates=1)
     hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=1, snr=snr, fd=1e-2,
-                                   band=band, oversample=2, taps=8)
+                                   band=band, taps=8)
     hf.set_reference(power)
     filt.set_templates(H[None, :])
     hf.set_templates(H[None, :])
@@ -509,7 +509,7 @@ def test_pinning_reads_the_margin_from_the_table():
     # and the right answer is the same margin for each. At 24000 trials
     # this cell reads 1.25e-4 flat to margin 0.98 and 9.35e-4 at 1.00, so
     # 1e-2 and 1e-3 both admit 1.00 and only 1e-4 forces 0.90.
-    ms = [mf.margin_for_config(power, n, 5.0, fd, 512, 2, 8)
+    ms = [mf.margin_for_config(power, n, 5.0, fd, 512, 8)
           for fd in (1e-2, 1e-3, 1e-4)]
     assert all(m is not None and 0.5 < m <= 1.0 for m in ms), ms
     assert ms[0] >= ms[1] >= ms[2], ms
@@ -518,22 +518,22 @@ def test_pinning_reads_the_margin_from_the_table():
     # below what the table resolves it saturates at the tightest measured
     # margin rather than falling back to 1.00, which would hand the
     # strictest budget the loosest threshold
-    assert mf.margin_for_config(power, n, 5.0, 1e-9, 512, 2, 8) == \
+    assert mf.margin_for_config(power, n, 5.0, 1e-9, 512, 8) == \
         pytest.approx(0.90)
 
     # band is not in the key any more, so an off-grid band is perfectly
     # answerable -- it enters only through the (f, B_eff) at its own edge
-    assert mf.margin_for_config(power, n, 5.0, 1e-3, 333, 2, 8) is not None
+    assert mf.margin_for_config(power, n, 5.0, 1e-3, 333, 8) is not None
 
     # what is NOT answerable is a reference with no localised peak: all its
     # power in a bin or two means the correlation is flat in lag
     flat = np.zeros(n, np.float32); flat[3] = 1.0
-    assert mf.margin_for_config(flat, n, 5.0, 1e-3, 512, 2, 8) is None
+    assert mf.margin_for_config(flat, n, 5.0, 1e-3, 512, 8) is None
 
     # and the plan actually applies it
-    want = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8)
+    want = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 8)
     hf = mf.HierarchicalFilter(n, 1, 2, snr=5.0, fd=1e-3,
-                               band=512, oversample=2, taps=8)
+                               band=512, taps=8)
     hf.set_reference(power)
     hf._ensure()
     assert hf._margin == pytest.approx(want)
@@ -555,7 +555,7 @@ def test_an_explicit_margin_beats_the_table_on_a_pinned_plan():
     power[1:n // 2] = k ** (-7 / 3.0) / ((0.015 * n / k) ** 4 + 1.0)
     power /= power.sum()
 
-    auto = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 2, 8)
+    auto = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 8)
     assert auto is not None, auto
     if abs(auto - 1.0) <= 1e-2:
         # the table says this cell is safe even wide open; compare the two
@@ -573,7 +573,7 @@ def test_an_explicit_margin_beats_the_table_on_a_pinned_plan():
     rates = {}
     for explicit in (None, 1.0, 0.90):
         hf = mf.HierarchicalFilter(n, 8, 4, snr=5.0, fd=1e-3,
-                                   band=512, oversample=2, taps=8)
+                                   band=512, taps=8)
         hf.set_reference(power)
         if explicit is not None:
             hf._mf.set_coarse_margin(explicit)
@@ -694,7 +694,7 @@ def _ratio_filter_shaped_workload(pin=True):
             s0 = int(starts[b])          # uintp; see the note above
             ser[s0:s0 + n] += (np.fft.ifft(inj) * n * scale).astype(np.complex64)
     hf = (mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2,
-                                band=512, oversample=2, taps=8) if pin else
+                                band=512, taps=8) if pin else
           mf.HierarchicalFilter(n, ndata=1, ntemplates=nt, snr=snr, fd=1e-2))
     hf.set_reference(ref)
     hf.set_templates(H)
@@ -794,7 +794,7 @@ def test_first_stage_threshold_is_independent_of_configuration():
     to override it, and two properties have to hold: lowering it makes the
     first stage strictly more willing to reconstruct (unlike passing a
     different snr at construction, which selects a whole new configuration),
-    and it leaves band/oversample/taps alone.
+    and it leaves band/taps alone.
 
     Signals are injected deliberately.  On pure noise at this threshold the
     first stage never fires at any level, every rate is zero, and a
@@ -813,7 +813,7 @@ def test_first_stage_threshold_is_independent_of_configuration():
     rates, cfgs = {}, {}
     for fs in (None, 6.0, 5.5, 5.0):
         hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5,
-                                   fd=1e-3, band=512, oversample=2, taps=8)
+                                   fd=1e-3, band=512, taps=8)
         hf.set_reference(power)
         hf.set_templates(h)
         hf.set_data(d)
@@ -855,7 +855,7 @@ def test_first_stage_below_the_design_grid_is_clamped():
     got = {}
     for fs in (4.5, 3.0, 0.01):
         hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5,
-                                   fd=1e-3, band=512, oversample=2, taps=8)
+                                   fd=1e-3, band=512, taps=8)
         hf.set_reference(power)
         hf.set_templates(h)
         hf.set_data(d)
@@ -887,7 +887,7 @@ def test_run_without_set_data_raises_rather_than_crashing(klass):
         f = mf.MatchedFilter(n, 1, nt)
     else:
         f = mf.HierarchicalFilter(n, 1, nt, snr=5.5, fd=1e-2, band=256,
-                                  oversample=2, taps=8)
+                                  taps=8)
         f.set_reference(power)
     f.set_templates(H)
     with pytest.raises(ValueError, match="set_data"):

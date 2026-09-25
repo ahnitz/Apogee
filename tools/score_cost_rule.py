@@ -94,7 +94,7 @@ def measure(n,snr,fd=1e-3,nd=8,nt=32):
     true={}
     for (c,fq,bq) in adm:
         band,U,K,mg=c
-        hf=mf.HierarchicalFilter(n,nd,nt,snr,fd,band=band,oversample=U,taps=K)
+        hf=mf.HierarchicalFilter(n,nd,nt,snr,fd,band=band,taps=K)
         hf.set_reference(p); hf._mf.set_coarse_margin(mg); hf.set_data(d); hf.set_templates(h)
         r=[per(lambda: flat.run(binsize=n,threshold=snr,window=(ws,we)))/
            per(lambda: hf.run(binsize=n,threshold=snr,window=(ws,we))) for _ in range(3)]

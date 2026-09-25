@@ -70,7 +70,7 @@ while t + n <= series_len:
 starts = np.array(starts, np.uintp); ws = np.array(ws, np.uintp); we = np.array(we, np.uintp)
 
 p = mf.HierarchicalFilter(n, ndata=1, ntemplates=ntmpl, snr=thresh, fd=1e-3,
-                          band=cfg["band"], oversample=2, taps=8)
+                          band=cfg["band"], taps=8)
 p.set_reference(power); p.set_templates(h)
 
 # Correctness pass: first stage at the lowest level the design grid offers
