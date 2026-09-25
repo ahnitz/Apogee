@@ -491,11 +491,18 @@ def test_ratio_filter_shaped_workload():
     _ratio_filter_shaped_workload(pin=True)
 
 
-def test_pinning_reads_the_margin_from_the_table():
+def test_pinning_reads_the_threshold_from_the_table():
     """Pinning bypasses the CHOICE, not the evidence.
 
-    The regression this guards is silent in every other test: an implicit
-    1.00 still runs, still reports peaks, and only drops the marginal ones.
+    A pinned plan is built in __init__, which is BEFORE set_reference -- and
+    the threshold table is keyed on the reference's own (f, ratio), so the
+    lookup cannot run there. Nothing ran it later either, so a pinned plan
+    took its threshold from an empty reference, which is 0: the coarse gate
+    disabled and every pair escalated. That is silent in almost every other
+    test, because a plan that escalates everything still reports every peak
+    correctly -- it just does no gating, and any budget assertion resting on
+    it passes for the wrong reason. Hence the explicit check that a pinned
+    plan's threshold matches the table's, and is not 0.
     """
     n = 4096
     k = np.arange(1, n // 2)
@@ -503,41 +510,26 @@ def test_pinning_reads_the_margin_from_the_table():
     power[1:n // 2] = k ** (-7 / 3.0) / ((0.015 * n / k) ** 4 + 1.0)
     power /= power.sum()
 
-    # A tighter budget must never give a LOOSER threshold. Not strictly
-    # tighter: where the whole margin curve sits near the table's
-    # resolution floor, the loosest setting already meets several budgets
-    # and the right answer is the same margin for each. At 24000 trials
-    # this cell reads 1.25e-4 flat to margin 0.98 and 9.35e-4 at 1.00, so
-    # 1e-2 and 1e-3 both admit 1.00 and only 1e-4 forces 0.90.
-    ms = [mf.margin_for_config(power, n, 5.0, fd, 512, 8)
+    # A tighter budget must never give a HIGHER threshold: dismissing less
+    # is what a smaller fd buys. Not strictly lower -- where the curve sits
+    # near the table's resolution floor several budgets share an answer.
+    ts = [mf.choose_threshold(power, n, 5.0, fd, 512)
           for fd in (1e-2, 1e-3, 1e-4)]
-    assert all(m is not None and 0.5 < m <= 1.0 for m in ms), ms
-    assert ms[0] >= ms[1] >= ms[2], ms
-    assert ms[2] < ms[0], ms            # somewhere in the range it must bite
+    assert all(t is not None and t > 0 for t in ts), ts
+    assert ts[0] >= ts[1] >= ts[2], ts
+    assert ts[2] < ts[0], ts            # somewhere in the range it must bite
 
-    # below what the table resolves it saturates at the tightest measured
-    # margin rather than falling back to 1.00, which would hand the
-    # strictest budget the loosest threshold
-    assert mf.margin_for_config(power, n, 5.0, 1e-9, 512, 8) == \
-        pytest.approx(0.90)
+    # band is not in the key, so an off-grid band is answerable -- it enters
+    # only through the (f, B_eff) measured at its own edge
+    assert mf.choose_threshold(power, n, 5.0, 1e-3, 333) is not None
 
-    # band is not in the key any more, so an off-grid band is perfectly
-    # answerable -- it enters only through the (f, B_eff) at its own edge
-    assert mf.margin_for_config(power, n, 5.0, 1e-3, 333, 8) is not None
-
-    # what is NOT answerable is a reference with no localised peak: all its
-    # power in a bin or two means the correlation is flat in lag
-    flat = np.zeros(n, np.float32); flat[3] = 1.0
-    assert mf.margin_for_config(flat, n, 5.0, 1e-3, 512, 8) is None
-
-    # and the plan actually applies it
-    want = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 8)
-    hf = mf.HierarchicalFilter(n, 1, 2, snr=5.0, fd=1e-3,
-                               band=512, taps=8)
+    # and the pinned plan actually RUNS at that number
+    want = mf.choose_threshold(power, n, 5.0, 1e-3, 512)
+    hf = mf.HierarchicalFilter(n, 8, 4, snr=5.0, fd=1e-3, band=512, taps=8)
     hf.set_reference(power)
-    hf._ensure()
-    assert hf._margin == pytest.approx(want)
-
+    got = hf._ensure().coarse_threshold(5.0)
+    assert got == pytest.approx(want, rel=1e-3), (got, want)
+    assert got > 0.0, got
 
 def test_an_explicit_coarse_threshold_overrides_the_table_on_a_pinned_plan():
     """A threshold the caller sets must reach the plan and beat the table.

@@ -290,7 +290,7 @@ class MatchedFilter:
         Doing that on the host cost more than the filtering did: 0.26 ms of
         kernel work inside a 5.0 ms call.
         """
-        band, f, margin, raw_thr, even_thr = self._gpu_calibration(threshold)
+        band, f, thr = self._gpu_calibration(threshold)
         # The coarse templates are a function of the templates and the band,
         # so they are rebuilt only when the templates change.
         #
@@ -315,7 +315,7 @@ class MatchedFilter:
         ct0, ct1 = self._ct
 
         idx, val = self._gpu.hier_peaks(
-            self.n, band, D, H, ct0, ct1, even_thr, raw_thr,
+            self.n, band, D, H, ct0, ct1, thr, thr,
             binsize=binsize, threshold=threshold, window=(start, end),
             upload_data=self._ddirty, upload_tmpl=self._tdirty)
         self._ddirty = self._tdirty = False
@@ -1611,55 +1611,6 @@ def _snr_rows_for(snr, covered, tol=1e-6):
     return (lo, hi), "between measured thresholds %g and %g" % (lo, hi)
 
 
-def margin_for_config(power, n, snr, fd, band, taps, tuning=None):
-    """Measured coarse margin for a configuration the CALLER chose.
-
-    `choose_config` resolves a margin as part of picking a configuration, so
-    a caller who pins band/taps used to get none at all -- an
-    implicit 1.00, leaving the coarse threshold to the compiled model in
-    src/hmf_table.h, whose recovery factors come from the reference's MEAN
-    spectrum and bound no single realisation. On the FIR-shaped workload
-    that cost 8 of 140 peaks against a 3% budget.
-
-    Pinning bypasses the CHOICE, not the evidence, so this uses the same
-    rows and the same interpolation selection does.
-
-    Returns None when the table cannot speak -- no rows at this length, or
-    a reference with no localised peak (see `_BEFF_MIN`) -- and the caller
-    keeps 1.00.
-    """
-    t = _load_tuning() if tuning is None else tuning
-    snrs = t.get("acc2_snrs", {}).get(n)
-    if not snrs:
-        return None
-    use, _why = _snr_rows_for(snr, snrs)
-    if use is None:
-        return None
-    f, be = _band_features(power, band)
-    if be < _BEFF_MIN:
-        return None
-    floor = _dismissal_floor(t)
-    margins = sorted({m for (an, aK, asnr, m) in t["acc2"]
-                      if an == n and aK == taps and asnr in use})
-    curve = []
-    for mg in margins:
-        est = [x for x in
-               (_idw(t["acc2"].get((n, taps, s_, mg)) or [], f, be,
-                     log=True, floor=floor) for s_ in use)
-               if x is not None]
-        if est:
-            curve.append((mg, max(est)))
-    if not curve:
-        return None
-    m = _margin_at_budget(curve, fd / _FDR_SAFETY, floor)
-    if m is None:
-        # rows exist but none meets the budget; hand back the tightest
-        # measured margin rather than falling through to 1.00, which would
-        # give the strictest budget the loosest threshold
-        return min(mg for mg, _ in curve)
-    return m
-
-
 class HierarchicalFilter(MatchedFilter):
     """Matched filter that correlates the low band first and refines on demand.
 
@@ -1710,7 +1661,6 @@ class HierarchicalFilter(MatchedFilter):
         self._cal_thr = None
         self._thr_applied = False
         self._pinned = None
-        self._margin = None
         self._fs_snr = None
         self._last_refine = 0.0
         self._gpu = None
@@ -1790,8 +1740,7 @@ class HierarchicalFilter(MatchedFilter):
             # said what to run. Pinning exists precisely to run something
             # the tables do not describe, which is what the tuner does on
             # every cell.
-            cfg = self._pinned + (self._margin if self._margin is not None
-                                  else 1.0,)
+            cfg = self._pinned + (1.0,)
         elif self._pending_ref is not None:
             try:
                 cfg = choose_config(self._pending_ref, self.n, self.snr, self.fd)
@@ -1846,14 +1795,8 @@ class HierarchicalFilter(MatchedFilter):
                 # rather than None. set_threshold overrides it regardless.
                 margin = 1.0
         if self._cal_thr is not None:
-            # A caller-supplied threshold overrides whatever the table chose,
-            # and is applied before any margin below so it wins.
+            # A caller-supplied threshold overrides whatever the table chose.
             self._mf.set_threshold(self._cal_thr)
-        # the coarse threshold is the strongest lever and is tuned with the rest; it is
-        # read per run, so setting it here is enough
-        self._margin = float(margin)
-        if abs(margin - 1.0) > 1e-9:
-            self._mf.set_coarse_margin(float(margin))
         if self._pending_ref is not None:
             self._mf.set_reference(self._pending_ref)
         return self._mf
@@ -1885,7 +1828,7 @@ class HierarchicalFilter(MatchedFilter):
         self._gcal = None
 
     def _gpu_calibration(self, threshold):
-        """(band, f, threshold, threshold, threshold) for this reference.
+        """(band, f, threshold) for this reference.
 
         The GPU runs the CPU's algorithm now -- coarse pass, one threshold,
         refine -- so it reads the same measured threshold from the same
@@ -1900,8 +1843,7 @@ class HierarchicalFilter(MatchedFilter):
         Three slots are returned where one number goes, so every caller and
         both backends keep their shape.
         """
-        key = (threshold, self.snr, self.fd, self._fs_snr, self._pinned,
-               self._margin)
+        key = (threshold, self.snr, self.fd, self._fs_snr, self._pinned)
         if self._gcal is not None and self._gcal[0] == key:
             return self._gcal[1]
         # An explicitly pinned configuration must be honoured. Building the
@@ -1910,7 +1852,6 @@ class HierarchicalFilter(MatchedFilter):
         # band 512 and reported 512 -- a caller asking for a configuration
         # got a different one.
         pin = {}
-        margin = self._margin
         if self._pinned is not None:
             pin = dict(band=self._pinned[0], taps=self._pinned[1])
         else:
@@ -1926,8 +1867,6 @@ class HierarchicalFilter(MatchedFilter):
                 cfg = None
             if cfg is not None:
                 pin = dict(band=cfg[0], taps=cfg[1])
-                if margin is None and len(cfg) > 2:
-                    margin = cfg[2]
         # The measured threshold, read directly. No CPU plan, no model.
         if pin.get("band") and self._pending_ref is not None:
             tv = None
@@ -1941,7 +1880,7 @@ class HierarchicalFilter(MatchedFilter):
                 ref = np.asarray(self._pending_ref, dtype=np.float64)
                 f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
                 self._gcfg = (band, int(pin.get("taps") or 8))
-                out = (band, f, float(tv), float(tv), float(tv))
+                out = (band, f, float(tv))
                 self._gcal = (key, out)
                 return out
 
@@ -1952,21 +1891,15 @@ class HierarchicalFilter(MatchedFilter):
         # configuration the tables cover perfectly well.
         cal.set_reference(self._pending_ref)
         cal.set_templates(self._gtmpl[0][None, :])
-        if margin is not None:
-            # The margin scales the coarse threshold, so it has to reach the
-            # plan the thresholds are read from. Without this the GPU ran at
-            # margin 1.0 whatever was selected -- the least conservative
-            # setting, and not the one the tables chose.
-            cal._ensure().set_coarse_margin(float(margin))
         if self._fs_snr is not None:
             cal.set_first_stage(self._fs_snr)
         plan = cal._ensure()
         band = cal.config[0]
-        margin, raw, even = plan.coarse_thresholds(float(threshold))
+        thr = plan.coarse_threshold(float(threshold))
         ref = np.asarray(self._pending_ref, dtype=np.float64)
         f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
         self._gcfg = cal.config          # the real (band, taps)
-        out = (band, f, margin, raw, even)
+        out = (band, f, thr)
         self._gcal = (key, out)
         return out
 
@@ -2036,19 +1969,6 @@ class HierarchicalFilter(MatchedFilter):
         if self._mf is not None:
             self._mf.set_threshold(float(value))
 
-    def set_coarse_margin(self, margin):
-        """Scale the coarse threshold, on either device.
-
-        Below 1.0 the first stage escalates more often and omits less; above
-        it, the reverse. Selection sets this from the measured tables, and a
-        caller overriding it is choosing a different point on that trade.
-        """
-        self._margin = float(margin)
-        if self._gpu is not None:
-            self._gcal = None                  # force recalibration
-            return
-        self._ensure().set_coarse_margin(float(margin))
-
     def set_first_stage(self, snr):
         """Calibrate the first stage against `snr` rather than the threshold.
 
@@ -2105,30 +2025,7 @@ class HierarchicalFilter(MatchedFilter):
         self._pending_ref = p
         if self._mf is not None:
             self._mf.set_reference(p)
-            self._apply_pinned_margin()
 
-    def _apply_pinned_margin(self):
-        """Give a caller-pinned configuration its measured coarse margin.
-
-        Done HERE, not in `_ensure`, and the ordering is the whole point.  The
-        margin depends on the reference, so it cannot be resolved in
-        __init__; but resolving it at first run would land AFTER an explicit
-        `set_coarse_margin` and silently overwrite it.  Applying it as the
-        reference arrives puts it before anything the caller does, so an
-        explicit setting still wins -- which is what a caller pinning a
-        configuration expects, and what the cost tuner relies on to sweep the
-        margin as an independent variable.
-        """
-        if self._pinned is None or self._margin is not None:
-            return
-        try:
-            m = margin_for_config(self._pending_ref, self.n, self.snr,
-                                  self.fd, *self._pinned)
-        except Exception:
-            m = None            # a missing or unreadable table is not fatal
-        self._margin = 1.0 if m is None else float(m)
-        if abs(self._margin - 1.0) > 1e-9:
-            self._mf.set_coarse_margin(self._margin)
 
     def _series_window(self, spec, H, binsize, threshold, w0, w1, first):
         """The hierarchical dispatch: coarse gate, then refine what survives.
