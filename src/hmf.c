@@ -76,6 +76,11 @@ struct ap_hmf_plan {
      per-template ingest measurement. */
   int    ref_on;
   float  even_margin, coarse_margin, gscale; int gcal;
+  /* The CALIBRATED coarse threshold, in the units the coarse pass
+     reports. Negative means none was supplied and the old modelled
+     derivation is used -- which is the only reason that code still
+     exists. See ap_hmf_set_threshold. */
+  float  cal_thr;
   float  ref_f, ref_g, ref_graw, ref_graw1;
   float *tg,*tgraw,*tgraw1;   /* [nt]       per-template recovery factors       */
   float *shift;               /* [2m]       scratch for the measurement         */
@@ -310,6 +315,7 @@ ap_hmf_plan *ap_hmf_create_ex(size_t n,int ndata,int ntmpl,float snr,float fd,
   { const char *e=getenv("MF_GSCALE"); if(e) p->gscale=(float)atof(e); }
   { const char *e=getenv("MF_GCAL"); if(e) p->gcal=atoi(e); }
   p->coarse_margin=1.0f;
+  p->cal_thr=-1.0f;
   { const char *e=getenv("MF_GATE_MARGIN"); if(e) p->coarse_margin=(float)atof(e); }
   p->even_margin=0.92f;
   { const char *e=getenv("MF_EVEN_MARGIN"); if(e) p->even_margin=(float)atof(e); }
@@ -351,7 +357,9 @@ int ap_hmf_coarse_thresholds(ap_hmf_plan *p,float threshold,
   float T = p->fs_snr > 0.0f ? p->fs_snr
                              : (threshold>p->snr ? threshold : p->snr);
   float gt = p->tg[0];
-  float tc = hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->coarse_margin;
+  float tc = p->cal_thr >= 0.0f
+             ? p->cal_thr / (p->tgraw[0]*0.999f)      /* so raw comes back as cal_thr */
+             : hmf_threshold(p->fpow[0]*gt*gt,T,p->fd)*p->coarse_margin;
   /* One threshold. `margin` is the design value before conversion and is
      NOT comparable to a coarse output; `raw` is the only number a backend
      should test against, and `even` is kept equal to it so the GPU's
@@ -405,6 +413,19 @@ static void measure_recovery(ap_hmf_plan *p,int t,const float *a0,const float *a
 /* Scale on the coarse threshold, and the strongest lever there is: it trades trigger
    rate against dismissal directly, where band and oversample only do so
    through the statistic.  Read per run, so it applies at once. */
+/* Supply the coarse threshold directly, measured rather than modelled.
+ *
+ * The threshold used to be hmf_threshold(f*g^2, T, fd) -- a Rice model read
+ * from a compiled table -- multiplied by a margin the accuracy table had
+ * measured to correct it. Two models of one number, and when the answer was
+ * wrong there was no way to tell which had moved. The margin is what the
+ * tuner already bisects against measured dismissal, so the measurement can
+ * simply BE the threshold. */
+int ap_hmf_set_threshold(ap_hmf_plan *p,float t){
+  if(!p) return -1;
+  p->cal_thr=t; return 0;
+}
+
 int ap_hmf_set_coarse_margin(ap_hmf_plan *p,float g){
   if(!p||!(g>0.f)) return -1;
   p->coarse_margin=g; return 0;
@@ -947,7 +968,9 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
                                : (threshold>p->snr ? threshold : p->snr);
     for(int t=0;t<nt;t++){
       float gt=p->tg[t0+t];
-      tcs[t]=hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
+      tcs[t]= p->cal_thr >= 0.0f
+              ? p->cal_thr / (p->tgraw[t0+t]*0.999f)
+              : hmf_threshold(p->fpow[t0+t]*gt*gt,T,p->fd)*p->coarse_margin;
       /* ONE threshold on the coarse output. tgraw is how much the coarse
          grid maximum under-reads the true peak, so this converts the design
          threshold into the units the coarse pass actually reports in.

@@ -1628,6 +1628,7 @@ class HierarchicalFilter(MatchedFilter):
         self._dataset = False
         self._held = {}
         self._pending_ref = None
+        self._cal_thr = None
         self._pinned = None
         self._margin = None
         self._fs_snr = None
@@ -1665,6 +1666,8 @@ class HierarchicalFilter(MatchedFilter):
             self._pinned = (int(band), int(taps or 8))
             self._mf = _core.HMF(self.n, self.ndata, self.ntemplates, self.snr,
                                  self.fd, self._pinned[0], 1, self._pinned[1])
+            if self._cal_thr is not None:
+                self._mf.set_threshold(self._cal_thr)
 
     def _ensure(self):
         """Build the plan, choosing its configuration if that was deferred.
@@ -1725,6 +1728,10 @@ class HierarchicalFilter(MatchedFilter):
         b, k, margin = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
                              self.snr, self.fd, int(b), 1, int(k))
+        if self._cal_thr is not None:
+            # A caller-supplied threshold overrides whatever the table chose,
+            # and is applied before any margin below so it wins.
+            self._mf.set_threshold(self._cal_thr)
         # the coarse threshold is the strongest lever and is tuned with the rest; it is
         # read per run, so setting it here is enough
         self._margin = float(margin)
@@ -1863,6 +1870,33 @@ class HierarchicalFilter(MatchedFilter):
         if counts:
             return peaks, (peaks["index"] >= 0).sum(axis=2).astype(np.int32)
         return peaks
+
+    def set_coarse_threshold(self, value):
+        """Set the coarse threshold directly, bypassing the design tables.
+
+        The coarse pass reports one number per pair -- the maximum of the
+        band-limited correlation -- and this is what it is compared against.
+        Above it the pair gets the full filter; below it the pair is
+        dismissed. That is the whole decision.
+
+        Autotuning exists to choose this number for a false-dismissal budget,
+        and needs measured tables to do it. A caller who knows what threshold
+        they want does not: set it here and no table is consulted, no
+        reference is required for the threshold (one is still needed for the
+        coarse band itself), and nothing is modelled. The guarantee becomes
+        whatever the caller's own threshold implies, which is the honest
+        trade for not asking the library to promise a budget.
+
+        Pass None to go back to the table.
+        """
+        if value is None:
+            self._cal_thr = None
+            if self._mf is not None:
+                self._mf.set_threshold(-1.0)
+            return
+        self._cal_thr = float(value)
+        if self._mf is not None:
+            self._mf.set_threshold(float(value))
 
     def set_coarse_margin(self, margin):
         """Scale the coarse threshold, on either device.

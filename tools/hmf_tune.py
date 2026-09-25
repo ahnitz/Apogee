@@ -151,7 +151,7 @@ def device_batch(device, default=64):
 
 
 def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
-            margin=1.0, device=None):
+            margin=1.0, device=None, thr=None):
     """Measured (dismissal, seconds-per-pair) for one configuration.
 
     Both numbers come from the real filter.  Injections go into a batch of
@@ -195,7 +195,14 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
     # looks. A whole 7000-cell GPU sweep came back with every margin giving
     # the identical answer, which is exactly the shape this failure makes:
     # the strongest lever in the table doing nothing at all.
-    hf.set_coarse_margin(float(margin))
+    if thr is not None:
+        # An ABSOLUTE coarse threshold, which is what direct calibration
+        # bisects. It overrides the margin entirely: the margin is a
+        # multiplier on a MODELLED threshold, and the whole point of passing
+        # thr is that no model is involved.
+        hf.set_coarse_threshold(float(thr))
+    else:
+        hf.set_coarse_margin(float(margin))
     flat.set_templates(H[None, :])
     hf.set_templates(H[None, :])
 

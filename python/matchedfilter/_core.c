@@ -285,6 +285,12 @@ static PyObject *HMF_config(HMFObject *self,PyObject *a){
   size_t band=0; int u=0,k=0; (void)a; ap_hmf_config(self->p,&band,&u,&k);
   return Py_BuildValue("(nii)",(Py_ssize_t)band,u,k);
 }
+static PyObject *HMF_set_threshold(HMFObject *self,PyObject *args){
+  double t; if(!PyArg_ParseTuple(args,"d",&t)) return NULL;
+  if(ap_hmf_set_threshold(self->p,(float)t)<0){
+    PyErr_SetString(PyExc_RuntimeError,"set_threshold failed"); return NULL; }
+  Py_RETURN_NONE;
+}
 static PyObject *HMF_set_coarse_margin(HMFObject *self,PyObject *args){
   float g; if(!PyArg_ParseTuple(args,"f",&g)) return NULL;
   if(ap_hmf_set_coarse_margin(self->p,g)<0){
@@ -304,6 +310,7 @@ static PyMethodDef HMF_methods[]={
   {"set_template",(PyCFunction)HMF_set_template,METH_VARARGS,"set_template(i, buffer)"},
   {"set_reference",(PyCFunction)HMF_set_reference,METH_VARARGS,"set_reference(buffer|None)"},
   {"set_first_stage",(PyCFunction)HMF_set_first_stage,METH_VARARGS,"set_first_stage(snr)"},
+  {"set_threshold",(PyCFunction)HMF_set_threshold,METH_VARARGS,"set_threshold(t)"},
   {"set_coarse_margin",(PyCFunction)HMF_set_coarse_margin,METH_VARARGS,"set_coarse_margin(g)"},
   {"run",(PyCFunction)HMF_run,METH_VARARGS,"run(...) -> total crossings"},
   {"nbins",(PyCFunction)HMF_nbins,METH_VARARGS,"nbins(binsize, start, end)"},

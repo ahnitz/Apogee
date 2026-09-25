@@ -157,6 +157,10 @@ int    ap_hmf_set_reference(ap_hmf_plan *p, const float *power);
    needed.  Pass <=0 to go back to deriving it.  Band, oversample and taps are
    fixed at plan creation and are unaffected. */
 int    ap_hmf_set_first_stage(ap_hmf_plan *p, float snr);
+/* Supply the coarse threshold directly, in the units the coarse pass
+   reports, measured rather than modelled. Overrides the internal
+   derivation entirely. Negative restores it. */
+int    ap_hmf_set_threshold(ap_hmf_plan *p, float t);
 int    ap_hmf_set_coarse_margin(ap_hmf_plan *p, float g);
 
 int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
