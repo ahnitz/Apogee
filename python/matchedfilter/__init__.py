@@ -1883,13 +1883,21 @@ class HierarchicalFilter(MatchedFilter):
 
         # One forward transform per block. Blocks may run off the end of the
         # series; the missing tail is zero, as the C's padding makes it.
+        #
+        # The 1/n is the caller's convention and the C applies it on the way
+        # in. Omitting it here handed the coarse gate spectra n times too
+        # large, so every pair cleared a threshold calibrated for the real
+        # scale and the GPU reported peaks on pure noise that the CPU
+        # correctly dismissed. Measured at n=4096: _gpu_hier received
+        # |D|max 304.633 by this route against 0.0743734 by run(), a ratio
+        # of exactly 4096.
         spec = np.zeros((nblk, n), dtype=np.complex64)
         for b in range(nblk):
             lo = int(st[b])
             seg = ser[lo:lo + n]
             buf = np.zeros(n, dtype=np.complex64)
             buf[:seg.size] = seg
-            spec[b] = np.fft.fft(buf)
+            spec[b] = np.fft.fft(buf) / n
 
         nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
         idx = np.full((nblk, nt, nb), -1, dtype=np.int64)

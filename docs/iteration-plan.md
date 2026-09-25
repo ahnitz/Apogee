@@ -80,34 +80,43 @@ GPU run_series host fraction   38-47% of the call, serial with the device
 
 Ordered by measured size of the gap, not by how interesting the work is.
 
-### 0. The GPU hierarchical `run_series` fires where the CPU dismisses
+### 0. GPU hierarchical `run_series` scaling -- DONE (round 2)
 
-**Correctness, so it outranks everything below.** Found by reading the code
-for item D: the two `_run_series_gpu` implementations disagree about the
-`1/n` the C applies on the way in. The flat one divides; the hierarchical
-one does not.
+The hierarchical `_run_series_gpu` omitted the `1/n` the C applies on the
+way in. `_gpu_hier` received `|D|max 304.633` by that route against
+`0.0743734` by `run()` on the same blocks: a ratio of exactly 4096. The
+gate therefore saw every pair as enormous and escalated all of them.
 
-On pure noise with a gate calibrated at `snr=5.5` the correct answer is
-nothing, and the CPU gives nothing. The GPU reports peaks at every block
-count tried (1, 2, 3, 4, 5, 6, 8, 12), at magnitudes around n times the flat
-filter's on the same data -- 0.061 to 0.087 after dividing by n=4096,
-against the flat filter's 0.0742. Values that size sail past the coarse
-gate, so every pair escalates and is reported.
+**The contradiction that held it up for a round resolved into a second
+bug.** `test_run_series_agrees_with_the_cpu` compares magnitudes and passed
+throughout, which a uniform factor of n should not survive. It passed
+because it was **vacuous**: its series was never scaled to unit-variance
+output, so the filter saw peaks around 1e-5 against a gate calibrated at
+`snr=5.0`, nothing fired on either device, and every assertion compared two
+empty selections. It had checked nothing since it was written.
 
-Reproducer: `tests/test_hier_series_scale.py`, xfail, strict=False.
+Three things were wrong, each hiding the next:
 
-**Not yet root-caused, and one thing contradicts the obvious explanation.**
-If the error were a uniform factor of n, `test_run_series_agrees_with_the_cpu`
-would fail -- it compares magnitudes where both fired, and it passes. So
-either the scaling is compensated somewhere on the injected-signal path, or
-the factor is not uniform. Resolve that before changing the `1/n`.
+1. the missing `1/n` (the bug),
+2. the unscaled fixture (why no test saw it),
+3. `threshold=0.0` in the comparison (why the fixed fixture still failed) --
+   below `snr` the GPU legitimately reports a superset, escalating the whole
+   interpolation window where the CPU interpolates. At threshold 0 it fires
+   52 slots to the CPU's 4, which measures the design. At 5.0 both give 4
+   and agree.
 
-Next step: compare `_gpu_hier`'s inputs between the `run()` route (spectra
-the caller pre-divided) and the `run_series` route (spectra built in the
-method), on the same blocks. One of them is scaled differently and the
-difference is the bug.
+A fourth was mine: the first injection used the whitened form
+`unit = H/|H|^2`, whose spectrum is `1/conj(H)` and so puts its power where
+the template is weakest. The matched filter reports the designed SNR but the
+coarse band carries almost none of it, so the gate dismisses for the right
+reason. A signal the filter is designed not to find cannot test agreement.
+The fixture now injects a scaled copy of the template.
 
-**Done when:** the xfail flips to a pass without loosening the fixture.
+`tests/test_hier_series_scale.py` passes rather than xfails. The fixture is
+guarded with `assert fired.any()`.
+
+417 passed on the Radeon box on NumPy 2.4, NumPy 1.26 and at `ulimit -n
+256`; 403 on an M2.
 
 ### A. Fewer decisions for the user
 

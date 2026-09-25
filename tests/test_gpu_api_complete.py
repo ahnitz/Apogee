@@ -77,13 +77,55 @@ def test_run_does_not_create_a_cpu_plan(filt):
 
 
 def _series_case(nt, seed=21):
-    """The overlap-save layout the C expects, as test_api drives it."""
+    """The overlap-save layout the C expects, as test_api drives it.
+
+    The series is SCALED so the filter output has unit-variance components,
+    and one loud signal is injected. Both are required for the comparisons
+    built on this fixture to check anything at all.
+
+    Without the scaling the output peaked around 1e-5 against a gate
+    calibrated at snr=5.0, so the hierarchical filter dismissed every pair on
+    both devices and test_run_series_agrees_with_the_cpu compared two empty
+    selections -- passing for as long as it had existed, including across a
+    period when the GPU route was handing the gate spectra n times too large.
+    A vacuous agreement test is worse than no test: it reports the thing it
+    never looked at as working.
+    """
     n, nseries, ntaps = 4096, 1 << 16, 451
     rng = np.random.default_rng(seed)
     reference = inspiral_power(n)
     H = np.stack([template_with_power(n, reference) for _ in range(nt)])
     ser = coloured_series(nseries, -7 / 3.0, rng)
     starts, ws, we = overlap_save_layout(nseries, n, ntaps)
+
+    def block_spectrum(s):
+        blk = np.zeros(n, np.complex64)
+        seg = ser[int(s):int(s) + n]
+        blk[:len(seg)] = seg
+        return (np.fft.fft(blk) / n).astype(np.complex64)
+
+    # Measured rather than derived: the series is coloured while |H|^2 is
+    # spread over every bin, so the analytic factor is easy to get wrong.
+    probe = np.fft.ifft(block_spectrum(starts[0]) * np.conj(H[0])) * n
+    ser *= np.float32(1.0 / probe.real.std())       # components, not |rho|
+
+    # One signal loud enough that the gate must keep it, in a block whose
+    # window is not one of the ragged ends.
+    #
+    # A SCALED COPY OF THE TEMPLATE, which is what a real signal looks like.
+    # The whitened form used elsewhere -- unit = H/|H|^2 -- has spectrum
+    # 1/conj(H), so its power sits where the template is weakest. The matched
+    # filter still reports the designed SNR, but the coarse band carries
+    # almost none of it and the gate dismisses the pair on every device, for
+    # the right reason. That is a signal the hierarchical filter is designed
+    # NOT to find, so it cannot test whether the two devices agree.
+    b = len(starts) // 2
+    s0 = int(starts[b])
+    t = 0
+    lag = int(ws[b]) + 37
+    ph = np.exp(-2j * np.pi * np.arange(n) / n).astype(np.complex64)
+    inj = (H[t] * (ph ** lag) * np.float32(12.0)).astype(np.complex64)
+    ser[s0:s0 + n] += (np.fft.ifft(inj) * n).astype(np.complex64)
     return n, reference, H, ser, starts, ws, we
 
 
@@ -116,12 +158,22 @@ def test_run_series_agrees_with_the_cpu():
                                   fd=1e-2, device=device)
         g.set_reference(reference)
         g.set_templates(H)
+        # threshold at the gate's own calibration, not 0. Below snr the GPU
+        # legitimately reports a SUPERSET -- it escalates the whole
+        # interpolation window where the CPU interpolates -- so at threshold
+        # 0 it fires 52 slots to the CPU's 4 and "the GPU invented a peak"
+        # is measuring the design, not a fault. At 5.0 both give 4 and agree.
         made.append(g.run_series(ser, starts, ws, we, binsize=n,
-                                 threshold=0.0).copy())
+                                 threshold=5.0).copy())
     a, b = made
 
     assert a.shape == b.shape
     fired = b["index"] >= 0
+    # Everything below compares only where the GPU fired. If nothing fires
+    # the whole test is vacuously true, which is what it was.
+    assert fired.any(), (
+        "nothing fired: this test compares empty selections and checks "
+        "nothing. Fix the fixture, do not relax the assertions.")
     assert not (fired & (a["index"] < 0)).any(), "the GPU invented a peak"
     np.testing.assert_array_equal(a["index"][fired], b["index"][fired])
     np.testing.assert_allclose(np.abs(a["value"][fired]),
