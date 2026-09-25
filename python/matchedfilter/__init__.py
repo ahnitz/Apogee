@@ -1542,7 +1542,10 @@ def choose_config(power, n, snr, fd, tuning=None):
             best, bcost, bmargin = (band, U, K), c, margin
     if best is None:
         return None
-    return (best[0], best[1], best[2], round(bmargin, 4))
+    # (band, taps, margin). The oversample used to sit between band and
+    # taps; it is gone, and this path is the only one that still had it,
+    # because the lengths it serves are the ones ACC2 never covered.
+    return (best[0], best[2], round(bmargin, 4))
 
 
 def _dismissal_floor(t):
@@ -1705,6 +1708,7 @@ class HierarchicalFilter(MatchedFilter):
         self._held = {}
         self._pending_ref = None
         self._cal_thr = None
+        self._thr_applied = False
         self._pinned = None
         self._margin = None
         self._fs_snr = None
@@ -1754,6 +1758,25 @@ class HierarchicalFilter(MatchedFilter):
         no rebuild and no re-ingest of templates.
         """
         if self._mf is not None:
+            # A plan pinned in __init__ was built BEFORE set_reference, so
+            # its threshold could not be looked up then -- the table is
+            # keyed on the reference's own (f, ratio). Do it on first use,
+            # once, now that the reference is here.
+            #
+            # Without this a pinned plan ran with a threshold derived from
+            # an empty reference, which is 0: the coarse gate disabled and
+            # every pair escalated. It dismissed nothing, so every budget
+            # assertion on a pinned plan passed by doing no gating at all.
+            if (not self._thr_applied and self._cal_thr is None
+                    and self._pending_ref is not None):
+                self._thr_applied = True
+                try:
+                    tv = choose_threshold(self._pending_ref, self.n, self.snr,
+                                          self.fd, int(self.config[0]))
+                except Exception:
+                    tv = None
+                if tv is not None:
+                    self._mf.set_threshold(float(tv))
             return self._mf
         cfg = None
         if self._pinned is not None:

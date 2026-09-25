@@ -80,7 +80,7 @@ def test_autotuning_uses_the_reference_where_it_has_rows():
         hf.set_reference(power)
         picks.append(hf.config)
     assert all(p is not None for p in picks)
-    assert all(b > 0 for b, _, _ in picks)
+    assert all(b > 0 for b, _ in picks)   # config is (band, taps)
 
 
 # ------------------------------------------------ SNR coverage and fallback

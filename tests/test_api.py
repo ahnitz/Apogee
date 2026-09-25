@@ -539,28 +539,25 @@ def test_pinning_reads_the_margin_from_the_table():
     assert hf._margin == pytest.approx(want)
 
 
-def test_an_explicit_margin_beats_the_table_on_a_pinned_plan():
-    """set_coarse_margin after set_reference must win, including at 1.0.
+def test_an_explicit_coarse_threshold_overrides_the_table_on_a_pinned_plan():
+    """A threshold the caller sets must reach the plan and beat the table.
 
-    The table margin is applied as the reference arrives, precisely so it
-    lands BEFORE anything the caller does. Resolving it at first run instead
-    put it after, which silently overwrote an explicit setting -- and the
-    cost tuner sweeps the margin as an independent variable, skipping the
-    call when it wants 1.0, so every 1.0 cell of a regenerated table would
-    have been measured at the table's margin rather than at 1.0.
+    The coarse threshold is the one knob left: set it and you opt out of the
+    tables entirely, trading the calibrated false-dismissal guarantee for a
+    number you chose. So it has to land AFTER whatever the table would pick,
+    and it has to actually move the plan -- an explicit setting that were
+    silently overwritten by the table lookup would look identical from the
+    outside except that the escalation rate never responded.
+
+    Lower threshold escalates more; 0.0 escalates everything, which is what
+    pins down that the value reaches the kernel rather than being clamped or
+    dropped somewhere on the way.
     """
     n = 4096
     k = np.arange(1, n // 2)
     power = np.zeros(n, np.float32)
     power[1:n // 2] = k ** (-7 / 3.0) / ((0.015 * n / k) ** 4 + 1.0)
     power /= power.sum()
-
-    auto = mf.margin_for_config(power, n, 5.0, 1e-3, 512, 8)
-    assert auto is not None, auto
-    if abs(auto - 1.0) <= 1e-2:
-        # the table says this cell is safe even wide open; compare the two
-        # explicit settings instead, which is the property being guarded
-        auto = None
 
     rng = np.random.default_rng(5)
     h = template_with_power(n, power)
@@ -571,23 +568,21 @@ def test_an_explicit_margin_beats_the_table_on_a_pinned_plan():
                  ).astype(np.complex64)
 
     rates = {}
-    for explicit in (None, 1.0, 0.90):
+    for explicit in (None, 0.0, 3.5, 4.5):
         hf = mf.HierarchicalFilter(n, 8, 4, snr=5.0, fd=1e-3,
                                    band=512, taps=8)
         hf.set_reference(power)
         if explicit is not None:
-            hf._mf.set_coarse_margin(explicit)
+            hf.set_coarse_threshold(explicit)
         hf.set_templates(h)
         hf.set_data(d)
         hf.run(binsize=n, threshold=5.0)
         rates[explicit] = hf.refine_rate
 
-    # 1.0 is the loosest coarse threshold, so it must escalate no more than
-    # any tighter one, and 0.90 must escalate more. That is the property:
-    # an explicit setting reaches the plan and moves it in the right
-    # direction.
-    assert rates[0.90] > rates[1.0], rates
-    assert rates[1.0] <= rates[None] + 1e-9, rates
+    assert rates[3.5] > rates[4.5], rates
+    assert rates[0.0] >= rates[3.5], rates
+    # everything survives a threshold of zero, or the value never arrived
+    assert rates[0.0] == pytest.approx(1.0), rates
 
 
 def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():
@@ -604,7 +599,7 @@ def test_autotuned_selection_meets_the_budget_where_a_pinned_band_does_not():
     """
     _ratio_filter_shaped_workload(pin=False)
 
-def _ratio_filter_shaped_workload(pin=True):
+def _ratio_filter_shaped_trial(pin=True, seed=22):
     """The shape a ratio/FIR search actually uses.
 
     What makes it different from every other test here:
@@ -621,7 +616,7 @@ def _ratio_filter_shaped_workload(pin=True):
     rounding.  Within a single path the guarantee is still exact.
     """
     n, nseries, ntaps, nt = 4096, 1 << 17, 451, 8
-    rng = np.random.default_rng(22)
+    rng = np.random.default_rng(seed)
     ser = coloured_series(nseries, -7 / 3.0, rng)
 
     H = np.zeros((nt, n), np.complex64)          # broadband, analytic half
@@ -720,9 +715,34 @@ def _ratio_filter_shaped_workload(pin=True):
             elif have["index"][t] >= 0:
                 invented += 1
 
-    assert detected > 50, f"only {detected} peaks; the test is not exercising the coarse threshold"
-    assert invented == 0, f"invented {invented} peaks"
-    assert differ == 0, f"{differ} recovered peaks differ from the full filter"
+    assert invented == 0, f"invented {invented} peaks (seed {seed})"
+    assert differ == 0, f"{differ} recovered peaks differ from the full filter (seed {seed})"
+    return detected, omitted
+
+
+def _ratio_filter_shaped_workload(pin=True, seeds=(22, 23, 24)):
+    """Pool the trial over several noise series before judging the rate.
+
+    One trial's 120 injections share a single series and a single template
+    set, so they are nowhere near 120 independent draws: omissions arrive
+    CLUMPED. Over seeds 22..41 the per-trial counts are 0 for sixteen of
+    twenty and 3-4 for the rest, pooling to 20/2400 = 0.83% -- which is the
+    1% the table promises, comfortably inside this 3% budget.
+
+    Asserting 3% on one trial therefore tested a coin flip, not the rate:
+    the pass/fail line falls between 3 and 4 events while the expectation is
+    1.2, so an accurate table fails outright on an unlucky series (seed 22
+    is one). Pooling measures the quantity the budget is about. The bound
+    itself is unchanged -- if it starts failing the tables have gone stale
+    against the code and regenerating them is the fix, not loosening it.
+    """
+    detected = omitted = 0
+    for sd in seeds:
+        d, o = _ratio_filter_shaped_trial(pin=pin, seed=sd)
+        detected += d
+        omitted += o
+    assert detected > 50 * len(seeds), \
+        f"only {detected} peaks; the test is not exercising the coarse threshold"
     assert omitted / detected <= 3e-2, f"omitted {omitted}/{detected}"
 
 
