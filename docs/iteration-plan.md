@@ -790,3 +790,29 @@ Constraint carried forward: coalescing beats instruction count. Both
 pre-permutations tried so far LOST ~17% at band 512 by putting lanes a
 cache line apart. Lane adjacency is an input to the layout, not a
 discovery afterwards.
+
+#### slotToIndex collapses from both ends (288 VALU/pair -> ~0)
+
+Three independent reductions, not one:
+
+  1. **The coarse path needs no index.** The tiled coarse kernel binds
+     [cdata, ct0, cval] -- no cidx -- and a maximum is order-independent.
+     The writeback's slotToIndex computes a value nothing reads. Deletion,
+     not optimisation.
+
+  2. **The window mask removes the other consumer**, and the mask is per
+     THREAD, not per pair: liveness depends on tid and the register slot
+     only. One 16-bit register, built once, then a select before the max.
+
+  3. **Where an index is genuinely needed** (flat / refine), the current
+     eager-all-16 shape is wrong twice over:
+       * LAZILY -- only the lane that WINS needs its index, and at a real
+         threshold that is zero lanes on almost every pair. Cost ~0
+         amortised instead of 16 reversals per thread per pair.
+       * INCREMENTALLY -- slotToIndex(tid*R + i) for i = 0..15 reverses
+         CONSECUTIVE integers, so after the first each next one is a
+         reverse-carry increment (~2 instr) rather than a full NDIG-digit
+         reversal (~9). 288 -> ~40 even computing all sixteen eagerly.
+
+So on the coarse path the term goes to zero, and elsewhere it drops by ~7x
+without changing what is computed.
