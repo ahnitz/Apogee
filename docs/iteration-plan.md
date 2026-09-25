@@ -556,3 +556,32 @@ exchange() it would need. Measure before refactoring.
 Caveat: the no-load variant timed 23.8 ms and is NOT usable -- a constant
 stub makes every lane produce the same magnitude and the InterlockedMax
 peak table serialises on contention. Discarded rather than reported.
+
+#### How to halve (quarter) the loads: permute the coarse banks on upload
+
+The blocker is the index pattern. `idx = tid + WG*n2`, so a thread's R
+successive loads are WG apart -- coalesced ACROSS the wave for a given n2,
+but never adjacent WITHIN a thread, so two of them cannot fold into one
+wide load as they stand.
+
+The host builds cdata/ct0, so it can store them in consumption order:
+thread tid's R=16 complex values contiguous. Then, packed at 4 bytes per
+complex, one thread's whole working set is 16*4 = **64 bytes, exactly one
+cache line**, fetched as 4 x uint4 instead of 16 scalar loads.
+
+    loads per thread per buffer:  16  ->  4
+    loads per pair:               32  ->  8
+
+Coalescing does not suffer the way it looks like it should: each thread
+touches exactly one full 64-byte line and a wave touches 32 distinct lines,
+all fully consumed. That is the same bytes with a quarter of the
+instructions -- and instructions are what binds.
+
+This is the prestaging the N x M pair grid pays for once: each coarse row
+is permuted on upload and reused across every pair that references it.
+
+Order of work:
+  1. permute cdata/ct0 in _pack_half2 on the host (pure numpy reshape)
+  2. load as uint4 in the coarse kernel, unpack 2 complex per 32 bits
+  3. keep the fp32 path untouched -- it is the flat filter's, and it
+     measured faster at full-wave bands
