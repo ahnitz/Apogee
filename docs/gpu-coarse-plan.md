@@ -158,3 +158,40 @@ asm (scalar v_*_f16 should approach zero).
   * Timing and correctness in the same breath. PPG measured 2.27x while
     silently dismissing three quarters of the signal.
   * Read the compiled output after two mispredictions, not after five.
+
+## Phase 0a result: the band-256 anomaly is real, and it is NOT a measurement artifact
+
+Measured, 262144 pairs, coarse only (threshold 1e9, refine_rate 0 in every
+case so nothing escalates):
+
+    band   random templates   inspiral templates
+     256        1.108 ms           3.985 ms       <- 3.6x slower
+     512        1.433 ms           1.612 ms       <- 1.1x
+
+**Band 256 is 2.4x SLOWER than band 512 on realistic templates while doing
+half the work.** On random templates the ordering is correct (256 cheaper
+than 512), so every benchmark in this effort -- all of which used random
+templates -- masked it.
+
+Ruled out:
+  * escalation: refine_rate is 0.0000 throughout, threshold is 1e9
+  * denormals: the coarse band of an inspiral template has median |v| of
+    4.8e-2 and ZERO values below the fp32 or fp16 tiny threshold
+  * the tiled coarse_256.spv path: disabling _COARSE_TILE changes it by 1%
+    (3.985 -> 3.935), so the special path is not the cause
+
+Still unexplained. The coarse kernel should be data-INDEPENDENT with the
+gate closed: same loads, same transform, same barriers, and the peak
+writeback is predicated off. Something in this configuration is not.
+
+**This blocks Phase 0c.** Band 256 is a band the autotuner can select, and
+cost-table regeneration would record 3.985 ms as its cost -- which is
+either a genuine property that band selection SHOULD see, or an artifact
+that would poison the table. Regenerating before knowing which would bake
+the wrong number into every future selection.
+
+Next diagnostic: RADV_DEBUG=shaderstats and asm for band 256 against band
+512 on the SAME template set, and a counter check that both dispatch the
+group count they should -- band 256 runs PPG=2 (131072 groups) against band
+512 at TILE_T=4 (65536 groups), so the launch counts differ by 2x and that
+is the first thing to confirm rather than assume.
