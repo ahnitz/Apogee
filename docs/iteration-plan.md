@@ -520,3 +520,39 @@ It was not worth it even if it had been sound: band 512 moved 2.390 ->
 2.318 ms, inside the ~7% run-to-run spread. If this is ever revisited it
 has to go through the subgroup extensions with a real size query, not an
 assumption about the group width.
+
+### The coarse stage is bound by LOAD INSTRUCTION COUNT, not bytes or math
+
+Measured by stubbing pieces of the kernel out (results deliberately wrong,
+timing only), band 512, 262144 pairs, baseline 2.239 ms:
+
+    exchange deleted entirely     1.981 ms   -> the whole exchange is 12%
+    innermost() deleted entirely  2.34  ms   -> the transform is FREE
+
+The butterflies cost nothing and the LDS exchange costs 12%, so ~88% is the
+global loads. That is why every precision change so far returned nothing:
+
+    a float2 load is ONE 8-byte dwordx2
+    the packed uint32 is ONE 4-byte dword
+
+Same instruction count, half the bytes. If the limit is the RATE OF LOAD
+INSTRUCTIONS rather than bytes moved, halving the element is a no-op -- and
+that is exactly what was measured, three times.
+
+Per pair: 2*512 complex loads / 32 threads = 32 loads per thread; 268M
+loads in ~1.98 ms is ~135 G loads/s against roughly 232 G/s of issue
+capacity on this part. The right order to be the limit.
+
+**So the fp16 win is not half the bytes, it is half the LOADS**: pack TWO
+complex per 8-byte load (uint2 / four halves) so each load instruction
+fetches two points. That halves the load count, which is the quantity that
+actually binds. The current packing was one complex per uint32 and
+therefore could never have helped.
+
+Also settled: TPT (several transforms per thread) is capped at ~12%,
+because all it can hide is the exchange. Not worth the restructuring of
+exchange() it would need. Measure before refactoring.
+
+Caveat: the no-load variant timed 23.8 ms and is NOT usable -- a constant
+stub makes every lane produce the same magnitude and the InterlockedMax
+peak table serialises on contention. Discarded rather than reported.
