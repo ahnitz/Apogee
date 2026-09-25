@@ -102,9 +102,8 @@ struct ap_hmf_plan {
   /* Phase counters in cycles.  rdtsc, not clock_gettime: the latter costs
      ~25 ns and these phases are ~200 ns, so it would measure itself. */
   unsigned long long c_even,c_odd,c_ref,c_fill; int prof;
-  long nbrk_fire,nbrk_rej;    /* pairs the bracket settled without the odd pass */
   FILE *dump;          /* MF_HMF_DUMP: per-pair (coarse, combined, thr) */
-  long npre, ninterp, nskip;   /* diagnostics: pre-screen passes, interpolations run */
+  long nskip;                  /* pairs the coarse gate dismissed */
   float last_thr;
   float fs_snr;        /* explicit first-stage SNR; <=0 means derive it */
 };
@@ -359,16 +358,16 @@ void ap_hmf_stats(const ap_hmf_plan *p,long *pairs,long *triggers){
             (double)p->c_ref /p->pairs,100*p->c_ref /tot,
             (double)p->c_fill/p->pairs,100*p->c_fill/tot);
   }
+  /* npre, ninterp, nbrk_fire and nbrk_rej used to be reported here. They
+     counted the pre-screen, the interpolations and the bracket -- all of
+     which went away with U and the even/odd split -- and NOTHING has
+     incremented them since. The diagnostic printed four zeros and a
+     "bracket" line for a bracket that no longer exists, which reads as a
+     measurement rather than as dead text. nskip still counts, and is the
+     one number here that means anything: pairs the coarse gate dismissed. */
   if(getenv("MF_HMF_DIAG"))
-    fprintf(stderr,"    [diag] pairs=%ld pre-screen passes=%ld (%.1f/pair) "
-            "interpolations=%ld (%.1f/pair) odd-skipped=%.1f%% thr=%.3f\n",
-            p->pairs,p->npre,(double)p->npre/(p->pairs?p->pairs:1),
-            p->ninterp,(double)p->ninterp/(p->pairs?p->pairs:1),
-            100.0*p->nskip/(p->pairs?p->pairs:1),p->last_thr);
-  if(getenv("MF_HMF_DIAG"))
-    fprintf(stderr,"    [diag] bracket: fired %ld (%.1f%%) rejected %ld (%.1f%%) "
-            "of %ld pairs\n", p->nbrk_fire,100.0*p->nbrk_fire/(p->pairs?p->pairs:1),
-            p->nbrk_rej,100.0*p->nbrk_rej/(p->pairs?p->pairs:1),p->pairs);
+    fprintf(stderr,"    [diag] pairs=%ld dismissed=%.1f%% thr=%.3f\n",
+            p->pairs, 100.0*p->nskip/(p->pairs?p->pairs:1), p->last_thr);
 }
 void ap_hmf_config(const ap_hmf_plan *p,size_t *band,int *taps){
   if(!p) return;

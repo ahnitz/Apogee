@@ -1133,3 +1133,66 @@ EXPECTED: 789 scalar half ops -> ~0, and the 598 fp32 ops (magnitude
 promotion, cos/sin twiddles) become fp16 or hoist. Against 8456 total
 instructions that is the largest single item identified in this effort, and
 the first with ISA evidence rather than a model behind it.
+
+## CPU coarse stage: the accounting
+
+Same method as the GPU -- account first, then read what the compiler
+emitted rather than reasoning from source.
+
+### Where it sits
+
+    band   coarse-only   ns/pair   flop/pair   achieved    % of peak
+     256     0.100 ms     194.8      11776     60.5 GF/s     20%
+     512     0.201 ms     392.4      26112     66.5 GF/s     22%
+    1024     0.411 ms     803.5      57344     71.4 GF/s     24%
+
+Against ~302 GFLOP/s for one Zen 5 core (151 G lane-op/s FMA x 2 flop,
+from docs/machine-notes.md). So the CPU sits at 20-24% of peak -- almost
+exactly where the GPU sat, and efficiency rises with band on both.
+
+Theoretical floor at band 512 is 86 ns/pair against 392 measured: **4.5x
+of headroom**, the same order the GPU had.
+
+### What the compiler actually emitted
+
+objdump of ap::N_AVX3::fft64_prod, 3063 instructions:
+
+    add/sub      817   vsubps 433, vaddps 384          27%
+    vmovaps      424   register-to-register moves      14%
+    vmulps       252   UNFUSED multiplies               8%
+    FMA          285   all variants                     9%
+    vmovups      256   loads/stores                     8%
+    scalar addr  696   mov 270, lea 207, add 207        23%
+
+Useful vector arithmetic is 44% -- under half, the same finding as the GPU
+(where it was ~40%). Two specifics stand out:
+
+  * **424 vmovaps.** 14% of the kernel is shuffling registers between
+    registers. On x86 these are renamed and near-free in latency, but they
+    still consume issue slots, and this many is a register-pressure
+    symptom against 32 ZMM registers.
+  * **252 unfused vmulps against 285 FMAs.** Roughly half the multiply
+    work is not reaching an FMA. Some standalone multiplies are inherent
+    to complex arithmetic (the first product of a*b - c*d has nothing to
+    fuse with), but this ratio is worth checking against what the butterfly
+    should emit.
+  * **696 scalar addressing ops, 23%** -- proportionally WORSE than the
+    GPU's 11%. Same class of overhead, larger share.
+
+### Dead code found and removed
+
+npre, ninterp, nbrk_fire and nbrk_rej: four counters reported under
+MF_HMF_DIAG and NEVER INCREMENTED since U and the even/odd split were
+removed. The diagnostic printed four zeros plus a "bracket: fired 0
+rejected 0" line for a bracket that no longer exists -- which reads as a
+measurement rather than as dead text. nskip survives and is the one number
+there that means anything.
+
+Still live, but only on the CALIBRATION path (measure_recovery), not the
+hot loop: p->cf (a full band-point FFT plan), p->taps and interp_abs.
+Worth confirming they are not allocated for plans that never calibrate.
+
+### Order of work (per Alex)
+
+  1. 2D tiling and the other structural items
+  2. SWAR last -- the CPU equivalent of fp16 for the coarse stage
