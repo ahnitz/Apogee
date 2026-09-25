@@ -36,6 +36,25 @@ def _manifest():
 #: halves occupancy, so this refuses rather than silently getting slower.
 _MAX_BINS = 2048
 
+
+def _pack_half2(a):
+    """complex64 -> one uint32 per value, real in the low half.
+
+    The coarse stage is bandwidth bound -- 978 GB/s at 3.19 FLOP/byte -- so
+    its two big inputs ship at half width. Packed into uint32 rather than a
+    half2 buffer so no 16-bit storage extension is needed.
+
+    Done ONCE on upload: every row is reused across the whole N x M pair
+    grid, so the conversion amortises to nothing.
+
+    Coarse only. The refine stage reads the full-precision data/tmpl
+    buffers, which is why survivors still get an exact peak.
+    """
+    a = np.ascontiguousarray(a, np.complex64)
+    re = a.real.astype(np.float16).view(np.uint16).astype(np.uint32)
+    im = a.imag.astype(np.float16).view(np.uint16).astype(np.uint32)
+    return np.ascontiguousarray(re | (im << 16), np.uint32)
+
 #: Byte offsets into VkPhysicalDeviceProperties. The 5 leading uint32s, the
 #: 256-byte name and the 16-byte UUID come to 292, padded to 296 because
 #: VkPhysicalDeviceLimits contains 64-bit members; maxComputeSharedMemorySize
@@ -532,10 +551,16 @@ class Context:
         # filtering it was feeding.
         if upload_data:
             bufs["data"].write(np.ascontiguousarray(data, np.complex64))
-            bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
+            if _COARSE_TILE.get(band):
+                bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
+            else:
+                bufs["cdata"].write(_pack_half2(data[:, :band]))
         if upload_tmpl:
             bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
-            bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
+            if _COARSE_TILE.get(band):
+                bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
+            else:
+                bufs["ct0"].write(_pack_half2(ct0))
             bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
 
         cmds = (_vp * 1)(cmd)
@@ -583,7 +608,16 @@ class Context:
             cpipe, clayout, cset_layout = self._build_pipeline(
                 ("coarse", band), "coarse_%d.spv" % band, 3, 8)
         else:
-            cpipe, clayout, cset_layout = self.pipeline(band)
+            # The coarse ROLE, reading packed cdata/ct0. Not self.pipeline()
+            # -- that is the flat filter's full-precision build of the same
+            # entry, and handing it packed buffers makes it read 4-byte
+            # elements as 8-byte ones: every peak comes back -1.
+            cpipe, clayout, cset_layout = self._build_pipeline(
+                ("coarse16", band), "tierb_%d_c16.spv" % band,
+                _NBIND, _PUSH_BYTES)
+        # gatedTierB stays full precision: in this path it is bound to the
+        # full-width data/tmpl set (`ds`), not to cdata/ct0. Only `cpipe`
+        # above reads the packed coarse buffers.
         gcpipe, gclayout, gcset_layout = self.gated_pipeline(band)
         kpipe, klayout, kset_layout = self._build_pipeline(
             ("compact", n), "compact_%d.spv" % n, 5, 12)
@@ -593,8 +627,8 @@ class Context:
         b = {
             "data":  _Buffer(self, nd * n * 8),
             "tmpl":  _Buffer(self, nt * n * 8),
-            "cdata": _Buffer(self, nd * band * 8),
-            "ct0":   _Buffer(self, nt * band * 8),
+            "cdata": _Buffer(self, nd * band * (8 if tile else 4)),
+            "ct0":   _Buffer(self, nt * band * (8 if tile else 4)),
             "ct1":   _Buffer(self, nt * band * 8),
             "cidx":  _Buffer(self, pairs * 4),
             "cval":  _Buffer(self, pairs * 8),

@@ -196,7 +196,7 @@ def reflect(blob):
                 push_constant=push_constant)
 
 
-def compile_metal(slangc, n, cap, entry, outdir, suffix=""):
+def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0):
     """Emit Metal Shading Language, and a .metallib when one can be built.
 
     The MSL is generated anywhere -- it is Slang's own output and needs no
@@ -210,8 +210,8 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix=""):
     compiling at run time rather than refusing.
     """
     src = outdir / ("mm_%d_%s%s.slang" % (n, entry, suffix))
-    src.write_text("#define NLEN %d\n#define LDS_CAP %d\n" % (n, cap)
-                   + KERNEL.read_text())
+    src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
+                   % (n, cap, coarse16) + KERNEL.read_text())
     stem = "%s_%d%s" % (STEMS[entry], n, suffix)
     msl = outdir / (stem + ".metal")
     proc = subprocess.run(
@@ -252,11 +252,11 @@ def lds_bytes(n, cap):
     return ch * wg * 8
 
 
-def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix=""):
+def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0):
     cap = LDS_CAP[n] if cap is None else cap
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
-    src.write_text("#define NLEN %d\n#define LDS_CAP %d\n"
-                   % (n, cap) + KERNEL.read_text())
+    src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
+                   % (n, cap, coarse16) + KERNEL.read_text())
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(
@@ -365,6 +365,15 @@ def main(argv=None):
         # carries the same coverage as a Linux one.
         metal = {}
         mcap = metal_cap(n)
+
+        # The coarse ROLE, at half width. fusedTierB and gatedTierB serve
+        # the coarse stage as well as their own, and the coarse stage reads
+        # the packed cdata/ct0 -- so those two get a SECOND build rather
+        # than a changed one, and the flat/refine paths keep full precision.
+        for centry in ("fusedTierB", "gatedTierB"):
+            compile_one(slangc, n, OUT, entry=centry, suffix="_c16", coarse16=1)
+            compile_metal(slangc, n, mcap, centry, MSL, suffix="_c16", coarse16=1)
+
         for entry in ENTRIES:
             m, lib = compile_metal(slangc, n, mcap, entry, MSL)
             metal[entry] = dict(msl=m.name,

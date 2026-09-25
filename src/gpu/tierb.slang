@@ -54,6 +54,33 @@ static const uint CH  = ((CAP / WG) > R) ? R : ((CAP / WG > 0) ? (CAP / WG) : 1)
 //: the transform is finished. A second array would have doubled LDS to 16 KB,
 //: and LDS is what caps how many workgroups a CU holds -- the 8 KB here was
 //: chosen for occupancy. Measured free: +0.1% against float2 staging.
+//: COARSE16: the coarse spectra are the dominant global traffic -- every
+//: pair reads a band of data AND of template, so at 512x512 pairs the
+//: coarse stage moves 2.15 GB at 978 GB/s: bandwidth bound at an
+//: arithmetic intensity of 3.19 FLOP/byte, ~21% of this part's fp32 peak.
+//: Halving the element halves that traffic.
+//:
+//: Packed as ONE uint holding two halves rather than a half2 buffer, so no
+//: 16-bit storage extension is needed. The host packs once on upload and
+//: every pair reuses the row, so the conversion amortises to nothing across
+//: the N x M pair grid.
+//:
+//: This is a ROLE, not an entry point. fusedTierB is both the flat filter
+//: (full precision data/tmpl) and the untiled coarse stage (cdata/ct0), so
+//: the format cannot be keyed on the entry name -- doing that changed both
+//: and made every coarse peak read as -1, a kernel reading 4-byte elements
+//: as 8-byte ones. Hence a separate suffixed build.
+#ifndef COARSE16
+#define COARSE16 0
+#endif
+#if COARSE16
+typedef uint CVal;
+float2 cload(StructuredBuffer<CVal> b, uint i)
+{ uint p = b[i]; return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16)); }
+#else
+typedef float2 CVal;
+float2 cload(StructuredBuffer<CVal> b, uint i) { return b[i]; }
+#endif
 groupshared uint stg[CH * WG * 2];
 void stgPut(uint i, float2 v) { stg[2*i] = asuint(v.x); stg[2*i+1] = asuint(v.y); }
 float2 stgGet(uint i) { return float2(asfloat(stg[2*i]), asfloat(stg[2*i+1])); }
@@ -212,7 +239,7 @@ uint slotToIndex(uint slot)
 //: use it. Slang does not allow one entry point to call another, and the
 //: gated variant needs exactly this body after its early-out.
 void filterPair(uint pair, uint tid,
-                StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                 RWStructuredBuffer<int> peakIdx,
                 RWStructuredBuffer<float2> peakVal,
                 uint ntmpl, uint winStart, uint winEnd,
@@ -225,7 +252,7 @@ void filterPair(uint pair, uint tid,
     // level 0: gather this thread's stride-WG column straight from global
     [unroll] for (uint n2 = 0; n2 < R; ++n2) {
         uint idx = tid + WG * n2;
-        r[n2] = cmulConj(data[d*N + idx], tmpl[t*N + idx]);
+        r[n2] = cmulConj(cload(data, d*N + idx), cload(tmpl, t*N + idx));
     }
 
     [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
@@ -330,7 +357,7 @@ void filterPair(uint pair, uint tid,
 
 [shader("compute")][numthreads(WG,1,1)]
 void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
-                StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                 RWStructuredBuffer<int> peakIdx,
                 RWStructuredBuffer<float2> peakVal,
                 uniform uint ntmpl, uniform uint winStart, uniform uint winEnd,
@@ -355,7 +382,7 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
 //: did: 0.26 ms of kernel work inside a 5.0 ms call at n=16384.
 [shader("compute")][numthreads(WG,1,1)]
 void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
-                StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                 RWStructuredBuffer<int> peakIdx,
                 RWStructuredBuffer<float2> peakVal,
                 StructuredBuffer<float2> coarse,
@@ -431,7 +458,7 @@ void compactPairs(uint3 gid: SV_DispatchThreadID,
 //: no gate left to apply -- being in the list IS having passed it.
 [shader("compute")][numthreads(WG,1,1)]
 void refineListed(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
-                  StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+                  StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                   RWStructuredBuffer<int> peakIdx,
                   RWStructuredBuffer<float2> peakVal,
                   StructuredBuffer<uint> survivors,
