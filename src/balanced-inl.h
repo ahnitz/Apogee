@@ -108,6 +108,15 @@ int supported(size_t N){
        2^11  old/new mean 1.078, new faster in 8 of 8
      2^11 separates cleanly (old 5.80-5.97, new 5.41-5.55); 2^9 does not,
      and 5% is near the limit of what this box can resolve.
+
+     Checked on the other ISAs, since AP_W is 16/8/4 across AVX3/AVX2/SSE4
+     and that changes which splits are legal as well as which is fastest.
+     Both changes together against both old settings:
+       AVX2 band  512   1.009x, faster in 2 of 5  -- neutral
+       AVX2 band 2048   1.071x, faster in 5 of 5  -- generalises
+       SSE4 band  512   1.035x, faster in 4 of 5
+     So 2^11 helps every ISA and 2^9 is an AVX-512 effect that costs the
+     others nothing. 424 passed under MF_ISA=AVX3, AVX2 and SSE4.
      2^10 keeps the balanced 32x32: 16x64 and 64x16 measured 3.065 and
      3.049 against 2.802, six runs each. 2^8 has no choice -- 16x16 is the
      only split with both halves at or above the vector width, and 2^7 is
@@ -151,6 +160,15 @@ void *create(size_t N){
        2^11  old/new mean 1.078, new faster in 8 of 8
      2^11 separates cleanly (old 5.80-5.97, new 5.41-5.55); 2^9 does not,
      and 5% is near the limit of what this box can resolve.
+
+     Checked on the other ISAs, since AP_W is 16/8/4 across AVX3/AVX2/SSE4
+     and that changes which splits are legal as well as which is fastest.
+     Both changes together against both old settings:
+       AVX2 band  512   1.009x, faster in 2 of 5  -- neutral
+       AVX2 band 2048   1.071x, faster in 5 of 5  -- generalises
+       SSE4 band  512   1.035x, faster in 4 of 5
+     So 2^11 helps every ISA and 2^9 is an AVX-512 effect that costs the
+     others nothing. 424 passed under MF_ISA=AVX3, AVX2 and SSE4.
      2^10 keeps the balanced 32x32: 16x64 and 64x16 measured 3.065 and
      3.049 against 2.802, six runs each. 2^8 has no choice -- 16x16 is the
      only split with both halves at or above the vector width, and 2^7 is
