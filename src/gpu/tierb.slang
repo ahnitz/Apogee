@@ -599,6 +599,107 @@ void filterOne(uint pair, uint d, uint t, uint tid, C dreg[16],
 
 
 
+
+#if COARSE16
+//: Peak for ONE lane of the dual-transform registers. Each lane is a
+//: different pair, so the reduction must stay per lane -- a wave-wide max
+//: across lanes is the PPG bug again, and the flat-vs-hierarchical guard
+//: is what catches it.
+void peakLane(uint pair, uint tid, uint lane, H magv[16], H re[16], H im[16],
+              RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
+              uint winStart, uint winEnd, uint thrBits)
+{
+    GroupMemoryBarrierWithGroupSync();
+    if (tid == 0) stg[_stgBase] = thrBits;
+    GroupMemoryBarrierWithGroupSync();
+
+    uint myMag[16];
+    uint bestBits = thrBits;
+    [unroll] for (uint i = 0; i < R; ++i) {
+        uint idx = slotToIndex(tid * R + i);
+        bool live = (idx >= winStart && idx < winEnd);
+        float m = float(lane == 0u ? magv[i].x : magv[i].y);
+        myMag[i] = live ? asuint(m) : 0u;
+        bestBits = max(bestBits, myMag[i]);
+    }
+#if PPG == 1
+    uint wm = WaveActiveMax(bestBits);
+    if (WaveIsFirstLane() && wm > thrBits) InterlockedMax(stg[_stgBase], wm);
+#else
+    if (bestBits > thrBits) InterlockedMax(stg[_stgBase], bestBits);
+#endif
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll] for (uint i = 0; i < R; ++i) {
+        if (myMag[i] > thrBits && stg[_stgBase] == myMag[i]) {
+            peakIdx[pair] = int(slotToIndex(tid * R + i));
+            peakVal[pair] = float2(float(lane == 0u ? re[i].x : re[i].y),
+                                   float(lane == 0u ? im[i].x : im[i].y));
+        }
+    }
+    if (tid == 0 && stg[_stgBase] == thrBits) {
+        peakIdx[pair] = -1;
+        peakVal[pair] = float2(0.0f, 0.0f);
+    }
+}
+
+//: TWO pairs at once in split/SoA form. Both share the data row and differ
+//: only in template, so the data broadcasts to both lanes and the templates
+//: fill one lane each. Every operation from here to the magnitude is
+//: elementwise and packs.
+void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
+               C dreg[16], StructuredBuffer<CVal> tmpl,
+               RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
+               uint winStart, uint winEnd, uint thrBits)
+{
+    H re[16], im[16];
+    [unroll] for (uint n2 = 0; n2 < R; ++n2) {
+        C ta = cload(tmpl, tA*N + tid + WG * n2);
+        C tb = cload(tmpl, tB*N + tid + WG * n2);
+        H dr = H(dreg[n2].x, dreg[n2].x);     // data broadcast: .xx swizzle
+        H di = H(dreg[n2].y, dreg[n2].y);
+        H tr = H(ta.x, tb.x);                 // one template per lane
+        H ti = H(ta.y, tb.y);
+        cmulconjs(dr, di, tr, ti, re[n2], im[n2]);
+    }
+
+    [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
+        uint want[16];
+        [unroll] for (uint z = 0; z < R; ++z) want[z] = 0u;
+        const uint TB   = WG >> (4 * lvl);
+        const uint len  = N  >> (4 * lvl);
+        const uint lgTB = firstbithigh(TB);
+        const uint lgLn = firstbithigh(len);
+        uint blk  = tid >> lgTB;
+        uint lane = tid & (TB - 1);
+
+        dft16s(re, im);
+        [unroll] for (uint k2 = 0; k2 < R; ++k2) {
+            float ang = 2.0f * PI * float(lane * k2) / float(len);
+            cmulw(re[k2], im[k2], CS(cos(ang)), CS(sin(ang)));
+        }
+        const uint per  = R / max(TB, 1u);
+        const uint TB2  = max(TB >> 4, 1u), len2 = TB;
+        uint blk2 = tid / TB2, lane2 = tid % TB2;
+        [unroll] for (uint dd = 0; dd < R; ++dd) {
+            uint j = dd / max(TB, 1u), m = dd % max(TB, 1u);
+            want[dd] = (TB <= R) ? (blk * len + (lane * per + j) * TB + m)
+                                 : (blk2 * len2 + lane2 + TB2 * dd);
+        }
+        exchangeS(re, im, want, lgLn, lgTB);
+    }
+    innermostS(re, im);
+
+    // |v|^2 for BOTH pairs in one packed multiply-add; the AoS path
+    // promoted to fp32 here (128 v_cvt_f32_f16 in the dump).
+    H magv[16];
+    [unroll] for (uint i = 0; i < R; ++i) magv[i] = mag2s(re[i], im[i]);
+
+    peakLane(pairA, tid, 0u, magv, re, im, peakIdx, peakVal, winStart, winEnd, thrBits);
+    peakLane(pairB, tid, 1u, magv, re, im, peakIdx, peakVal, winStart, winEnd, thrBits);
+}
+#endif
+
 void filterPair(uint pair, uint tid,
                 StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                 RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
@@ -619,9 +720,16 @@ void filterPair(uint pair, uint tid,
     C dreg[16];
     [unroll] for (uint n2 = 0; n2 < R; ++n2)
         dreg[n2] = cload(data, d*N + tid + WG * n2);
+#if COARSE16 && (TILE_T % 2) == 0
+    // Two at a time, in split/SoA form.
+    [unroll] for (uint k = 0; k < TILE_T; k += 2)
+        filterTwo(p0 + k, p0 + k + 1, t0 + k, t0 + k + 1, tid, dreg, tmpl,
+                  peakIdx, peakVal, winStart, winEnd, thrBits);
+#else
     [unroll] for (uint k = 0; k < TILE_T; ++k)
         filterOne(p0 + k, d, t0 + k, tid, dreg, tmpl, peakIdx, peakVal,
                   winStart, winEnd, binsize, binShift, nbins, thrBits);
+#endif
 }
 
 [shader("compute")][numthreads(WG*PPG,1,1)]

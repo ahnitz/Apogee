@@ -12,7 +12,7 @@ struct EntryPointParams_0
 };
 
 
-#line 724 "/home/ahnitz/projects/claude/searchdev/work/peak-fft/python/matchedfilter/metal/mm_1024_compactPairs.slang"
+#line 832 "/home/ahnitz/projects/claude/searchdev/work/peak-fft/python/matchedfilter/metal/mm_1024_compactPairs.slang"
 struct KernelContext_0
 {
     EntryPointParams_0 constant* entryPointParams_0;
@@ -24,41 +24,41 @@ struct KernelContext_0
 };
 
 
-#line 724
+#line 832
 [[kernel]] void compactPairs(uint3 gid_0 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_coarse_1 [[buffer(1)]], uint device* entryPointParams_survivors_1 [[buffer(2)]], uint device* entryPointParams_args_1 [[buffer(3)]], int device* entryPointParams_peakIdx_1 [[buffer(4)]], packed_float2 device* entryPointParams_peakVal_1 [[buffer(5)]])
 {
 
-#line 724
+#line 832
     thread KernelContext_0 kernelContext_0;
 
-#line 724
+#line 832
     (&kernelContext_0)->entryPointParams_0 = entryPointParams_1;
 
-#line 724
+#line 832
     (&kernelContext_0)->entryPointParams_coarse_0 = entryPointParams_coarse_1;
 
-#line 724
+#line 832
     (&kernelContext_0)->entryPointParams_survivors_0 = entryPointParams_survivors_1;
 
-#line 724
+#line 832
     (&kernelContext_0)->entryPointParams_args_0 = entryPointParams_args_1;
 
-#line 724
+#line 832
     (&kernelContext_0)->entryPointParams_peakIdx_0 = entryPointParams_peakIdx_1;
 
-#line 724
+#line 832
     (&kernelContext_0)->entryPointParams_peakVal_0 = entryPointParams_peakVal_1;
 
-#line 732
+#line 840
     uint pair_0 = gid_0.x;
     if(pair_0 >= (entryPointParams_1->pairs_0))
     {
 
-#line 733
+#line 841
         return;
     }
 
-#line 734
+#line 842
     if((length(float2(*((&kernelContext_0)->entryPointParams_coarse_0+pair_0)) )) >= ((&kernelContext_0)->entryPointParams_0->thr_0))
     {
         uint slot_0 = atomic_fetch_add_explicit(((atomic_uint device*)((&kernelContext_0)->entryPointParams_args_0+int(0))), 1U, memory_order_relaxed);
@@ -66,38 +66,38 @@ struct KernelContext_0
         return;
     }
 
-#line 738
+#line 846
     uint b_0 = 0U;
 
-#line 745
+#line 853
     for(;;)
     {
 
-#line 745
+#line 853
         if(b_0 < ((&kernelContext_0)->entryPointParams_0->nbins_0))
         {
         }
         else
         {
 
-#line 745
+#line 853
             break;
         }
 
-#line 746
+#line 854
         uint o_0 = pair_0 * (&kernelContext_0)->entryPointParams_0->nbins_0 + b_0;
         *((&kernelContext_0)->entryPointParams_peakIdx_0+o_0) = int(-1);
 
-#line 747
+#line 855
         *((&kernelContext_0)->entryPointParams_peakVal_0+o_0) = packed_float2(float2(0.0f, 0.0f)) ;
 
-#line 745
+#line 853
         b_0 = b_0 + 1U;
 
-#line 745
+#line 853
     }
 
-#line 750
+#line 858
     return;
 }
 
