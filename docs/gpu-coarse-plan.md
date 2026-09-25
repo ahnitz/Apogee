@@ -159,7 +159,7 @@ asm (scalar v_*_f16 should approach zero).
     silently dismissing three quarters of the signal.
   * Read the compiled output after two mispredictions, not after five.
 
-## Phase 0a result: the band-256 anomaly is real, and it is NOT a measurement artifact
+## Phase 0a result: RESOLVED -- it was a benchmark-harness bug (see below)
 
 Measured, 262144 pairs, coarse only (threshold 1e9, refine_rate 0 in every
 case so nothing escalates):
@@ -195,3 +195,44 @@ Next diagnostic: RADV_DEBUG=shaderstats and asm for band 256 against band
 group count they should -- band 256 runs PPG=2 (131072 groups) against band
 512 at TILE_T=4 (65536 groups), so the launch counts differ by 2x and that
 is the first thing to confirm rather than assume.
+
+## Phase 0a, resolved: set_coarse_threshold was ignored on the GPU
+
+The band-256 "anomaly" was an artifact of my own harness, not a property
+of the kernel.
+
+**The autotuning route was never involved.** It reads the threshold from
+the calibration table and the band from the cost table, and that was
+correct throughout. The bug was in the MANUAL OVERRIDE: _gpu_calibration
+went straight to choose_threshold and never consulted self._cal_thr, so
+set_coarse_threshold -- the documented way to opt out of the tables -- was
+silently discarded on the GPU while working on the CPU.
+
+Benchmarks used set_coarse_threshold(1e9) to close the gate and measure the
+coarse stage alone. The GPU ignored it and kept refining, and inspiral
+templates -- which are matched to the inspiral reference -- escalate far
+more than random ones. Hence a 3.9x "penalty" at band 256 that was really
+refinement work.
+
+Fixed: _cal_thr is honoured on both the table path and the CPU-plan
+fallback, and added to the _gcal cache key so a cached result from before
+the call is not reused. With the gate genuinely closed:
+
+    band   random   inspiral   penalty
+     128   0.737    0.718 ms    0.97x
+     256   1.095    1.111 ms    1.02x
+     512   1.774    1.929 ms    1.09x
+    1024   3.404    3.359 ms    0.99x
+
+Data-independent, as a coarse pass should be.
+
+Two consequences:
+
+  * **Phase 0c is unblocked.** There is no band-256 pathology to bake into
+    a regenerated cost table.
+  * **The earlier optimisation numbers stand.** They all used random
+    templates, which escalate so rarely that the gate was closed in
+    practice even though the override was being dropped.
+
+And a user-facing bug is fixed on the way: an explicit threshold now
+reaches both backends instead of one.
