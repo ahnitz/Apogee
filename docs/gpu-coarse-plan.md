@@ -73,9 +73,11 @@ produced durable facts after five source-level models failed):
     comparisons feed band SELECTION, so bad data here corrupts the dominant
     lever. Fix before trusting any cross-band number.
 
-0b. **Repair the tuning tools.** hmf_tune.py, score_cost_rule.py,
-    score_selection.py and regen/cost_gpu.py all call set_coarse_margin,
-    removed earlier. They are the only way to regenerate cost tables.
+0b. ~~**Repair the tuning tools.**~~ DONE. hmf_tune.py, score_cost_rule.py,
+    score_selection.py and regen/cost_gpu.py called set_coarse_margin after
+    it was removed. `set_coarse_margin` no longer appears anywhere in the
+    repository; the margin is expressed as a scale on the measured coarse
+    threshold via `_apply_margin`, and the tools run.
 
 0c. **Regenerate the cost tables.** Band selection runs on costs measured
     BEFORE band 128 got 2.57x and band 512 got 1.28x. The relative ordering

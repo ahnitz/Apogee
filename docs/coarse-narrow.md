@@ -15,9 +15,27 @@ Correctness here is structural, not statistical.
 Quantisation makes the coarse statistic read slightly low or slightly high.
 Multiply it by its own worst-case under-report before comparing to the coarse threshold
 and it can no longer read low at all, so **no trigger can be lost at any
-width**. The entire error budget turns into trigger rate, and trigger rate is
-cheap: reconstruction is 16% of the time at the operating point, so paying for
-a few more reconstructions buys a lot of coarse-pass speed.
+width**. The entire error budget turns into trigger rate.
+
+**The "trigger rate is cheap" premise below is STALE and it is the load
+bearing one.** It said reconstruction is 16% of the time at the operating
+point. Measured with MF_HMF_PROF across the configurations selection
+actually picks, reconstruction is 41% to 73%, and only reaches single
+digits at band 1024 with a 0.6% escalation rate:
+
+    snr 5.5 band  512   coarse 58%   refine 41%
+    snr 6.5 band  256   coarse 44%   refine 55%
+    snr 5.0 band 1024   coarse 73%   refine 27%
+    snr 6.0 band  256   coarse 26%   refine 73%
+    snr 6.0 band 1024   coarse 95%   refine  5%
+
+So extra reconstructions are not cheap at the operating point, they are the
+larger half of it. The int8 plan's "+23% reconstructions" costs 0.23 x 0.55
+= +13% of total time where the doc assumed 0.23 x 0.16 = +4%. That does not
+kill the idea -- halving a 45% coarse stage still wins -- but it roughly
+halves the margin of the argument, and the phase-3 cost model below needs
+re-deriving against the measured share before it is used to justify
+anything.
 
 Measured over 520 real pairs, margin placed where the true statistic gives a 5%
 trigger rate:
