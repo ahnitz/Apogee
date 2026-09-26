@@ -1,3 +1,7 @@
+> Gate-model update: accuracy and threshold tables have been retired. See
+> [the current gate model](gate-model.md) for the execution contract. Table
+> and margin discussions below record historical measurements.
+
 # CPU work: state and next steps
 
 Written as a handoff. Everything here is measured or read from the code;
@@ -135,6 +139,50 @@ Accepting band < 256 and internally using 256. It would have given no
 speedup and a different coarse statistic from the GPU's. Measured, band 128
 costs 0.067 us/pair against band 256's 0.351: a factor of 5.2 that the
 fallback would have thrown away.
+
+## SUPERSEDED IN PART: the gate model landed
+
+The other session replaced the measured threshold table with an analytic
+gate model (`python/matchedfilter/gatemodel.py`); `accuracy.txt` and
+`threshold.txt` are gone and `cost.txt` is regenerated. Most of the
+threshold-table diagnosis below is therefore history rather than a
+description of the code. What survives is worth recording, because the two
+lines of work were independent and they agree.
+
+**The model reproduces thresholds this investigation measured by bisection
+against injections**, at n=4096, snr 5.0, fd 1e-3:
+
+    band   bisected safe (this doc)   gate model   apart
+     256          3.4125                3.3541      1.7%
+     512          3.8825                3.9224      1.0%
+    1024          4.3502                4.3604      0.2%
+
+An analytic model and a measured bisection, built separately and agreeing
+to 2%, is a much stronger statement than either alone.
+
+**The band-key defect is fixed.** At a fixed (f = 0.70, ratio = 1.20) the
+old table returned one value for every band; the model varies. The test
+that pinned the defect -- `test_the_threshold_table_is_still_band_blind` --
+was updated into `test_model_distinguishes_bands_with_identical_old_table_keys`,
+which is what its own failure message asked for.
+
+**Band 128 remains not worth selecting, and now for a visible reason.**
+Under the model it takes a threshold of 2.5550, dismisses 0 of 523
+injections, and runs at 0.98x of the flat filter. That is this document's
+earlier conclusion arrived at from the other direction: the band cannot be
+both correct and fast, and the 2.43x it used to show was budget being
+spent.
+
+    band   threshold   dismissed   vs flat
+     128     2.5550      0/523      0.98x
+     256     3.3541      0/523      1.65x
+     512     3.9224      1/523      4.53x
+    1024     4.3604      0/523      5.13x
+
+**Selection still picks a slower band, but the gap has closed a long way.**
+It chooses 512 at 4.53x where 1024 measures 5.13x -- 1.13x left on the
+table, against 1.84x before. The cost-table finding stands in kind and is
+much smaller in degree.
 
 ## The overnight investigation, 2026-09-26
 
