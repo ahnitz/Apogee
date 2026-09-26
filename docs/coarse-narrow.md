@@ -250,6 +250,14 @@ a 1% trigger margin int8 passes 6.2% of pairs, so the cost model is
 `0.5C + 0.06C = 0.56C` against `C` for int16 alone -- and unsafe flips stay at
 zero by construction, so the fixtures should show 842/842 unchanged.
 
+> **Both of those numbers are wrong; see "the upward bias is not a bound"
+> above before building this.** 1.0166 is a fit to 520 pairs and is exceeded
+> by every wider sample, including the captured pycbc data (worst 0.96387,
+> needing 1.0375), so the reject pass as specified LOSES SIGNALS. A bias
+> large enough to be safe rejects less, and the measured pass rate is 17.9%
+> to 52.7% rather than 6.2%. Re-priced: 1.19x end to end at band 512, 1.31x
+> at band 1024, and a net loss at band 256.
+
 **Phase 4 -- integrate**, with `tools/hier_all.sh` as the coarse threshold: 12 captured
 segments, 842 triggers, zero missed, and the ms/segment must fall.
 
