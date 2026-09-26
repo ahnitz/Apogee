@@ -137,8 +137,14 @@ def load_done(path):
         return done
     for line in open(path):
         p = line.split()
-        if len(p) >= 8 and p[0] == "THR":
-            done.add((int(p[1]), p[2], p[3], p[4], p[5], int(p[7])))
+        if len(p) < 7 or p[0] != "THR":
+            continue
+        # Rows written before band became a column have no eighth field.
+        # Reading them as "band unknown" and re-measuring would append a
+        # duplicate for every cell; they were all measured at n/8, so say
+        # so rather than silently redoing the file.
+        band = int(p[7]) if len(p) >= 8 else int(p[1]) // 8
+        done.add((int(p[1]), p[2], p[3], p[4], p[5], band))
     return done
 
 

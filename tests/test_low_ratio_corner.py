@@ -181,8 +181,16 @@ def test_the_threshold_table_is_still_band_blind():
     """
     # Two references that put DIFFERENT bands at the same ratio, so the
     # only thing separating the two queries is the band itself.
+    #
+    # Relative to THIS file, not the working directory: pytest is run from
+    # outside the checkout often enough that the suite has already been
+    # fixed for it once.
+    import os
     import sys
-    sys.path.insert(0, "tools")
+    tools = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
     import hmf_tune as ht
     thresholds = {}
     for band in (128, 1024):
