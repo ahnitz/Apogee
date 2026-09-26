@@ -201,13 +201,19 @@ alone DOES fix its correctness: dismissal goes from 15 of 523 to 0 of 523.
 It also takes escalation from 37.5% to 92.2%, and that is the whole story.
 Timed against the flat filter on the same data, n=4096:
 
-    band   threshold             time      vs flat
-     128   table (unsafe)       1035 us     2.51x
-     128   corrected (safe)     2465 us     1.05x
-     256   table                1046 us     2.48x
-     256   corrected            2249 us     1.15x
-     512   table                 410 us     6.33x
-     512   corrected             773 us     3.36x
+    band   threshold                time      vs flat
+     128   table  3.3341           1039 us     2.43x
+     128   BISECTED SAFE 2.8956    2403 us     1.05x
+     256   table  3.5307           1048 us     2.41x
+     256   BISECTED SAFE 3.4125    1352 us     1.87x
+     512   table  4.0354            411 us     6.15x
+     512   BISECTED SAFE 3.8825     619 us     4.08x
+
+(Against the BISECTED-safe threshold, not the sqrt(ln band) correction. The
+correction is over-conservative -- at band 256 it gives 3.158 where safe is
+3.4125 -- and a first pass at this used it as a proxy for "safe", which
+overstated the cost of safety at band 256 as 1.15x rather than 1.87x. The
+audit measures safe directly; use that.)
 
 **The small-band speedup is bought with a threshold that is too high.** At
 band 128 the reference lands at ratio 1.24, the coarse grid is too coarse to
@@ -222,11 +228,12 @@ where band 512 measured 10.75x. Selection picked it because the cost table
 said it was cheap -- and those costs were measured at the unsafe threshold.
 With a safe one it is not cheap.
 
-Band 512 survives correction at 3.36x and is worth having. Band 256 does
-not: 2.48x becomes 1.15x, so most of its advantage comes from the 4.3% its
-table row sits above the bisected-safe value. It passes 0 of 523 injections
-today, so it is not demonstrably unsafe -- but its speed and its margin are
-the same quantity, and band 256 is what selection picks at snr 6.0 and 6.5.
+Bands 256 and 512 both survive, at 1.87x and 4.08x. Their table rows sit
+3.5% and 3.9% above the bisected-safe value (12000 trials a bisection step,
+so about three times the 1.0-1.3% noise floor), and that headroom is worth
+2.41/1.87 = 1.29x at band 256 and 6.15/4.08 = 1.51x at band 512. Real, but
+not where most of the speedup comes from -- which is what separates them
+from band 128, where the safe configuration keeps nothing at all.
 
 ### `fd` is a promise about signals, not about trigger lists
 
