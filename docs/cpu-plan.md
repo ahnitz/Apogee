@@ -319,6 +319,24 @@ error is in the lookup rather than the rows: `score_cost_rule.py` measured
 candidate pricing rules spanning 54% to 88% of the best available speedup,
 which is the same magnitude as the misranking here.
 
+The obvious explanation is coverage, and it is wrong. The retuned rows
+span f 0.690-1.000 against the shipped table's 0.122-1.000 -- dense but
+narrow, 770 distinct (f, B_eff) anchors at n=4096 against 51 -- so the
+natural guess is that the failing points extrapolate. They do not:
+
+    reference   band 256   band 512   band 1024
+    inspiral     0.8832     0.9584     0.9882
+    shallow      0.6950     0.8455     0.9403
+    steep        0.9638     0.9914     0.9983
+
+All inside 0.690-1.000, and the regressed point (steep, snr 6.0) is at
+f >= 0.96, nowhere near an edge. Only shallow at band 256 is marginal, at
+0.6950 against a 0.690 floor, which may bear on the one shallow point that
+stayed wrong.
+
+So the remaining misrankings are not a coverage artefact, and what is left
+to suspect is the lookup itself or variance in the retune. Not resolved.
+
 PROVISIONAL. The retune had not finished. Re-run this comparison against
 the complete table before drawing conclusions from the two that did not
 improve.
