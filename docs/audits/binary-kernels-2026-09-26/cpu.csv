@@ -1,0 +1,118 @@
+symbol,instructions,stack_operands,fma,branches
+ap::N_AVX2::supported(unsigned long)@plt,3,0,0,2
+ap::N_AVX2::destroy(void*)@plt,3,0,0,2
+ap::N_AVX3::destroy(void*)@plt,3,0,0,2
+ap::N_AVX3::supported(unsigned long)@plt,3,0,0,2
+ap::N_SSE4::supported(unsigned long)@plt,3,0,0,2
+ap::N_SSE4::destroy(void*)@plt,3,0,0,2
+"ap::N_AVX2::stageB_load_many(ap::N_AVX2::BP*, int, int)",93,16,0,7
+ap::N_AVX2::has_prod(void*),5,0,0,0
+ap::N_AVX2::series_stride(void*),2,0,0,0
+"ap::N_AVX2::split(void*, int*, int*)",10,0,0,1
+ap::N_AVX2::pairbatch(void*),7,0,0,0
+"ap::N_AVX3::stageB_load_many(ap::N_AVX3::BP*, int, int)",103,14,0,7
+ap::N_AVX3::has_prod(void*),5,0,0,0
+ap::N_AVX3::series_stride(void*),2,0,0,0
+"ap::N_AVX3::split(void*, int*, int*)",10,0,0,1
+ap::N_AVX3::pairbatch(void*),7,0,0,0
+"ap::N_SSE4::stageB_load_many(ap::N_SSE4::BP*, int, int)",87,16,0,7
+ap::N_SSE4::has_prod(void*),5,0,0,0
+ap::N_SSE4::series_stride(void*),2,0,0,0
+"ap::N_SSE4::split(void*, int*, int*)",10,0,0,1
+ap::N_SSE4::pairbatch(void*),7,0,0,0
+"ap::N_AVX2::interp_max(void*, unsigned long, unsigned long, float, float const*, float const*, int, int, float)",157,13,8,22
+"ap::N_AVX3::interp_max(void*, unsigned long, unsigned long, float, float const*, float const*, int, int, float)",159,11,8,22
+"ap::N_SSE4::interp_max(void*, unsigned long, unsigned long, float, float const*, float const*, int, int, float)",176,23,0,22
+ap::N_AVX2::destroy(void*),54,0,0,2
+ap::N_AVX3::destroy(void*),54,0,0,2
+ap::N_SSE4::destroy(void*),54,0,0,2
+ap::N_AVX2::Backend(),20,3,0,2
+ap::N_AVX3::Backend(),20,3,0,2
+ap::N_SSE4::Backend(),20,3,0,2
+"ap::N_AVX2::fftsr16_tw(hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",404,90,46,0
+"ap::N_AVX2::fftsr32_tw(hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",1006,295,114,0
+"ap::N_AVX2::fft64_tw(hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",2744,708,286,0
+"ap::N_AVX3::fftsr16_tw(hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",346,21,46,0
+"ap::N_AVX3::fftsr32_tw(hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",888,149,114,0
+"ap::N_AVX3::fftsr64_tw(hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",2190,517,270,0
+"ap::N_SSE4::fftsr16_tw(hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",610,85,0,0
+"ap::N_SSE4::fftsr32_tw(hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",1558,296,0,0
+"ap::N_SSE4::fft64_tw(hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]",4268,735,0,0
+"ap::N_SSE4::fftsr16_prod(float const*, float const*, float const*, float const*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, long) [clone .isra.0]",692,121,0,0
+"ap::N_SSE4::fftsr32(hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long) [clone .isra.0]",1368,420,0,0
+"ap::N_SSE4::fftsr16(hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long) [clone .isra.0]",513,136,0,0
+"ap::N_SSE4::fft64_prod(float const*, float const*, float const*, float const*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, long) [clone .isra.0]",4258,672,0,0
+"ap::N_SSE4::fft32_prod(float const*, float const*, float const*, float const*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, long) [clone .isra.0]",1862,259,0,0
+"ap::N_SSE4::fft16_prod(float const*, float const*, float const*, float const*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, long) [clone .isra.0]",855,151,0,0
+"ap::N_SSE4::fft8_prod(float const*, float const*, float const*, float const*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, long) [clone .isra.0]",289,28,0,0
+"ap::N_SSE4::fft64_88(hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long) [clone .isra.0]",3545,857,0,0
+"ap::N_AVX3::fftsr64_prod(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]",2451,526,272,0
+"ap::N_AVX3::fftsr32_prod(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]",1025,157,116,0
+"ap::N_AVX3::fftsr16_prod(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]",423,25,48,0
+"ap::N_AVX3::fftsr64(hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long) [clone .isra.0]",2242,762,144,0
+"ap::N_AVX3::fftsr32(hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long) [clone .isra.0]",904,253,52,0
+"ap::N_AVX3::fftsr16(hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long) [clone .isra.0]",348,59,16,0
+"ap::N_AVX3::fft64_prod(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]",2786,262,288,0
+"ap::N_AVX3::fft32_prod(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]",1296,120,120,0
+"ap::N_AVX3::fft16_prod(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]",607,29,52,0
+"ap::N_AVX2::fftsr16_prod(float const*, float const*, float const*, float const*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, long) [clone .isra.0]",479,94,48,0
+"ap::N_AVX2::fftsr32(hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long) [clone .isra.0]",1025,399,52,0
+"ap::N_AVX2::fftsr16(hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long) [clone .isra.0]",398,126,16,0
+"ap::N_AVX2::fft64_prod(float const*, float const*, float const*, float const*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, long) [clone .isra.0]",3025,570,288,0
+"ap::N_AVX2::fft32_prod(float const*, float const*, float const*, float const*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, long) [clone .isra.0]",1366,229,120,0
+"ap::N_AVX2::fft16_prod(float const*, float const*, float const*, float const*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, long) [clone .isra.0]",633,104,52,0
+"ap::N_AVX2::fft64_88(hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long) [clone .isra.0]",2768,781,160,0
+"ap::N_AVX3::small_scan(ap::N_AVX3::BP*, unsigned long, float, ap_peak*, unsigned long, int, unsigned long, unsigned long, int) [clone .constprop.0]",281,17,3,35
+"ap::N_AVX2::small_scan(ap::N_AVX2::BP*, unsigned long, float, ap_peak*, unsigned long, int, unsigned long, unsigned long, int) [clone .constprop.0]",301,42,3,35
+"ap::N_SSE4::small_scan(ap::N_SSE4::BP*, unsigned long, float, ap_peak*, unsigned long, int, unsigned long, unsigned long, int) [clone .constprop.0]",321,43,0,34
+"ap::N_AVX2::efft(int, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, float const*, float const*)",385,49,8,20
+"ap::N_AVX2::stageA_prod(ap::N_AVX2::BP*, float const*, float const*, float const*, float const*)",689,113,66,22
+"ap::N_AVX2::stageB(ap::N_AVX2::BP*, int, hwy::N_AVX2::Vec256<float>**, hwy::N_AVX2::Vec256<float>**, int) [clone .constprop.0]",119,17,0,11
+"ap::N_AVX2::binmax_core(ap::N_AVX2::BP*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",2598,464,13,380
+"ap::N_AVX3::efft(int, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, float const*, float const*) [clone .isra.0]",349,37,8,21
+"ap::N_AVX3::stageB(ap::N_AVX3::BP*, int, hwy::N_AVX3::Vec512<float>**, hwy::N_AVX3::Vec512<float>**, int) [clone .constprop.0]",122,15,0,11
+"ap::N_AVX3::stageA_prod(ap::N_AVX3::BP*, float const*, float const*, float const*, float const*)",938,221,10,61
+"ap::N_AVX3::binmax_core(ap::N_AVX3::BP*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",1966,375,8,183
+"ap::N_SSE4::efft(int, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, float const*, float const*)",452,46,0,22
+"ap::N_SSE4::stageB(ap::N_SSE4::BP*, int, hwy::N_SSE4::Vec128<float, 4ul>**, hwy::N_SSE4::Vec128<float, 4ul>**, int) [clone .constprop.0]",110,19,0,11
+"ap::N_SSE4::binmax_core(ap::N_SSE4::BP*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",1626,316,0,234
+"ap::N_AVX3::stageA_split(ap::N_AVX3::BP*, float const*, float const*, int) [clone .constprop.0]",929,205,8,61
+"ap::N_AVX3::stageA(ap::N_AVX3::BP*, float const*, int)",937,210,8,62
+"ap::N_AVX3::fft(void*, float const*, float*, int)",268,32,0,28
+"ap::N_AVX2::stageA_split(ap::N_AVX2::BP*, float const*, float const*, int) [clone .constprop.0]",661,98,64,22
+"ap::N_SSE4::stageA(ap::N_SSE4::BP*, float const*, int)",442,78,0,25
+"ap::N_SSE4::fft(void*, float const*, float*, int)",274,50,0,28
+"ap::N_AVX2::stageA(ap::N_AVX2::BP*, float const*, int)",675,101,64,23
+"ap::N_AVX2::fft(void*, float const*, float*, int)",268,42,0,28
+ap::N_AVX2::supported(unsigned long),98,13,0,19
+ap::N_AVX3::supported(unsigned long),98,13,0,19
+ap::N_SSE4::supported(unsigned long),99,13,0,19
+"ap::N_AVX3::bins_reserve(ap::N_AVX3::BP*, unsigned long)",64,17,0,4
+"ap::N_AVX3::binmax(void*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",193,43,0,14
+"ap::N_AVX3::binmax_split(void*, float const*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",143,33,0,10
+"ap::N_AVX2::bins_reserve(ap::N_AVX2::BP*, unsigned long)",87,9,0,7
+"ap::N_AVX2::binmax(void*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",170,40,0,14
+"ap::N_AVX2::binmax_split(void*, float const*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",139,35,0,10
+"ap::N_SSE4::bins_reserve(ap::N_SSE4::BP*, unsigned long)",90,15,0,7
+"ap::N_SSE4::binmax(void*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",185,46,0,13
+"ap::N_SSE4::binmax_split(void*, float const*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",543,107,0,34
+ap::N_AVX3::create_small(unsigned long),241,57,0,27
+ap::N_AVX2::create_small(unsigned long),274,63,0,32
+ap::N_SSE4::create_small(unsigned long),281,61,0,32
+"ap::N_AVX2::series_buf(void*, int)",68,7,0,8
+"ap::N_AVX3::series_buf(void*, int)",68,7,0,8
+"ap::N_SSE4::series_buf(void*, int)",68,7,0,8
+ap::N_AVX3::create(unsigned long),1830,532,1,239
+ap::N_AVX2::create(unsigned long),1737,526,1,244
+ap::N_SSE4::create(unsigned long),1669,479,0,242
+"ap::N_AVX3::efft_prod(int, float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, float const*, float const*)",1481,393,80,65
+"ap::N_AVX3::stageA_prod_gm(ap::N_AVX3::BP*, float const*, float const*, float const*, float const*)",890,200,10,56
+"ap::N_AVX3::binmax_prod(void*, float const*, float const*, float const*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",59,14,0,5
+"ap::N_AVX3::binmax_prod_batch(void*, float const*, float const*, float const*, float const*, int, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",691,70,3,49
+"ap::N_AVX2::efft_prod(int, float const*, float const*, float const*, float const*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, float const*, float const*)",1353,390,80,56
+"ap::N_AVX2::stageA_prod_gm(ap::N_AVX2::BP*, float const*, float const*, float const*, float const*)",625,87,66,17
+"ap::N_AVX2::binmax_prod(void*, float const*, float const*, float const*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",59,14,0,5
+"ap::N_AVX2::binmax_prod_batch(void*, float const*, float const*, float const*, float const*, int, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",868,144,3,87
+"ap::N_SSE4::efft_prod(int, float const*, float const*, float const*, float const*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, float const*, float const*)",1102,312,0,62
+"ap::N_SSE4::binmax_prod_batch(void*, float const*, float const*, float const*, float const*, int, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",619,88,0,63
+"ap::N_SSE4::binmax_prod(void*, float const*, float const*, float const*, float const*, unsigned long, float, ap_peak*, int, unsigned long, unsigned long)",898,166,0,47
