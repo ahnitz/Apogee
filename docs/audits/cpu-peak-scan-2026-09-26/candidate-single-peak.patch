@@ -1,0 +1,50 @@
+--- a/src/balanced-inl.h
++++ b/src/balanced-inl.h
+@@ -748,6 +748,34 @@
+     }
+   }
+ }
++
++#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_SSE4
++/* Single-bin scan: keep the winning sample and index in registers.  Visit
++   natural lag order so strict comparisons retain the earliest equal maximum. */
++static HWY_NOINLINE void small_scan_one(BP*p,float thr,ap_peak*out,size_t ostride,
++                           int conj,size_t ws,size_t we,int nlane){
++  vf mx=V_SET1(thr>0.f?thr*thr:0.f), re=V_ZERO(), im=V_ZERO();
++  vi ix=VI_SET1(-1);
++  for(size_t k=ws;k<we;k++){
++    const int e=eidx(&p->ea,(int)k);
++    const vf r=p->bR[e], i=p->bI[e];
++    const vf m=V_FMADD(r,r,V_MUL(i,i));
++    const vm g=V_CMP_GT(m,mx);
++    if(__builtin_expect(V_MASK_ANY(g),0)){
++      mx=V_SEL(g,mx,m); re=V_SEL(g,re,r); im=V_SEL(g,im,i);
++      ix=VI_SEL(g,ix,VI_SET1((int)k));
++    }
++  }
++  float mv[AP_W],rv[AP_W],iv[AP_W]; int xv[AP_W];
++  V_STOREU(mv,mx); V_STOREU(rv,re); V_STOREU(iv,im); VI_STOREU(xv,ix);
++  for(int l=0;l<nlane;l++){
++    ap_peak *o=out+(size_t)l*ostride;
++    if(xv[l]<0){o->index=-1;o->re=0.f;o->im=0.f;o->magnitude=0.f;}
++    else{o->index=xv[l];o->re=rv[l];o->im=conj?-iv[l]:iv[l];o->magnitude=sqrtf(mv[l]);}
++  }
++}
++
++#endif
+
+ static void small_efft(BP*p){
+   efft((int)p->N,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+@@ -1095,6 +1123,12 @@
+     efft_prod_broadcast((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+   else
+     efft_prod((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
++#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_SSE4
++  // Keep dispatch outside the general scan so its implementation stays intact.
++  // AVX3's existing size-64 scan wins on mostly-rejected coarse calls.
++  const bool use_one=HWY_TARGET!=HWY_AVX3 || p->N!=64 || !(thr>0.f);
++  if(nb==1&&use_one){small_scan_one(p,thr,out,nb,conj,ws,we,nlane);return 0;}
++#endif
+   small_scan(p,binsize,thr,out,nb,conj,ws,we,nlane);
+   return 0;
+ }

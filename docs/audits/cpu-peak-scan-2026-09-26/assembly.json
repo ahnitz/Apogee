@@ -1,0 +1,90 @@
+{
+  "ap::N_AVX2::fftsr32_tw(hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]": {
+    "baseline": {
+      "instructions": 1007,
+      "stack_operands": 295
+    },
+    "candidate": {
+      "instructions": 1007,
+      "stack_operands": 295
+    },
+    "same_normalized_instructions": true
+  },
+  "ap::N_AVX3::fftsr32_tw(hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]": {
+    "baseline": {
+      "instructions": 890,
+      "stack_operands": 149
+    },
+    "candidate": {
+      "instructions": 872,
+      "stack_operands": 100
+    },
+    "same_normalized_instructions": false
+  },
+  "ap::N_SSE4::fftsr32_tw(hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, float const*, float const*) [clone .constprop.0] [clone .isra.0]": {
+    "baseline": {
+      "instructions": 1559,
+      "stack_operands": 296
+    },
+    "candidate": {
+      "instructions": 1559,
+      "stack_operands": 296
+    },
+    "same_normalized_instructions": true
+  },
+  "ap::N_SSE4::fft64_prod(float const*, float const*, float const*, float const*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, hwy::N_SSE4::Vec128<float, 4ul>*, long, long) [clone .isra.0]": {
+    "baseline": {
+      "instructions": 4258,
+      "stack_operands": 672
+    },
+    "candidate": {
+      "instructions": 4258,
+      "stack_operands": 672
+    },
+    "same_normalized_instructions": true
+  },
+  "ap::N_AVX3::fftsr64_prod_broadcast(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]": {
+    "baseline": {
+      "instructions": 2467,
+      "stack_operands": 532
+    },
+    "candidate": {
+      "instructions": 2467,
+      "stack_operands": 532
+    },
+    "same_normalized_instructions": true
+  },
+  "ap::N_AVX3::fftsr32_prod_broadcast(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]": {
+    "baseline": {
+      "instructions": 1036,
+      "stack_operands": 162
+    },
+    "candidate": {
+      "instructions": 1061,
+      "stack_operands": 120
+    },
+    "same_normalized_instructions": false
+  },
+  "ap::N_AVX3::fft64_prod(float const*, float const*, float const*, float const*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, hwy::N_AVX3::Vec512<float>*, long, long) [clone .isra.0]": {
+    "baseline": {
+      "instructions": 2788,
+      "stack_operands": 262
+    },
+    "candidate": {
+      "instructions": 2788,
+      "stack_operands": 262
+    },
+    "same_normalized_instructions": true
+  },
+  "ap::N_AVX2::fft64_prod(float const*, float const*, float const*, float const*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, hwy::N_AVX2::Vec256<float>*, long, long) [clone .isra.0]": {
+    "baseline": {
+      "instructions": 3027,
+      "stack_operands": 570
+    },
+    "candidate": {
+      "instructions": 3027,
+      "stack_operands": 570
+    },
+    "same_normalized_instructions": true
+  }
+}

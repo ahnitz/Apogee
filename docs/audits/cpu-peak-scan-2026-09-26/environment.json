@@ -1,0 +1,17 @@
+{
+  "cpu": "AMD Ryzen AI MAX+ 395 w/ Radeon 8060S",
+  "platform": "Linux-7.1.13-100.fc43.x86_64-x86_64-with-glibc2.42",
+  "compiler": "g++ (GCC) 15.3.1 20260722 (Red Hat 15.3.1-1)",
+  "baseline_native_commit": "a5a63b6",
+  "validation_snapshot_commit": "b25d6a8c0dad44deab4ea4a62158aaacf307f69f",
+  "benchmark_cpu": 4,
+  "test_cpu": 10,
+  "sha256": {
+    "baseline": "a4ac22c4b4c0f0ed00f5c263d2b227801236c2ec1b3fc92398537d2da813decb",
+    "candidate": "9ff8bde786933a2c619700a2e1e51c419045b09e32edcbfa428558e358d0f567"
+  },
+  "candidate_label": "scan plus scheduling prototype, NOT enabled",
+  "confirmation_cpu": 15,
+  "production_kernels_changed": false,
+  "background_load": "CPU cost regeneration and parallel bank-building jobs were observed. CPU 6 shares its SMT core with a busy worker on CPU 22; later confirmation used CPU 15 (sibling 31). Frequency and physical cache placement were not controlled."
+}

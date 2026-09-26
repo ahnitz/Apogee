@@ -57,8 +57,8 @@ class Candidate:
 
 
 class Reference:
-    def __init__(self, bridge, n, nd, nt):
-        self.lib, self.bridge = C.CDLL(_core.__file__), bridge
+    def __init__(self, bridge, n, nd, nt, core_path=None):
+        self.lib, self.bridge = C.CDLL(core_path or _core.__file__), bridge
         self.n, self.nd, self.nt = n, nd, nt
         v, i, z = C.c_void_p, C.c_int, C.c_size_t
         bind(self.lib, 'ap_mf_create', [z, i, i], v)

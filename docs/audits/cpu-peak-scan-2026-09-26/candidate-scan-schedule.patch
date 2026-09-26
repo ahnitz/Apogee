@@ -1,0 +1,119 @@
+--- a/src/balanced-inl.h
++++ b/src/balanced-inl.h
+@@ -745,6 +745,73 @@
+       if(xv[l]<0){ o->index=-1; o->re=0.f; o->im=0.f; o->magnitude=0.f; }
+       else { o->index=xv[l]; o->re=rv[l];
+              o->im=conj?-iv[l]:iv[l]; o->magnitude=sqrtf(mv[l]); }
++    }
++  }
++}
++
++/* Single-bin scan: keep the winning sample and index in registers.  Visit
++   natural lag order so strict comparisons retain the earliest equal maximum. */
++static HWY_NOINLINE void small_scan_one(BP*p,float thr,ap_peak*out,size_t ostride,
++                           int conj,size_t ws,size_t we,int nlane){
++  vf mx=V_SET1(thr>0.f?thr*thr:0.f), re=V_ZERO(), im=V_ZERO();
++  vi ix=VI_SET1(-1);
++  for(size_t k=ws;k<we;k++){
++    const int e=eidx(&p->ea,(int)k);
++    const vf r=p->bR[e], i=p->bI[e];
++    const vf m=V_FMADD(r,r,V_MUL(i,i));
++    const vm g=V_CMP_GT(m,mx);
++    if(__builtin_expect(V_MASK_ANY(g),0)){
++      mx=V_SEL(g,mx,m); re=V_SEL(g,re,r); im=V_SEL(g,im,i);
++      ix=VI_SEL(g,ix,VI_SET1((int)k));
++    }
++  }
++  float mv[AP_W],rv[AP_W],iv[AP_W]; int xv[AP_W];
++  V_STOREU(mv,mx); V_STOREU(rv,re); V_STOREU(iv,im); VI_STOREU(xv,ix);
++  for(int l=0;l<nlane;l++){
++    ap_peak *o=out+(size_t)l*ostride;
++    if(xv[l]<0){o->index=-1;o->re=0.f;o->im=0.f;o->magnitude=0.f;}
++    else{o->index=xv[l];o->re=rv[l];o->im=conj?-iv[l]:iv[l];o->magnitude=sqrtf(mv[l]);}
++  }
++}
++
++/* Size 64 has natural-order output. On AVX2, scan one live lane directly
++   or use two independent vector accumulators to shorten the maximum dependency
++   chain. The final merge explicitly retains the earliest equal maximum. */
++static HWY_NOINLINE void small_scan64(BP*p,float thr,ap_peak*out,
++                                     int conj,size_t ws,size_t we,int nlane){
++  const float seed=thr>0.f?thr*thr:0.f;
++  if(nlane==1){
++    float mx=seed,re=0.f,im=0.f;int ix=-1;
++    for(size_t k=ws;k<we;k++){
++      const float r=hn::ExtractLane(p->bR[k],0),i=hn::ExtractLane(p->bI[k],0);
++      const float m=fmaf(r,r,i*i);
++      if(m>mx){mx=m;re=r;im=i;ix=(int)k;}
++    }
++    out->index=ix;out->re=re;out->im=ix<0?0.f:(conj?-im:im);
++    out->magnitude=ix<0?0.f:sqrtf(mx);return;
++  }
++  vf ma=V_SET1(seed),mb=ma;vi ia=VI_SET1(-1),ib=ia;
++  size_t k=ws;
++  for(;k+1<we;k+=2){
++    const vf ar=p->bR[k],ai=p->bI[k],br=p->bR[k+1],bi=p->bI[k+1];
++    const vf a=V_FMADD(ar,ar,V_MUL(ai,ai)),b=V_FMADD(br,br,V_MUL(bi,bi));
++    const vm ga=V_CMP_GT(a,ma),gb=V_CMP_GT(b,mb);
++    ma=V_SEL(ga,ma,a);ia=VI_SEL(ga,ia,VI_SET1((int)k));
++    mb=V_SEL(gb,mb,b);ib=VI_SEL(gb,ib,VI_SET1((int)k+1));
++  }
++  if(k<we){
++    const vf r=p->bR[k],i=p->bI[k],m=V_FMADD(r,r,V_MUL(i,i));
++    const vm g=V_CMP_GT(m,ma);ma=V_SEL(g,ma,m);ia=VI_SEL(g,ia,VI_SET1((int)k));
++  }
++  const vm tie=hn::And(hn::Eq(ma,mb),hn::RebindMask(AP_D,hn::Lt(ib,ia)));
++  const vm g=hn::Or(V_CMP_GT(mb,ma),tie);
++  float mv[AP_W];int xv[AP_W];V_STOREU(mv,V_SEL(g,ma,mb));VI_STOREU(xv,VI_SEL(g,ia,ib));
++  for(int l=0;l<nlane;l++){
++    ap_peak*o=out+l;o->index=xv[l];
++    if(xv[l]<0){o->re=0.f;o->im=0.f;o->magnitude=0.f;}
++    else{
++      const float r=hn::ExtractLane(p->bR[xv[l]],l),i=hn::ExtractLane(p->bI[xv[l]],l);
++      o->re=r;o->im=conj?-i:i;o->magnitude=sqrtf(mv[l]);
+     }
+   }
+ }
+@@ -1095,6 +1162,16 @@
+     efft_prod_broadcast((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+   else
+     efft_prod((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
++  if constexpr(HWY_TARGET==HWY_AVX2){
++    if(nb==1&&p->N==64){small_scan64(p,thr,out,conj,ws,we,nlane);return 0;}
++  }
++  // Keep the general scan a leaf function: adding a helper call inside it
++  // changes compiler layout of the other targets' hot scan loops.
++  if constexpr(HWY_TARGET==HWY_AVX3 || HWY_TARGET==HWY_SSE4){
++    // The existing size-64 AVX3 scan wins on mostly-rejected coarse calls.
++    const bool use_one=HWY_TARGET!=HWY_AVX3 || p->N!=64 || !(thr>0.f);
++    if(nb==1&&use_one){small_scan_one(p,thr,out,nb,conj,ws,we,nlane);return 0;}
++  }
+   small_scan(p,binsize,thr,out,nb,conj,ws,we,nlane);
+   return 0;
+ }
+--- a/src/gen.py
++++ b/src/gen.py
+@@ -234,13 +234,23 @@
+             mdf = s.mi(df)                      # -i*(w^k Z - w^3k Z')
+             X[k+q]    = s.add(U[k+q], mdf)
+             X[k+3*q]  = s.sub(U[k+q], mdf)
++            if n==s.n and n==32:
++                # All input loads finish in the recursive calls above. Storing
++                # each root quartet now shortens output live ranges on AVX3.
++                # Keep the established schedule on other targets.
++                s.emit("#if HWY_TARGET == HWY_AVX3")
++                for j in (k,k+n//2,k+q,k+3*q):
++                    s.emit("ar[S*%d]=%s; ai[S*%d]=%s;"%(j,X[j][0],j,X[j][1]))
++                s.emit("#endif")
+         return X
+
+ def build_sr(n,name,tw=False,prod=False):
+     g=SRGen(n,name,tw,False,prod)
+     X=g.rec(list(range(n)))
++    if n==32: g.emit("#if HWY_TARGET != HWY_AVX3")
+     for k in range(n):
+         g.emit("ar[S*%d]=%s; ai[S*%d]=%s;"%(k,X[k][0],k,X[k][1]))
++    if n==32: g.emit("#endif")
+     body="\n".join(g.L)
+     cdefs="\n".join("  const vf %s=V_SET1(%sf);"%(v,k) for k,v in g.consts.items())
+     if prod:

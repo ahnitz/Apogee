@@ -24,7 +24,7 @@ def worker():
     for line in sys.stdin:
         cfg = json.loads(line)
         band, nt, kind, survival, cutoff, ingest = cfg[:6]
-        key = tuple(cfg[:6])
+        key = tuple(cfg[:6]) + tuple(cfg[7:])
         if key not in plans:
             rng = np.random.default_rng(band + nt)
             def noise(shape):
@@ -48,7 +48,9 @@ def worker():
                 threshold = (float(np.quantile(maxima, 1-survival))
                              if survival > 0 else 1e10)
                 f.set_coarse_threshold(threshold)
-            kw = dict(binsize=n, raw=True)
+            fraction, requested_bin, threshold = cfg[7:] if len(cfg)>7 else (1., 0, 0.)
+            lo = int(n*(1-fraction)/2)
+            kw = dict(binsize=requested_bin or n, window=(lo,n-lo), threshold=threshold, raw=True)
             out = f.run(**kw)
             digest = hashlib.sha256(b''.join(x.tobytes() for x in out)).hexdigest()
             admitted = float((out[0] >= 0).mean())
@@ -75,9 +77,17 @@ def main():
     p.add_argument('--kinds', nargs='+', choices=['flat', 'hier'], default=['flat', 'hier'])
     p.add_argument('--survival', type=float, default=.01)
     p.add_argument('--rounds', type=int, default=9)
+    p.add_argument('--repeats', type=int, help='override calls per timed sample')
     p.add_argument('--cutoff', type=int, default=1024, help='MF_PBMAX; 0 uses automatic dispatch')
     p.add_argument('--include-ingest', action='store_true')
+    p.add_argument('--window-fraction', type=float, default=1.)
+    p.add_argument('--bin-size', type=int, default=0, help='0 uses the transform length')
+    p.add_argument('--threshold', type=float, default=0.)
     args = p.parse_args()
+    if not 0 < args.window_fraction <= 1 or args.bin_size < 0:
+        p.error('window fraction must be in (0,1] and bin size nonnegative')
+    if args.rounds < 1 or (args.repeats is not None and args.repeats < 1):
+        p.error('rounds and repeats must be positive')
     results = []
     for isa in args.isas:
         workers = []
@@ -94,7 +104,8 @@ def main():
                 for band in args.bands:
                     for nt in args.templates:
                         cfg = [band, nt, kind, args.survival, args.cutoff,
-                               args.include_ingest, max(50, 20000//nt)]
+                               args.include_ingest, args.repeats or max(50, 20000//nt),
+                               args.window_fraction, args.bin_size, args.threshold]
                         times, digests, admitted = [[], []], set(), set()
                         for round_ in range(args.rounds):
                             for i in ((0, 1) if round_ % 2 == 0 else (1, 0)):
@@ -111,6 +122,8 @@ def main():
                             raise AssertionError(f'Output mismatch: {isa}, {cfg}')
                         row = dict(isa=isa, band=band, templates=nt, kind=kind,
                                    cutoff=args.cutoff, ingest=args.include_ingest,
+                                   window_fraction=args.window_fraction, bin_size=args.bin_size,
+                                   threshold=args.threshold,
                                    admitted=sorted(admitted), samples=times,
                                    speedup=statistics.median([a/b for a, b in zip(*times)]))
                         results.append(row)
