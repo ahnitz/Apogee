@@ -274,6 +274,21 @@ interpolation lands on rows from a different escalation regime.
 obvious first thing to try. Whether the shipped rows are wrong everywhere
 or only near this query is not established.
 
+**The faster band is admissible**, which is the check that makes this a
+defect rather than selection being right for a reason I had not measured.
+Injections at 1.04*snr, 510 per cell:
+
+    snr 6.0 fd 1e-2   band 256  0/510        band 512  5/510 = 9.8e-3
+    snr 6.0 fd 1e-3   band 256  0/510        band 512  1/510 = 2.0e-3
+    snr 6.5 fd 1e-3   band 256  0/509        band 512  1/509 = 2.0e-3
+
+All within budget. One qualification: at snr 6.0 fd 1e-2 band 512 sits AT
+its budget (9.8e-3 against 1e-2) while band 256 has the whole of it spare,
+so picking 256 there buys margin for a 1.30x speed cost. That would be a
+defensible trade -- but it is not the trade selection made, since selection
+priced 256 as cheaper and took it on cost. The other two points have no
+such excuse: 1 event in 510 is the same as 0, and 512 is 1.6-1.8x faster.
+
 ### `fd` is a promise about signals, not about trigger lists
 
 Marginal NOISE triggers are dismissed at 2.4e-2 (captured) to 3.7e-1
