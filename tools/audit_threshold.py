@@ -126,6 +126,36 @@ def highest_safe(n, power, band, snr, fd, trials, steps=9, verbose=False):
     return lo, table
 
 
+def repeatability(n, band, f_target, ratio, snr, fd, trials, steps, seeds):
+    """Spread of ONE cell measured repeatedly, which is the floor every
+    other spread has to clear.
+
+    Measured before this existed, nothing quoted here had a noise floor
+    against it. At n=4096 band 512 fd=1e-2 with 3000 trials a step, eight
+    seeds give sd 1.0-1.3% and a full range of 2.5-3.8%. That makes the
+    19.9% band spread at f=0.60 about twenty sigma and real, and the 3.1%
+    at f=0.995 indistinguishable from re-running the same cell.
+    """
+    import statistics
+    import hmf_tune as ht
+    vals = []
+    for seed in seeds:
+        power = ht.make_ref(n, band, f_target, band / ratio)
+        cell = Cell(n, power, band, snr, fd, seed=seed)
+        lo, hi = 2.0, 4.6
+        for _ in range(steps):
+            mid = 0.5 * (lo + hi)
+            det, om = cell.measure(mid, trials)
+            if det > 0 and om / det <= fd:
+                lo = mid
+            else:
+                hi = mid
+        vals.append(lo)
+    mean = statistics.mean(vals)
+    sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+    return vals, mean, sd, 100.0 * (max(vals) / min(vals) - 1.0)
+
+
 def coverage(paths):
     """Does each table's grid cover the range real references query?
 
@@ -193,7 +223,27 @@ def main():
     ap.add_argument("--coverage", action="store_true",
                     help="report each table's grid against the range real "
                          "references query, and exit")
+    ap.add_argument("--repeat", type=int, default=0, metavar="SEEDS",
+                    help="measure ONE cell this many times and report the "
+                         "spread: the noise floor any other spread must "
+                         "clear. Uses --band[0], --f-target and --ratio.")
+    ap.add_argument("--f-target", type=float, default=0.60)
+    ap.add_argument("--ratio", type=float, default=1.2)
     a = ap.parse_args()
+
+    if a.repeat:
+        seeds = [11, 23, 37, 53, 71, 97, 131, 167, 199, 233][:a.repeat]
+        band = a.band[0]
+        vals, mean, sd, rng = repeatability(a.n, band, a.f_target, a.ratio,
+                                            a.snr, a.fd, a.trials, 7, seeds)
+        print("n=%d band=%d f=%.3f ratio=%.2f snr=%.1f fd=%.0e, %d trials/step"
+              % (a.n, band, a.f_target, a.ratio, a.snr, a.fd, a.trials))
+        print("   %s" % " ".join("%.3f" % v for v in vals))
+        print("   mean %.4f  sd %.4f (%.1f%%)  full range %.1f%% over %d seeds"
+              % (mean, sd, 100 * sd / mean, rng, len(seeds)))
+        print("\nA spread below about %.0f%% is not distinguishable from "
+              "re-running this cell." % rng)
+        return 0
 
     if a.coverage:
         coverage([

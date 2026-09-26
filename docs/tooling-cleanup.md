@@ -184,7 +184,14 @@ which is why tools/regen/threshold_lowratio.py takes --band as a sweep.
 
 The spread is ordered by f, and that is the useful part: band matters most
 where the band keeps LEAST of the signal. At f=0.60 it is worth 20%; by
-f=0.995 it is 3%, which is measurement noise. The coarse statistic is a max
+f=0.995 it is 3%, which is measurement noise -- and that last claim is now
+measured rather than asserted. One cell re-run under eight seeds gives
+sd 1.0-1.3% and a full range 2.5-3.8% (`audit_threshold.py --repeat 8`),
+so 19.9% is about twenty sigma and 3.1% is indistinguishable from a re-run.
+Against that floor, ratio 1.20 clears it at every f measured, and ratio 1.50
+clears it down to f=0.95. Keying band out would therefore only be safe for
+f >= 0.98 and ratio >= 1.5 -- a corner -- so the third key does not get
+cheaper by exempting high f. The coarse statistic is a max
 over `band` lags so its noise floor grows as sqrt(2 ln band), and when f is
 near 1 the signal dominates that floor and band stops mattering.
 
