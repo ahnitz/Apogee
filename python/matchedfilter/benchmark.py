@@ -216,6 +216,8 @@ def _numpy_matched_filter(dspec, tspec, binsize, threshold, ws, we, ifft=None):
 #: the time a real batch is 32768 pairs it is not a realistic CPU call
 #: either. The cap is where the curve flattens: above it the per-pair cost
 #: stops moving, so a bigger batch measures the same thing more slowly.
+SUPPORTED_LENGTHS = tuple(1 << exponent for exponent in range(6, 21))
+
 _SHAPE_BUDGET = 256 << 20
 _MAX_PAIRS = 64 * 512
 
@@ -233,15 +235,14 @@ def default_shape(n, budget=_SHAPE_BUDGET, cap=_MAX_PAIRS):
 
     Flat at 64 x 512 through n=32768, then quartering. The ratio is held at
     1:8 so both scale together rather than one of them collapsing to a
-    degenerate 1 or 2.
+    larger allocation than the input budget permits.
     """
-    k = 3
+    k = 0
     while True:
         nd, nt = 1 << (k + 1), 1 << (k + 4)
         if nd * nt > cap or (nd + nt) * n * 8 > budget:
             break
         k += 1
-    k = max(k, 2)                          # never below 8 x 64
     return 1 << k, 1 << (k + 3)
 
 
@@ -369,7 +370,7 @@ def _inspiral_power(n, frac=0.895, fmax_frac=0.125, knee_frac=0.0150):
     The previous frac=0.85 was inherited, and it mattered: it put 85% of the
     power below n/8 where a real reference has 93%, which lowered the coarse
     threshold enough to escalate 18.8% of pure-noise pairs against 1.2% on the
-    captures at the same band and margin.
+    captures at the same band and threshold.
     """
     k = np.arange(1, n // 2, dtype=np.float64)
     knee = max(2.0, knee_frac * n)
@@ -517,7 +518,7 @@ def _bench_hier(n, nd, nt, snr, fd, reps):
     # reference and the threshold, which is the thing worth benchmarking.
     # Pinning band=n//8 here meant the same first stage ran at every
     # threshold, so the plotted speedup could not show what a higher
-    # threshold buys -- a narrower first pass and a tighter margin -- and it
+    # threshold buys -- a narrower first pass and a higher gate -- and it
     # measured a configuration no caller would get.
     hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=fd)
     hf.set_reference(power)
@@ -614,8 +615,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--n", type=int, nargs="+",
-                    default=[1024, 4096, 16384, 65536],
-                    help="transform lengths to test")
+                    default=SUPPORTED_LENGTHS,
+                    help="transform lengths; default: every power of two from 64 to 1048576")
     ap.add_argument("--data", type=int, default=0,
                     help="data segments; 0 picks a shape by transform length")
     ap.add_argument("--templates", type=int, default=0,
@@ -774,9 +775,9 @@ def main(argv=None):
                                   "speedup": speed, "refine_rate": rate,
                                   "band": band,
                                   "taps": taps})
-        print("\nThe margin skips a pair when a cheap low-band estimate rules out\n"
-              "any sample reaching the threshold, so the speedup grows with the\n"
-              "threshold and falls to ~1 on data where everything triggers.\n"
+        print("\nThe coarse stage skips a pair when a cheap low-band estimate rules\n"
+              "out any sample reaching the threshold, so the speedup grows with\n"
+              "the threshold and falls to ~1 on data where everything triggers.\n"
               "'chosen' is the first-stage band/taps the library\n"
               "selected from the reference and the threshold -- not a setting\n"
               "of this benchmark. It should narrow as the threshold rises.")
