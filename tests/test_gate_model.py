@@ -200,10 +200,26 @@ def test_scalloping_not_beff_is_what_predicts_dismissal():
     "NOT fix it: the best value is 1.35 and it still leaves a typical 2.04x "
     "error, because no scale reproduces the shape -- at gate 4.2 even "
     "sigma=1.6 gives 3.1e-05 against a measured 1.1e-03. So the missing "
-    "piece is a MECHANISM, and the first suspect is the assumption that the "
-    "coarse and fine stages correlate exactly as sqrt(f): the coarse filter "
-    "is a decimated band-limited thing, not the truncated template. Derive "
-    "that correlation rather than assuming it; do not fit a fudge factor."))
+    "piece is a MECHANISM, not a parameter. THREE CANDIDATES ARE NOW "
+    "ELIMINATED WITH EVIDENCE -- do not re-run them. They were ruled out by "
+    "dumping the real coarse statistic: MF_HMF_DUMP with the gate set to 0, "
+    "which makes every pair survive so the dump records the whole "
+    "distribution instead of only the survivors.\n"
+    "  * Normalisation. hmf.c refresh_template() scales the coarse template "
+    "by 1/sqrt(f), so the statistic IS unit-variance normalised and "
+    "rho*sqrt(f)*kappa is the right form for its mean.\n"
+    "  * The sqrt(f) correlation. Measured corr(coarse, fine) = 0.9687 and "
+    "the model reproduces 0.9693. This was the prime suspect and it is "
+    "innocent.\n"
+    "  * Maximum over the coarse lag grid. The noise maximum over 1024 lags "
+    "is ~2.6 against a signal near 4.8, so max(signal, noise) is the signal "
+    "essentially always: nlag = 1, 256, 1024 and 4096 give IDENTICAL rates.\n"
+    "WHAT REMAINS, quantified: measured coarse mean 5.0508 and sd 0.8708, "
+    "against a modelled mean of 4.8343 -- about 6% high, with a fatter lower "
+    "tail. Note a higher mean ALONE would reduce dismissal, so the excess at "
+    "tight gates needs the extra spread as well. Look for one mechanism that "
+    "does both: a kappa varying more across trials than |A(d)| over a "
+    "half-step allows. Do not fit a fudge factor."))
 @pytest.mark.parametrize("thr", LOOSE_GATES)
 def test_model_agrees_with_the_filter(thr):
     p = profile()
