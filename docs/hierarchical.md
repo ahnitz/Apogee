@@ -149,19 +149,43 @@ trigger list exactly should use the flat filter, or a band where `f` is
 `tests/test_gate_population.py` asserts both halves so neither can be read
 without the other.
 
-### Open: a bank that does not match its reference
+### A bank that does not match its reference spends threshold headroom
 
 The reference states how SNR accumulates for the bank being filtered, and a
 bank matching it meets the budget.  A synthetic bank spanning exponents
 -7/3 to -4/3 against a reference at -7/3 omits 66 of 508 injections at band
 512 -- 130x the budget.
 
-That is not settled either way.  One reference cannot describe a
-heterogeneous bank, which argues misuse; but a real template bank IS
-heterogeneous, and the twelve captured PyCBC segments pass with 0 of 2400
-dismissed while their 37 templates span an in-band fraction of 0.31 to 0.61
-against a reference at 0.93 -- a WIDER spread than the synthetic case that
-fails.  So spread alone is not the mechanism and the question is open.
+The mechanism is one line, `refresh_template()` in src/hmf.c:
+
+    double f = p->ref_on ? p->ref_f : p->fpow[t];
+
+The per-template in-band fraction `fpow[t]` is computed and then used only
+when no reference is set.  With a reference -- the normal path, since
+selection needs one -- every coarse template is scaled by `1/sqrt(f_ref)`,
+so a template keeping less of its power in the band produces a coarse
+statistic smaller by `sqrt(f_t / f_ref)` and is gated on a threshold
+calibrated for `f_ref`.  Measured, the loss is monotone in the template's
+own f: zero above f=0.936, 18.5% at 0.827, 48.3% at 0.739.
+
+The captured PyCBC bank does not show it, and that looked like a
+contradiction: 37 templates at f 0.636 to 0.786 against a reference at
+0.9875 -- a predicted shortfall WORSE than the synthetic case -- dismissing
+0 of 160.  The difference is headroom.  That capture runs at band 1024,
+ratio 5.33, where the shipped threshold audits 2.5% BELOW the safe value;
+the synthetic case runs at band 512, ratio 2.83, where it audits 4.1%
+ABOVE.  Grid loss compounds it, since ratio 2.83 samples the correlation
+peak half as finely.
+
+So a heterogeneous bank is not safe or unsafe in itself.  It spends
+threshold headroom that nothing accounts for, and whether that is
+survivable depends on the band.  Using `fpow[t]` would normalise each
+template by its own fraction and remove the dependence -- it is not done
+here, because the threshold tables are calibrated against the reference and
+changing the normalisation without re-calibrating them would trade a known
+failure for an unmeasured one.  tests/test_heterogeneous_bank.py pins the
+loss AND its shape, since a flat loss would be a threshold that is merely
+too high and only an f-ordered one identifies this mechanism.
 
 ## Known limits
 
