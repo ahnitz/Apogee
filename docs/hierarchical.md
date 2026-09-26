@@ -305,41 +305,36 @@ Until this is resolved, treat 2^10..2^16 as measured and 2^18..2^20 as unverifie
 
 ## Next: int16 for the coarse stage
 
-The phase profile puts the even coarse transform at 71% of the time below ~5%
-trigger, running at 18.3 flops/cycle -- 57% of the AVX2 FMA peak.  It is not
-overhead-bound, so the only way through is less arithmetic, and the coarse stage
-is the one place in matchedfilter that can afford it: refinement is a separate exact
-transform, so a ~1e-3 relative error in the coarse values cannot change a
-reported peak, only the coarse threshold decision.
+Precision is settled and is not the blocker. `tools/coarse_precision.py`
+rounds every butterfly output with block floating point, on captured pycbc
+pairs rather than synthetic data:
 
-The int16 codelets already exist and are tested (`ffti16_8/16/32/64`, with and
-without shift, covered by tests/test_units).  Band 256 splits 16x16, so both
-stages land on `ffti16_16`.  What is missing is the driver:
+    arithmetic        median   1st pct    worst
+    float32           1.0000    1.0000   1.0000
+    int16             1.0000    0.9999   0.9999
+    int12             0.9999    0.9983   0.9982
+    fp16 mantissa     0.9997    0.9964   0.9962
 
-1. Quantise the coarse product to Q15 with per-block scaling, tracking headroom.
-   The existing `_ns` (no-shift) variants exist precisely for the blocks where
-   headroom is provably sufficient.
-2. An int16 stage A / stage B driver in balanced.c, fused with the product
-   loader as the float path is.
-3. An int16 binned maximum, or dequantise the few candidate lanes only.
-4. **Re-calibrate g, graw and graw1 with the int16 kernel in the loop.**  This
-   is not optional.  Quantisation changes the distribution of the coarse
-   statistic, so inheriting float-calibrated recovery factors would leave the
-   false-dismissal bound approximately right instead of exactly right -- which
-   defeats the point of having a lever on it.  tests/test_hmf's omission-rate
-   check is what verifies this held.
+A statistic reading low by x needs the threshold lowered by x, and what it
+has to come out of is the HEADROOM between the shipped threshold and the
+highest one that still meets the budget -- 4.1% at band 512, and -2.5% at
+band 1024 where the table is already conservative (`audit_threshold.py`).
+So int16 at 0.01% is free by a factor of 400. Quantising only the input,
+through an exact transform, gives 0.004% independently, which is the same
+answer by a different route.
 
-Expected gain: the codelets measured 1.55-1.64x on arithmetic.  With the even
-transform at 71% of the low-trigger cells, that is roughly 1.4x overall there,
-and nothing in the high-trigger cells, where refinement dominates and only the
-trigger rate matters.
+That leaves throughput as the only open question, and the width test is
+what bears on it: the last doubling of lanes buys 1.24-1.51x on the
+pair-batched path and 1.22x on the balanced one, so the lanes ARE usable
+(they were not, when the coarse pass was a balanced split -- see
+docs/optimization-method.md). Extrapolating one more doubling gives
+1.10-1.4x on the coarse stage and about 1.15x end to end, against a coarse
+share that runs 26-95% depending on the operating point.
 
-This is a substantial change, not a microoptimisation: a new transform path plus
-a re-calibration.  It should not be attempted in a context too small to finish
-and re-validate it, because a half-finished margin that is slightly wrong looks
-*faster*, and the correctness suite cannot see it.
-
-## The first-stage threshold can be set directly
+The honest summary is that int16 is worth roughly 1.1x overall for a Q15
+codelet family, a scaling policy and a widened scan -- and that the
+measured prizes elsewhere are comparable and cheaper: the four-step corner
+turn is >=14% of the flat filter on its own.## The first-stage threshold can be set directly
 
 `(snr, fd)` select a configuration -- band, oversample, taps -- and a level for
 the first stage, from the offline sweep in `tools/hmf_design.py`.  That level

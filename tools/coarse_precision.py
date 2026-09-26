@@ -83,8 +83,17 @@ def main(path, nblocks=10, ntmpl=6):
         rel = r / base
         print("%-16s %9.4f %10.4f %10.4f"
               % (label, np.median(rel), np.percentile(rel, 1), rel.min()))
-    print("\nA statistic that reads low by x needs the coarse threshold lowered by x;\n"
-          "the coarse threshold currently carries 6% of margin for calibration.")
+    # The margin this used to cite is gone -- there is one measured threshold
+    # now -- so the figure to compare against is the HEADROOM between the
+    # shipped threshold and the highest one that still meets the budget.
+    # tools/audit_threshold.py measures it, and it depends on the band:
+    # band 512 is 4.1% (table 4.0354, safe 3.8774) and band 1024 is -2.5%,
+    # i.e. already conservative.
+    print("\nA statistic that reads low by x needs the coarse threshold lowered\n"
+          "by x. Against the 4.1% of headroom measured at band 512 (see\n"
+          "tools/audit_threshold.py), int16 at 0.01% is free by a factor of\n"
+          "400, int12 at 0.18% spends 4%, an fp16 mantissa at 0.38% spends 9%.\n"
+          "Precision is not what decides whether the coarse stage can narrow.")
 
 
 if __name__ == "__main__":
