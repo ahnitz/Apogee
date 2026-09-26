@@ -347,8 +347,7 @@ TABLE_N   = (1024, 2048, 4096, 8192, 16384, 32768, 65536,
 
 
 def emit_table(path):
-    """Generate src/hmf_table.h.  Measured offline, compiled in; matchedfilter does no
-    run-time search."""
+    """Generate the archived model table for historical experiments only."""
     # No sweep over N. This used to run design() for all eleven transform
     # lengths -- 5m31s of CI on every push -- to fill a `chosen` dict that
     # fed the compiled picks table. That table was removed in favour of the
@@ -413,7 +412,7 @@ def emit_table(path):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "emit":
-        emit_table("src/hmf_table.h")
+        emit_table("tools/regen/legacy_hmf_table.h")
     elif len(sys.argv) > 1 and sys.argv[1] == "validate":
         validate(4096, 16, 2, 8, 5.5)
         validate(2048, 8, 2, 8, 6.0)

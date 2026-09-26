@@ -1,19 +1,4 @@
-"""Finding Apple GPUs, through Metal, with ctypes.
-
-Detection is separated from execution on purpose. The kernels ship as Metal
-and there is no Metal runtime yet, so nothing could report an Apple GPU at
-all -- which made "no GPU on this machine" the answer on a Mac that has one,
-and made a macOS CI run unable to say anything about the hardware it was
-running on.
-
-This answers the narrower question that can be answered today: is there a
-Metal device, and what is it? That is what decides whether writing the
-runtime is worth it, and on a hosted runner it is genuinely in doubt --
-those are virtual machines, and a guest is not guaranteed a GPU.
-
-Calls MTLCreateSystemDefaultDevice and reads the device's name through the
-Objective-C runtime. No PyObjC, nothing to install.
-"""
+"""Enumerate owned Metal device handles without loading compute pipelines."""
 import ctypes
 import sys
 
@@ -61,13 +46,19 @@ def _all_devices(objc, metal):
                         ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p,
                                          ctypes.c_void_p, ctypes.c_ulong))
     sel = objc.sel_registerName(b"objectAtIndex:")
-    return [at_fn(array, sel, i) for i in range(count)]
-
-
-def _first_of_all_devices(objc, metal):
-    """Back-compat shim for the runtime; prefer _all_devices."""
-    found = _all_devices(objc, metal)
-    return found[0] if found else None
+    ownership = ctypes.cast(objc.objc_msgSend, ctypes.CFUNCTYPE(
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p))
+    retain = objc.sel_registerName(b"retain")
+    release = objc.sel_registerName(b"release")
+    handles = []
+    try:
+        for i in range(count):
+            handle = at_fn(array, sel, i)
+            ownership(handle, retain)
+            handles.append(handle)
+        return handles  # caller owns each reference
+    finally:
+        ownership(array, release)
 
 
 def enumerate_devices():
@@ -98,25 +89,30 @@ def enumerate_devices():
                     "On a virtual machine the guest may simply not be given "
                     "a GPU")
 
-    out = []
-    for handle in handles:
-        name = _nsstring(objc, handle, b"name") or "Apple GPU"
+    try:
+        out = []
+        for handle in handles:
+            name = _nsstring(objc, handle, b"name") or "Apple GPU"
 
-        # Read the limit that decides whether the shipped kernels can run
-        # here rather than discovering it at pipeline creation.
-        def _uint(selector, dev=handle):
-            fn = ctypes.cast(objc.objc_msgSend,
-                             ctypes.CFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p,
-                                              ctypes.c_void_p))
-            return int(fn(dev, objc.sel_registerName(selector)))
+            # Read the limit that decides whether the shipped kernels can run
+            # here rather than discovering it at pipeline creation.
+            def _uint(selector, dev=handle):
+                fn = ctypes.cast(objc.objc_msgSend,
+                                 ctypes.CFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p,
+                                                  ctypes.c_void_p))
+                return int(fn(dev, objc.sel_registerName(selector)))
 
-        try:
-            shared = _uint(b"maxThreadgroupMemoryLength")
-        except Exception:
-            shared = 0
-        out.append(dict(name=name, vendor=0x106B, kind="integrated",
-                        shared_memory=shared))
-    return out, None
+            try:
+                shared = _uint(b"maxThreadgroupMemoryLength")
+            except Exception:
+                shared = 0
+            out.append(dict(name=name, vendor=0x106B, kind="integrated",
+                            shared_memory=shared))
+        return out, None
+    finally:
+        release = objc.sel_registerName(b"release")
+        for handle in handles:
+            objc.objc_msgSend(handle, release)
 
 
 def available():

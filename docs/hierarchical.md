@@ -1,3 +1,8 @@
+> Historical design notes: the compiled calibration model described below is
+> no longer used by execution. Its table is archived at
+> `tools/regen/legacy_hmf_table.h`; current execution requires measured file
+> coverage or an explicit band and coarse threshold.
+
 # The hierarchical matched filter
 
 The hierarchical filter assumes that enough of a template's signal-to-noise

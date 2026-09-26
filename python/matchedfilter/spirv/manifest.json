@@ -36,7 +36,7 @@
       ],
       "push_constant": true,
       "file": "tierb_64.spv",
-      "bytes": 15484,
+      "bytes": 18852,
       "compact": {
         "file": "compact_64.spv",
         "descriptors": 5
@@ -98,7 +98,7 @@
       ],
       "push_constant": true,
       "file": "tierb_128.spv",
-      "bytes": 16072,
+      "bytes": 19360,
       "compact": {
         "file": "compact_128.spv",
         "descriptors": 5
@@ -160,7 +160,7 @@
       ],
       "push_constant": true,
       "file": "tierb_256.spv",
-      "bytes": 18008,
+      "bytes": 21296,
       "compact": {
         "file": "compact_256.spv",
         "descriptors": 5
@@ -222,7 +222,7 @@
       ],
       "push_constant": true,
       "file": "tierb_512.spv",
-      "bytes": 22004,
+      "bytes": 25372,
       "compact": {
         "file": "compact_512.spv",
         "descriptors": 5
@@ -284,7 +284,7 @@
       ],
       "push_constant": true,
       "file": "tierb_1024.spv",
-      "bytes": 22616,
+      "bytes": 26064,
       "compact": {
         "file": "compact_1024.spv",
         "descriptors": 5
@@ -346,7 +346,7 @@
       ],
       "push_constant": true,
       "file": "tierb_2048.spv",
-      "bytes": 23204,
+      "bytes": 26572,
       "compact": {
         "file": "compact_2048.spv",
         "descriptors": 5
@@ -408,7 +408,7 @@
       ],
       "push_constant": true,
       "file": "tierb_4096.spv",
-      "bytes": 25140,
+      "bytes": 28508,
       "compact": {
         "file": "compact_4096.spv",
         "descriptors": 5
@@ -470,7 +470,7 @@
       ],
       "push_constant": true,
       "file": "tierb_8192.spv",
-      "bytes": 29136,
+      "bytes": 32584,
       "compact": {
         "file": "compact_8192.spv",
         "descriptors": 5
@@ -555,7 +555,7 @@
       ],
       "push_constant": true,
       "file": "tierb_16384.spv",
-      "bytes": 29748,
+      "bytes": 33276,
       "compact": {
         "file": "compact_16384.spv",
         "descriptors": 5
@@ -640,7 +640,7 @@
       ],
       "push_constant": true,
       "file": "tierb_32768.spv",
-      "bytes": 40392,
+      "bytes": 43760,
       "compact": {
         "file": "compact_32768.spv",
         "descriptors": 5
@@ -725,7 +725,7 @@
       ],
       "push_constant": true,
       "file": "tierb_65536.spv",
-      "bytes": 30812,
+      "bytes": 34180,
       "compact": {
         "file": "compact_65536.spv",
         "descriptors": 5
@@ -776,5 +776,128 @@
         "lds_bytes": 32768
       }
     }
+  },
+  "forward": {
+    "64": {
+      "file": "forward_64.spv",
+      "metal": "forward_64.metal",
+      "local_size": [
+        4,
+        1,
+        1
+      ],
+      "lds_cap": 512
+    },
+    "128": {
+      "file": "forward_128.spv",
+      "metal": "forward_128.metal",
+      "local_size": [
+        8,
+        1,
+        1
+      ],
+      "lds_cap": 512
+    },
+    "256": {
+      "file": "forward_256.spv",
+      "metal": "forward_256.metal",
+      "local_size": [
+        16,
+        1,
+        1
+      ],
+      "lds_cap": 512
+    },
+    "512": {
+      "file": "forward_512.spv",
+      "metal": "forward_512.metal",
+      "local_size": [
+        32,
+        1,
+        1
+      ],
+      "lds_cap": 512
+    },
+    "1024": {
+      "file": "forward_1024.spv",
+      "metal": "forward_1024.metal",
+      "local_size": [
+        64,
+        1,
+        1
+      ],
+      "lds_cap": 512
+    },
+    "2048": {
+      "file": "forward_2048.spv",
+      "metal": "forward_2048.metal",
+      "local_size": [
+        128,
+        1,
+        1
+      ],
+      "lds_cap": 1024
+    },
+    "4096": {
+      "file": "forward_4096.spv",
+      "metal": "forward_4096.metal",
+      "local_size": [
+        256,
+        1,
+        1
+      ],
+      "lds_cap": 2048
+    },
+    "8192": {
+      "file": "forward_8192.spv",
+      "metal": "forward_8192.metal",
+      "local_size": [
+        512,
+        1,
+        1
+      ],
+      "lds_cap": 4096
+    },
+    "16384": {
+      "file": "forward_16384.spv",
+      "metal": "forward_16384.metal",
+      "local_size": [
+        1024,
+        1,
+        1
+      ],
+      "lds_cap": 4096
+    },
+    "32768": {
+      "file": "forward_32768.spv",
+      "metal": "forward_32768.metal",
+      "local_size": [
+        1024,
+        1,
+        1
+      ],
+      "lds_cap": 4096
+    },
+    "65536": {
+      "file": "forward_65536.spv",
+      "metal": "forward_65536.metal",
+      "local_size": [
+        1024,
+        1,
+        1
+      ],
+      "lds_cap": 4096
+    }
+  },
+  "pack_coarse": {
+    "file": "pack_coarse.spv",
+    "metal": "pack_coarse.metal"
+  },
+  "source_hashes": {
+    "tierb.slang": "f6f2a33483e895d722bdb82feccf2e797680bed5a7163a29ab5f52b8265ebaae",
+    "fft_transform.slang": "7cdbdab1dac4e36ce0c0ae483fb170a210057cea205bb846425d04e2693e617e",
+    "coarse_tile.slang": "e63fc4b013211c57f1f561dad822420665f9c69764815c96148e8f37cfa218e8",
+    "series_forward.slang": "1ed347cedae7d1f7543ccfbfd6a4ea1971f6be1eb4fdd504c9e6b0a17b849ee5",
+    "pack_coarse.slang": "cd22cec0258100bd27cfab36d573a5fcf5cc09ce83bd3248815e7275d7e2a408"
   }
 }

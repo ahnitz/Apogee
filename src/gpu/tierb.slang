@@ -632,9 +632,10 @@ void filterPair(uint pair, uint tid,
     // `pairs`, so the coarse stage reports one value per pair and never a
     // per-bin table. Binning is the FINE stage's job and is unaffected.
     // The window is KEPT -- winStart/winEnd still bound the search.
-    if (tid == 0) stg[_stgBase] = thrBits;
+    if (tid == 0) { stg[_stgBase] = thrBits; stg[_stgBase+1] = 0xffffffffu; }
 #else
     for (uint b = tid; b < nbins; b += WG) stg[_stgBase+b] = thrBits;
+    if (nbins == 1 && tid == 0) stg[_stgBase+1] = 0xffffffffu;
 #endif
     GroupMemoryBarrierWithGroupSync();
 
@@ -695,36 +696,64 @@ void filterPair(uint pair, uint tid,
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Whoever matches the bin maximum writes it. On an exact tie more than
-    // one thread writes, at equal magnitude and different indices; any of
-    // them is a correct argmax and the caller was promised no tie-break.
-    [unroll] for (uint i = 0; i < R; ++i) {
+    // Elect ONE register slot before writing either output. Tied samples
+    // can have different phases; independent index/value stores race.
 #if COARSE16
-        if (myMag[i] > thrBits && stg[_stgBase] == myMag[i]) {
-            uint o = pair;
+    {
 #else
-        if (myMag[i] > thrBits && stg[_stgBase+myBin[i]] == myMag[i]) {
-            uint o = pair * nbins + myBin[i];
+    if (nbins == 1) {
 #endif
-            peakIdx[o] = int(slotToIndex(tid * R + i));
-            peakVal[o] = float2(float(r[i].x), float(r[i].y));
+        uint winner = 0xffffffffu;
+        [unroll] for (uint i = 0; i < R; ++i)
+            if (myMag[i] > thrBits && myMag[i] == stg[_stgBase])
+                winner = min(winner, tid * R + i);
+#if PPG == 1
+        uint waveWinner = WaveActiveMin(winner);
+        if (WaveIsFirstLane() && waveWinner != 0xffffffffu)
+            InterlockedMin(stg[_stgBase+1], waveWinner);
+#else
+        if (winner != 0xffffffffu) InterlockedMin(stg[_stgBase+1], winner);
+#endif
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint i = 0; i < R; ++i) {
+            if (tid * R + i == stg[_stgBase+1]) {
+                peakIdx[pair] = int(slotToIndex(tid * R + i));
+                peakVal[pair] = float2(float(r[i].x), float(r[i].y));
+            }
+        }
+        if (tid == 0 && stg[_stgBase+1] == 0xffffffffu) {
+            peakIdx[pair] = -1;
+            peakVal[pair] = float2(0, 0);
         }
     }
-    // Bins nothing cleared: index -1 and a zero value, matching the CPU. No
-    // value is offered for a sample that was never chosen.
-#if COARSE16
-    if (tid == 0 && stg[_stgBase] == thrBits) {
-        {
-            uint o = pair;
-#else
-    for (uint b = tid; b < nbins; b += WG) {
-        if (stg[_stgBase+b] == thrBits) {
-            uint o = pair * nbins + b;
-#endif
-            peakIdx[o] = -1;
-            peakVal[o] = float2(0.0f, 0.0f);
+#if !COARSE16
+    else {
+        // Reuse the magnitude table for winner slots, retaining candidates
+        // in registers. A separate bin array would increase LDS occupancy.
+        [unroll] for (uint i = 0; i < R; ++i)
+            myMag[i] = uint(myMag[i] > thrBits &&
+                           myMag[i] == stg[_stgBase+myBin[i]]);
+        GroupMemoryBarrierWithGroupSync();
+        for (uint b = tid; b < nbins; b += WG) stg[_stgBase+b] = 0xffffffffu;
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint i = 0; i < R; ++i)
+            if (myMag[i] != 0u) InterlockedMin(stg[_stgBase+myBin[i]], tid*R+i);
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for (uint i = 0; i < R; ++i) {
+            if (myMag[i] != 0u && stg[_stgBase+myBin[i]] == tid*R+i) {
+                uint o = pair * nbins + myBin[i];
+                peakIdx[o] = int(slotToIndex(tid*R+i));
+                peakVal[o] = float2(float(r[i].x), float(r[i].y));
+            }
+        }
+        for (uint b = tid; b < nbins; b += WG) {
+            if (stg[_stgBase+b] == 0xffffffffu) {
+                peakIdx[pair*nbins+b] = -1;
+                peakVal[pair*nbins+b] = float2(0, 0);
+            }
         }
     }
+#endif
 }
 
 
@@ -740,7 +769,7 @@ void peakLane(uint pair, uint tid, uint lane, H magv[16], H re[16], H im[16],
               uint winStart, uint winEnd, uint thrBits)
 {
     GroupMemoryBarrierWithGroupSync();
-    if (tid == 0) stg[_stgBase] = thrBits;
+    if (tid == 0) { stg[_stgBase] = thrBits; stg[_stgBase+1] = 0xffffffffu; }
     GroupMemoryBarrierWithGroupSync();
 
     // Reduce PACKED: one v_pk_max_f16 per register gives both lanes'
@@ -757,15 +786,28 @@ void peakLane(uint pair, uint tid, uint lane, H magv[16], H re[16], H im[16],
 #endif
     GroupMemoryBarrierWithGroupSync();
 
+    uint winner = 0xffffffffu;
     [unroll] for (uint i = 0; i < R; ++i) {
         uint mi = asuint(float(lane == 0u ? magv[i].x : magv[i].y));
-        if (mi > thrBits && stg[_stgBase] == mi) {
-            peakIdx[pair] = int(slotToIndex(tid * R + i));
+        if (mi > thrBits && stg[_stgBase] == mi)
+            winner = min(winner, tid*R+i);
+    }
+#if PPG == 1
+    uint waveWinner = WaveActiveMin(winner);
+    if (WaveIsFirstLane() && waveWinner != 0xffffffffu)
+        InterlockedMin(stg[_stgBase+1], waveWinner);
+#else
+    if (winner != 0xffffffffu) InterlockedMin(stg[_stgBase+1], winner);
+#endif
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint i = 0; i < R; ++i) {
+        if (stg[_stgBase+1] == tid*R+i) {
+            peakIdx[pair] = int(slotToIndex(tid*R+i));
             peakVal[pair] = float2(float(lane == 0u ? re[i].x : re[i].y),
                                    float(lane == 0u ? im[i].x : im[i].y));
         }
     }
-    if (tid == 0 && stg[_stgBase] == thrBits) {
+    if (tid == 0 && stg[_stgBase+1] == 0xffffffffu) {
         peakIdx[pair] = -1;
         peakVal[pair] = float2(0.0f, 0.0f);
     }

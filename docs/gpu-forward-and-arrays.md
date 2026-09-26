@@ -59,11 +59,12 @@ The limits are explicit:
 - Returned peaks still use ordinary NumPy storage. This change removes the
   large input/intermediate copies, not the compact result readback.
 
-Rebuild the forward and packing artifacts with
-`python tools/build_forward.py --slangc /path/to/slangc`. It emits both SPIR-V
-and Metal sources. Correlation artifacts use `tools/build_spirv.py`; both
-builders read the same transform body. Apple release builds compile the
-committed Metal sources into metallibs.
+Rebuild all production artifacts with
+`python tools/build_spirv.py --slangc /path/to/slangc`. This includes forward,
+packing and correlation SPIR-V and Metal sources; `tools/build_forward.py`
+now delegates to the same complete build. The manifest lists forward/packing
+artifacts and fingerprints shared shader dependencies, checked by shipping
+tests. On Apple hosts the build also compiles all Metal sources into metallibs.
 
 ## Validation
 

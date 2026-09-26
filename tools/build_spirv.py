@@ -13,6 +13,7 @@ touches Slang; the runtime reads these blobs and hands them to Vulkan.
 Run:  python tools/build_spirv.py [--slangc PATH]
 """
 import argparse
+import hashlib
 import json
 import pathlib
 import shutil
@@ -251,10 +252,16 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0, ppg=1):
     if proc.returncode != 0:
         raise RuntimeError("slangc -target metal failed for n=%d %s:\n%s"
                            % (n, entry, proc.stderr))
+    return msl, compile_metallib(msl)
+
+
+def compile_metallib(msl):
+    """Compile one Metal source when Apple tooling exists; drop stale output."""
+    msl.with_suffix(".metallib").unlink(missing_ok=True)
     lib = None
     if shutil.which("xcrun"):
-        lib = outdir / (stem + ".metallib")
-        air = outdir / (stem + ".air")
+        lib = msl.with_suffix(".metallib")
+        air = msl.with_suffix(".air")
         for cmd in ([["xcrun", "-sdk", "macosx", "metal", "-c", str(msl),
                       "-o", str(air)],
                      ["xcrun", "-sdk", "macosx", "metallib", str(air),
@@ -263,11 +270,12 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0, ppg=1):
             if r.returncode != 0:
                 print("  metallib step failed (%s); shipping MSL only"
                       % r.stderr.strip().splitlines()[-1:], file=sys.stderr)
+                lib.unlink(missing_ok=True)
                 lib = None
                 break
         if air.exists():
             air.unlink()
-    return msl, lib
+    return lib
 
 
 def lds_bytes(n, cap):
@@ -300,6 +308,14 @@ def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0,
                            % (n, entry, proc.stderr))
     src.unlink()
     return spv
+
+
+def source_hashes():
+    """Fingerprint all production shader dependencies for freshness checks."""
+    names = ('tierb.slang', 'fft_transform.slang', 'coarse_tile.slang',
+             'series_forward.slang', 'pack_coarse.slang')
+    return {name: hashlib.sha256((KERNEL.parent / name).read_bytes()).hexdigest()
+            for name in names}
 
 
 def main(argv=None):
@@ -453,6 +469,11 @@ def main(argv=None):
                  LDS_CAP[n] * 8 // 1024, len(info["descriptors"]),
                  ", push constants" if info["push_constant"] else ""))
 
+    # The forward transform shares FFT source with correlation. Always build
+    # both so a normal rebuild cannot leave one direction stale.
+    import build_forward
+    manifest.update(build_forward.build_kernels(slangc, sys.modules[__name__]))
+    manifest["source_hashes"] = source_hashes()
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print("wrote %s" % (OUT / "manifest.json"))
     return 0

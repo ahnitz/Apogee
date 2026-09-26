@@ -16,6 +16,8 @@ job. It is written to fail loudly rather than plausibly.
 import ctypes
 import pathlib
 import sys
+from contextlib import contextmanager
+from functools import wraps
 
 import numpy as np
 from ._shared import empty_shared, shared_buffer, shared_key, write_input
@@ -94,6 +96,20 @@ class _ObjC:
         self.objc.sel_registerName.argtypes = [ctypes.c_char_p]
         self.objc.objc_getClass.restype = ctypes.c_void_p
         self.objc.objc_getClass.argtypes = [ctypes.c_char_p]
+
+    @contextmanager
+    def autorelease_pool(self):
+        push = self.objc.objc_autoreleasePoolPush
+        push.restype = ctypes.c_void_p
+        push.argtypes = []
+        pop = self.objc.objc_autoreleasePoolPop
+        pop.restype = None
+        pop.argtypes = [ctypes.c_void_p]
+        pool = push()
+        try:
+            yield
+        finally:
+            pop(pool)
 
     def sel(self, name):
         return self.objc.sel_registerName(name)
@@ -189,6 +205,14 @@ def describe_error(o, err):
 
 
 
+def _autoreleased(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self.o.autorelease_pool():
+            return method(self, *args, **kwargs)
+    return call
+
+
 class Context(InputUploads):
     """One Metal device, its queue, and the pipelines built on it."""
 
@@ -196,6 +220,18 @@ class Context(InputUploads):
         if sys.platform != "darwin":
             raise MetalError("Metal is only available on macOS")
         self.o = _ObjC()
+        self.device = self.queue = None
+        self._pipelines = {}
+        self._batches = {}
+        self._hier = {}
+        try:
+            self._initialize(index)
+        except Exception:
+            self.destroy()
+            raise
+
+    @_autoreleased
+    def _initialize(self, index):
         self.o.metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
         # Enumerate rather than ask for the "system default", which is the
         # device recommended for RENDERING and is nil with no display
@@ -205,13 +241,18 @@ class Context(InputUploads):
         if not found:
             one = self.o.metal.MTLCreateSystemDefaultDevice()
             found = [one] if one else []
-        if index >= len(found):
+        if index < 0 or index >= len(found):
+            for handle in found:
+                self.o.call(handle, b"release", restype=None)
             raise MetalError(
                 "no Metal device with index %d (found %d); "
                 "MTLCopyAllDevices is the enumeration and "
                 "MTLCreateSystemDefaultDevice needs a display"
                 % (index, len(found)))
         self.device = found[index]
+        for i, handle in enumerate(found):
+            if i != index:
+                self.o.call(handle, b"release", restype=None)
         self.name = self.o.to_str(self.o.call(self.device, b"name"))
         self.queue = self.o.call(self.device, b"newCommandQueue")
         #: Device-only seconds for the last dispatch, see _record_gpu_time.
@@ -281,7 +322,7 @@ class Context(InputUploads):
             return "pack_coarse"
         if entry == "seriesForward":
             return "forward_%d" % n
-        base = "%s_%d" % ({"fusedTierB": "tierb", "gatedTierB": "gated",
+        base = "%s_%d" % ({"fusedTierB": "tierb",
                            "compactPairs": "compact",
                            "refineListed": "refine"}[entry], n)
         info = _manifest().get("modules", {}).get(str(n), {})
@@ -331,17 +372,20 @@ class Context(InputUploads):
         desc = self.o.call(
             self.o.call(self.o.objc.objc_getClass(
                 b"MTLComputePipelineDescriptor"), b"alloc"), b"init")
-        self.o.call(desc, b"setComputeFunction:", restype=None,
-                    args=(fn,), argtypes=(ctypes.c_void_p,))
-        self.o.call(desc, b"setMaxTotalThreadsPerThreadgroup:", restype=None,
-                    args=(want,), argtypes=(ctypes.c_ulong,))
-        err = ctypes.c_void_p()
-        pso = self.o.call(
-            self.device,
-            b"newComputePipelineStateWithDescriptor:options:reflection:error:",
-            args=(desc, 0, None, ctypes.byref(err)),
-            argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p,
-                      ctypes.c_void_p))
+        try:
+            self.o.call(desc, b"setComputeFunction:", restype=None,
+                        args=(fn,), argtypes=(ctypes.c_void_p,))
+            self.o.call(desc, b"setMaxTotalThreadsPerThreadgroup:", restype=None,
+                        args=(want,), argtypes=(ctypes.c_ulong,))
+            err = ctypes.c_void_p()
+            pso = self.o.call(
+                self.device,
+                b"newComputePipelineStateWithDescriptor:options:reflection:error:",
+                args=(desc, 0, None, ctypes.byref(err)),
+                argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p,
+                          ctypes.c_void_p))
+        finally:
+            self.o.call(desc, b"release", restype=None)
         if not pso:
             raise MetalError(
                 "%s needs a %d-thread threadgroup and asking for one failed: "
@@ -349,37 +393,48 @@ class Context(InputUploads):
         return pso, int(self.o.call(pso, b"maxTotalThreadsPerThreadgroup",
                                     restype=ctypes.c_ulong))
 
+    @_autoreleased
     def pipeline(self, n, entry="fusedTierB"):
         key = (n, entry)
         if key in self._pipelines:
             return self._pipelines[key]
         stem = self._stem(n, entry)
         lib = self._library(stem)
-        fn = self.o.call(lib, b"newFunctionWithName:",
-                         args=(self.o.nsstring(entry),),
-                         argtypes=(ctypes.c_void_p,))
-        if not fn:
-            raise MetalError("no function %r in %s" % (entry, stem))
-        want = n // _radix(n)
-        err = ctypes.c_void_p()
-        pso = self.o.call(self.device,
-                          b"newComputePipelineStateWithFunction:error:",
-                          args=(fn, ctypes.byref(err)),
-                          argtypes=(ctypes.c_void_p, ctypes.c_void_p))
-        if not pso:
-            raise MetalError("could not build a pipeline for %s: %s"
-                             % (stem, self._error(err)))
-        limit = int(self.o.call(pso, b"maxTotalThreadsPerThreadgroup",
-                                restype=ctypes.c_ulong))
-        if limit < want:
-            pso, limit = self._pipeline_sized(stem, fn, want)
-        if limit < want:
-            raise UnsupportedSize(
-                "n=%d needs a %d-thread threadgroup and this pipeline allows "
-                "%d on %s even when asked for %d; use a shorter transform or "
-                "device='cpu'" % (n, want, limit, self.name, want))
-        self._pipelines[key] = pso
-        return pso
+        fn = pso = None
+        try:
+            fn = self.o.call(lib, b"newFunctionWithName:",
+                             args=(self.o.nsstring(entry),),
+                             argtypes=(ctypes.c_void_p,))
+            if not fn:
+                raise MetalError("no function %r in %s" % (entry, stem))
+            want = n // _radix(n)
+            err = ctypes.c_void_p()
+            pso = self.o.call(self.device,
+                              b"newComputePipelineStateWithFunction:error:",
+                              args=(fn, ctypes.byref(err)),
+                              argtypes=(ctypes.c_void_p, ctypes.c_void_p))
+            if not pso:
+                raise MetalError("could not build a pipeline for %s: %s"
+                                 % (stem, self._error(err)))
+            limit = int(self.o.call(pso, b"maxTotalThreadsPerThreadgroup",
+                                    restype=ctypes.c_ulong))
+            if limit < want:
+                self.o.call(pso, b"release", restype=None)
+                pso = None
+                pso, limit = self._pipeline_sized(stem, fn, want)
+            if limit < want:
+                raise UnsupportedSize(
+                    "n=%d needs a %d-thread threadgroup and this pipeline allows "
+                    "%d on %s even when asked for %d; use a shorter transform or "
+                    "device='cpu'" % (n, want, limit, self.name, want))
+            self._pipelines[key] = pso
+            result, pso = pso, None  # ownership transferred to the cache
+            return result
+
+        finally:
+            for obj in (pso, fn, lib):
+                if obj:
+                    self.o.call(obj, b"release", restype=None)
 
     # ---- dispatch ---------------------------------------------------------
     def _record_gpu_time(self, cmd):
@@ -402,6 +457,7 @@ class Context(InputUploads):
     def empty_shared(self, shape, dtype=np.complex64):
         return empty_shared(self, _Buffer, shape, dtype)
 
+    @_autoreleased
     def forward(self, n, series, starts, spectra, *, defer=False):
         pso = self.pipeline(n, "seriesForward")
         buffers = [shared_buffer(a, self) for a in (series, starts, spectra)]
@@ -447,6 +503,7 @@ class Context(InputUploads):
                 self.o.call(pending[0], b"release", restype=None)
                 setattr(self, name, None)
 
+    @_autoreleased
     def peaks(self, n, data, tmpl, binsize=None, threshold=0.0, window=None,
               upload_data=True, upload_tmpl=True):
         """Peak index and complex value per (data, template, bin).
@@ -538,25 +595,15 @@ class Context(InputUploads):
         return idx, val
 
     # ---- hierarchical -----------------------------------------------------
+    @_autoreleased
     def hier_peaks(self, n, band, data, tmpl, ct0, raw_thr,
                    binsize=None, threshold=0.0, window=None,
                    upload_data=True, upload_tmpl=True):
         """The whole hierarchical filter in ONE command buffer.
 
-        Three dispatches -- coarse even, coarse odd, then the gated
-        refinement -- with no host in the loop. The gate is evaluated by the
-        refining kernel itself, so nothing has to be read back to decide
-        which pairs survive. That readback was the whole problem on the
-        Vulkan side: the kernel work measured 0.26 ms inside a 5.0 ms call.
-
-        Metal needs no explicit barrier between the three. A compute encoder
-        is serial by default, so each dispatch observes the previous one's
-        writes -- what the SPIR-V path spells out with vkCmdPipelineBarrier.
-
-        No tiled coarse kernel here. Vulkan uses one at band=256 and the
-        general path everywhere else; the general path is the one both
-        agree on, and the tiled variant is a speed optimisation that is
-        known wrong away from 256 and has never run on Apple.
+        Coarse correlation, survivor compaction, then listed refinement.
+        Shared input uses a preceding GPU coarse-band extraction dispatch.
+        The survivor count stays on the device through indirect dispatch.
         """
         nd, nt = data.shape[0], tmpl.shape[0]
         pairs = nd * nt
@@ -741,17 +788,18 @@ class Context(InputUploads):
         self._uploaded = {"data": {}, "tmpl": {}}
 
     def destroy(self):
-        if getattr(self, "_batches", None) is None:
+        if getattr(self, "device", None) is None:
             return
-        for batch in self._batches.values():
-            for buf in batch:
-                buf.destroy()
-        self._batches.clear()
-        for bufs in self._hier.values():
-            for buf in bufs.values():
-                buf.destroy()
-        self._hier.clear()
+        self.cancel_forward()
+        self.clear_cache()
+        for pipeline in self._pipelines.values():
+            self.o.call(pipeline, b"release", restype=None)
         self._pipelines.clear()
+        if self.queue:
+            self.o.call(self.queue, b"release", restype=None)
+            self.queue = None
+        self.o.call(self.device, b"release", restype=None)
+        self.device = None
 
     def __del__(self):
         """Release the device buffers when the context is dropped.

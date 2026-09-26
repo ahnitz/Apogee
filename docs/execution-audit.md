@@ -9,6 +9,15 @@ The CI run for `a89bafb` passed every job, including Python 3.9–3.14, wheel,
 benchmark, generated files and macOS Metal. Green CI does not cover the new
 boundary/race reproducers below.
 
+## Follow-up
+
+The GPU tie race, Metal ownership, production-kernel build coverage and dead
+code/documentation findings have been addressed; see
+[cleanup validation](peak-race-cleanup.md). The CPU coarse-gate boundary
+finding remains open. The greater-than-32-bit binsize finding was explicitly
+deprioritized by the user. The original observations below are retained as
+the audit record.
+
 ## P1: GPU ties can return an index and value from different samples
 
 `src/gpu/tierb.slang`, the peak writeback in `filterOne`, lets every thread

@@ -24,10 +24,9 @@ struct ap_hmf_plan {
   float ref_f,cal_thr;
   ap_peak *cebuf;
   int *firebuf;
-  long pairs,trig,nskip;
+  long pairs,trig;
   unsigned long long c_even,c_odd,c_ref,c_fill;
   int prof,trace;
-  float last_thr;
   FILE *dump;
 };
 
@@ -255,7 +254,7 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
     for(int t=0;t<nt;t++){
       const size_t row=(size_t)d*nt+t;
       p->pairs++;
-      const float thr = p->cal_thr; p->last_thr=thr;
+      const float thr = p->cal_thr;
       int fire=0;
       /* Fused coarse pass: product, transform and maximum in one kernel, with
        * the product never reaching memory.  One bin spanning the whole coarse
@@ -269,7 +268,6 @@ int ap_hmf_run(ap_hmf_plan *p,int d0,int nd,int t0,int nt,
         if(p->trace && p->pairs<6)
           fprintf(stderr,"    [trace] pair=%ld thr=%.3f coarse max BELOW thr\n",
                   p->pairs,thr);
-        p->nskip++;
         goto verdict;
       }
       if(p->prof){ unsigned long long t1=ap_ticks(); p->c_odd+=t1-_t0; _t0=t1; }

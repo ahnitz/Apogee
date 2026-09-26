@@ -90,3 +90,29 @@ def test_the_tiled_coarse_kernels_selected_are_present():
         assert (spirv / ("coarse_%d.spv" % band)).is_file(), (
             "_COARSE_TILE selects band %d but coarse_%d.spv did not ship"
             % (band, band))
+
+
+def test_forward_and_packing_kernels_ship():
+    spirv, metal = _dirs()
+    manifest = _manifest()
+    for n in mf._GPU_SIZES:
+        entry = manifest['forward'][str(n)]
+        assert (spirv / entry['file']).is_file()
+        assert (metal / entry['metal']).is_file()
+        assert entry['local_size'] == manifest['modules'][str(n)]['local_size']
+    packing = manifest['pack_coarse']
+    assert (spirv / packing['file']).is_file()
+    assert (metal / packing['metal']).is_file()
+
+
+def test_production_shader_sources_match_built_manifest():
+    import hashlib
+    source = pathlib.Path(__file__).resolve().parents[1] / 'src/gpu'
+    if not source.is_dir():
+        pytest.skip('source tree not available in this installation')
+    recorded = _manifest()['source_hashes']
+    assert set(recorded) == {'tierb.slang', 'fft_transform.slang', 'coarse_tile.slang',
+                             'series_forward.slang', 'pack_coarse.slang'}
+    for name, digest in recorded.items():
+        assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest, (
+            '%s changed: rebuild all kernels with tools/build_spirv.py' % name)

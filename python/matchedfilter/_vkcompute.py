@@ -516,14 +516,9 @@ class Context(InputUploads):
                    upload_data=True, upload_tmpl=True):
         """The whole hierarchical filter in ONE command buffer.
 
-        Three dispatches -- coarse even, coarse odd, then the gated
-        refinement -- with pipeline barriers between them and NO host in the
-        loop. The gate is evaluated by the refining kernel itself, so nothing
-        has to be read back to decide which pairs survive.
-
-        That readback was the entire problem: the kernel work measured 0.26 ms
-        inside a 5.0 ms call at n=16384, so 95% of the time was the host
-        deciding what the GPU already knew.
+        Coarse correlation, survivor compaction, then listed refinement.
+        Shared input uses a preceding GPU coarse-band extraction dispatch.
+        The survivor count stays on the device through indirect dispatch.
         """
         vk = self.vk
         nd, nt = data.shape[0], tmpl.shape[0]

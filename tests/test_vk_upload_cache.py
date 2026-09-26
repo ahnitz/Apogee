@@ -4,6 +4,7 @@ Only allocation and submission are replaced: the production dispatch methods
 choose the cached buffers and decide which inputs to write.
 """
 from types import SimpleNamespace
+from contextlib import nullcontext
 
 import numpy as np
 import pytest
@@ -77,7 +78,7 @@ def ctx(request, monkeypatch):
                                      "idx", "val", "args")}, None)
     if request.param == "metal":
         monkeypatch.setattr(backend, "_Buffer", Buffer)
-        c.o = SimpleNamespace(call=lambda *args, **kw: None)
+        c.o = SimpleNamespace(call=lambda *args, **kw: None, autorelease_pool=nullcontext)
         c.pipeline = lambda *args: None
         c._check_completed = lambda *args: None
         c._record_gpu_time = lambda *args: None

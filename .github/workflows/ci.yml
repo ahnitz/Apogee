@@ -54,8 +54,7 @@ jobs:
           done
 
   generated-files:
-    # Both of these are committed, and both have been stale in a way that
-    # produced wrong answers rather than a build error.
+    # Generated CPU codelets are committed and must match their generator.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,13 +69,6 @@ jobs:
           (cd src && python3 gen.py)
           diff -u /tmp/committed.h src/codelets-inl.h \
             || { echo "::error::src/codelets-inl.h is stale; re-run 'python3 src/gen.py'"; exit 1; }
-
-      - name: src/hmf_table.h must match tools/hmf_design.py
-        run: |
-          cp src/hmf_table.h /tmp/committed_table.h
-          python3 tools/hmf_design.py emit
-          diff -u /tmp/committed_table.h src/hmf_table.h \
-            || { echo "::error::src/hmf_table.h is stale; re-run 'python3 tools/hmf_design.py emit'"; exit 1; }
 
   benchmark:
     # Advisory only.  A shared runner's timings are too noisy to margin a merge

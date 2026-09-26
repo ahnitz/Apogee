@@ -779,11 +779,9 @@ def _uncovered_reference(power, n, t):
 def _uncovered_message(n, snr, fd):
     """Why autotuning refused, and what to do about it.
 
-    Only the DISCRETE choices are limited by these tables. The coarse
-    threshold itself is interpolated in (f_eff, snr) by src/hmf_table.h over
-    snr 4.5 to 8.0 and clamps conservatively outside, so the threshold adapts
-    to any request; what is missing here is measured evidence for which band,
-    oversampling, taps and margin to pair it with.
+    Configuration and threshold selection require measured file coverage.
+    An explicit band and coarse threshold can instead configure execution;
+    there is no compiled-model calibration fallback.
     """
     t = _load_tuning()
     ns = sorted(set(t.get("acc2_snrs", {})) | {r[0] for r in t["fdr"]})
@@ -1215,6 +1213,26 @@ def _margin_at_budget(curve, fd, floor):
     pts = sorted(curve)
     ms = [m for m, _ in pts]
     ds = [max(d, floor) for _, d in pts]
+    #: Dismissal is non-decreasing in the gate BY CONSTRUCTION: a higher gate
+    #: cannot dismiss less signal. Every cell is a Poisson measurement, so
+    #: adjacent cells invert that locally -- and an inversion is not a
+    #: measurement, it is an error with a known sign.
+    #:
+    #: Enforcing it here rather than trusting it matters because the bracket
+    #: search below is only well defined on a monotone curve: on an inverted
+    #: pair it can select the wrong interval, or `ds[0] > fd` can reject a
+    #: curve whose later points are comfortably inside budget. That is how a
+    #: threshold ends up NARROWER at snr 5.8 than at 5.5 and twice as slow.
+    #:
+    #: The running maximum is the monotone envelope that never UNDERSTATES
+    #: dismissal, so a repaired cell errs toward escalating rather than
+    #: toward missing signal -- the only safe direction, because nothing
+    #: downstream can recover a dismissed trigger.
+    run, hi = [], 0.0
+    for d in ds:
+        hi = max(hi, d)
+        run.append(hi)
+    ds = run
     if ds[0] > fd:
         return None                       # tightest margin already over budget
     if ds[-1] <= fd:
@@ -1433,6 +1451,37 @@ def choose_threshold(power, n, snr, fd, band, tuning=None):
     return float(num / den) if den else None
 
 
+def _snr_envelope(raw):
+    """Make a dismissal-vs-snr curve non-increasing, in the SAFE direction.
+
+    Dismissal falls with snr by construction: a louder signal cannot be
+    missed more often. Every cell is a Poisson measurement, so adjacent snr
+    rows invert that -- 514 of 1400 curves in the shipped table, and the
+    worst runs 0.0238 -> 0.0347 across snr 5.0 to 6.5, a 46% CLIMB that is
+    far too smooth and too large to be scatter. An inversion is not a
+    measurement; it is an error with a known sign.
+
+    Enforcing it matters because selection reads this curve to decide which
+    configurations are admissible. An inverted pair admits a narrower band
+    at one snr than at the next one up, and the filter then escalates more
+    and runs SLOWER at the easier threshold -- measured at n=16384, snr
+    5.75, where band 1024 is admitted and costs 2.9x the band 2048 chosen
+    at snr 6.0.
+
+    The envelope runs from the HIGHEST snr downward, taking the running
+    maximum. That is the only safe direction: it overstates dismissal, so a
+    repaired cell errs toward escalating rather than toward missing signal,
+    and nothing downstream can recover a dismissed trigger. The mirror
+    choice -- a running minimum upward -- would also remove the inversion,
+    while quietly claiming accuracy nothing measured supports.
+    """
+    out, hi = {}, 0.0
+    for s in sorted(raw, reverse=True):
+        hi = max(hi, raw[s])
+        out[s] = hi
+    return out
+
+
 def _choose_v2(power, n, snr, fd, t):
     """Cheapest configuration whose ESTIMATED dismissal meets the budget.
 
@@ -1505,14 +1554,25 @@ def _admissible_v2(power, n, snr, fd, t, use, floor):
             src = t["acc2r"] if use_r else t["acc2"]
             margins = sorted({m for (an, aK, asnr, m) in src
                               if an == n and aK == K and asnr in use})
+            all_s = sorted(t.get("acc2r_snrs" if use_r else "acc2_snrs",
+                                 {}).get(n) or use)
             curve = []
             for mg in margins:
-                # worst over the SNR rows that speak for this threshold
-                est = [x for x in
-                       (_idw(src.get((n, K, s_, mg)) or [], f,
-                             ratio if use_r else be,
-                             log=True, floor=floor) for s_ in use)
-                       if x is not None]
+                # Estimate at EVERY measured snr row, not only the ones that
+                # speak for this threshold: the monotone envelope is a
+                # constraint ACROSS rows, so it needs the whole column to be
+                # imposed at all.
+                raw = {}
+                for s_ in all_s:
+                    x = _idw(src.get((n, K, s_, mg)) or [], f,
+                             ratio if use_r else be, log=True, floor=floor)
+                    if x is not None:
+                        raw[s_] = x
+                if not raw:
+                    continue
+                env = _snr_envelope(raw)
+                # then, as before, worst over the rows that speak here
+                est = [env[s_] for s_ in use if s_ in env]
                 if est:
                     curve.append((mg, max(est)))
             if not curve:
@@ -1590,6 +1650,27 @@ def choose_config(power, n, snr, fd, tuning=None):
     tsnrs = t["snrs_at"].get(n)
     if not tsnrs:
         return None
+    #: A threshold row has to be earned by COVERAGE before it can be used at
+    #: all -- not just before it counts as an exact hit.
+    #:
+    #: At n=16384 snr 5.75 exactly one configuration of 48 was measured. That
+    #: is enough to make _snr_rows_for call 5.75 "measured", so the bracketing
+    #: rule never fires and selection reads a column that is empty for 47 of
+    #: 48 candidates. It picked band 1024 where snr 5.5 and 6.0 both pick
+    #: 2048, and ran 2.9x SLOWER at the easier threshold.
+    #:
+    #: Filtering at the pick level cannot fix this: `use` is itself (5.75,),
+    #: so there is nothing to fall back to. The row has to be gone before the
+    #: bracketing rule chooses, which is what this does.
+    #:
+    #: Half the fullest coverage at this length is the line. The removed
+    #: "complete coverage only" guard demanded ALL of it and cost n=4096 snr
+    #: 6.5 9.01x against 5.66x, because three bands of four is a perfectly
+    #: good basis; one of six is not.
+    _cov = {s_: len({(r[1], r[2], r[3], r[7])
+                     for r in t["by_ns"].get((n, s_), ())}) for s_ in tsnrs}
+    _full = max(_cov.values()) if _cov else 0
+    tsnrs = [s_ for s_ in tsnrs if _cov[s_] * 2 >= _full] or tsnrs
     use, why = _snr_rows_for(snr, tsnrs)
     if use is None:
         return None
@@ -1990,11 +2071,8 @@ class HierarchicalFilter(MatchedFilter):
     # coarse pass needs no kernel of its own; it is the kernel that already
     # ships, at a shorter length.
     #
-    # The second fact that makes it simple: with a reference set, the three
-    # coarse thresholds are SCALARS, not per-template. fpow and the recovery
-    # factors then come from the reference rather than from each template, so
-    # every template gets the same numbers -- verified across 32 templates
-    # with deliberately different power-law slopes.
+    # A supplied reference gives a common power fraction; pinned plans may
+    # instead normalize each coarse template by its own power fraction.
     def _start_gpu(self):
         # Same one-contract-two-backends shape as the flat filter, plus the
         # calibration cache. Written as one path for the reason given there.

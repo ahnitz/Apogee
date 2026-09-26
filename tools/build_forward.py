@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """Build series gather/forward FFTs from the production inverse FFT helpers."""
-import argparse
 import pathlib
 import subprocess
 import tempfile
 import build_spirv as build
 
 
-def main():
-    parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument('--slangc')
-    args = parser.parse_args()
-    compiler = build.find_slangc(args.slangc)
+def build_kernels(compiler, build_module=build):
+    """Build every series artifact and return its manifest entries."""
+    build = build_module
+    entries = {}
     for target, folder, suffix in [('spirv', 'spirv', 'spv'),
                                     ('metal', 'metal', 'metal')]:
         out = build.ROOT / 'python/matchedfilter' / folder / f'pack_coarse.{suffix}'
@@ -35,10 +33,22 @@ def main():
                 subprocess.run([compiler, str(src), '-I', str(build.KERNEL.parent), '-target', target,
                                 '-entry', 'seriesForward', '-stage', 'compute',
                                 '-O3', '-o', str(out)], check=True)
+        blob = build.ROOT / 'python/matchedfilter/spirv' / f'forward_{n}.spv'
+        info = build.reflect(blob.read_bytes())
+        entries[str(n)] = dict(file=blob.name, metal=f'forward_{n}.metal',
+                               local_size=info['local_size'], lds_cap=cap)
         print(n, flush=True)
     metal = build.ROOT / 'python/matchedfilter/metal'
     for path in list(metal.glob('forward_*.metal')) + [metal / 'pack_coarse.metal']:
         path.write_text(path.read_text().rstrip() + '\n')
+        build.compile_metallib(path)
+    return dict(forward=entries, pack_coarse=dict(file='pack_coarse.spv',
+                                                 metal='pack_coarse.metal'))
+
+
+def main():
+    # Keep the historical command, but rebuild the complete dependency set.
+    return build.main()
 
 
 if __name__ == '__main__':
