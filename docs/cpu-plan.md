@@ -138,8 +138,9 @@ fallback would have thrown away.
 
 ## The overnight investigation, 2026-09-26
 
-Twenty cycles of measure-commit-review. One change shipped; the rest is
-diagnosis, and three of the commits retract earlier ones of mine.
+Eleven cycles of measure-commit-review so far, of twenty. One change
+shipped; the rest is diagnosis, and three of the commits retract earlier
+ones of mine.
 
 ### Shipped
 
@@ -150,10 +151,14 @@ split-radix codelets do the whole DAG in registers -- they carry
 `(void)br;(void)bi;` -- and gen.py had no product variant. Adding one
 deletes the traffic rather than blocking it better. Paired and interleaved:
 
-    AVX-512  band 256 1.04-1.16x   band 512 1.137x   band 1024 1.073x
-    AVX2     band 256 1.103x       band 512 1.100x
-    SSE4     band 256 1.053x       band 512 1.072x
-    flat n=4096 1.054x (5 of 5)
+    AVX-512  band 256 1.044-1.164   band 512 1.137   band 1024 1.073
+    AVX2     band 256 1.103          band 512 1.100   band 1024 unchanged
+    SSE4     band 256 1.053          band 512 1.072   band 1024 unchanged
+    flat n=4096 1.054 (5 of 5); n=16384 and 65536 unchanged, and those are
+    controls -- eprod_ok is false there so codelet_prod is never called.
+
+Band 1024 is "unchanged" on the narrow targets by design, not by omission:
+m=32 is where it lands and m=32 is gated to AP_W >= 16.
 
 m=32 and m=64 gated to AP_W >= 16: ungated, m=32 measured 1.075x on
 AVX-512 but 0.991x on AVX2 with the new side swinging 292-332us against a
