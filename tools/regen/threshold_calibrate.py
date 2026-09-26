@@ -25,8 +25,14 @@ sys.path.insert(0, "tools")
 sys.path.insert(0, "tests")
 import hmf_tune as t
 
+from threshold_lowratio import ref_band     # same directory
+
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 4096
-BAND = max(256, min(1024, N // 4))
+#: One definition, shared with the re-measurement tool. These two disagreed
+#: once -- this file at n//4, the other at n//8 -- and since a row is not
+#: comparable across band (5.5% between 512 and 1024) the comparison of the
+#: two silently measured the mismatch and was read as a defect in the rows.
+BAND = ref_band(N)
 SNRS = [5.0, 5.5, 6.0, 6.5]
 #: Extended down to 0.60: band 128 at n=4096 sits at f=0.697,
 #: below the old 0.80 floor, so its gate was being extrapolated.
