@@ -119,6 +119,22 @@ entry points completed and returned the expected results after splitting;
 the unsplit baseline lost the Vulkan device. No successful baseline GPU timing
 is claimed for that failing case.
 
+## Development priority
+
+Keep every supported GPU length. Focus throughput work on **n=2048–8192**;
+retain 32768 and 65536 as supported paths without making their optimization
+the immediate target. Compare both large and small batches before changing a
+dispatch rule. In the [earlier size sweep](measurements/device-paths-all-sizes-2026-09-26.json),
+flat GPU filtering remained 24–40× faster than CPU across 2048–8192 at
+128×512. Hierarchical GPU filtering used a smaller coarse band than CPU at
+4096 and 8192 and refined far more pairs, so band selection and its measured
+costs deserve attention in this range. The calibration and gate model have
+since changed; those earlier rates are evidence for where to remeasure, not
+current configuration recommendations. At 16×64, the
+[fixed-shape sweep](measurements/device-paths-fixed-2026-09-26.json) also
+found hierarchical GPU slower than CPU at 2048 and 4096. Keep correctness and
+false-dismissal checks paired with any band or batch-policy change.
+
 ## Effect of the class changes
 
 | Workload (`run_series`) | Before, ms | After, ms | Improvement |
