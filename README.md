@@ -158,9 +158,6 @@ Measure it on your own machine:
 python -m matchedfilter.benchmark
 ```
 
-[CPU/GPU timings at every supported size](https://ahnitz.github.io/matchedfilter/all-sizes.html)
-include the batch shape and calibration gaps.
-
 ### Run the benchmarks
 
 ```bash

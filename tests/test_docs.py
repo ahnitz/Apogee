@@ -190,15 +190,31 @@ def test_readme_horizontal_rules_are_not_literal_dashes():
     assert build_report.md("before\n\n---\n\nafter") == "<p>before</p><hr><p>after</p>"
 
 
-def test_all_sizes_page_is_published_and_contains_every_length():
-    import pathlib
-    import json
-    root = pathlib.Path(ROOT)
-    assert any(page[0] == 'all-sizes.html' and page[3] == 'docs/local-device-timings.md'
-               for page in build_report.PAGES)
-    page = build_report.md((root / 'docs/local-device-timings.md').read_text())
-    rows = json.loads((root / 'docs/measurements/device-paths-all-sizes-2026-09-26.json').read_text())['results']
-    assert [r['n'] for r in rows] == [2**i for i in range(6, 21)]
-    for row in rows:
-        assert '<td>%d</td>' % row['n'] in page
-    assert 'not calibrated' in page and 'unsupported' in page
+def test_existing_charts_include_all_measured_sizes(monkeypatch):
+    assert not any(p[0] == 'all-sizes.html' for p in build_report.PAGES)
+    lengths = [2**i for i in range(6, 21)]
+    run = {'host': {'label': 'linux-x86_64'},
+           'flat': [{'n': n, 'us_per_pair': 1.0} for n in lengths],
+           'hierarchical': [{'n': n, 'snr': 5.5, 'fd': 1e-3, 'speedup': 2.0}
+                            for n in lengths]}
+    captured = []
+    def chart(series, *args, **kwargs):
+        captured.extend(n for _, values in series for n, _ in values)
+        return '<svg></svg>'
+    monkeypatch.setattr(build_report, 'line_chart', chart)
+    build_report.bench_pair([run])
+    assert set(lengths) <= set(captured)
+    page = build_report.bench_speedup([run], [])
+    for n in lengths:
+        assert 'n = %d' % n in page
+
+
+def test_hier_chart_keeps_lengths_only_another_runner_measured():
+    preferred = {'host': {'label': 'linux-x86_64'}, 'hierarchical': [
+        {'n': 4096, 'snr': 5.5, 'fd': 1e-3, 'speedup': 2.0},
+        {'n': 1048576, 'snr': 5.5, 'fd': 1e-3, 'uncovered': 'not tuned'}]}
+    other = {'host': {'label': 'linux-arm64'}, 'hierarchical': [
+        {'n': 1048576, 'snr': 5.5, 'fd': 1e-3, 'speedup': 3.0}]}
+    page = build_report.bench_speedup([preferred, other], [])
+    assert 'n = 1048576' in page
+    assert 'n=1048576 (linux-arm64)' in page

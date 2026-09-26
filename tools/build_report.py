@@ -1094,17 +1094,23 @@ def bench_speedup(runs, names):
     """
     runs = _bench_runs(runs)
     ref = next((r for r in runs if r["host"]["label"] == "linux-x86_64"), runs[0])
-    hier = [h for h in ref.get("hierarchical", [])]
+    hier = [h for run in runs for h in run.get("hierarchical", [])]
     snrs = sorted({h["snr"] for h in hier})
     sizes = sorted({h["n"] for h in hier})
     fds = sorted({h.get("fd") for h in hier if h.get("fd")}, reverse=True)
     panels = []
     for n in sizes:
+        # Keep one host per panel, but do not hide a length just because
+        # the preferred runner lacks a calibrated result for it.
+        source = next((run for run in [ref] + [r for r in runs if r is not ref]
+                       if any(h['n'] == n and 'speedup' in h
+                              for h in run.get('hierarchical', []))), ref)
+        measured = source.get('hierarchical', [])
         groups = []
         for snr in snrs:
             vs = []
             for fd in fds:
-                m = [h for h in hier if h["n"] == n and h["snr"] == snr
+                m = [h for h in measured if h["n"] == n and h["snr"] == snr
                      and h.get("fd") == fd and "speedup" in h]
                 vs.append(m[0]["speedup"] if m else None)
             groups.append(("snr %g" % snr, vs))
@@ -1112,7 +1118,7 @@ def bench_speedup(runs, names):
             panels.append(("n = %d" % n,
                            bar_chart(groups, ["fd = %g" % f for f in fds],
                                      "Hierarchical vs flat, n=%d (%s)"
-                                     % (n, html.escape(ref["host"]["label"])),
+                                     % (n, html.escape(source["host"]["label"])),
                                      "speedup")))
     if not panels:
         return "<p>No hierarchical results were available.</p>"
@@ -1446,8 +1452,6 @@ PAGES = [("index.html", "Overview", "overview", None, "Start here"),
          ("precision.html", "Numerical accuracy", "precision", None,
           "Does it work"),
          ("benchmarks.html", "Matched filter", "bench-flat", None, "How fast"),
-         ("all-sizes.html", "CPU / GPU: all sizes", "file",
-          "docs/local-device-timings.md", "How fast"),
          ("hierarchical-benchmarks.html", "Hierarchical filter", "bench-hier",
           None, "How fast"),
          ("notes.html", "Design notes", "notes-index", None, "Why it is built this way"),

@@ -170,8 +170,9 @@ The public CLI and benchmark CI now default to every power of two from 64
 to 1048576. Regression tests verify the complete emitted size list and input
 memory budgets at the largest lengths. The CPU/GPU sweep uses 128 × 512
 where memory permits, retains unsupported/calibration-gap rows, and validates
-near-tied cross-device maxima against an independent transform. Its published
-all-sizes page is checked against the 15-row measurement artifact.
+near-tied cross-device maxima against an independent transform. The existing flat and hierarchical chart pages show all measured lengths;
+the hierarchical chart can use another runner when its preferred runner
+lacks a result for a length. No separate all-sizes page is published.
 
 The old short report stopped at 16384 to isolate a regression before the
 larger GPU kernels were committed; it was not a support limit. Separate stale
