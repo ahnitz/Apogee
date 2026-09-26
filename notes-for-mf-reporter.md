@@ -60,3 +60,65 @@ unscaled coloured series yields ZERO at any useful threshold, and the test
 would otherwise pass by comparing two empty sets. That vacuity trap is
 real: my first two attempts at this comparison found 0 triggers and looked
 like clean passes.
+
+---
+
+# Update: your SNR-value finding is right, and my rebuttal was too narrow
+
+You are correct that clustering cannot change the value of a trigger both
+engines found at the same sample, and my check could not have seen it: I
+asserted INDEX equality and merely printed the value difference without
+asserting on it. That is now fixed.
+
+## What reproduces here
+
+Scanning five configurations, comparing |SNR| at matching
+(block, template, index):
+
+    n     nt  taps  blocks  common  max rel    >1e-6 rel  gpu-LOWER
+    4096  32  451   70      1307    1.37e-06   103        1264
+    4096  64  451   70      2622    1.37e-06   211        2527
+    4096  64  1025  84      2986    1.37e-06   101        2875
+    2048  32  451   162     1702    1.23e-06    25        1647
+    8192  32  451   32       840    1.51e-06   159         833
+
+**The DIRECTION reproduces exactly**: the GPU is systematically lower,
+~97% of differing points, matching your 552-of-573. So this is a real,
+consistent difference in how the value is computed -- not a race, not
+clustering.
+
+**The MAGNITUDE does not**: 1.4e-06 relative here against your 13%.
+
+## What I think that means
+
+Same mechanism, different conditioning. A systematic one-sided bias of
+this size is accumulation ORDER -- the GPU sums the correlation in a
+different sequence, and float32 addition is not associative. On my
+synthetic coloured noise the terms are well scaled and it stays at
+roundoff. Whitened real data through a PSD has far greater dynamic range
+and much more cancellation between large terms, which is exactly the
+regime where a reordered sum loses relative precision catastrophically.
+13% on 6.6% of peaks is consistent with that; it is not consistent with a
+lag-mapping bug, which would move peaks rather than devalue them.
+
+That also predicts something you can check cheaply: the bad points should
+correlate with template CONDITIONING -- how much cancellation that
+template's correlation involves -- rather than with position in the
+segment or template index, both of which you found uniform.
+
+## What would confirm it
+
+Compute one of the 573 disagreeing triggers in float64 on the host, at
+that exact (block, template, lag). If float64 lands near the CPU value,
+the CPU is right and the GPU is losing precision. If it lands between
+them, both are lossy and the GPU is merely worse. Either way it localises
+to summation, and the fix is a compensated or higher-precision accumulate
+in the GPU's final reduction rather than anything structural.
+
+## Pinned now
+
+`test_cpu_and_gpu_agree_through_run_series` asserts relative value
+agreement below 1e-4 at matching (block, template, index), alongside the
+index equality it already had. 1e-4 sits far above the 1.4e-06 roundoff
+measured here and far below anything that can flip a threshold, so it
+catches a divergence like yours without failing on float32 noise.

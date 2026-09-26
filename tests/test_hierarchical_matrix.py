@@ -606,6 +606,25 @@ def test_cpu_and_gpu_agree_through_run_series():
         assert int(((a >= 0) & (b < 0)).sum()) == 0, "%s: %s-only triggers" % (kind, devices[0])
         assert int(((a < 0) & (b >= 0)).sum()) == 0, "%s: %s-only triggers" % (kind, devices[1])
 
+        # VALUES too, not just indices. Comparing indices alone missed a
+        # report of the GPU differing by 13% relative on triggers both
+        # engines found at the SAME time and template -- clustering cannot
+        # do that, since it decides which triggers survive, not what one
+        # is worth.
+        #
+        # Measured here: the GPU is systematically LOWER, ~97% of the
+        # differing points, but only by ~1.4e-06 relative -- float32
+        # accumulation order, not a defect. The bound is set well above
+        # that and far below anything that could flip a threshold, so it
+        # catches a real divergence without failing on roundoff.
+        av = np.abs(out[(kind, devices[0])]["value"])[both]
+        bv = np.abs(out[(kind, devices[1])]["value"])[both]
+        rel = np.abs(av - bv) / np.maximum(av, 1e-30)
+        assert float(rel.max()) < 1e-4, (
+            "%s: values differ by %.2e relative at matching (block, "
+            "template, index) -- %d of %d points over 1e-6"
+            % (kind, float(rel.max()), int((rel > 1e-6).sum()), int(rel.size)))
+
     # The one-sided guarantee, on the series path, per device.
     for dev in devices:
         fi = out[("flat", dev)]["index"]
