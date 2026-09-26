@@ -354,9 +354,24 @@ stayed wrong.
 So the remaining misrankings are not a coverage artefact, and what is left
 to suspect is the lookup itself or variance in the retune. Not resolved.
 
-PROVISIONAL. The retune had not finished. Re-run this comparison against
-the complete table before drawing conclusions from the two that did not
-improve.
+NOT provisional at n=4096. The retune covered that size completely -- 48
+keys, 9560 rows, identical between two snapshots of the run -- so the 4 of
+6 stands. The rows are kept at
+`tools/cost-retuned-4096-experimental.txt`, with what they change:
+
+    reference   snr   old pick -> new    t(old)   t(new)   effect
+    inspiral    6.0     256  ->  512      408us    207us   1.97x FASTER
+    shallow     5.5     512  -> 1024      981us    587us   1.67x FASTER
+    steep       5.5     256  ->  512      294us    208us   1.41x FASTER
+    steep       6.0     256  ->  512      136us    205us   1.50x slower
+
+    total over the four changed points: 1819us -> 1207us = 1.51x net
+
+So installing them is worth about 1.51x where the pick changes. They are
+NOT installed: the run was stopped before covering every size the shipped
+table does, so dropping them in wholesale would replace rows for sizes that
+were never re-measured, and the 1.50x regression wants a human. A completed
+run plus that decision is the whole remaining task.
 
 **The faster band is admissible**, which is the check that makes this a
 defect rather than selection being right for a reason I had not measured.
