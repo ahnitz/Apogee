@@ -183,7 +183,9 @@ def cache_limits(rounds):
     n, blocks, nt = 1024, 128, 32
     ser, st, lo, hi, h = inputs(n, blocks, nt, 128)
     plans = {k: plan(n,32,nt,'gpu','flat',h) for k in ('entries32','entries256')}
-    plans['entries256']._gpu.cache_limit_entries = 256
+    for label, f in plans.items():
+        attr = 'cache_limit_recordings' if hasattr(f._gpu, 'cache_limit_recordings') else 'cache_limit_entries'
+        setattr(f._gpu, attr, 256 if label == 'entries256' else 32)
     calls = {k: (lambda f=f:f.run_series(ser,st,lo,hi)) for k,f in plans.items()}
     validate(calls['entries32']().copy(),calls['entries256']())
     result = dict(suite='cache_limits',n=n,blocks=blocks,templates=nt,window_groups=128,
@@ -193,7 +195,7 @@ def cache_limits(rounds):
         buffers=[b for batch in f._gpu._batches.values() for b in batch[:-1]]
         buffers += [b for batch in getattr(f._gpu,'_forwards',{}).values() for b in batch[:-1]]
         unique={int(b.ptr.value if hasattr(b.ptr,'value') else b.ptr):b.nbytes for b in buffers}
-        accounting[label]={'counted_bytes':sum(b.nbytes for b in buffers),
+        accounting[label]={'counted_bytes':f._gpu._cache_bytes(),
                            'unique_allocation_bytes':sum(unique.values()),
                            'dispatch_entries':len(f._gpu._batches)}
     result['memory_accounting']=accounting
@@ -230,7 +232,10 @@ def vector_validation(device, rounds):
     if np.any(low >= high):
         raise ValueError('every block must have a nonempty search window')
     nbset = set(map(int, np.unique(1 + (high-low-1)//binsize)))"""
-    assert old in source, 'update prototype for this package version'
+    if old not in source:
+        raise SystemExit('Vectorized planning is implemented. Compare package snapshots with '
+                         'tools/bench_class_changes.py; run this historical prototype against '
+                         'the audit baseline (19551a7 or earlier).')
     namespace={}
     exec(source.replace(old,new),vars(mf),namespace)
     prototype=namespace['_series_layout']
@@ -265,7 +270,7 @@ def reorder_cpu(rounds):
         baseline=lambda:f.run_series(ser,st,lo,hi)
         validate(baseline().copy(),grouped())
         row=dict(suite='reorder_cpu',kind=kind,n=n,blocks=blocks,templates=nt,
-                 window_groups=2,results=times({'adjacent_only':baseline,
+                 window_groups=2,results=times({'public_call':baseline,
                                                'group_and_scatter':grouped},rounds))
         rows.append(row);print(json.dumps(row),flush=True)
     return rows

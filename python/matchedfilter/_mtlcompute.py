@@ -542,13 +542,19 @@ class Context(InputUploads):
             key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
-            self._cache_room(8*n*(nd+nt) + 12*nd*nt*nbins)
+            incoming = [b for a in (data, tmpl)
+                        if (b := shared_buffer(a, self)) is not None]
+            estimate = 8*n*(nd+nt) + 12*nd*nt*nbins
+            estimate -= sum(a.nbytes for a in (data, tmpl)
+                            if shared_buffer(a, self) is not None)
+            self._cache_room(estimate, incoming=incoming)
             out = nd * nt * nbins
             batch = (shared_buffer(data, self) or _Buffer(self, nd * n * 8),
                      shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
                      _Buffer(self, out * 4), _Buffer(self, out * 8))
             self._batches[key] = batch
             upload_data = upload_tmpl = True
+        self._cache_touch("flat", key)
         b_data, b_tmpl, b_idx, b_val = batch
         if upload_data:
             write_input(b_data, data)
@@ -635,7 +641,12 @@ class Context(InputUploads):
             key, data, tmpl, upload_data, upload_tmpl)
         bufs = self._hier.get(key)
         if bufs is None:
-            self._cache_room(8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(24+12*nbins))
+            incoming = [b for a in (data, tmpl)
+                        if (b := shared_buffer(a, self)) is not None]
+            estimate = 8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(16+12*nbins) + 12
+            estimate -= sum(a.nbytes for a in (data, tmpl)
+                            if shared_buffer(a, self) is not None)
+            self._cache_room(estimate, incoming=incoming)
             bufs = {
                 "data":  shared_buffer(data, self) or _Buffer(self, nd * n * 8),
                 "tmpl":  shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
@@ -658,6 +669,7 @@ class Context(InputUploads):
             # served a previous call's data out of a newly allocated buffer,
             # and every index came back -1.
             upload_data = upload_tmpl = True
+        self._cache_touch("hier", key)
         if upload_data:
             write_input(bufs["data"], data)
             if shared_buffer(data, self) is None:
@@ -776,6 +788,14 @@ class Context(InputUploads):
                              self.o, ctypes.c_void_p(err)) if err
                             else "no error object"))
 
+    def _evict_record(self, kind, key, keep_storage=None):
+        cache = self._batches if kind == 'flat' else self._hier
+        batch = cache.pop(key)
+        for buf in (batch.values() if isinstance(batch, dict) else batch):
+            buf.destroy()
+        for resident in self._uploaded.values():
+            resident.pop(key, None)
+
     def clear_cache(self):
         for batch in self._batches.values():
             for buf in batch:
@@ -786,6 +806,7 @@ class Context(InputUploads):
         self._batches.clear()
         self._hier.clear()
         self._uploaded = {"data": {}, "tmpl": {}}
+        self._cache_order = {}
 
     def destroy(self):
         if getattr(self, "device", None) is None:

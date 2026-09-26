@@ -152,6 +152,27 @@ def _as_c64(a, n, what):
 from ._errors import UnsupportedSize      # noqa: E402
 
 
+def _format_result(idx, val, *, raw=False, counts=None, out=None, order=None):
+    """Assemble the public dtype once, or return separate raw arrays."""
+    if counts is True:
+        counts = (idx >= 0).sum(axis=2).astype(np.int32)
+    if raw:
+        if order is None:
+            result = (idx.astype(np.int64, copy=False), val)
+        else:
+            ri = np.empty(idx.shape, np.int64)
+            rv = np.empty(val.shape, np.complex64)
+            ri[order], rv[order] = idx, val
+            result = ri, rv
+    else:
+        result = np.empty(idx.shape, PEAK_DTYPE) if out is None else out
+        if order is None:
+            result["index"], result["value"] = idx, val
+        else:
+            result["index"][order], result["value"][order] = idx, val
+    return (result, counts) if counts is not None and counts is not False else result
+
+
 class MatchedFilter:
     """Correlate a set of data segments against a set of templates.
 
@@ -177,6 +198,13 @@ class MatchedFilter:
         self.ntemplates = int(ntemplates)
         if self.ndata < 1 or self.ntemplates < 1:
             raise ValueError("ndata and ntemplates must be >= 1")
+        self._init_state()
+        if self.device.kind == "gpu":
+            self._start_gpu()
+            return
+        self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
+
+    def _init_state(self):
         self._buf = None
         self._sbuf = None
         #: Has any spectrum reached the plan? The hierarchical refine path
@@ -194,10 +222,6 @@ class MatchedFilter:
         self._gtrig = 0
         self._ddirty = True
         self._tdirty = True
-        if self.device.kind == "gpu":
-            self._start_gpu()
-            return
-        self._mf = _core.MF(self.n, self.ndata, self.ntemplates)
 
     # ---- GPU -----------------------------------------------------------
     #
@@ -223,8 +247,8 @@ class MatchedFilter:
                 "would have to be split across dispatches."
                 % (sorted(_GPU_SIZES), self.n))
         self._gpu = self._backend().Context(self.device.index)
-        self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
-        self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
+        self._gdata = None  # series execution uses its own workspace
+        self._gtmpl = None
 
     def _backend(self):
         """The compute module for this device: Metal on Apple, else Vulkan."""
@@ -273,18 +297,22 @@ class MatchedFilter:
             self._tdirty = True
         if index is None:
             a = np.ascontiguousarray(_from_any(spectra), dtype=np.complex64)
-            if a.shape != store.shape:
-                raise ValueError("expected shape %s, got %s"
-                                 % (store.shape, a.shape))
+            shape = (self.ndata if what == "data" else self.ntemplates, self.n)
+            if a.shape != shape:
+                raise ValueError("expected shape %s, got %s" % (shape, a.shape))
             from ._shared import shared_buffer
             attr = "_gdata" if what == "data" else "_gtmpl"
             if shared_buffer(a, self._gpu) is not None:
                 setattr(self, attr, a)
-            elif shared_buffer(store, self._gpu) is not None or not store.flags.writeable:
+            elif store is None or shared_buffer(store, self._gpu) is not None or not store.flags.writeable:
                 setattr(self, attr, a.copy())
             else:
                 store[:] = a
         else:
+            if store is None:
+                shape = (self.ndata if what == "data" else self.ntemplates, self.n)
+                store = np.zeros(shape, dtype=np.complex64)
+                setattr(self, "_gdata" if what == "data" else "_gtmpl", store)
             if not store.flags.writeable:
                 store = store.copy()
                 setattr(self, "_gdata" if what == "data" else "_gtmpl", store)
@@ -320,6 +348,7 @@ class MatchedFilter:
         self._held[-1] = a                      # see the note above
         for i in range(self.ndata):
             self._ensure().set_data(i, a[i])
+        self._held = {-1: a}
         self._dataset = True
         self._mark_ready("data", None)
 
@@ -345,97 +374,40 @@ class MatchedFilter:
         self._mark_ready("template", None)
 
 
-    def _gpu_hier(self, D, H, binsize, threshold, start, end):
-        """Coarse pass and refinement, in one command buffer on the device.
+    def _gpu_pair_limit(self):
+        limit = getattr(self._gpu, 'max_dispatch_x', 2**32 - 1)
+        # Large transforms can exceed a driver's submission timeout when a
+        # whole bank runs at once. Bound worst-case work, including a fully
+        # admitted hierarchical batch, independently of storage capacity.
+        if self.n >= 32768:
+            limit = min(limit, (1 << 29) // self.n)
+        return limit
 
-        Shared by run() and run_series() so the two cannot drift.
-
-        Nothing is read back between the passes. The refining kernel
-        evaluates the coarse gate itself, so a dismissed pair's workgroup
-        exits immediately and no survivor list ever has to reach the host.
-        Doing that on the host cost more than the filtering did: 0.26 ms of
-        kernel work inside a 5.0 ms call.
-        """
-        band, f, thr = self._gpu_calibration(threshold)
-        # The coarse templates are a function of the templates and the band,
-        # so they are rebuilt only when the templates change.
-        #
-        # Keyed on WHERE the templates are, not on the identity of the view
-        # object. H is a fresh slice of self._gtmpl on every call, so id(H)
-        # was a new number every time and this cache never hit once -- it
-        # rebuilt nt x band complex twice per run, which at 65536 pairs was
-        # 3.9 ms of numpy against 2.1 ms of GPU.
-        #
-        # id() was also unsound. CPython reuses the address of a freed
-        # object, so the next call's view can land on the previous one's id
-        # and hit the cache for a DIFFERENT template sub-range of the same
-        # shape. The data pointer cannot collide that way: it is the address
-        # of the templates themselves, so a different t0 is a different key.
-        ck = (band, f, H.ctypes.data, H.shape)
-        if getattr(self, "_ckey", None) != ck or self._tdirty:
-            if f is None:
-                power = np.abs(H.astype(np.complex128)) ** 2
-                total = power.sum(axis=1)
-                fraction = np.divide(power[:, :band].sum(axis=1), total,
-                                     out=np.zeros_like(total), where=total > 0)
-                sc = np.divide(1.0, np.sqrt(fraction),
-                               out=np.zeros_like(fraction), where=fraction > 0)[:, None]
-            else:
-                sc = 1.0 / np.sqrt(f) if f > 0 else 0.0
-            ct0 = (H[:, :band] * sc).astype(np.complex64)
-            self._ct = ct0
-            self._ckey = ck
-        ct0 = self._ct
-
-        idx, val = self._gpu.hier_peaks(
-            self.n, band, D, H, ct0, thr,
-            binsize=binsize, threshold=threshold, window=(start, end),
-            upload_data=self._ddirty, upload_tmpl=self._tdirty)
-        self._ddirty = self._tdirty = False
-
-        # The indirect dispatch count records actual coarse survivors, including
-        # refinements that yield no final detection. Read after completion;
-        # no extra submission or host decision is needed.
-        self._gpairs += idx.shape[0] * idx.shape[1]
-        self._gtrig += self._gpu.last_refinements
+    def _gpu_window(self, D, H, binsize, threshold, start, end):
+        nd, nt = D.shape[0], H.shape[0]
+        limit = self._gpu_pair_limit()
+        if nd * nt <= limit:
+            return self._gpu_dispatch(D, H, binsize, threshold, start, end)
+        nb = 1 + (end - start - 1) // binsize
+        idx = np.empty((nd, nt, nb), np.int32)
+        val = np.empty((nd, nt, nb), np.complex64)
+        for t0 in range(0, nt, limit):
+            t1 = min(t0 + limit, nt)
+            rows = max(1, limit // (t1 - t0))
+            for d0 in range(0, nd, rows):
+                d1 = min(d0 + rows, nd)
+                gi, gv = self._gpu_dispatch(D[d0:d1], H[t0:t1], binsize,
+                                           threshold, start, end)
+                idx[d0:d1, t0:t1], val[d0:d1, t0:t1] = gi, gv
         return idx, val
 
-    def _run_gpu(self, binsize, threshold, start, end, data, templates,
-                 counts, raw):
-        """The GPU half of run(), returning exactly what the CPU half does.
-
-        Sub-ranges are taken by slicing the stored spectra rather than by
-        telling the kernel about them: the kernel dispatches one workgroup
-        per pair, so a sub-range is just a smaller dispatch, and keeping that
-        out of the kernel keeps its index arithmetic in one place.
-        """
-        d0, nd = (0, self.ndata) if data is None else (int(data[0]), int(data[1]))
-        t0, nt = (0, self.ntemplates) if templates is None else (int(templates[0]), int(templates[1]))
-        if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
-           or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
-            raise ValueError("data/templates sub-range out of bounds")
-
-        if not self._dataset or self._missing("data", d0, nd):
-            raise ValueError(
-                "no data: call set_data() before run(). The plan stores the "
-                "caller's spectrum pointer and the hierarchical refine path "
-                "is the first thing to dereference it, so this used to be a "
-                "segfault, and only once a pair fired.")
-        self._require_templates(t0, nt)
+    def _gpu_dispatch(self, D, H, binsize, threshold, start, end):
         idx, val = self._gpu.peaks(
-            self.n, self._gdata[d0:d0 + nd], self._gtmpl[t0:t0 + nt],
-            binsize=binsize, threshold=threshold, window=(start, end),
-            upload_data=self._ddirty, upload_tmpl=self._tdirty)
+            self.n, D, H, binsize=binsize, threshold=threshold,
+            window=(start, end), upload_data=self._ddirty,
+            upload_tmpl=self._tdirty)
         self._ddirty = self._tdirty = False
-        if raw:
-            r = (idx.astype(np.int64, copy=False), val)
-            return (r, (idx >= 0).sum(axis=2).astype(np.int32)) if counts else r
-        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
-        peaks["index"] = idx
-        peaks["value"] = val
-        if counts:
-            return peaks, (idx >= 0).sum(axis=2).astype(np.int32)
-        return peaks
+        return idx, val
 
     # ---- run ----------------------------------------------------------------
     def _execution_plan(self):
@@ -502,15 +474,11 @@ class MatchedFilter:
         if binsize < 1:
             raise ValueError("binsize must be >= 1")
         start, end = self._window(window)
-        if self._gpu is not None:
-            return self._run_gpu(binsize, threshold, start, end, data,
-                                 templates, counts, raw)
         d0, nd = (0, self.ndata) if data is None else (int(data[0]), int(data[1]))
         t0, nt = (0, self.ntemplates) if templates is None else (int(templates[0]), int(templates[1]))
         if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
            or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
             raise ValueError("data/templates sub-range out of bounds")
-        nb = self._ensure().nbins(binsize, start, end)
         if not self._dataset or self._missing("data", d0, nd):
             raise ValueError(
                 "no data: call set_data() before run(). The plan stores the "
@@ -518,6 +486,12 @@ class MatchedFilter:
                 "is the first thing to dereference it, so this used to be a "
                 "segfault, and only once a pair fired.")
         self._require_templates(t0, nt)
+        if self._gpu is not None:
+            idx, val = self._gpu_window(
+                self._gdata[d0:d0 + nd], self._gtmpl[t0:t0 + nt],
+                binsize, threshold, start, end)
+            return _format_result(idx, val, raw=raw, counts=bool(counts))
+        nb = self._ensure().nbins(binsize, start, end)
         rows = nd * nt
         # Reuse the output buffers.  Six allocations per call is nothing beside
         # a 2^20 transform, but a caller driving small batches in a tight loop
@@ -535,13 +509,9 @@ class MatchedFilter:
         peaks = peaks.reshape(nd, nt, nb)
         self._execution_plan().run(d0, nd, t0, nt, binsize, float(threshold), start, end,
                      idx, val, mag, cnt)
-        if raw:
-            r = (idx.reshape(nd, nt, nb), val.reshape(nd, nt, nb))
-            return (r, cnt.reshape(nd, nt)) if counts else r
-        peaks["index"] = idx.reshape(nd, nt, nb)
-        peaks["value"] = val.reshape(nd, nt, nb)
-        return (peaks, cnt.reshape(nd, nt)) if counts else peaks
-
+        return _format_result(idx.reshape(nd, nt, nb), val.reshape(nd, nt, nb),
+                              raw=raw, counts=cnt.reshape(nd, nt) if counts else None,
+                              out=peaks)
 
 
     def _series_layout(self, series, starts, win_start, win_end, binsize, templates):
@@ -568,16 +538,9 @@ class MatchedFilter:
         if nt < 1 or t0 < 0 or t0 + nt > self.ntemplates:
             raise ValueError("templates sub-range out of bounds")
         self._require_templates(t0, nt)
-        # A single output stride cannot represent different bin counts.
-        nbset = {self.nbins(binsize, (int(a), int(b))) for a, b in zip(ws, we)}
-        if len(nbset) > 1:
-            raise ValueError(
-                "every block's window must give the same bin count; these "
-                "give %s. Use a binsize that divides each window equally, or "
-                "call run_series once per distinct window." % sorted(nbset))
-        if not nbset or min(nbset) < 1:
-            raise ValueError("every block must have a nonempty search window")
-        return ser, st, ws, we, binsize, t0, nt
+        from ._series import SeriesLayout
+        layout = SeriesLayout(self.n, st, ws, we, binsize)
+        return ser, layout, binsize, t0, nt
 
     def run_series(self, series, starts, win_start, win_end,
                    binsize=None, threshold=0.0, templates=None, raw=False):
@@ -594,27 +557,28 @@ class MatchedFilter:
         ``(nblocks, ntemplates, nbins)``, or with ``raw=True`` the two plain
         arrays ``(index, value)`` of that shape.
 
-        Blocks sharing a window are filtered together, up to this filter's own
-        ``ndata``.  That is the grouping knob and there is no other: ndata is
-        already how many segments the plan can hold, and a second control
-        would only let the two disagree.  A filter built with ``ndata=1``
-        still gives the same answers, one block at a time.
+        Equal-window blocks are grouped internally; output retains caller order.
+        Flat CPU batches use up to ``ndata`` slots. Hierarchical CPU batches
+        use a bounded internal group (normally eight). GPU batches follow the
+        series memory budget independently of ``ndata``.
 
         Raw CPU results reuse buffers; copy retained results.
         A later run() requires set_data() again because series execution
         uses the plan's data slots. This rule applies on both devices.
         """
-        ser, st, ws, we, binsize, t0, nt = self._series_layout(
+        ser, layout, binsize, t0, nt = self._series_layout(
             series, starts, win_start, win_end, binsize, templates)
+        if self._gpu is not None or self.ndata > 1 or isinstance(self, HierarchicalFilter):
+            layout.group(materialize=self._gpu is not None)
+        st, ws, we = layout.starts, layout.low, layout.high
         nblk = st.size
         # CPU series execution reuses the data slots. Require fresh spectra
         # before a later run(), consistently on both devices.
         self._dataset = False
         self._data_ready = set()
         if self._gpu is not None:
-            return self._run_series_gpu(ser, st, ws, we, binsize, threshold,
-                                        templates, raw)
-        nb = self._ensure().nbins(binsize, int(ws[0]), int(we[0]))
+            return self._run_series_gpu(ser, layout, binsize, threshold, t0, nt, raw)
+        nb = layout.nbins
         need = nblk * nt * nb
         sb = self._sbuf
         if sb is None or sb[0] != (nblk, nt, nb):
@@ -626,81 +590,59 @@ class MatchedFilter:
         _, idx, val, mag, cnt = sb
         self._execution_plan().run_series(ser, st, ws, we, t0, nt, binsize,
                                   float(threshold), idx, val, mag, cnt)
-        if raw:
-            return idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb)
-        peaks = np.empty((nblk, nt, nb), dtype=PEAK_DTYPE)
-        peaks["index"] = idx.reshape(nblk, nt, nb)
-        peaks["value"] = val.reshape(nblk, nt, nb)
-        return peaks
+        return _format_result(idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb),
+                              raw=raw, order=layout.order)
 
     def _series_window(self, spec, H, binsize, threshold, w0, w1):
-        """One dispatch for the blocks sharing a window. Returns (index, value).
+        # Each group has fresh spectra, even when it reuses an allocation.
+        self._ddirty = True
+        return self._gpu_window(spec, H, binsize, threshold, w0, w1)
 
-        The only thing the two filters do differently in run_series, which is
-        why everything around it is shared.
-        """
-        gi, gv = self._gpu.peaks(
-            self.n, spec, H, binsize=binsize, threshold=threshold,
-            window=(w0, w1), upload_data=True,
-            upload_tmpl=self._tdirty)
-        self._tdirty = False
-        return gi, gv
-
-    def _run_series_gpu(self, ser, st, ws, we, binsize, threshold,
-                        templates, raw):
-        """Bound temporary FFT/gather memory while batching matching windows."""
-        n = self.n
-        t0, nt = (0, self.ntemplates) if templates is None else map(int, templates)
+    def _run_series_gpu(self, ser, layout, binsize, threshold, t0, nt, raw):
+        """Execute shared layout groups with bounded FFT/gather storage."""
+        n, nb, nblk = self.n, layout.nbins, layout.starts.size
         H = self._gtmpl[t0:t0 + nt]
-        nblk = st.size
-        nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
-        idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
-        val = np.zeros((nblk, nt, nb), dtype=np.complex64)
-        # Only spectra, start offsets and dispatch results scale with batch
-        # size. Upload the source segment once; shared input needs no copy.
         from ._shared import shared_buffer
         if ser.size > np.iinfo(np.uint32).max:
             raise ValueError("GPU series exceeds the 32-bit sample address range")
         budget = getattr(self, "_series_batch_bytes", 64 * 1024 * 1024)
-        batch = min(nblk, 65535, max(1, budget // (8*n + 4 + 12*nt*nb)))
+        batch = min(nblk, 65535, max(1, self._gpu_pair_limit() // nt),
+                    max(1, budget // (8*n + 4 + 12*nt*nb)))
         source_shared = shared_buffer(ser, self._gpu) is not None
-        workspace_key = (ser.size, batch, n, source_shared)
         workspace = getattr(self, "_series_workspace", None)
-        if workspace is None or workspace[0] != workspace_key:
-            workspace = (workspace_key,
-                         None if source_shared else self._gpu.empty_shared(ser.shape),
-                         self._gpu.empty_shared((batch, n)),
+        if workspace is None or workspace[0] != (batch, n):
+            workspace = ((batch, n), None, self._gpu.empty_shared((batch, n)),
                          self._gpu.empty_shared(batch, np.uint32))
-            self._series_workspace = workspace
         _, source, spectra, starts = workspace
         if source_shared:
             source = ser
+            self._series_workspace = (workspace[0], None, spectra, starts)
         else:
-            source[:] = ser
-        for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
-            rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
-            for begin in range(0, rows.size, batch):
-                selected = rows[begin:begin + batch]
-                count = selected.size
-                # Offsets beyond the input produce zero blocks, including
-                # uintp offsets too large to represent in a shader uint.
-                starts[:count] = np.minimum(st[selected], ser.size)
+            if source is None or source.size < ser.size:
+                source = self._gpu.empty_shared(ser.shape)
+            source[:ser.size] = ser
+            self._series_workspace = (workspace[0], source, spectra, starts)
+            source = source[:ser.size]
+        # A single group needs no aggregate buffers or scatter.
+        single = len(layout.groups) == 1 and nblk <= batch
+        if not single:
+            idx = np.empty((nblk, nt, nb), dtype=np.int64)
+            val = np.empty((nblk, nt, nb), dtype=np.complex64)
+        for w0, w1, a, b in layout.groups:
+            for begin in range(a, b, batch):
+                end = min(begin + batch, b)
+                count = end - begin
+                starts[:count] = np.minimum(layout.starts[begin:end], ser.size)
                 spec = spectra[:count]
                 self._gpu.forward(n, source, starts[:count], spec, defer=True)
                 try:
-                    gi, gv = self._series_window(spec, H, binsize, threshold,
-                                                 w[0], w[1])
+                    gi, gv = self._series_window(spec, H, binsize, threshold, w0, w1)
                 finally:
-                    # Preparation is deferred on Vulkan. A validation error
-                    # must not leave work queued for an unrelated later call.
                     self._gpu.cancel_forward()
-                idx[selected] = gi
-                val[selected] = gv
-        if raw:
-            return idx, val
-        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
-        peaks["index"], peaks["value"] = idx, val
-        return peaks
+                if single:
+                    return _format_result(gi, gv, raw=raw)
+                idx[begin:end], val[begin:end] = gi, gv
+        return _format_result(idx, val, raw=raw, order=layout.order)
 
     def empty_shared(self, shape, dtype=np.complex64):
         """Allocate a NumPy array backed by this filter's GPU shared memory.
@@ -719,8 +661,8 @@ class MatchedFilter:
     def set_memory_limits(self, *, cache_bytes=None, series_bytes=None):
         """Set GPU dispatch-cache and series-temporary budgets in bytes.
 
-        Defaults: 512 MiB of dispatch buffers, 32 cache entries, and 64 MiB
-        of series working storage. A single dispatch/block can exceed a
+        Defaults: 512 MiB of dispatch buffers, 32 storage shapes (and up to
+        256 Vulkan command recordings), and 64 MiB of series working storage. A single dispatch/block can exceed a
         budget. The source-series upload (unless already shared) and final
         returned output are not included in the batch working budget.
         Changing the cache budget releases existing dispatch buffers.
@@ -1964,26 +1906,12 @@ class HierarchicalFilter(MatchedFilter):
                 raise ValueError("taps must be even and between 2 and 64")
         self.snr = float(snr)
         self.fd = float(fd)
-        self._buf = None
-        self._sbuf = None
-        #: Has any spectrum reached the plan? The hierarchical refine path
-        #: dereferences the stored pointer, so run() with no set_data() was a
-        #: SEGFAULT -- and only once a pair actually fired, which made it look
-        #: intermittent rather than like a missing call.
-        self._dataset = False
-        self._data_ready = set()
-        self._template_ready = set()
-        self._held = {}
+        self._init_state()
         self._pending_ref = None
         self._cal_thr = None
         self._thr_applied = False
         self._pinned = None
         self._fs_snr = None
-        self._gpu = None
-        self._gpairs = 0
-        self._gtrig = 0
-        self._ddirty = True
-        self._tdirty = True
         if self.device.kind == "gpu":
             # HierarchicalFilter overrides __init__, so it does NOT inherit
             # MatchedFilter's call to _start_gpu. Omitting this left device=
@@ -2105,8 +2033,8 @@ class HierarchicalFilter(MatchedFilter):
                 "device='gpu' supports n in %s; got %d"
                 % (sorted(_GPU_SIZES), self.n))
         self._gpu = self._backend().Context(self.device.index)
-        self._gdata = np.zeros((self.ndata, self.n), dtype=np.complex64)
-        self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
+        self._gdata = None  # series execution uses its own workspace
+        self._gtmpl = None
         self._gcal = None
 
     def _coarse_value(self, band, *, required=True):
@@ -2161,43 +2089,39 @@ class HierarchicalFilter(MatchedFilter):
         self._gcal = (key, out)
         return out
 
-    def _run_gpu(self, binsize, threshold, start, end, data, templates,
-                 counts, raw_out):
-        """Coarse pass, then the flat filter on what survives.
+    def _gpu_dispatch(self, D, H, binsize, threshold, start, end):
+        """Run coarse filtering and refinement without host survivor readback."""
+        band, f, thr = self._gpu_calibration(threshold)
+        # Fresh views can share an address; view identity is not a cache key.
+        # Template/reference changes set _tdirty, even for in-place updates.
+        ck = (band, f, H.ctypes.data, H.shape)
+        if getattr(self, "_ckey", None) != ck or self._tdirty:
+            if f is None:
+                power = np.abs(H.astype(np.complex128)) ** 2
+                total = power.sum(axis=1)
+                fraction = np.divide(power[:, :band].sum(axis=1), total,
+                                     out=np.zeros_like(total), where=total > 0)
+                sc = np.divide(1.0, np.sqrt(fraction),
+                               out=np.zeros_like(fraction), where=fraction > 0)[:, None]
+            else:
+                sc = 1.0 / np.sqrt(f) if f > 0 else 0.0
+            ct0 = (H[:, :band] * sc).astype(np.complex64)
+            self._ct = ct0
+            self._ckey = ck
+        ct0 = self._ct
 
-        Two dispatches for the coarse halves and one per data segment for the
-        refinement. That is more round trips than the fused kernel wants --
-        the survivor list goes to the host and back -- and it is the first
-        thing to remove once this is correct. Correctness first: a fused
-        kernel that is wrong is harder to diagnose than a slow one.
-        """
-        d0, nd = (0, self.ndata) if data is None else (int(data[0]), int(data[1]))
-        t0, nt = (0, self.ntemplates) if templates is None else (int(templates[0]), int(templates[1]))
-        if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
-           or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
-            raise ValueError("data/templates sub-range out of bounds")
-        if not self._dataset or self._missing("data", d0, nd):
-            raise ValueError(
-                "no data: call set_data() before run(). The plan stores the "
-                "caller's spectrum pointer and the hierarchical refine path "
-                "is the first thing to dereference it, so this used to be a "
-                "segfault, and only once a pair fired.")
+        idx, val = self._gpu.hier_peaks(
+            self.n, band, D, H, ct0, thr,
+            binsize=binsize, threshold=threshold, window=(start, end),
+            upload_data=self._ddirty, upload_tmpl=self._tdirty)
+        self._ddirty = self._tdirty = False
 
-
-        self._require_templates(t0, nt)
-        D = self._gdata[d0:d0 + nd]
-        H = self._gtmpl[t0:t0 + nt]
-
-        idx, val = self._gpu_hier(D, H, binsize, threshold, start, end)
-        peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
-        peaks["index"] = idx
-        peaks["value"] = val
-        if raw_out:
-            r = (peaks["index"], peaks["value"])
-            return (r, (peaks["index"] >= 0).sum(axis=2).astype(np.int32)) if counts else r
-        if counts:
-            return peaks, (peaks["index"] >= 0).sum(axis=2).astype(np.int32)
-        return peaks
+        # The indirect dispatch count records actual coarse survivors, including
+        # refinements that yield no final detection. Read after completion;
+        # no extra submission or host decision is needed.
+        self._gpairs += idx.shape[0] * idx.shape[1]
+        self._gtrig += self._gpu.last_refinements
+        return idx, val
 
     def set_coarse_threshold(self, value):
         """Set the coarse threshold directly, bypassing the design tables.
@@ -2293,16 +2217,6 @@ class HierarchicalFilter(MatchedFilter):
         if self._mf is not None:
             self._mf.set_reference(p)
 
-
-    def _series_window(self, spec, H, binsize, threshold, w0, w1):
-        """The hierarchical dispatch: coarse gate, then refine what survives.
-
-        Everything else in run_series is the base class's.
-        """
-        # spec is freshly computed for this group. An allocator can reuse the
-        # previous group's address, so a pointer comparison is not freshness.
-        self._ddirty = True
-        return self._gpu_hier(spec, H, binsize, threshold, w0, w1)
 
     @property
     def config(self):

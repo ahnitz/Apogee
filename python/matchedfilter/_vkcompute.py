@@ -324,6 +324,10 @@ class Context(InputUploads):
                                              ctypes.c_uint64]
         self._pipelines = {}
         self._batches = {}
+        self._storage = {}
+        self._storage_users = {}
+        self._record_storage = {}
+        self._record_pools = {}
         self._hier = {}
         self._uploaded = {"data": {}, "tmpl": {}}
 
@@ -370,6 +374,10 @@ class Context(InputUploads):
         # to create a pipeline.
         self.max_invocations = int(ctypes.cast(
             ctypes.byref(props, _OFF_MAX_INVOCATIONS),
+            ctypes.POINTER(_u32))[0])
+
+        self.max_dispatch_x = int(ctypes.cast(
+            ctypes.byref(props, _OFF_MAX_INVOCATIONS - 12),
             ctypes.POINTER(_u32))[0])
 
         self.mem_props = _MemProps()
@@ -563,15 +571,27 @@ class Context(InputUploads):
                int(np.float32(t2).view(np.uint32)),
                float(raw_thr))
         key += (shared_key(data, self), shared_key(tmpl, self))
+        storage_key = ("hier", n, band, nd, nt, nbins, *key[-2:])
         upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
-            key, data, tmpl, upload_data, upload_tmpl)
+            storage_key, data, tmpl, upload_data, upload_tmpl)
         batch = self._hier.get(key)
         if batch is None:
-            self._cache_room(8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(24+12*nbins))
-            batch = self._make_hier(key, n, band, nd, nt, nbins, binsize,
+            incoming = [b for b in (shared_buffer(data, self), shared_buffer(tmpl, self)) if b is not None]
+            estimate = (8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(16+12*nbins) + 12
+                        - (nd*n*8 if shared_buffer(data, self) else 0)
+                        - (nt*n*8 if shared_buffer(tmpl, self) else 0))
+            if storage_key in self._storage:
+                estimate = 0
+            self._cache_room(estimate, incoming=incoming, keep_storage=storage_key)
+            fresh = storage_key not in self._storage
+            pool_start = len(getattr(self, '_pools', []))
+            batch = self._make_hier(storage_key, n, band, nd, nt, nbins, binsize,
                                     shift, lo, hi, t2, raw_thr, data, tmpl)
             self._hier[key] = batch
-            upload_data = upload_tmpl = True   # see the note in peaks()
+            self._register_record('hier', key, storage_key, pool_start)
+            if fresh:
+                upload_data = upload_tmpl = True
+        self._cache_touch('hier', key)
         bufs, cmd = batch
         # Upload only what changed. A template bank is 67 MB at n=16384 with
         # 512 templates, and re-sending it on every call dwarfed the
@@ -584,14 +604,14 @@ class Context(InputUploads):
                 bufs["cdata"].write(_pack_half2(data[:, :band]))
             else:
                 bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
-            self._uploaded["data"][key] = dsig
+            self._uploaded["data"][storage_key] = dsig
         if upload_tmpl:
             write_input(bufs["tmpl"], tmpl)
             if _use_c16(band) and not _COARSE_TILE.get(band):
                 bufs["ct0"].write(_pack_half2(ct0))
             else:
                 bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
-            self._uploaded["tmpl"][key] = tsig
+            self._uploaded["tmpl"][storage_key] = tsig
 
         self._submit(cmd)
 
@@ -692,22 +712,25 @@ class Context(InputUploads):
         rpipe, rlayout, rset_layout = self._build_pipeline(
             ("refine", refine_file), refine_file, 5, _PUSH_BYTES)
         pairs = nd * nt
-        b = {
-            "data":  shared_buffer(data, self) or _Buffer(self, nd * n * 8),
-            "tmpl":  shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
-            "cdata": _Buffer(self, nd * band * (4 if _use_c16(band) and not tile else 8)),
-            "ct0":   _Buffer(self, nt * band * (4 if _use_c16(band) and not tile else 8)),
-            "cidx":  _Buffer(self, pairs * 4),
-            "cval":  _Buffer(self, pairs * 8),
-            # The compacted survivor list and the indirect group count.
-            # args is [groupCountX, 1, 1]; compactPairs atomically bumps
-            # [0], so the count never has to reach the host and this
-            # stays one recorded command buffer.
-            "surv":  _Buffer(self, pairs * 4),
-            "args":  _Buffer(self, 12, usage=_BUF_STORAGE | _BUF_INDIRECT),
-            "idx":   _Buffer(self, nd * nt * nbins * 4, readback=True),
-            "val":   _Buffer(self, nd * nt * nbins * 8, readback=True),
-        }
+        b = self._storage.get(key)
+        if b is None:
+            b = {
+                "data":  shared_buffer(data, self) or _Buffer(self, nd * n * 8),
+                "tmpl":  shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
+                "cdata": _Buffer(self, nd * band * (4 if _use_c16(band) and not tile else 8)),
+                "ct0":   _Buffer(self, nt * band * (4 if _use_c16(band) and not tile else 8)),
+                "cidx":  _Buffer(self, pairs * 4),
+                "cval":  _Buffer(self, pairs * 8),
+                # The compacted survivor list and the indirect group count.
+                # args is [groupCountX, 1, 1]; compactPairs atomically bumps
+                # [0], so the count never has to reach the host and this
+                # stays one recorded command buffer.
+                "surv":  _Buffer(self, pairs * 4),
+                "args":  _Buffer(self, 12, usage=_BUF_STORAGE | _BUF_INDIRECT),
+                "idx":   _Buffer(self, nd * nt * nbins * 4, readback=True),
+                "val":   _Buffer(self, nd * nt * nbins * 8, readback=True),
+            }
+            self._storage[key] = b
         # The tiled coarse kernel reports a magnitude per pair and nothing
         # else -- a maximum does not depend on the output ordering, so it
         # needs no index and no digit reversal.
@@ -844,7 +867,8 @@ class Context(InputUploads):
             forwards = self._forwards = {}
         batch = forwards.get(key)
         if batch is None:
-            self._cache_room(sum(b.nbytes for b in buffers))
+            self._cache_room(0, incoming=buffers)
+            pool_start = len(getattr(self, '_pools', []))
             ds = self._descriptor_set(sl, buffers)
             cmd = _vp()
             info = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
@@ -870,6 +894,8 @@ class Context(InputUploads):
             _check(vk.vkEndCommandBuffer(cmd), "end forward")
             batch = (*buffers, cmd)
             forwards[key] = batch
+            self._register_record('forward', key, None, pool_start)
+        self._cache_touch('forward', key)
         cmd = batch[-1]
         if defer:
             self._pending_forward = cmd
@@ -901,31 +927,15 @@ class Context(InputUploads):
         pipe, layout, set_layout = self._build_pipeline(
             ("peaks", filename), filename, _NBIND, _PUSH_BYTES)
         out = nd * nt * nbins
-        b_data = shared_buffer(data, self) or _Buffer(self, nd * n * 8)
-        b_tmpl = shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8)
-        b_idx = _Buffer(self, out * 4, readback=True)
-        b_val = _Buffer(self, out * 8, readback=True)
-
-        sizes = (_PoolSize * 1)(_PoolSize(_DESC_STORAGE_BUFFER, _NBIND))
-        dp_info = _DescPoolCreate(33, None, 0, 1, 1, sizes)
-        pool = _vp()
-        _check(vk.vkCreateDescriptorPool(self.device, ctypes.byref(dp_info),
-                                         None, ctypes.byref(pool)),
-               "vkCreateDescriptorPool")
-        set_layouts = (_vp * 1)(set_layout)
-        ds_info = _DescSetAlloc(34, None, pool, 1, ctypes.cast(set_layouts, _vp))
-        dset = _vp()
-        _check(vk.vkAllocateDescriptorSets(self.device, ctypes.byref(ds_info),
-                                           ctypes.byref(dset)),
-               "vkAllocateDescriptorSets")
-        bufs = (b_data, b_tmpl, b_idx, b_val)
-        infos = (_DescBufferInfo * _NBIND)(
-            *[_DescBufferInfo(b.handle, 0, _WHOLE_SIZE) for b in bufs])
-        writes = (_WriteDescSet * _NBIND)(*[
-            _WriteDescSet(35, None, dset, i, 0, 1, _DESC_STORAGE_BUFFER,
-                          None, ctypes.pointer(infos[i]), None)
-            for i in range(_NBIND)])
-        vk.vkUpdateDescriptorSets(self.device, _NBIND, writes, 0, None)
+        bufs = self._storage.get(key)
+        if bufs is None:
+            bufs = (shared_buffer(data, self) or _Buffer(self, nd * n * 8),
+                    shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
+                    _Buffer(self, out * 4, readback=True),
+                    _Buffer(self, out * 8, readback=True))
+            self._storage[key] = bufs
+        b_data, b_tmpl, b_idx, b_val = bufs
+        dset = self._descriptor_set(set_layout, bufs)
 
         cb_info = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
         cmd = _vp()
@@ -947,8 +957,6 @@ class Context(InputUploads):
                               ctypes.byref(pc))
         vk.vkCmdDispatch(cmd, nd * nt, 1, 1)
         _check(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")
-        self._pools = getattr(self, "_pools", [])
-        self._pools.append(pool)
         return (b_data, b_tmpl, b_idx, b_val, cmd)
 
     def peaks(self, n, data, tmpl, binsize=None, threshold=0.0, window=None,
@@ -1008,28 +1016,35 @@ class Context(InputUploads):
         key = (n, nd, nt, nbins, binsize, shift, lo, hi,
                int(np.float32(t2).view(np.uint32)))
         key += (shared_key(data, self), shared_key(tmpl, self))
+        storage_key = ("flat", n, nd, nt, nbins, *key[-2:])
         upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
-            key, data, tmpl, upload_data, upload_tmpl)
+            storage_key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
-            self._cache_room(8*n*(nd+nt) + 12*nd*nt*nbins)
-            batch = self._make_batch(key, n, nd, nt, nbins,
+            incoming = [b for b in (shared_buffer(data, self), shared_buffer(tmpl, self)) if b is not None]
+            estimate = (8*n*(nd+nt) + 12*nd*nt*nbins
+                        - (nd*n*8 if shared_buffer(data, self) else 0)
+                        - (nt*n*8 if shared_buffer(tmpl, self) else 0))
+            if storage_key in self._storage:
+                estimate = 0
+            self._cache_room(estimate, incoming=incoming, keep_storage=storage_key)
+            fresh = storage_key not in self._storage
+            pool_start = len(getattr(self, '_pools', []))
+            batch = self._make_batch(storage_key, n, nd, nt, nbins,
                                      binsize, shift, lo, hi, t2, data, tmpl)
             self._batches[key] = batch
-            # A NEW batch has empty buffers. The caller's dirty flags describe
-            # whether the arrays changed, not whether THIS batch has ever seen
-            # them -- and a second call with a different binsize, window or
-            # threshold lands on a new batch with the flags already cleared.
-            # Every result then came back -1, from buffers nothing had filled.
-            upload_data = upload_tmpl = True
+            self._register_record('flat', key, storage_key, pool_start)
+            if fresh:
+                upload_data = upload_tmpl = True
+        self._cache_touch('flat', key)
         b_data, b_tmpl, b_idx, b_val, cmd = batch
 
         if upload_data:
             write_input(b_data, data)
-            self._uploaded["data"][key] = dsig
+            self._uploaded["data"][storage_key] = dsig
         if upload_tmpl:
             write_input(b_tmpl, tmpl)
-            self._uploaded["tmpl"][key] = tsig
+            self._uploaded["tmpl"][storage_key] = tsig
 
         self._submit(cmd)
 
@@ -1045,54 +1060,71 @@ class Context(InputUploads):
             np.complex64).reshape(nd, nt, nbins)
         return idx, val
 
+    cache_limit_recordings = 256
+
+    def _register_record(self, kind, key, storage, pool_start):
+        token = (kind, key)
+        self._record_pools[token] = self._pools[pool_start:]
+        if storage is not None:
+            self._record_storage[token] = storage
+            self._storage_users.setdefault(storage, set()).add(token)
+
+    def _drop_storage(self, key):
+        buffers = self._storage.pop(key)
+        for buf in (buffers.values() if isinstance(buffers, dict) else buffers):
+            buf.destroy()
+        self._storage_users.pop(key, None)
+        for resident in self._uploaded.values():
+            resident.pop(key, None)
+
+    def _evict_record(self, kind, key, keep_storage=None):
+        token = (kind, key)
+        cache = {'flat': self._batches, 'hier': self._hier,
+                 'forward': getattr(self, '_forwards', {})}[kind]
+        batch = cache.pop(key)
+        cmd = batch[-1]
+        if getattr(self, '_pending_forward', None) is cmd:
+            self._submit(None)
+        commands = (_vp * 1)(cmd)
+        self.vk.vkFreeCommandBuffers.argtypes = [_vp, _vp, _u32, ctypes.POINTER(_vp)]
+        self.vk.vkFreeCommandBuffers(self.device, self.command_pool, 1, commands)
+        pools = self._record_pools.pop(token, [])
+        for pool in pools:
+            self.vk.vkDestroyDescriptorPool(self.device, pool, None)
+        dead = {pool.value for pool in pools}
+        self._pools = [pool for pool in self._pools if pool.value not in dead]
+        storage = self._record_storage.pop(token, None)
+        if storage is not None:
+            users = self._storage_users[storage]
+            users.discard(token)
+            if not users and storage != keep_storage:
+                self._drop_storage(storage)
+
     def clear_cache(self):
-        """Release completed dispatch storage while retaining pipelines."""
-        # A cache miss between preparation and filtering must materialize the
-        # forward result before freeing its recorded command buffer.
+        """Release records and owned storage, preserving external shared arrays."""
         self._submit(None)
-        vk = self.vk
-        commands = [batch[-1] for batch in self._batches.values()]
-        commands += [batch[-1] for batch in getattr(self, "_forwards", {}).values()]
-        commands += [batch[-1] for batch in self._hier.values()]
-        if commands:
-            array = (_vp * len(commands))(*commands)
-            vk.vkFreeCommandBuffers.argtypes = [_vp, _vp, _u32, ctypes.POINTER(_vp)]
-            vk.vkFreeCommandBuffers(self.device, self.command_pool, len(commands), array)
-        for batch in self._batches.values():
-            for buf in batch[:-1]:
-                buf.destroy()
-        for bufs, _cmd in self._hier.values():
-            for buf in bufs.values():
-                buf.destroy()
-        getattr(self, "_forwards", {}).clear()
-        self._batches.clear()
-        self._hier.clear()
-        for pool in getattr(self, "_pools", []):
-            vk.vkDestroyDescriptorPool(self.device, pool, None)
+        for kind, cache in (('flat', self._batches), ('hier', self._hier),
+                            ('forward', getattr(self, '_forwards', {}))):
+            for key in list(cache):
+                self._evict_record(kind, key)
+        # Also clean up storage/descriptors left by failed construction.
+        for key in list(self._storage):
+            self._drop_storage(key)
+        for pool in getattr(self, '_pools', []):
+            self.vk.vkDestroyDescriptorPool(self.device, pool, None)
         self._pools = []
+        self._cache_order = {}
         self._uploaded = {"data": {}, "tmpl": {}}
 
     def destroy(self):
-        # Idempotent: __del__ calls this too, and a caller that already
-        # destroyed explicitly must not hand vkDestroyDevice a dead handle.
         if getattr(self, "device", None) is None:
             return
+        self.clear_cache()
         vk = self.vk
         for pipe, layout, set_layout in self._pipelines.values():
             vk.vkDestroyPipeline(self.device, pipe, None)
             vk.vkDestroyPipelineLayout(self.device, layout, None)
             vk.vkDestroyDescriptorSetLayout(self.device, set_layout, None)
-        for b_data, b_tmpl, b_idx, b_val, _cmd in self._batches.values():
-            for buf in (b_data, b_tmpl, b_idx, b_val):
-                buf.destroy()
-        getattr(self, "_forwards", {}).clear()
-        self._batches.clear()
-        for bufs, _cmd in self._hier.values():
-            for buf in bufs.values():
-                buf.destroy()
-        self._hier.clear()
-        for pool in getattr(self, "_pools", []):
-            vk.vkDestroyDescriptorPool(self.device, pool, None)
         self._pipelines.clear()
         vk.vkDestroyCommandPool(self.device, self.command_pool, None)
         vk.vkDestroyDevice(self.device, None)

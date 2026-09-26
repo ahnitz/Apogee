@@ -72,10 +72,23 @@ def ctx(request, monkeypatch):
     c.queue = None
     c.vk = SimpleNamespace(vkQueueSubmit=lambda *args: 0,
                            vkQueueWaitIdle=lambda *args: 0)
-    c._make_batch = lambda *args: (*[Buffer() for _ in range(4)], None)
-    c._make_hier = lambda *args: (
-        {name: Buffer() for name in ("data", "tmpl", "cdata", "ct0",
-                                     "idx", "val", "args")}, None)
+    if request.param == "vulkan":
+        c._storage, c._storage_users = {}, {}
+        c._record_storage, c._record_pools = {}, {}
+        c._pools = []
+
+        def make_batch(key, *args):
+            if key not in c._storage:
+                c._storage[key] = tuple(Buffer() for _ in range(4))
+            return (*c._storage[key], None)
+
+        def make_hier(key, *args):
+            if key not in c._storage:
+                c._storage[key] = {name: Buffer() for name in
+                    ("data", "tmpl", "cdata", "ct0", "idx", "val", "args")}
+            return c._storage[key], None
+
+        c._make_batch, c._make_hier = make_batch, make_hier
     if request.param == "metal":
         monkeypatch.setattr(backend, "_Buffer", Buffer)
         c.o = SimpleNamespace(call=lambda *args, **kw: None, autorelease_pool=nullcontext)

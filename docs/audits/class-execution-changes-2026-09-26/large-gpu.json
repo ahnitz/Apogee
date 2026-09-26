@@ -1,0 +1,83 @@
+{
+  "machine": "Linux-7.1.13-100.fc43.x86_64-x86_64-with-glibc2.42",
+  "cpu_backend": "AVX3",
+  "devices": [
+    "cpu:0",
+    "gpu:0",
+    "gpu:1"
+  ],
+  "native_sha256": {
+    "baseline": "e242d3696275d283950008e6331c485c6057dbe7b9dd960da3f9c6dee958c21d",
+    "candidate": "e242d3696275d283950008e6331c485c6057dbe7b9dd960da3f9c6dee958c21d"
+  },
+  "shader_manifest_sha256": {
+    "baseline": "af23cfb112c99040dedcda3142391f5276ffd8215795cfad5948c2a8f6e060b1",
+    "candidate": "af23cfb112c99040dedcda3142391f5276ffd8215795cfad5948c2a8f6e060b1"
+  },
+  "coarse_threshold": 4.0,
+  "cpu_comparison": "shared native plan; separate Python wrappers",
+  "baseline_series_bytes": null,
+  "rows": [
+    {
+      "device": "gpu",
+      "kind": "flat",
+      "n": 65536,
+      "blocks": 128,
+      "templates": 512,
+      "windows": 1,
+      "binsize": 65536,
+      "series": {
+        "candidate": {
+          "median_ms": 3090.205806074664,
+          "samples_ms": [
+            3093.6141919810325,
+            3090.205806074664,
+            3082.722407998517
+          ]
+        }
+      },
+      "run": {
+        "candidate": {
+          "median_ms": 3144.1597370430827,
+          "samples_ms": [
+            3144.1597370430827,
+            3173.231945023872,
+            3141.318953013979
+          ]
+        }
+      }
+    },
+    {
+      "device": "gpu",
+      "kind": "hier",
+      "n": 65536,
+      "blocks": 128,
+      "templates": 512,
+      "windows": 1,
+      "binsize": 65536,
+      "series": {
+        "candidate": {
+          "median_ms": 359.2956269858405,
+          "samples_ms": [
+            359.2956269858405,
+            358.746879035607,
+            369.12590090651065
+          ]
+        }
+      },
+      "refinement_fraction": {
+        "candidate": 0.086181640625
+      },
+      "run": {
+        "candidate": {
+          "median_ms": 356.5969290211797,
+          "samples_ms": [
+            356.5969290211797,
+            363.44107694458216,
+            347.993795061484
+          ]
+        }
+      }
+    }
+  ]
+}

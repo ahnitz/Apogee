@@ -1,5 +1,10 @@
 # Class layout and series scheduling audit — 2026-09-26
 
+Status: the approved changes are implemented. See the
+[implementation and timing report](class-execution-changes.md) for results.
+The measurements below describe the original audit baseline.
+
+
 `run_series()` is the right execution boundary: one call should cover many
 blocks and the largest useful template bank. It already avoids a host FFT
 round trip and keeps GPU spectra resident between forward and correlation.

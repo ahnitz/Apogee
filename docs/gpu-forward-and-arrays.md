@@ -15,7 +15,17 @@ with one completion wait. Metal encodes both into one command buffer.
 The source segment is uploaded once per call unless it is already shared.
 The series batch budget covers spectra, start offsets and result scratch;
 it excludes the source upload and the final returned result. `clear_cache()`
-releases the reusable series workspace along with dispatch buffers.
+releases the reusable series workspace along with dispatch buffers. Window
+and threshold variants share Vulkan buffer storage when their shapes match;
+only their command recordings differ. The cache retains up to 32 storage
+shapes and 256 Vulkan recordings, with a 512 MiB allocation budget. Shared
+allocations count once, and eviction removes the least recently used records
+until there is room. Metal uses 32 shape entries. One operation may exceed
+these limits when it cannot be split further.
+For n=32768 and n=65536, `run()` and `run_series()` also bound each
+correlation submission to 2^29 point-pairs, avoiding the device loss observed
+with a whole large bank in one submission. This work bound applies even if
+the storage budget would allow more rows.
 GPU sample addressing currently limits a source to UINT32_MAX samples;
 offsets beyond the segment still produce zero-padded blocks, including
 larger host-size offsets.
@@ -101,3 +111,6 @@ The [class execution audit](class-execution-audit.md) measures series grouping,
 layout validation, caller chunking and dispatch-cache overhead with unchanged
 kernels. It identifies different CPU/GPU batching controls and proposes shared
 planning and result handling while preserving backend-specific layouts.
+
+The [implementation and timing report](class-execution-changes.md) records the
+completed scheduling/cache changes, their tests, and public-call measurements.
