@@ -152,13 +152,25 @@ lines of work were independent and they agree.
 **The model reproduces thresholds this investigation measured by bisection
 against injections**, at n=4096, snr 5.0, fd 1e-3:
 
-    band   bisected safe (this doc)   gate model   apart
-     256          3.4125                3.3541      1.7%
-     512          3.8825                3.9224      1.0%
-    1024          4.3502                4.3604      0.2%
+    band   bisected safe   re-measured now   gate model   model vs safe
+     256      3.4125            3.4146           3.3541      1.8% low
+     512      3.8825            3.8782           3.9224      1.1% high
+    1024      4.3502            4.3374           4.3604      0.5% high
+
+The middle column matters. Those bisections were run BEFORE the gate was
+replaced, and one of the commits doing it says the fix "was the noise
+convention" -- so the obvious objection is that the two columns are not on
+the same scale and the agreement is an accident. Re-running the bisection
+against the current code answers it: 3.4146, 3.8782, 4.3374 against the
+earlier 3.4125, 3.8825, 4.3502, reproducing to 0.3% across the refactor.
+Same scale, so the comparison holds.
 
 An analytic model and a measured bisection, built separately and agreeing
-to 2%, is a much stronger statement than either alone.
+to 2%, is a much stronger statement than either alone. The model sits 1.1%
+and 0.5% ABOVE the measured-safe value at bands 512 and 1024 -- the unsafe
+direction -- but that is inside the 1.0-1.3% repeatability of the bisection
+itself, so it is at the boundary rather than over it. Against the old
+table's +3.5% to +15%, that is the whole improvement.
 
 **The band-key defect is fixed.** At a fixed (f = 0.70, ratio = 1.20) the
 old table returned one value for every band; the model varies. The test
