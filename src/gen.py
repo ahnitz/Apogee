@@ -182,6 +182,19 @@ class SRGen(Gen):
        input is read once into a register - which is why the result can be written
        back in place."""
     def load(s,idx):
+        if s.prod:
+            # conj(d*t) formed as the inputs are read, exactly as Gen does --
+            # but split-radix reads every input ONCE into a register and writes
+            # back in place, so unlike the Stockham form there is no scratch
+            # buffer for the product codelet to bounce through.
+            o=("q%d_r"%idx,"q%d_i"%idx)
+            s.emit("vf dR%d=V_LOADU(dr+DS*%d), dI%d=V_LOADU(di+DS*%d);"
+                   %(idx,idx,idx,idx))
+            s.emit("vf tR%d=V_LOADU(tr+DS*%d), tI%d=V_LOADU(ti+DS*%d);"
+                   %(idx,idx,idx,idx))
+            s.emit("vf %s=V_FMSUB(dR%d,tR%d,V_MUL(dI%d,tI%d));"%(o[0],idx,idx,idx,idx))
+            s.emit("vf %s=V_FNMSUB(dR%d,tI%d,V_MUL(dI%d,tR%d));"%(o[1],idx,idx,idx,idx))
+            return o
         if s.tw and idx!=0:
             o=("q%d_r"%idx,"q%d_i"%idx)
             s.emit("const vf W%dr=V_SET1(twr[%d]), W%di=V_SET1(twi[%d]);"%(idx,idx,idx,idx))
@@ -223,15 +236,22 @@ class SRGen(Gen):
             X[k+3*q]  = s.sub(U[k+q], mdf)
         return X
 
-def build_sr(n,name,tw=False):
-    g=SRGen(n,name,tw,False)
+def build_sr(n,name,tw=False,prod=False):
+    g=SRGen(n,name,tw,False,prod)
     X=g.rec(list(range(n)))
     for k in range(n):
         g.emit("ar[S*%d]=%s; ai[S*%d]=%s;"%(k,X[k][0],k,X[k][1]))
     body="\n".join(g.L)
     cdefs="\n".join("  const vf %s=V_SET1(%sf);"%(v,k) for k,v in g.consts.items())
-    args=("vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi"
-          if tw else "vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S")
+    if prod:
+        args=("const float*restrict dr,const float*restrict di,"
+              "const float*restrict tr,const float*restrict ti,"
+              "vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,"
+              "const long S,const long DS")
+    elif tw:
+        args="vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const float*restrict twr,const float*restrict twi"
+    else:
+        args="vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S"
     return ("static inline int %s(%s){\n  (void)br;(void)bi;\n  const vf Z=V_ZERO();\n%s\n%s\n  return 0;\n}\n"
             )%(name,args,cdefs,body)
 
@@ -258,6 +278,15 @@ if __name__=="__main__":
     for nn in (16,32,64):
         out.append(build_sr(nn,"fftsr%d"%nn))
         out.append(build_sr(nn,"fftsr%d_tw"%nn,tw=True))
+    # Split-radix PRODUCT codelets. The Stockham fft%d_prod forms above bounce
+    # through the br/bi scratch pair between their two passes -- 32 vector
+    # accesses at m=16, 128 at m=64 -- and in the pair-batched path that
+    # scratch is indexed at the OUTPUT stride, so consecutive calls walk the
+    # whole element buffer instead of one small block. Split-radix reads each
+    # input once into a register and writes back in place, so the scratch
+    # traffic is not reduced, it is DELETED.
+    for nn in (16,32,64):
+        out.append(build_sr(nn,"fftsr%d_prod"%nn,prod=True))
     # Twiddle-fused: only the sizes elemfft.h falls through to.  16 and 32
     # go to the split-radix variants, so fft16_tw and fft32_tw were dead.
     for (nn,rr) in ((8,[8]),(64,[8,8])):

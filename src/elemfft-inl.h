@@ -111,10 +111,43 @@ static inline int codelet_tw(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,
  * not read.  fft8_prod was the one exception; nothing asked for an 8-point
  * product codelet until the small-N path did, and band 128 came back as
  * noise.  If a new codelet is added here, check that it returns 0. */
+/* MF_SRPROD selects the split-radix product codelets, so the two forms can be
+   compared in ONE build -- this machine drifts ~18% between runs and a choice
+   argued from two binaries measures the room.  Read once; the branch is on a
+   value that never changes and predicts perfectly. */
+static inline int ap_srprod(void){
+  static int v = -1;
+  if(v < 0){ const char *e = getenv("MF_SRPROD"); v = e ? atoi(e) : 1; }
+  return v;
+}
 static inline int codelet_prod(int m,const float*restrict dr,const float*restrict di,
                                const float*restrict tr,const float*restrict ti,
                                vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,
                                long S,long DS){
+  if(ap_srprod()) switch(m){
+    /* 8 has no split-radix form and needs no scratch either: one radix-8 pass
+       writes straight to ar. */
+    case  8: return fft8_prod   (dr,di,tr,ti,ar,ai,br,bi,S,DS);
+    /* 16 wins at every width. */
+    case 16: return fftsr16_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+    default:
+      /* 32 and 64 only at 16 lanes -- the same register-file argument that
+         gates fftsr64 in codelet(), and the product form is worse off than
+         the plain one because it holds four more vectors per input while it
+         loads.  Measured, paired and interleaved, split-radix against
+         Stockham on the pair-batched path:
+         m=32 lands at n=1024, AVX-512 1.075x (6 of 6), AVX2 0.991x (2 of 4,
+         and the new side swings 292-332 us against a steady 305-308), SSE4
+         0.995x (0 of 4).  So it pays where the DAG fits and is a coin flip
+         where it spills. */
+      if constexpr (AP_W >= 16){
+        if(m==32) return fftsr32_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+        return fftsr64_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+      } else {
+        if(m==32) return fft32_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+        return fft64_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
+      }
+  }
   switch(m){
     case  8: return fft8_prod (dr,di,tr,ti,ar,ai,br,bi,S,DS);
     case 16: return fft16_prod(dr,di,tr,ti,ar,ai,br,bi,S,DS);
