@@ -52,9 +52,35 @@ coverage. Keep the generated output separate until selection is validated.
 The twelve local PyCBC captures contain 842 flat peaks. Their pinned band-1024
 configuration misses three captured triggers, with both forced-balanced and
 automatic CPU execution. Band 2048 reproduces every captured trigger in all
-twelve segments. The default gate's dismissal calibration needs further work;
-this cleanup does not claim to have fixed it or validated the complete
-483-template PyCBC search.
+twelve segments.
+
+**Followed up and resolved: this is not a dismissal-calibration defect.** It
+was recorded here as one, and measuring it properly says otherwise. Two
+things were missing. First, the pinned band understates it -- selection picks
+band 512 for this reference, and band 512 loses 20 of 842, not 3. Second,
+and decisive, those are NOISE triggers. The budget is a promise about
+signals, and on the same captures with the same plans, 2400 injections at
+snr 5.2 were dismissed ZERO times at bands 256, 512 and 1024, a resolution
+of 4.2e-4 against a 1e-3 budget.
+
+    band   flat noise triggers dismissed     injections dismissed
+     256      48  5.7e-2                        0 of 2400
+     512      20  2.4e-2                        0
+    1024       3  3.6e-3                        0
+    2048       0  0                             --  (f = 1.0000)
+
+Marginal noise triggers are preferentially gated because their in-band part
+is an independent draw, where a signal's is fixed by the template. Band 2048
+has f = 1.0 and loses nothing, which is the mechanism check. See
+docs/hierarchical.md and tests/test_gate_population.py, which asserts both
+halves so the noise loss cannot be read as a budget violation and "fixed" by
+lowering the gate.
+
+Still open from this: a bank that does not match its reference. A synthetic
+bank spanning exponents -7/3 to -4/3 against a reference at -7/3 omits 66 of
+508 injections at band 512, 130x the budget -- while the captured 37-template
+bank, whose spread is wider, passes. The complete 483-template PyCBC search
+is still not validated.
 
 `tools/cost-small-bands-4096-experimental.txt` records current-runtime relative
 costs at n=4096, SNR 5/5.5/6/6.5, reference anchor fractions .9/.99 and bandwidths

@@ -110,15 +110,69 @@ They differ by ~6% at U=2 and ~18% at U=1.  Using `g` for the pre-scan discards
 exactly the samples interpolation exists to rescue, and adds false dismissals on
 top of the calibrated rate without any test noticing unless it counts omissions.
 
+## What `fd` promises, and what it does not
+
+`fd` is a budget on dismissed **signals**.  It is NOT a promise that the
+hierarchical filter reproduces the flat filter's trigger list, and on
+marginal noise the two differ by a great deal.  Measured at threshold 5.0,
+with the same plan meeting its budget on the same data:
+
+    band   flat NOISE triggers dismissed    injections at snr 5.2 dismissed
+           captured    synthetic            captured (of 2400)
+     256    5.7e-2      3.8e-1               0     (< 4.2e-4)
+     512    2.4e-2      3.7e-1               0
+    1024    3.6e-3      2.7e-1               0
+    2048    0           0                    --    (f = 1.0000)
+
+Selection picks band 512 for that reference, so the shipped default loses a
+few percent of captured marginal noise triggers and a third of synthetic
+ones, while losing no signals at all.
+
+**This is the mechanism working, not a calibration defect.**  A coherent
+signal deposits power across frequency exactly as the template does, so the
+in-band fraction `f` applies and the coarse statistic is about `sqrt(f)`
+times the full one, every time.  A noise fluctuation that reaches the
+threshold got there by a draw, and its in-band part is an INDEPENDENT draw
+with the same mean and a large variance -- so a good share of marginal
+noise triggers land under the gate while signals at the same `|z|` do not.
+Where `f` is 1.0 the coarse statistic IS the full one and nothing can be
+dismissed; band 2048 measures exactly that, on both data sets.
+
+It matters anyway, for two reasons.  A pipeline that estimates its
+background from the trigger distribution is not filtering signals, and this
+changes that distribution.  And a user comparing the two filters will see
+this first, read it as a bug, and the obvious repair -- lower the gate --
+throws the speedup away for nothing.  A caller who needs the flat filter's
+trigger list exactly should use the flat filter, or a band where `f` is
+1.0, which is not a hierarchical filter in any useful sense.
+
+`tests/test_gate_population.py` asserts both halves so neither can be read
+without the other.
+
+### Open: a bank that does not match its reference
+
+The reference states how SNR accumulates for the bank being filtered, and a
+bank matching it meets the budget.  A synthetic bank spanning exponents
+-7/3 to -4/3 against a reference at -7/3 omits 66 of 508 injections at band
+512 -- 130x the budget.
+
+That is not settled either way.  One reference cannot describe a
+heterogeneous bank, which argues misuse; but a real template bank IS
+heterogeneous, and the twelve captured PyCBC segments pass with 0 of 2400
+dismissed while their 37 templates span an in-band fraction of 0.31 to 0.61
+against a reference at 0.93 -- a WIDER spread than the synthetic case that
+fails.  So spread alone is not the mechanism and the question is open.
+
 ## Known limits
 
-- **The coarse transform cannot go below 256 points**, because that is matchedfilter's
-  smallest supported size.  The unconstrained design often wants 64 or 128, so
-  supporting smaller transforms would unlock more speedup, particularly at
-  N=2^11 and high SNR.
 - **The decision is per pair, not per bin.**  The transform is global, so a partial
   one would not help; but it means a single loud bin drags the whole pair
   through the full correlation.
+- **Bands 64 and 128 are supported but never selected.**  The transform
+  handles them (the pair-batched path), and they are tested, but no cost
+  rows are installed for them: appending measured rows made selection pick
+  band 128/K4 at 4.37x where band 512/K4 measured 10.75x.  Explicit
+  `band=64` or `band=128` works.
 - **The trigger rate depends on the data.**  On noisier data than the design
   assumed the coarse pass escalates more often, and at a high enough rate the coarse pass
   is pure overhead.  `ap_hmf_stats` reports it; that is the first number to look
