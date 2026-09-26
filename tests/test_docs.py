@@ -142,3 +142,49 @@ def test_page_builds_from_pre_rename_artifacts():
     # the escalation table now reports one row per (n, snr), deduplicated
     # across runners, so look for the rate rather than a runner name
     assert "20.00%" in pages["hierarchical-benchmarks.html"]
+
+
+def test_readme_banner_renders_once_with_working_image_paths():
+    from html.parser import HTMLParser
+    class Images(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.sources = []
+        def handle_starttag(self, tag, attrs):
+            if tag == 'img':
+                self.sources.append(dict(attrs).get('src'))
+    with open(os.path.join(ROOT, 'README.md')) as stream:
+        intro = build_report.split_readme(stream.read())['_intro']
+    intro = build_report.strip_self_reference(build_report.retarget_anchors(intro))
+    page = build_report.overview_page({'_intro': intro})
+    parser = Images()
+    parser.feed(page)
+    assert parser.sources.count('assets/teaser.svg') == 1
+    assert 'docs/assets/teaser.svg' not in page
+    assert '&lt;p align=' not in page
+    assert '<strong>Batched matched filtering' in page
+    assert '537 MB' in page
+
+
+def test_historical_benchmark_artifacts_use_representative_targets():
+    def run(label, backend):
+        return {'host': {'label': label, 'backend': backend, 'system': 'test', 'machine': 'test'},
+                'flat': [{'n': 1024, 'data': 1, 'templates': 1, 'us_per_pair': 1.,
+                          'ok': True, 'reference_us_per_pair':
+                          {'numpy': 2., 'scipy': 2., 'fftw': 3., 'mkl': 4.}}]}
+    runs = [run('linux-x86_64', 'AVX3'), run('linux-x86_64-AVX3', 'AVX3'),
+            run('linux-x86_64-AVX2', 'AVX2'), run('linux-x86_64-SSE4', 'SSE4'),
+            run('macos-arm64', 'NEON_BF16'), run('macos-arm64-NEON', 'NEON'),
+            run('macos-arm64-NEON_WITHOUT_AES', 'NEON_WITHOUT_AES'),
+            run('my-custom-host-name', 'AVX2'), run('my-custom-host-name-AVX2', 'AVX2')]
+    picked = build_report._bench_runs(runs)
+    assert [r['host']['label'] for r in picked] == [
+        'linux-x86_64', 'linux-x86_64-AVX2', 'macos-arm64', 'my-custom-host-name']
+    page = build_report.filter_benchmarks_page(runs)
+    assert 'NEON_WITHOUT_AES' not in page and 'linux-x86_64-AVX3' not in page
+    assert '<th>numpy us</th>' not in page and '<th>scipy us</th>' not in page
+    assert '<th>fftw us</th>' in page and '<th>mkl us</th>' in page
+
+
+def test_readme_horizontal_rules_are_not_literal_dashes():
+    assert build_report.md("before\n\n---\n\nafter") == "<p>before</p><hr><p>after</p>"

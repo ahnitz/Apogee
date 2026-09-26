@@ -1,13 +1,10 @@
 """Self-contained benchmark: `python -m matchedfilter.benchmark`
 
-Needs nothing but numpy, so it runs anywhere the wheel installs.  It compares
-against numpy doing the same matched filter - product, inverse transform, then a
-per-bin peak scan - which is the work any implementation has to do, and checks
-the answers agree before reporting any timing.
-
-numpy's FFT is not a fair proxy for MKL or FFTW; it is a floor, not a rival.
-What this is for is telling you whether matchedfilter works and is fast *on your
-machine*, since the numbers in the README come from one developer box.
+NumPy supplies the independent correctness check. Optional FFTW and MKL
+references time the inverse transform alone, in single precision on one CPU
+thread; matchedfilter times the product, transform, and peak scan together.
+If neither reference is installed, matchedfilter timings and correctness checks
+still run, without a substitute reference timing.
 
     python -m matchedfilter.benchmark                 # default sweep
     python -m matchedfilter.benchmark --n 4096 16384  # specific lengths
@@ -32,15 +29,22 @@ def available_engines():
     behind, and the plan the benchmark then reports for that size measures
     a cache hit rather than the planning it actually did.
     """
-    names = ["numpy"]
-    for mod, name in (("pyfftw", "fftw"), ("scipy", "scipy"),
-                      ("mkl_fft", "mkl")):
+    names = []
+    for mod, name in (("pyfftw", "fftw"), ("mkl_fft", "mkl")):
         try:
             __import__(mod)
             names.append(name)
         except Exception:
             pass
     return names
+
+
+def benchmark_targets():
+    """Representative performance runs; correctness CI still tests every ISA."""
+    selected = ["auto"]
+    if "AVX2" in mf.targets() and mf.backend() != "AVX2":
+        selected.append("AVX2")
+    return selected
 
 
 FFTW_PLAN = {"estimate": "FFTW_ESTIMATE", "measure": "FFTW_MEASURE",
@@ -90,7 +94,7 @@ def reference_transforms(n, batch, x, fftw_plan="auto"):
     made it measure slower than numpy, which is not a result anyone should
     believe.
     """
-    out = [("numpy", lambda: np.fft.ifft(x, axis=-1))]
+    out = []
     try:
         import pyfftw
         # complex64, to match what this library computes in. An earlier
@@ -109,11 +113,6 @@ def reference_transforms(n, batch, x, fftw_plan="auto"):
         _plan_seconds[n] = time.perf_counter() - _t0
         src[:] = x
         out.append(("fftw", plan))
-    except Exception:
-        pass
-    try:
-        from scipy import fft as _sfft
-        out.append(("scipy", lambda: _sfft.ifft(x, axis=-1, workers=1)))
     except Exception:
         pass
     try:
@@ -646,7 +645,12 @@ def main(argv=None):
                          "starts and is never counted." % PATIENT_MAX_N)
     ap.add_argument("--label", default="",
                     help="name for this machine in a combined report")
+    ap.add_argument("--list-targets", action="store_true",
+                    help="print representative CPU targets for benchmark automation")
     a = ap.parse_args(argv)
+    if a.list_targets:
+        print(" ".join(benchmark_targets()))
+        return 0
 
     print(f"matchedfilter {mf.__version__}   "
           f"{platform.processor() or platform.machine()}   "
@@ -684,8 +688,8 @@ def main(argv=None):
           + f"{'gpu':>11}" + f"{'gpu x':>8}"
           + "".join(f"{e:>11}" for e in engines)
           + "".join(f"{'vs ' + e:>9}" for e in engines) + "   check")
-    if "fftw" not in engines:
-        print("  (pyfftw not installed; install it for the comparison that matters)")
+    if not engines:
+        print("  (No FFTW/MKL reference installed; install pyfftw or mkl-fft for comparison.)")
 
     fails = 0
     flat_rows = []
@@ -718,22 +722,14 @@ def main(argv=None):
         flat_rows.append({"n": n, "data": nd, "templates": nt,
                           "gpu_us_per_pair": gus,
                           "us_per_pair": mine,
-                          "numpy_us_per_pair": refs.get("numpy"),
                           "reference_us_per_pair": refs,
                           "checked": not a.no_check, "ok": "FAILED" not in ok})
 
     if _plan_seconds:
         tot = sum(_plan_seconds.values())
-        print("\nFFTW planning, excluded from every time above: %s | total "
-              "%.2fs.\n%s"
-              % (", ".join("n=%d %s %.2fs"
-                           % (n, _plan_used.get(n, "?"), t)
-                           for n, t in sorted(_plan_seconds.items())), tot,
-                 "FFTW_PATIENT is 26%% faster than FFTW_MEASURE where it is\n"
-                 "affordable, and far steadier -- measure returned 9.73 and\n"
-                 "24.56 us on two runs at n=4096. It is used up to n=%d; above\n"
-                 "that it does not finish planning in reasonable time (180s at\n"
-                 "n=65536 against 1.4s for measure)." % PATIENT_MAX_N))
+        print("\nFFTW planning (excluded from timings): %s; total %.2fs." %
+              (", ".join("n=%d %s %.2fs" % (n, _plan_used.get(n, "?"), t)
+                         for n, t in sorted(_plan_seconds.items())), tot))
     print("\n" + "The reference columns time ONE INVERSE TRANSFORM and nothing\n"
           "else -- batched, single precision, one thread. This library's column\n"
           "covers the whole matched filter: the product, the transform and the\n"

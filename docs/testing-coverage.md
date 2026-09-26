@@ -154,3 +154,12 @@ budget and float32-range guards; those guards passed 134 focused tests, and thei
 21 calibration-contract tests passed with warnings treated as errors. The cost
 export regression additionally verifies that newly measured bands without
 existing cost coverage are not exported into selection.
+
+## Benchmark presentation
+
+README banners use Markdown, the site resolves image assets and horizontal
+rules, and the overview renders the teaser once with responsive sizing. Timing
+references are FFTW/MKL only; NumPy remains the correctness oracle. Regression
+tests cover missing optional engines, representative CPU target selection,
+old-artifact deduplication, reference columns, and generated banner markup.
+A real CPU/GPU benchmark and a 15-page site build validate the end-to-end path.

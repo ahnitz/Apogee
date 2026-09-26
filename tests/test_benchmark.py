@@ -29,3 +29,23 @@ def test_hierarchical_cli_reports_two_field_config(monkeypatch, tmp_path, capsys
         assert row["band"] == 128
         assert row["taps"] == 4
         assert row["speedup"] == 2.0
+
+
+def test_no_optional_engines_means_no_substitute_timing(monkeypatch):
+    import sys
+    import numpy as np
+    for module in ('pyfftw', 'mkl_fft', 'mkl_fft.interfaces'):
+        monkeypatch.setitem(sys.modules, module, None)
+    assert benchmark.available_engines() == []
+    assert benchmark.reference_transforms(128, 1, np.zeros((1,128), np.complex64)) == []
+
+
+def test_representative_targets_do_not_repeat_auto(monkeypatch):
+    monkeypatch.setattr(benchmark.mf, 'targets', lambda: ['AVX3', 'AVX2', 'SSE4'])
+    monkeypatch.setattr(benchmark.mf, 'backend', lambda: 'AVX3')
+    assert benchmark.benchmark_targets() == ['auto', 'AVX2']
+    monkeypatch.setattr(benchmark.mf, 'backend', lambda: 'AVX2')
+    assert benchmark.benchmark_targets() == ['auto']
+    monkeypatch.setattr(benchmark.mf, 'targets', lambda: ['NEON_BF16', 'NEON', 'NEON_WITHOUT_AES'])
+    monkeypatch.setattr(benchmark.mf, 'backend', lambda: 'NEON_BF16')
+    assert benchmark.benchmark_targets() == ['auto']

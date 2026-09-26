@@ -562,6 +562,8 @@ nav a.on{color:var(--fg);font-weight:600;border-left-color:var(--accent)}
 nav a.sub{padding-left:1.5rem;font-size:12.5px}
 
 main{min-width:0;padding:2.2rem 0 5rem;max-width:44rem}
+img{max-width:100%;height:auto}
+hr{border:0;border-top:1px solid var(--bd);margin:1.5rem 0}
 .hero{margin:0 0 2rem}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;
     clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
@@ -721,6 +723,10 @@ def md(text):
     lines = text.split("\n")
     while i < len(lines):
         ln = lines[i]
+        if _re.fullmatch(r"(?:-{3,}|\*{3,}|_{3,})", ln.strip()):
+            out.append("<hr>")
+            i += 1
+            continue
         if ln.startswith("```"):
             j = i + 1
             buf = []
@@ -821,6 +827,7 @@ def inline(t):
     t = _re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
     t = _re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", t)
     t = _re.sub(r"(?<![*\w])\*([^*]+)\*(?!\*)", r"<em>\1</em>", t)
+    t = _re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r'<img src="\2" alt="\1">', t)
     t = _re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', t)
     return t
 
@@ -1153,13 +1160,7 @@ def bench_pair(runs):
     return "".join(o)
 
 
-#: Engines worth charting. FFTW is the reference that means something, and
-#: MKL where the runner has it. numpy and scipy are NOT shown: both normally
-#: wrap pocketfft, but a wheel linked against MKL makes them silently the
-#: same engine as the MKL line -- and their numbers came out close enough to
-#: FFTW to suggest exactly that. A comparison whose backend depends on how
-#: the wheel was built is not a comparison. They stay in the details table,
-#: where the engine is at least named.
+#: Direct FFT engines for timing; NumPy remains the correctness reference.
 _CHART_ENGINES = ("fftw", "mkl")
 
 
@@ -1176,11 +1177,9 @@ def bench_refs(runs, engines):
          'whether computing only the binned maxima beats doing the transform '
          'at all, which is the step that would otherwise dominate. FFTW is '
          'the reference worth caring about, and MKL where the runner has it. '
-         'numpy and scipy are not charted: both normally wrap pocketfft, but '
-         'a wheel linked against MKL turns them into the MKL line under '
-         'another name, so what they measure depends on how they were built '
-         'rather than on this library. Their numbers are in the table '
-         'below.</div>']
+         'NumPy supplies an independent float64 correctness check, not a '
+         'timing baseline. NumPy/SciPy timings are omitted to keep the '
+         'comparison focused on direct FFTW and MKL implementations.</div>']
     panels = []
     for r in runs:
         pts = [(f["n"], f["us_per_pair"]) for f in r.get("flat", [])
@@ -1199,34 +1198,36 @@ def bench_refs(runs, engines):
                            line_chart(ser, "%s: cost per pair" % r["host"]["label"],
                                       "transform length n", "microseconds per pair")))
     o.append(tabs(panels, "runner"))
-    return "".join(o) if panels else ""
+    return "".join(o) if panels else "<p>No FFTW or MKL reference measurements are available for these runs.</p>"
 
 
-#: ISA suffixes worth a row of their own on the results pages.
-#:
-#: A bare platform label -- "linux-x86_64", "macos-arm64" -- is the `auto`
-#: run, which resolves to the best target the runner has and is what a user
-#: actually gets. Everything else the build happens to hold is a duplicate
-#: for these pages: NEON_BF16 and NEON_WITHOUT_AES differ from NEON only in
-#: features an FFT never touches, and NEON/AVX3 simply repeat `auto` on
-#: their own hardware. AVX2 is kept because 256-bit against 512-bit is a
-#: real contrast for anyone on older x86.
-#:
-#: Ten rows across three machines said less than four do. The complete
-#: per-target numbers are unchanged and still in the details table, which
-#: passes all_targets=True.
-_SHOWN_ISAS = ("AVX2",)
-
-
+# Historical artifacts may contain many feature variants of the same kernel.
+# Show automatic selection and a distinct AVX2 comparison per host.
 def _bench_runs(runs, all_targets=False):
     runs = [r for r in runs if r.get("flat") or r.get("hierarchical")]
     if not all_targets:
-        def keep(label):
-            parts = label.split("-")
-            if len(parts) <= 2:
-                return True              # the bare platform: the `auto` run
-            return parts[-1] in _SHOWN_ISAS
-        runs = [r for r in runs if keep(r["host"]["label"])]
+        import re
+        groups = {}
+        for run in runs:
+            label = run["host"]["label"]
+            match = re.match(r"^(.*)-(AVX[\w]*|SSE[\w]*|NEON[\w]*|SVE[\w]*|SCALAR)$", label)
+            base = match[1] if match else label
+            target = match[2] if match else "auto"
+            groups.setdefault(base, []).append((target, run))
+        selected = []
+        for group in groups.values():
+            automatic = next((r for t,r in group if t == "auto"), None)
+            if automatic is None:
+                priority = lambda pair: (0 if pair[0].startswith("AVX3") else
+                                         1 if pair[0].startswith("NEON") else
+                                         2 if pair[0] == "AVX2" else 3, pair[0])
+                automatic = min(group, key=priority)[1]
+            selected.append(automatic)
+            if automatic["host"].get("backend") != "AVX2":
+                extra = next((r for t,r in group if t == "AVX2" and r is not automatic), None)
+                if extra is not None:
+                    selected.append(extra)
+        runs = selected
     runs.sort(key=lambda r: r["host"]["label"])
     return runs
 
@@ -1240,12 +1241,12 @@ def filter_benchmarks_page(runs):
     numbers are ratios against THIS one -- mixing them on a page made it easy
     to read a margin speedup as though it were raw throughput.
     """
-    all_runs = _bench_runs(runs, all_targets=True)
     runs = _bench_runs(runs)
+    all_runs = runs
     if not runs:
         return "<p>No benchmark results were available when this page was built.</p>"
     engines = sorted({e for r in all_runs for f in r.get("flat", [])
-                      for e in (f.get("reference_us_per_pair") or {})})
+                      for e in (f.get("reference_us_per_pair") or {}) if e in _CHART_ENGINES})
     fastest = min((f["us_per_pair"] for r in runs for f in r.get("flat", [])),
                   default=0)
     o = ['<p>One (data, template) correlation with peak-only output, on every '
@@ -1253,17 +1254,20 @@ def filter_benchmarks_page(runs):
          'read these as comparisons between back ends rather than as figures '
          'for any particular CPU.</p>',
          '<div class="cards">'
-         '<div class="card"><div class="k">%d</div><div class="l">platforms measured</div></div>'
+         '<div class="card"><div class="k">%d</div><div class="l">CPU configurations</div></div>'
          '<div class="card"><div class="k">%.2f</div><div class="l">fastest us per pair</div></div>'
          '<div class="card"><div class="k">%d</div><div class="l">transform lengths</div></div>'
          '</div>' % (len(runs), fastest,
                      len({f["n"] for r in runs for f in r.get("flat", [])}))]
     o.append(tabs([("Cost per pair", bench_pair(runs)),
                    ("Against other FFTs", bench_refs(runs, engines))], "view"))
+    o.append("<p>Automatic CPU selection is shown once per host. AVX2 is shown "
+             "separately when it differs; equivalent feature variants are omitted. "
+             "Correctness CI still tests every compiled target.</p>")
     o.append("<h3>What was tested</h3>")
     o.append(workload_note(runs, "flat"))
     o.append(bench_what(runs))
-    o.append(details("All numbers (%d rows, every target)"
+    o.append(details("All numbers (%d rows, representative targets)"
                      % sum(len(r.get("flat", [])) for r in all_runs),
                      bench_flat_raw(all_runs, engines)))
     return "".join(o)
@@ -1383,7 +1387,7 @@ def bench_hier_raw(runs):
             for r in runs for h in r.get("hierarchical", []) if "speedup" in h]
     if not rows:
         return ""
-    return table(["runner", "n", "fd", "snr", "chosen b/U/K", "flat (ms)",
+    return table(["runner", "n", "fd", "snr", "chosen band/taps", "flat (ms)",
                   "hierarchical (ms)", "speedup", "triggered"], rows)
 
 
@@ -1461,7 +1465,7 @@ SIGNPOSTS = [
      "Error against a float64 reference across injected SNR, with the "
      "distribution and not just the mean."),
     ("benchmarks.html", "Benchmarks",
-     "Against numpy, FFTW and MKL on the transform they all do, plus what "
+     "Against FFTW and MKL on the transform they all do, plus what "
      "the hierarchical mode saves."),
     ("notes.html", "Design notes",
      "Why the tables are measured rather than modelled, and which ideas "
@@ -1578,18 +1582,7 @@ def overview_page(readme):
     # in order to decide whether to keep reading. Generated offline by
     # tools/teaser_figure.py, because it measures FFTW and rocFFT and cannot
     # run on a CI machine without either.
-    teaser = asset("teaser.svg")
-    teaser_block = ('<div class="hero">%s</div>'
-                    '<p class="note">16384 correlations of 4096 points. FFTW '
-                    'and rocFFT are timed doing the <b>inverse transform '
-                    'alone</b>; matchedfilter is timed doing the product, the '
-                    'transform <b>and</b> the peak scan. On the GPU the '
-                    'baseline is at the memory-bandwidth limit — 213 GB/s '
-                    'against a 211 GB/s copy — because it has to write the '
-                    '537 MB of correlation. Not writing it is the point.</p>'
-                    % teaser) if teaser else ""
     return (hero
-            + teaser_block
             + md(readme.get("_intro", ""))
             + schematic()
             + "<h2>What it looks like</h2>"
@@ -1634,7 +1627,7 @@ def retarget_anchors(text):
     """
     for frag, page in ANCHORS.items():
         text = text.replace("](%s)" % frag, "](%s)" % page)
-    return text
+    return text.replace("](docs/assets/", "](assets/")
 
 
 def strip_self_reference(text):

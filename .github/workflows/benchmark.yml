@@ -62,8 +62,8 @@ jobs:
           # FFTW is the reference worth comparing against, but pyfftw has no
           # wheel on every platform here.  Optional by design: the benchmark
           # reports whichever references it finds.
-          python -m pip install pyfftw scipy || \
-            echo "::notice::pyfftw/scipy unavailable; comparing against numpy only"
+          python -m pip install pyfftw || \
+            echo "::notice::FFTW unavailable; timings will use MKL if installed"
           # MKL is x86-only and has no arm64 or macOS wheel, so this is
           # expected to fail on two of the three runners.
           python -m pip install mkl mkl-fft || \
@@ -73,18 +73,17 @@ jobs:
         # The suite coarse thresholds the benchmark: a timing of a wrong answer is
         # worthless, and a kernel has produced wrong answers before.
         #
-        # The target list comes from the build, not from this file: which
-        # ones a wheel contains is the compiler's decision, and which of
-        # those will run is the runner's.
+        # Time automatic selection plus AVX2 when distinct. The separate
+        # correctness workflow still exercises every supported SIMD target.
         run: |
           # Single-threaded is the claim, so pin the references too: an
-          # FFTW or scipy that quietly used every core would be comparing
+          # FFTW or MKL that quietly used every core would be comparing
           # core counts rather than transforms.
           export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
           mkdir -p /tmp/run && cd /tmp/run
-          targets=$(python -c "import matchedfilter;print(' '.join(matchedfilter.targets()))")
+          targets=$(python -m matchedfilter.benchmark --list-targets)
           echo "targets on this host: $targets"
-          for isa in auto $targets; do
+          for isa in $targets; do
             if [ "$isa" = auto ]; then unset MF_ISA; name="${{ matrix.label }}"
             else export MF_ISA="$isa"; name="${{ matrix.label }}-$isa"; fi
             echo "::group::$name"

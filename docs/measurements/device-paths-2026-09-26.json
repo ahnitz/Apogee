@@ -1,0 +1,266 @@
+{
+  "backend": "AVX3",
+  "devices": [
+    "cpu:0",
+    "gpu:0",
+    "gpu:1"
+  ],
+  "method": "warm run(), pure Gaussian noise, inspiral-shaped normalized templates, 60% window, one bin, threshold 5.5; hierarchical snr=5.5 fd=.001 from files",
+  "rounds": 9,
+  "results": [
+    {
+      "n": 1024,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 0.677951059769839,
+          "us_per_pair": 0.6620615818064834,
+          "min_ms": 0.6031516590155661,
+          "max_ms": 0.7690694206394255
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 256,
+          "ms_per_batch": 0.1583408797159791,
+          "us_per_pair": 0.15462976534763584,
+          "min_ms": 0.1486065611243248,
+          "max_ms": 0.17081778030842543,
+          "refine_rate": 0.01171875
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.7579446607269347,
+          "us_per_pair": 0.7401803327411471,
+          "min_ms": 0.33559357980266213,
+          "max_ms": 1.1131772212684155
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.2587174579578762,
+          "us_per_pair": 0.2526537675369885,
+          "min_ms": 0.25017637623629224,
+          "max_ms": 1.2991624147010346,
+          "refine_rate": 0.015625
+        }
+      }
+    },
+    {
+      "n": 2048,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 2.3958507378626126,
+          "us_per_pair": 2.3396979861939577,
+          "min_ms": 2.2408724762499332,
+          "max_ms": 2.6213796505623534
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 256,
+          "ms_per_batch": 0.17453696113079786,
+          "us_per_pair": 0.1704462511042948,
+          "min_ms": 0.16711599892005324,
+          "max_ms": 0.21231649909168482,
+          "refine_rate": 0.0126953125
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.5982183804735541,
+          "us_per_pair": 0.5841976371812052,
+          "min_ms": 0.5265043815597892,
+          "max_ms": 0.9390664403326809
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.2364152600057423,
+          "us_per_pair": 0.23087427734935773,
+          "min_ms": 0.2117261989042163,
+          "max_ms": 0.30448782024905086,
+          "refine_rate": 0.0244140625
+        }
+      }
+    },
+    {
+      "n": 4096,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 5.796967449391054,
+          "us_per_pair": 5.6611010247959515,
+          "min_ms": 5.383294334428178,
+          "max_ms": 6.3213981144751115
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 512,
+          "ms_per_batch": 0.46324267983436584,
+          "us_per_pair": 0.4523854295257479,
+          "min_ms": 0.4301581787876785,
+          "max_ms": 0.5510702193714678,
+          "refine_rate": 0.03125
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 1.0703994799405336,
+          "us_per_pair": 1.0453119921294274,
+          "min_ms": 1.0105672385543585,
+          "max_ms": 1.1938031995669007
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.4644355201162398,
+          "us_per_pair": 0.4535503126135154,
+          "min_ms": 0.42110353941097856,
+          "max_ms": 0.5331406788900495,
+          "refine_rate": 0.25390625
+        }
+      }
+    },
+    {
+      "n": 8192,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 12.911426330295702,
+          "us_per_pair": 12.608814775679397,
+          "min_ms": 11.053061345592141,
+          "max_ms": 16.27176934077094
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 2048,
+          "ms_per_batch": 4.473071881673402,
+          "us_per_pair": 4.368234259446682,
+          "min_ms": 3.8663597725745706,
+          "max_ms": 5.6790032217072115,
+          "refine_rate": 0.0615234375
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 7.047338427842727,
+          "us_per_pair": 6.8821664334401635,
+          "min_ms": 6.82663857670767,
+          "max_ms": 7.185322432113545
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 512,
+          "ms_per_batch": 3.7147256662137806,
+          "us_per_pair": 3.627661783411895,
+          "min_ms": 3.5681964945979416,
+          "max_ms": 4.03235533546346,
+          "refine_rate": 0.46484375
+        }
+      }
+    },
+    {
+      "n": 16384,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 24.55991046736017,
+          "us_per_pair": 23.984287565781415,
+          "min_ms": 21.022781496867537,
+          "max_ms": 26.604288490489125
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 2048,
+          "ms_per_batch": 6.466434759204276,
+          "us_per_pair": 6.314877694535426,
+          "min_ms": 6.0382523806765676,
+          "max_ms": 7.6499138813233,
+          "refine_rate": 0.125
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 14.262389314050475,
+          "us_per_pair": 13.928114564502417,
+          "min_ms": 13.652304303832352,
+          "max_ms": 14.820253321280083
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 1024,
+          "ms_per_batch": 10.870016005355865,
+          "us_per_pair": 10.615250005230337,
+          "min_ms": 10.736755008110777,
+          "max_ms": 10.987061221385375,
+          "refine_rate": 0.75390625
+        }
+      }
+    },
+    {
+      "n": 32768,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 54.572405060753226,
+          "us_per_pair": 53.29336431714182,
+          "min_ms": 45.57644994929433,
+          "max_ms": 71.20007707271725
+        },
+        "cpu_hier": {
+          "unavailable": "no calibrated coarse threshold for n=32768 band=4096: provide a covering threshold file, or set both band and coarse threshold"
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 33.255524933338165,
+          "us_per_pair": 32.47609856771305,
+          "min_ms": 32.69854700192809,
+          "max_ms": 35.40147503372282
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=32768 snr=5.50 fd=1e-03 -- no measured configuration at snr 5.50 meets fd=1e-03. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=[5.0, 5.5, 5.75, 6.0, 6.5], and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    },
+    {
+      "n": 65536,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 146.01445000153035,
+          "us_per_pair": 142.59223632961948,
+          "min_ms": 141.11762098036706,
+          "max_ms": 186.02175498381257
+        },
+        "cpu_hier": {
+          "unavailable": "no calibrated coarse threshold for n=65536 band=16384: provide a covering threshold file, or set both band and coarse threshold"
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 199.9553459463641,
+          "us_per_pair": 195.2688925257462,
+          "min_ms": 148.81794701796025,
+          "max_ms": 207.54608605057
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=65536 snr=5.50 fd=1e-03 -- no measured configuration at snr 5.50 meets fd=1e-03. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=[5.0, 5.5, 6.0, 6.5], and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    }
+  ],
+  "cpu": "AMD RYZEN AI MAX+ 395",
+  "gpu": "AMD Radeon 8060S",
+  "date": "2026-09-26",
+  "source_commit": "3c6866d55305f59cfe346c7dd5ea1a9d29c02b84",
+  "working_tree_note": "Frozen package snapshot includes concurrent uncommitted GPU size extensions through 65536."
+}
