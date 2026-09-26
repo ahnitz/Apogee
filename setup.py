@@ -97,6 +97,12 @@ def highway():
 HWY_INC, HWY_SRC, HWY_LIBS = highway()
 
 DEFS = [("HWY_DISABLED_TARGETS", "(%s)" % "|".join(DISABLED))]
+# Ablation builds. AP_NOXPOSE=1 removes stage A's corner turn, which makes
+# the results WRONG and the timing informative -- it sizes the prize before
+# anything is built to win it. It has to be compile-time: as a plan-field
+# branch in that loop it measured itself. See balanced-inl.h.
+if os.environ.get("AP_NOXPOSE"):
+    DEFS = DEFS + [("AP_NOXPOSE", os.environ["AP_NOXPOSE"])]
 SOURCES = (
     [("src/kernel.cc", CXX + ARCH, DEFS)]
     + [(s, CXX + ARCH, DEFS) for s in HWY_SRC]   # same baseline, or the

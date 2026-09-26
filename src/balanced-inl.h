@@ -25,6 +25,10 @@
 #define AP_BALANCED_INL_H_
 #endif
 
+#ifndef AP_NOXPOSE
+#define AP_NOXPOSE 0
+#endif
+
 HWY_BEFORE_NAMESPACE();
 namespace ap {
 namespace HWY_NAMESPACE {
@@ -461,7 +465,20 @@ static AP_ALWAYS_INLINE void stageA_tail(BP*p,int g,vf*restrict TR,vf*restrict T
         TI[t]=V_FMADD(xr,ti,V_MUL(xi,tr));
       }
     }
+  /* AP_NOXPOSE ablates the corner turn: results are WRONG, the timing is
+     the point -- the way to size a prize before building anything to win
+     it, as MF_NOSTORE did.
+     COMPILE-TIME, not a plan field. Written first as `if(p->noxpose)` it
+     measured its own branch: the ablated build came out SLOWER than the
+     normal one in one round and faster in the next, because a test on a
+     plan field inside this loop stops the compiler scheduling it. That is
+     the same finding that made binmax_one's STORE a template parameter,
+     one screen down in this file. */
+#if AP_NOXPOSE
+  for(int i=0;i<AP_W;i++){ OR[i]=TR[i]; OI[i]=TI[i]; }
+#else
   V_TRANSPOSE(TR,OR); V_TRANSPOSE(TI,OI);
+#endif
       /* Streaming these past the cache looked right on paper - the line is dead
          until stage B reads it back, so the read-for-ownership is wasted DRAM
          traffic.  Measured, it is 1.22x to 1.62x SLOWER (0/32 rounds); stage B
