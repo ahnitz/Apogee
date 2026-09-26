@@ -296,3 +296,50 @@ def test_every_device_matches_the_model(thr):
         "(%.2fx). Its coarse stage no longer matches the physics the gate "
         "is placed from, so its calibration is wrong -- check what "
         "approximation changed." % (dev, got, want, thr, got / want))
+
+
+def test_the_library_model_matches_this_one():
+    """matchedfilter.gatemodel is the shipped copy of the model above.
+
+    Two implementations of the same physics, checked against each other so
+    the library's cannot drift from the one these tests validate against
+    the filter.
+    """
+    from matchedfilter import gatemodel
+    p = profile()
+    for thr in LOOSE_GATES:
+        a = model(p, thr)
+        b = gatemodel.dismissal(p, N, BAND, SNR, thr, fd_hint=1e-2)
+        assert b is not None
+        assert 1 / 1.3 < a / b < 1.3, (
+            "the library model gives %.3e where the reference model gives "
+            "%.3e at gate %.1f" % (b, a, thr))
+
+
+#: SCOPE of the validation, stated so it is not over-read: every agreement
+#: check here injects a signal.
+#:
+#: That is not a limitation in the way it first looks. Conditional on the
+#: observed fine SNR the two populations are the same distribution -- with
+#: X = sqrt(f) u + sqrt(1-f) w, u | X has mean sqrt(f) X and variance 1-f,
+#: so a signal at rho_t gives the coarse statistic mean sqrt(f) rho and a
+#: noise trigger at the same rho gives mean sqrt(f) rho too. rho_t cancels.
+#: That is the sufficient-statistic argument in handoff/fdr-overshoot and
+#: it holds: the coarse statistic cannot know where the SNR came from,
+#: because if it could, it would separate signal from noise better than a
+#: matched filter.
+#:
+#: So a gate calibrated on injections is calibrated for noise triggers too.
+def test_the_model_is_validated_on_injections_only():
+    """The scope of the validation, asserted so it is not over-read.
+
+    Every agreement check in this file injects a signal. The noise-trigger
+    population is measured in test_gate_population.py and is NOT covered
+    here, which is the whole of the open question above.
+    """
+    p = profile()
+    band, thr = 1024, 4.6
+    inj = filter_mc(p, thr, band=band)
+    mdl = model(p, thr, band=band)
+    assert 1 / 1.3 < inj / mdl < 1.3, (
+        "model %.3e against an injected-signal measurement of %.3e" % (mdl, inj))

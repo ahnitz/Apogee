@@ -1377,6 +1377,28 @@ def choose_threshold(power, n, snr, fd, band, tuning=None):
     measured, so selection reads it rather than deriving one and correcting
     it. Returns None where nothing was measured, which makes the caller
     refuse rather than guess.
+
+    NOT YET REPLACED BY gatemodel.py, though it should be. That model
+    computes this from the profile with nothing fitted and agrees with the
+    filter to 0.91-1.15 on injections, where THIS table's gates overshoot
+    their budget by 2-6.5x on a real pycbc reference.
+
+    What blocks the swap is NOT the injection-vs-noise population. Those
+    are provably the same: writing the fine output as X = sqrt(f) u +
+    sqrt(1-f) w, with u the in-band noise the coarse stage sees, u | X is
+    Gaussian with mean sqrt(f) X and variance 1-f. For a signal at rho_t,
+    X = rho - rho_t and the coarse statistic is rho_t sqrt(f) + u, so its
+    mean is sqrt(f) rho. For a noise trigger X = rho and the coarse is u,
+    mean sqrt(f) rho. Same mean, same variance 1-f, rho_t cancels -- which
+    is the sufficient-statistic argument in handoff/fdr-overshoot, and it
+    holds. At f = 1 the variance vanishes, coarse equals fine, and the only
+    loss left is grid scalloping.
+
+    What blocks it is unfinished work, not a contradiction: wiring this to
+    the model left tests/test_gate_population.py failing at the full band,
+    and that was not yet traced to a cause. Everything else the swap
+    touches (three tests asserting table mechanics, and the low-ratio
+    corner, which the model FIXES) is expected to change.
     """
     t = _load_tuning() if tuning is None else tuning
     rows_by_fd = t.get("thr", {})
