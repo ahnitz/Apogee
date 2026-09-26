@@ -126,6 +126,57 @@ def highest_safe(n, power, band, snr, fd, trials, steps=9, verbose=False):
     return lo, table
 
 
+def coverage(paths):
+    """Does each table's grid cover the range real references query?
+
+    Written after finding the same fault twice by hand. A table can leave a
+    variable out of its key and look correct if the check that justified
+    the omission ran where that variable does not matter -- accuracy.txt
+    measured a 1.14x spread across band, its header says "across band/B_eff
+    from 16 to 128", and band is worth 20% at the ratio 1.2 real references
+    reach. The grid not covering the operating range is the visible symptom
+    of that, and it is mechanical to check.
+    """
+    from test_api import inspiral_power as ip
+    q = []
+    for n in (2048, 4096, 8192, 16384):
+        for e in (-7 / 3.0, -2.0, -5 / 3.0):
+            for knee in (0.0150, 0.05, 0.002):
+                power = ip(n, exponent=e, knee_frac=knee)
+                for band in (128, 256, 512, 1024, 2048):
+                    if band >= n:
+                        continue
+                    f, be = mf._band_features(power, band)
+                    if be > 0:
+                        q.append((f, be, band / be))
+    lim = {"f": (min(x[0] for x in q), max(x[0] for x in q)),
+           "B_eff": (min(x[1] for x in q), max(x[1] for x in q)),
+           "ratio": (min(x[2] for x in q), max(x[2] for x in q))}
+    print("operating range over %d (n, band, reference) combinations:" % len(q))
+    for k in ("f", "B_eff", "ratio"):
+        print("   %-6s %10.3f to %10.3f" % (k, lim[k][0], lim[k][1]))
+    print()
+    for path, tag, cols in paths:
+        try:
+            rows = [l.split() for l in open(path) if l.startswith(tag)]
+        except OSError:
+            print("   %-46s  unreadable" % path)
+            continue
+        if not rows:
+            print("   %-46s  no %s rows" % (path, tag))
+            continue
+        print("   %s" % path)
+        for name, idx in cols:
+            v = [float(r[idx]) for r in rows if len(r) > idx]
+            lo, hi = min(v), max(v)
+            want = lim[name]
+            gap = lo > want[0] * 1.001 or hi < want[1] * 0.999
+            print("      %-6s %10.3f to %10.3f   %s"
+                  % (name, lo, hi,
+                     "GAP: operating range is %.3f to %.3f"
+                     % want if gap else "covers"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=4096)
@@ -139,7 +190,21 @@ def main():
                     help="injections a bisection step; %d*fd events expected"
                          % 6000)
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--coverage", action="store_true",
+                    help="report each table's grid against the range real "
+                         "references query, and exit")
     a = ap.parse_args()
+
+    if a.coverage:
+        coverage([
+            ("python/matchedfilter/threshold.txt", "THR",
+             [("f", 3), ("ratio", 4)]),
+            ("python/matchedfilter/cost.txt", "COST",
+             [("f", 6), ("B_eff", 7)]),
+            ("tools/cost-small-bands-4096-experimental.txt", "COST",
+             [("f", 6), ("B_eff", 7)]),
+        ])
+        return 0
 
     power = inspiral_power(a.n, knee_frac=a.knee)
     expect = a.trials * a.fd
