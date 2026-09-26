@@ -186,12 +186,24 @@ def test_scalloping_not_beff_is_what_predicts_dismissal():
 # --- 4. the agreement itself ----------------------------------------------
 
 @pytest.mark.xfail(strict=True, reason=(
-    "The noise model is not yet accurate enough to replace the table. kappa "
-    "is validated to 0.6% against the real coarse stage, but the modelled "
-    "rate sits 0.6-1.25x from the filter MC at loose gates -- outside the "
-    "1.5x that would invalidate a gate placement, but not inside the +-20% "
-    "the fd budget is quoted to. The gap is in the conditioning on 'fine "
-    "detected', not in kappa. Flips to pass when that is derived properly."))
+    "The noise model cannot yet replace the table, and the gap is STRUCTURAL "
+    "rather than a free parameter. kappa is validated to 0.6% against the "
+    "real coarse stage, so the error is in the noise side. Measured against "
+    "the filter at n=4096, band 1024, snr 5.0:\n"
+    "    gate   filter     model\n"
+    "    4.2    1.13e-03   0.00e+00\n"
+    "    4.4    7.46e-03   5.79e-04\n"
+    "    4.6    2.25e-02   1.85e-02\n"
+    "    4.8    6.86e-02   8.71e-02\n"
+    "Conditioning on 'fine detected' is too strong at tight gates and about "
+    "right at loose ones. Fitting a single effective coarse-noise sigma does "
+    "NOT fix it: the best value is 1.35 and it still leaves a typical 2.04x "
+    "error, because no scale reproduces the shape -- at gate 4.2 even "
+    "sigma=1.6 gives 3.1e-05 against a measured 1.1e-03. So the missing "
+    "piece is a MECHANISM, and the first suspect is the assumption that the "
+    "coarse and fine stages correlate exactly as sqrt(f): the coarse filter "
+    "is a decimated band-limited thing, not the truncated template. Derive "
+    "that correlation rather than assuming it; do not fit a fudge factor."))
 @pytest.mark.parametrize("thr", LOOSE_GATES)
 def test_model_agrees_with_the_filter(thr):
     p = profile()
