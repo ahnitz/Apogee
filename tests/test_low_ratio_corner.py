@@ -68,15 +68,13 @@ SNR = 5.0
 FD = 1e-3
 
 
-def _dismissal(power, band, reps=12, nb=64, nt=16, thr=None):
+def _dismissal(power, band, reps=12, nb=64, nt=16):
     H = np.stack([template_with_power(N, power) for _ in range(nt)])
     flat = mf.MatchedFilter(N, nb, nt)
     flat.set_templates(H)
     hier = mf.HierarchicalFilter(N, nb, nt, snr=SNR, fd=FD, band=band, taps=8)
     hier.set_reference(power)
     hier.set_templates(H)
-    if thr is not None:
-        hier.set_coarse_threshold(thr)
     ph = np.exp(2j * np.pi * np.arange(N) / N)
     rng = np.random.default_rng(23)
     detected = omitted = 0

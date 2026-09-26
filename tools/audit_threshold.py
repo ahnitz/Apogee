@@ -25,9 +25,14 @@ tests/test_low_ratio_corner.py and docs/tooling-cleanup.md.
 This measures the same quantity the table claims, in the same units, the
 way a caller experiences it: inject at the design SNR into noise, filter
 with the flat filter and the hierarchical one, and count the peaks the flat
-filter reports that the hierarchical one does not.  It does NOT reuse
-hmf_tune.measure_tc, deliberately -- that is the code that produced the
-rows, and a check sharing the producer's setup cannot see a fault in it.
+filter reports that the hierarchical one does not.
+
+It does NOT reuse hmf_tune.measure_tc, nor
+tools/regen/threshold_lowratio.py, and that duplication is DELIBERATE.
+Those are the producers; this is the check. A check sharing the producer's
+setup cannot see a fault in it, which is exactly how the original error
+survived -- the rows and their only validation came from one code path.
+Do not factor the three together.
 
     python tools/audit_threshold.py                     # the four cells above
     python tools/audit_threshold.py --band 128 --trials 20000
@@ -51,44 +56,64 @@ import matchedfilter as mf                                   # noqa: E402
 from test_api import inspiral_power, template_with_power, noise  # noqa: E402
 
 
-def dismissal(n, power, band, snr, fd, threshold, trials, nt=16, nb=64,
-              seed=101, amp=1.0):
-    """(detected, omitted) for one coarse threshold."""
-    H = np.stack([template_with_power(n, power) for _ in range(nt)])
-    flat = mf.MatchedFilter(n, nb, nt)
-    flat.set_templates(H)
-    hier = mf.HierarchicalFilter(n, nb, nt, snr=snr, fd=fd, band=band, taps=8)
-    hier.set_reference(power)
-    hier.set_templates(H)
-    hier.set_coarse_threshold(threshold)
-    ph = np.exp(2j * np.pi * np.arange(n) / n)
-    rng = np.random.default_rng(seed)
-    detected = omitted = 0
-    for _ in range((trials + nb - 1) // nb):
-        D = noise((nb, n), rng)
-        which = rng.integers(0, nt, nb)
-        for b in range(nb):
-            lag = int(rng.integers(0, n))
-            D[b] += (amp * snr * H[which[b]] * ph ** lag).astype(np.complex64)
-        flat.set_data(D)
-        hier.set_data(D)
-        a = flat.run(binsize=n, threshold=snr)
-        c = hier.run(binsize=n, threshold=snr)
-        for b in range(nb):
-            t = which[b]
-            if a["index"][b, t, 0] >= 0:
-                detected += 1
-                omitted += int(c["index"][b, t, 0] < 0)
-    return detected, omitted
+class Cell:
+    """One (n, reference, band, snr, fd) cell, ready to measure at any
+    threshold.
+
+    The bank and both plans depend only on the cell, not on the threshold
+    under test, so they are built once here rather than inside the
+    bisection -- which calls measure() nine times and was paying for nine
+    banks, nine flat plans and nine hierarchical plans to vary one float.
+
+    Holds only what it needs, so nothing of the caller's scope stays alive
+    for the length of a sweep.
+    """
+
+    def __init__(self, n, power, band, snr, fd, nt=16, nb=64, seed=101):
+        self.n, self.snr, self.fd = n, snr, fd
+        self.nt, self.nb, self.seed = nt, nb, seed
+        self.H = np.stack([template_with_power(n, power) for _ in range(nt)])
+        self.flat = mf.MatchedFilter(n, nb, nt)
+        self.flat.set_templates(self.H)
+        self.hier = mf.HierarchicalFilter(n, nb, nt, snr=snr, fd=fd,
+                                          band=band, taps=8)
+        self.hier.set_reference(power)
+        self.hier.set_templates(self.H)
+        self.ph = np.exp(2j * np.pi * np.arange(n) / n)
+
+    def measure(self, threshold, trials):
+        """(detected, omitted) at one coarse threshold."""
+        n, nb, nt, snr = self.n, self.nb, self.nt, self.snr
+        self.hier.set_coarse_threshold(threshold)
+        rng = np.random.default_rng(self.seed)
+        detected = omitted = 0
+        for _ in range((trials + nb - 1) // nb):
+            D = noise((nb, n), rng)
+            which = rng.integers(0, nt, nb)
+            for b in range(nb):
+                lag = int(rng.integers(0, n))
+                D[b] += (snr * self.H[which[b]]
+                         * self.ph ** lag).astype(np.complex64)
+            self.flat.set_data(D)
+            self.hier.set_data(D)
+            a = self.flat.run(binsize=n, threshold=snr)
+            c = self.hier.run(binsize=n, threshold=snr)
+            for b in range(nb):
+                t = which[b]
+                if a["index"][b, t, 0] >= 0:
+                    detected += 1
+                    omitted += int(c["index"][b, t, 0] < 0)
+        return detected, omitted
 
 
 def highest_safe(n, power, band, snr, fd, trials, steps=9, verbose=False):
     """Bisect for the largest coarse threshold whose dismissal meets `fd`."""
     table = mf.choose_threshold(power, n, snr, fd, band)
+    cell = Cell(n, power, band, snr, fd)
     lo, hi = 2.0, table * 1.15
     for _ in range(steps):
         mid = 0.5 * (lo + hi)
-        det, om = dismissal(n, power, band, snr, fd, mid, trials)
+        det, om = cell.measure(mid, trials)
         rate = om / max(det, 1)
         ok = det > 0 and rate <= fd
         if verbose:
