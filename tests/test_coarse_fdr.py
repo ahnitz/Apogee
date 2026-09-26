@@ -98,16 +98,21 @@ def assert_transfer(cpu, gpu, label):
     return rates
 
 
+@pytest.mark.parametrize('backend', ['cpu-reference', 'gpu'])
 @pytest.mark.parametrize('band', BANDS)
-def test_coarse_kernel_fdr_transfer(band, record_property):
-    dev = usable_gpu()
-    if dev is None:
+def test_coarse_kernel_fdr_transfer(band, backend, record_property, request):
+    dev = usable_gpu() if backend == 'gpu' else None
+    if backend == 'gpu' and dev is None:
+        if request.config.getoption('--require-coarse-gpu'):
+            pytest.fail('required coarse-calibration GPU coverage has no usable GPU')
         pytest.skip('no usable GPU')
-    vk, _ = vulkan_runs()
+    vk = backend == 'gpu' and vulkan_runs()[0]
     kernels = []
     gpu = None
     try:
-        if vk:
+        if backend == 'cpu-reference':
+            kernels = [('NumPy independent reference', None)]
+        elif vk:
             root = pathlib.Path(mf.__file__).parent / 'spirv'
             names = [f'tierb_{band}.spv']
             names += sorted(p.name for p in root.glob(f'tierb_{band}_c16*.spv'))
@@ -150,6 +155,13 @@ def test_coarse_kernel_fdr_transfer(band, record_property):
             a = np.abs(cpu.run()['value']).reshape(BATCH, 4)
             reference.append(a[np.arange(BATCH), matched][detected])
             for name, kernel in kernels:
+                if backend == 'cpu-reference':
+                    # One independent FFT per injected template, not the full
+                    # Cartesian bank: this keeps mandatory CPU coverage cheap.
+                    product = data.astype(np.complex128) * np.conj(templates[matched])
+                    b = np.abs(np.fft.ifft(product, axis=1) * band).max(axis=1)
+                    observed[name].append(b[detected])
+                    continue
                 if kernel is None:
                     gpu.set_data(data)
                     b = np.abs(gpu.run()['value']).reshape(BATCH, 4)

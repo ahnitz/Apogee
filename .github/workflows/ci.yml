@@ -124,21 +124,8 @@ jobs:
     # and older images returned nil from MTLCreateSystemDefaultDevice.
     runs-on: macos-latest
     timeout-minutes: 30
-    # The runtime now exists but has never executed: there is no Apple
-    # hardware on the development machine, so every claim about this path is
-    # a claim about generated source rather than about something that ran.
-    #
-    # A GPU should be there. Hosted macOS runners expose an "Apple
-    # Paravirtual device" -- MSL compilation and command-buffer submission
-    # are reported working -- though MTLCreateSystemDefaultDevice returned
-    # nil on older images, which is why the code also tries
-    # MTLCopyAllDevices. Simdgroup MATRIX operations are the feature most
-    # suspected of being missing on a paravirtual device; this kernel uses
-    # simd_max, a plain reduction, not those.
-    #
-    # Still continue-on-error: whichever way it goes, the output is
-    # information nobody currently has.
-    continue-on-error: true
+    # GPU calibration-transfer checks are required: a missing device or a
+    # numerical regression must not silently produce a green build.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -256,7 +243,7 @@ jobs:
           done
 
       - name: Run the suite
-        run: python -m pytest tests -q
+        run: python -m pytest tests -q --require-coarse-gpu
 
       # The end of the chain: does a shipped kernel actually run and give
       # the right answer? A failure here is the useful outcome -- it says

@@ -48,6 +48,9 @@ def pytest_runtest_makereport(item, call):
         return
     from matchedfilter import UnsupportedSize
     if call.excinfo.errisinstance(UnsupportedSize):
+        if (item.config.getoption('--require-coarse-gpu') and
+                item.path.name == 'test_coarse_fdr.py'):
+            return  # this CI job promises the complete coarse test matrix
         report.outcome = "skipped"
         report.longrepr = (__file__, 0, "unsupported on this device: %s"
                            % call.excinfo.value)
@@ -152,3 +155,8 @@ def vulkan_runs():
         return _VK
     _VK = (True, None)
     return _VK
+
+
+def pytest_addoption(parser):
+    parser.addoption('--require-coarse-gpu', action='store_true', default=False,
+                     help='Fail rather than skip missing coarse-calibration GPU coverage')
