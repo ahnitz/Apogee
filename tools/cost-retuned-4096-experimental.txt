@@ -22,16 +22,27 @@
 #
 #   total over the four changed points: 1819us -> 1207us = 1.51x net
 #
-# Correct at 4 of 6 sampled points against the shipped table's 2 of 6. The
-# n=4096 rows are COMPLETE -- 48 keys, 9560 rows, unchanged between two
-# snapshots of the run -- so this is not a partial result.
+# Correct at 4 of 6 sampled points against the shipped table's 2 of 6.
 #
-# WHY NOT INSTALLED. One point regresses, which rules out "the rows were
-# merely stale" -- fresher rows cannot make a correct ranking wrong -- and
-# the run was stopped before covering every size the shipped table does
-# (it reached n=1024, 2048, 4096, 16384 and part of 32768). Dropping these
-# in wholesale would replace rows for sizes that were never re-measured.
-# Installing wants a completed run and a human on the 1.50x regression.
+# The n=4096 rows are COMPLETE, and the proof is structural rather than a
+# row count: the retune writes sizes in order and never revisits one, and
+# the n=4096 block is contiguous (lines 10244-19803 of the run's output,
+# with n=16384 starting at 19804). By the same argument n=1024, 2048 and
+# 16384 are complete and n=32768 is partial, the run having been stopped
+# during it.
+#
+# WHY NOT INSTALLED, and it is not only the interruption:
+#
+#   1. The retune SKIPPED n=8192 entirely -- straight from 4096 to 16384 --
+#      although 8192 has ACC2 rows and the shipped table carries 3600 rows
+#      for it. Until that is explained, the run cannot be trusted to have
+#      covered what it was asked to.
+#   2. Its size set does not match the shipped table's, which also has
+#      65536, 131072 and 262144. Any install is therefore per size, not a
+#      replacement of the file.
+#   3. One point regresses by 1.50x. That rules out "the rows were merely
+#      stale" -- fresher rows cannot make a correct ranking wrong -- and it
+#      is a trade for a person to make.
 #
 # Measured on Ryzen AI Max+ 395, AVX3, with the gate as it ships.
 #

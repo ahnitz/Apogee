@@ -368,10 +368,20 @@ keys, 9560 rows, identical between two snapshots of the run -- so the 4 of
     total over the four changed points: 1819us -> 1207us = 1.51x net
 
 So installing them is worth about 1.51x where the pick changes. They are
-NOT installed: the run was stopped before covering every size the shipped
-table does, so dropping them in wholesale would replace rows for sizes that
-were never re-measured, and the 1.50x regression wants a human. A completed
-run plus that decision is the whole remaining task.
+NOT installed, for three reasons rather than general caution:
+
+  1. The retune SKIPPED n=8192 -- straight from 4096 to 16384 -- although
+     8192 has ACC2 rows and the shipped table carries 3600 for it. Until
+     that is explained the run cannot be trusted to have covered what it
+     was asked to, and that is a bug in the tool, not in the rows.
+  2. Its size set does not match the shipped table's, which also has
+     65536, 131072 and 262144. Any install is per size, not a file swap.
+  3. One point regresses 1.50x, which is a trade for a person.
+
+Completeness of what it DID produce is not in doubt: the retune writes
+sizes in order and never revisits one, and the n=1024, 2048, 4096 and 16384
+blocks are contiguous, so those four are complete and only 32768 is
+partial.
 
 **The faster band is admissible**, which is the check that makes this a
 defect rather than selection being right for a reason I had not measured.
