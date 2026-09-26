@@ -36,7 +36,7 @@
       ],
       "push_constant": true,
       "file": "tierb_64.spv",
-      "bytes": 15708,
+      "bytes": 15484,
       "compact": {
         "file": "compact_64.spv",
         "descriptors": 5
@@ -98,7 +98,7 @@
       ],
       "push_constant": true,
       "file": "tierb_128.spv",
-      "bytes": 16296,
+      "bytes": 16072,
       "compact": {
         "file": "compact_128.spv",
         "descriptors": 5
@@ -160,7 +160,7 @@
       ],
       "push_constant": true,
       "file": "tierb_256.spv",
-      "bytes": 18232,
+      "bytes": 18008,
       "compact": {
         "file": "compact_256.spv",
         "descriptors": 5
@@ -222,7 +222,7 @@
       ],
       "push_constant": true,
       "file": "tierb_512.spv",
-      "bytes": 22208,
+      "bytes": 21984,
       "compact": {
         "file": "compact_512.spv",
         "descriptors": 5
@@ -284,7 +284,7 @@
       ],
       "push_constant": true,
       "file": "tierb_1024.spv",
-      "bytes": 22820,
+      "bytes": 22596,
       "compact": {
         "file": "compact_1024.spv",
         "descriptors": 5
@@ -346,7 +346,7 @@
       ],
       "push_constant": true,
       "file": "tierb_2048.spv",
-      "bytes": 23408,
+      "bytes": 23184,
       "compact": {
         "file": "compact_2048.spv",
         "descriptors": 5
@@ -408,7 +408,7 @@
       ],
       "push_constant": true,
       "file": "tierb_4096.spv",
-      "bytes": 25344,
+      "bytes": 25120,
       "compact": {
         "file": "compact_4096.spv",
         "descriptors": 5
@@ -470,7 +470,7 @@
       ],
       "push_constant": true,
       "file": "tierb_8192.spv",
-      "bytes": 29320,
+      "bytes": 29096,
       "compact": {
         "file": "compact_8192.spv",
         "descriptors": 5
@@ -518,7 +518,8 @@
       "lds_bytes": 65536,
       "portable": {
         "file": "tierb_8192_lds32.spv",
-        "lds_bytes": 32768
+        "lds_bytes": 32768,
+        "bytes": 29096
       }
     },
     "16384": {
@@ -555,7 +556,7 @@
       ],
       "push_constant": true,
       "file": "tierb_16384.spv",
-      "bytes": 29932,
+      "bytes": 29708,
       "compact": {
         "file": "compact_16384.spv",
         "descriptors": 5
@@ -603,7 +604,8 @@
       "lds_bytes": 65536,
       "portable": {
         "file": "tierb_16384_lds32.spv",
-        "lds_bytes": 32768
+        "lds_bytes": 32768,
+        "bytes": 29708
       }
     }
   }

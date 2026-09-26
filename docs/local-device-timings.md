@@ -14,26 +14,26 @@ the corresponding flat results, before timing.
 
 | Points | CPU flat | GPU flat | CPU hierarchical | GPU hierarchical | CPU / GPU band |
 |---:|---:|---:|---:|---:|:---|
-| 1024 | 0.678 | 0.758 | 0.158 | 0.259 | 256 / 256 |
-| 2048 | 2.396 | 0.598 | 0.175 | 0.236 | 256 / 256 |
-| 4096 | 5.797 | 1.070 | 0.463 | 0.464 | 512 / 256 |
-| 8192 | 12.911 | 7.047 | 4.473 | 3.715 | 2048 / 512 |
-| 16384 | 24.560 | 14.262 | 6.466 | 10.870 | 2048 / 1024 |
-| 32768 | 54.572 | 33.256 | — | — | — / — |
-| 65536 | 146.014 | 199.955 | — | — | — / — |
+| 1024 | 0.620 | 0.303 | 0.156 | 0.325 | 256 / 256 |
+| 2048 | 2.589 | 0.483 | 0.173 | 0.266 | 256 / 256 |
+| 4096 | 5.521 | 0.704 | 0.431 | 0.654 | 512 / 256 |
+| 8192 | 12.854 | 1.492 | 4.557 | 0.859 | 2048 / 512 |
+| 16384 | 23.510 | 2.785 | 7.282 | 2.267 | 2048 / 1024 |
 
-“—” means calibration/configuration coverage is missing, not an estimated time.
 CPU and GPU choose different calibrated bands at some sizes, so hierarchical
 comparisons include the selection policy as well as execution speed. These
 noise timings are not signal-dismissal measurements or comparisons with the
 larger batch in the README teaser.
 
-The frozen working-tree snapshot includes ongoing 32768/65536-point GPU work
-not yet committed at measurement time. Shared-machine timing is noisy:
-65536-point GPU rounds ranged from 148.8 to 207.5 ms. Treat the medians as local
-observations, not a performance guarantee. Raw ranges and refinement rates are
-in `docs/measurements/device-paths-2026-09-26.json`.
+These measurements supersede the original table after fixing the shared
+flat/refinement shader regression. They use the committed-source kernel set
+(through 16384 points), with the fix applied; the concurrent wider-kernel work
+is excluded. The previous 32768/65536 measurements are not corrected results
+and are retained only in the original raw JSON. Shared-machine timings vary.
+See [the regression investigation](gpu-performance-regression.md).
+Raw corrected ranges and refinement rates are in
+`docs/measurements/device-paths-fixed-2026-09-26.json`.
 
 ```bash
-python tools/bench_device_paths.py --data 16 --templates 64 --rounds 9 --json timings.json
+python tools/bench_device_paths.py --n 1024 2048 4096 8192 16384 --data 16 --templates 64 --rounds 9 --json timings.json
 ```

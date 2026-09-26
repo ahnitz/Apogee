@@ -445,12 +445,27 @@ uint slotToIndex(uint slot)
 #define TILE_T 1
 #endif
 
+// Keep the full-precision path in one function. Passing a dummy data
+// register array through the coarse tiling wrapper doubled flat/refine
+// execution time on the Radeon 8060S, even when its loads were disabled.
+#if COARSE16
 void filterOne(uint pair, uint d, uint t, uint tid, C dreg[16],
                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
                uint winStart, uint winEnd,
                uint binsize, int binShift, uint nbins, uint thrBits)
+#else
+void filterPair(uint pair, uint tid,
+                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
+                RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
+                uint ntmpl, uint winStart, uint winEnd,
+                uint binsize, int binShift, uint nbins, uint thrBits)
+#endif
 {
+#if !COARSE16
+    _tid = tid;
+    uint d = pair / ntmpl, t = pair % ntmpl;
+#endif
     C r[16];
 
     // level 0: gather this thread's stride-WG column straight from global
@@ -745,6 +760,7 @@ void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
 }
 #endif
 
+#if COARSE16
 void filterPair(uint pair, uint tid,
                 StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                 RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
@@ -780,6 +796,7 @@ void filterPair(uint pair, uint tid,
                   winStart, winEnd, binsize, binShift, nbins, thrBits);
 #endif
 }
+#endif
 
 [shader("compute")][numthreads(WG*PPG,1,1)]
 void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,

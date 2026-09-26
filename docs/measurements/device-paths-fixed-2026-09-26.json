@@ -1,0 +1,208 @@
+{
+  "backend": "AVX3",
+  "devices": [
+    "cpu:0",
+    "gpu:0",
+    "gpu:1"
+  ],
+  "method": "warm run(), pure Gaussian noise, inspiral-shaped normalized templates, 60% window, one bin, threshold 5.5; hierarchical snr=5.5 fd=.001 from files",
+  "rounds": 9,
+  "results": [
+    {
+      "n": 1024,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 0.6200796412304044,
+          "us_per_pair": 0.6055465246390668,
+          "min_ms": 0.5845869402401149,
+          "max_ms": 1.1531903990544379
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 256,
+          "ms_per_batch": 0.1563512603752315,
+          "us_per_pair": 0.15268677771018702,
+          "min_ms": 0.1474805804900825,
+          "max_ms": 0.1994831208139658,
+          "refine_rate": 0.01171875
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.3027866323649579,
+          "us_per_pair": 0.2956900706689042,
+          "min_ms": 0.2603372653984294,
+          "max_ms": 1.0065473045925706
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.32509641954675317,
+          "us_per_pair": 0.31747697221362614,
+          "min_ms": 0.23873769911006093,
+          "max_ms": 0.5965983006171882,
+          "refine_rate": 0.015625
+        }
+      }
+    },
+    {
+      "n": 2048,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 2.589118622598194,
+          "us_per_pair": 2.528436154881049,
+          "min_ms": 2.124159524793781,
+          "max_ms": 2.875993477313646
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 256,
+          "ms_per_batch": 0.17309894086793065,
+          "us_per_pair": 0.16904193444133853,
+          "min_ms": 0.16718281898647547,
+          "max_ms": 0.2077106013894081,
+          "refine_rate": 0.0126953125
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.48268239945173264,
+          "us_per_pair": 0.47136953071458265,
+          "min_ms": 0.3514433419331908,
+          "max_ms": 0.7497318997047842
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.2655817614868283,
+          "us_per_pair": 0.2593571889519808,
+          "min_ms": 0.24436850100755692,
+          "max_ms": 0.9793608984909953,
+          "refine_rate": 0.0244140625
+        }
+      }
+    },
+    {
+      "n": 4096,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 5.52099445162134,
+          "us_per_pair": 5.391596144161466,
+          "min_ms": 4.616629112408393,
+          "max_ms": 6.187567228658332
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 512,
+          "ms_per_batch": 0.4308856395073235,
+          "us_per_pair": 0.4207867573313706,
+          "min_ms": 0.40837754029780626,
+          "max_ms": 0.7176508009433746,
+          "refine_rate": 0.03125
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.7035104418173432,
+          "us_per_pair": 0.6870219158372493,
+          "min_ms": 0.6196364015340805,
+          "max_ms": 1.0447383602149785
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.6541364407166839,
+          "us_per_pair": 0.6388051178873866,
+          "min_ms": 0.356184639967978,
+          "max_ms": 0.864959079772234,
+          "refine_rate": 0.25390625
+        }
+      }
+    },
+    {
+      "n": 8192,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 12.854266999056563,
+          "us_per_pair": 12.552995116266175,
+          "min_ms": 11.201871238881722,
+          "max_ms": 14.393224497325718
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 2048,
+          "ms_per_batch": 4.556920495815575,
+          "us_per_pair": 4.450117671694898,
+          "min_ms": 4.053199586148064,
+          "max_ms": 4.781528502159442,
+          "refine_rate": 0.0615234375
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 1.4920537831966538,
+          "us_per_pair": 1.4570837726529824,
+          "min_ms": 1.317175621217167,
+          "max_ms": 1.609627459500287
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 512,
+          "ms_per_batch": 0.8589670201763511,
+          "us_per_pair": 0.8388349806409678,
+          "min_ms": 0.7756758597679436,
+          "max_ms": 0.9372990415431559,
+          "refine_rate": 0.46484375
+        }
+      }
+    },
+    {
+      "n": 16384,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 23.51033251034096,
+          "us_per_pair": 22.959309092129843,
+          "min_ms": 21.323992987163365,
+          "max_ms": 27.434392482973635
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 2048,
+          "ms_per_batch": 7.282220176421106,
+          "us_per_pair": 7.111543141036236,
+          "min_ms": 6.484535833199819,
+          "max_ms": 7.990194174150625,
+          "refine_rate": 0.125
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 2.785415682745607,
+          "us_per_pair": 2.720132502681257,
+          "min_ms": 2.451491266440012,
+          "max_ms": 3.0024921043628923
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 1024,
+          "ms_per_batch": 2.2668341354636303,
+          "us_per_pair": 2.2137052104137016,
+          "min_ms": 2.0791609528135844,
+          "max_ms": 2.7753685452890666,
+          "refine_rate": 0.75390625
+        }
+      }
+    }
+  ],
+  "source_note": "Committed source at 1c3cce2 plus full-precision filterPair fix; excludes concurrent wider-kernel development."
+}

@@ -1,6 +1,7 @@
 """The figure that answers "why would I care?", measured on this machine.
 
-Six bars at n=4096 and one batch size, so the work is identical everywhere.
+Six bars at n=4096 and one batch size. CPU/GPU matchedfilter bars time
+the public run() API, including output readback and assembly after warmup.
 
 The comparison is deliberately unfair TO US in what is counted: FFTW and
 rocFFT are timed doing the inverse transform ALONE, while matchedfilter is
@@ -110,7 +111,6 @@ def cpu_ms(kind, reps=3):
 
 
 def gpu_ms(kind, reps=12):
-    from matchedfilter import _vkcompute as V
     d, h = _case()
     if kind == "flat":
         f = mf.MatchedFilter(N, ND, NT, device="gpu")
@@ -120,24 +120,15 @@ def gpu_ms(kind, reps=12):
         f.set_reference(ref)
     f.set_data(d)
     f.set_templates(h)
-    f.run(binsize=N, threshold=5.5)
-    ctx = f._gpu
-    cmds = [b[1] for b in ctx._hier.values()] + [b[4] for b in ctx._batches.values()]
-    arr = (V._vp * len(cmds))(*cmds)
-    sub = V._SubmitInfo(4, None, 0, None, None, len(cmds), arr, 0, None)
-
-    def go():
-        ctx.vk.vkQueueSubmit(ctx.queue, 1, ctypes.byref(sub), None)
-        ctx.vk.vkQueueWaitIdle(ctx.queue)
-
+    # Match cpu_ms: time the public API, including synchronization,
+    # readback and result assembly. Replaying private command buffers hid
+    # that overhead and made the two device bars incomparable.
     for _ in range(3):
-        go()
+        f.run(binsize=N, threshold=5.5)
     t0 = time.perf_counter()
     for _ in range(reps):
-        go()
-    t = (time.perf_counter() - t0) / reps * 1e3
-    ctx.destroy()
-    return t
+        f.run(binsize=N, threshold=5.5)
+    return (time.perf_counter() - t0) / reps * 1e3
 
 
 def rocfft_ms(reps=10):
