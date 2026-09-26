@@ -48,3 +48,28 @@ later while the reported GPU clock rose from 1023 to 2092 MHz. Clock ramping,
 batch size and competing work affect comparisons with short alternating
 CPU/GPU timing rounds. No power or clock settings were changed. The size sweep
 measures repeated warm API calls, not a guarantee of peak sustained throughput.
+
+## Controlled hierarchical A/B
+
+A follow-up isolated the refinement fix from coarse tiling. All three variants
+used identical inputs from the teaser, n=4096, full windows, SNR=5.5,
+fd=0.01, band=256, and the same supplied calibration. The pre-fix variant
+changed only `refine_4096.spv` to its parent-of-429d5c2 version; the untiled
+variant selected the existing tile-one coarse binary. No thresholds changed.
+The public GPU `run()` call was timed, including output assembly, after 0.5 s
+warmup per variant. Twelve rounds rotated/reversed variant order and used
+50 ms timing blocks. Values are median milliseconds per batch.
+
+| Batch | Before fix, tiled | Fixed, tiled | Fixed, untiled |
+|---|---:|---:|---:|
+| 16 × 64 | 0.07079 | 0.06350 | 0.06401 |
+| 16 × 1024 | 0.31632 | 0.21756 | 0.22546 |
+
+The large hierarchical batch takes 31.2% less time after the fix (1.45×
+throughput). Tiling's additional end-to-end difference here is only 3.5%
+and overlaps round-to-round ranges; this is not evidence for a large tiling
+speedup. The small-batch tiling difference is negligible. Every variant
+returned matching final peak indices/values and refined exactly 6.8359375%
+of pairs. These comparisons measure retained tiling separately from repaired
+refinement, rather than inferring either benefit from a CPU/GPU speed ratio.
+Raw ranges are in `docs/measurements/hierarchical-ab-2026-09-26.json`.
