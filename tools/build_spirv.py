@@ -290,12 +290,12 @@ def lds_bytes(n, cap):
     return ch * wg * 8
 
 
-def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0, ppg=1, tile=1):
+def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0, ppg=1, tile=1, single_bin=0):
     cap = LDS_CAP[n] if cap is None else cap
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   "#define PPG %d\n#define TILE_T %d\n#define RADIX %d\n"
-                   % (n, cap, coarse16, ppg, tile, RADIX.get(n, 16))
+                   "#define PPG %d\n#define TILE_T %d\n#define RADIX %d\n#define SINGLE_BIN %d\n"
+                   % (n, cap, coarse16, ppg, tile, RADIX.get(n, 16), single_bin)
                    + KERNEL.read_text())
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
@@ -378,7 +378,11 @@ def main(argv=None):
         # that cost does not shrink with the band because it is not
         # arithmetic. compactPairs is band-independent; refineListed needs
         # the same portable variant the other n-length kernels do.
-        comp = compile_one(slangc, n, OUT, "compactPairs")
+        comp = OUT / "compact.spv"
+        if n == TIER_B[0]:
+            compile_one(slangc, n, OUT, "compactPairs").replace(comp)
+            for obsolete in OUT.glob("compact_*.spv"):
+                obsolete.unlink()
         cinfo = reflect(comp.read_bytes())
         info["compact"] = dict(file=comp.name,
                                descriptors=len(cinfo["descriptors"]))
@@ -391,6 +395,16 @@ def main(argv=None):
                                  cap=PORTABLE_CAP, suffix="_lds32")
             info["refine"]["portable"] = dict(
                 file=rsmall.name, lds_bytes=lds_bytes(n, PORTABLE_CAP))
+        # Benchmarked one-bin specialization for the large full-precision
+        # Vulkan kernels. Keep the general kernels for multiple output bins.
+        if n >= 16384:
+            for entry, target in (("fusedTierB", info), ("refineListed", info["refine"])):
+                one = compile_one(slangc, n, OUT, entry, suffix="_onebin", single_bin=1)
+                target["one_bin"] = dict(file=one.name)
+                if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
+                    small = compile_one(slangc, n, OUT, entry, cap=PORTABLE_CAP,
+                                        suffix="_onebin_lds32", single_bin=1)
+                    target["one_bin"]["portable"] = dict(file=small.name)
         # Metal, from the same source. Built for every size so a macOS wheel
         # carries the same coverage as a Linux one.
         metal = {}

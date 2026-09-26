@@ -1,0 +1,540 @@
+{
+  "main": [
+    {
+      "n": 16384,
+      "rows": 1,
+      "hier": false,
+      "ms": [
+        0.061053899116814137,
+        0.065422966144979
+      ],
+      "ratio": 1.0715608190691563
+    },
+    {
+      "n": 16384,
+      "rows": 1,
+      "hier": true,
+      "ms": [
+        0.0613450538367033,
+        0.05970196798443794
+      ],
+      "ratio": 0.9732156751114907
+    },
+    {
+      "n": 16384,
+      "rows": 16,
+      "hier": false,
+      "ms": [
+        0.17558899708092213,
+        0.1564730191603303
+      ],
+      "ratio": 0.8911322563578284
+    },
+    {
+      "n": 16384,
+      "rows": 16,
+      "hier": true,
+      "ms": [
+        0.21664600353688002,
+        0.1971289748325944
+      ],
+      "ratio": 0.9099128145192709
+    },
+    {
+      "n": 16384,
+      "rows": 64,
+      "hier": false,
+      "ms": [
+        1.946205971762538,
+        1.6373380785807967
+      ],
+      "ratio": 0.8412974280918366
+    },
+    {
+      "n": 16384,
+      "rows": 64,
+      "hier": true,
+      "ms": [
+        2.0783430663868785,
+        1.7225369811058044
+      ],
+      "ratio": 0.8288030060890623
+    },
+    {
+      "n": 32768,
+      "rows": 1,
+      "hier": false,
+      "ms": [
+        0.16316608525812626,
+        0.1279700081795454
+      ],
+      "ratio": 0.7842929367159774
+    },
+    {
+      "n": 32768,
+      "rows": 1,
+      "hier": true,
+      "ms": [
+        0.1780940219759941,
+        0.1443200744688511
+      ],
+      "ratio": 0.810358892834171
+    },
+    {
+      "n": 32768,
+      "rows": 16,
+      "hier": false,
+      "ms": [
+        1.3484859373420477,
+        1.0483440710231662
+      ],
+      "ratio": 0.7774230653747266
+    },
+    {
+      "n": 32768,
+      "rows": 16,
+      "hier": true,
+      "ms": [
+        1.3580139493569732,
+        1.045198063366115
+      ],
+      "ratio": 0.7696519346218954
+    },
+    {
+      "n": 32768,
+      "rows": 64,
+      "hier": false,
+      "ms": [
+        21.698219003155828,
+        17.286143032833934
+      ],
+      "ratio": 0.7966618380208904
+    },
+    {
+      "n": 32768,
+      "rows": 64,
+      "hier": true,
+      "ms": [
+        21.939389989711344,
+        17.21001008991152
+      ],
+      "ratio": 0.7844343027760706
+    },
+    {
+      "n": 65536,
+      "rows": 1,
+      "hier": false,
+      "ms": [
+        0.8063910063356161,
+        0.6266039563342929
+      ],
+      "ratio": 0.7770473026251775
+    },
+    {
+      "n": 65536,
+      "rows": 1,
+      "hier": true,
+      "ms": [
+        0.8371779695153236,
+        0.6293889600783587
+      ],
+      "ratio": 0.7517982830374018
+    },
+    {
+      "n": 65536,
+      "rows": 16,
+      "hier": false,
+      "ms": [
+        21.030267933383584,
+        18.469059956260026
+      ],
+      "ratio": 0.8782132502906499
+    },
+    {
+      "n": 65536,
+      "rows": 16,
+      "hier": true,
+      "ms": [
+        21.23198506888002,
+        18.39138299692422
+      ],
+      "ratio": 0.8662111873788332
+    },
+    {
+      "n": 65536,
+      "rows": 64,
+      "hier": false,
+      "ms": [
+        264.8216759553179,
+        194.2166369408369
+      ],
+      "ratio": 0.7333864806958104
+    },
+    {
+      "n": 65536,
+      "rows": 64,
+      "hier": true,
+      "ms": [
+        262.5762289389968,
+        193.65195906721056
+      ],
+      "ratio": 0.7375075796072952
+    }
+  ],
+  "portable": [
+    {
+      "n": 16384,
+      "rows": 16,
+      "hier": false,
+      "ms": [
+        0.21992193069308996,
+        0.1984420232474804
+      ],
+      "ratio": 0.9023293976279898
+    },
+    {
+      "n": 16384,
+      "rows": 16,
+      "hier": true,
+      "ms": [
+        0.23097300436347723,
+        0.23624300956726074
+      ],
+      "ratio": 1.0228165417785804
+    },
+    {
+      "n": 32768,
+      "rows": 16,
+      "hier": false,
+      "ms": [
+        2.2385340416803956,
+        1.811934052966535
+      ],
+      "ratio": 0.8094288580067223
+    },
+    {
+      "n": 32768,
+      "rows": 16,
+      "hier": true,
+      "ms": [
+        2.137485076673329,
+        1.7817579209804535
+      ],
+      "ratio": 0.833576776944562
+    },
+    {
+      "n": 65536,
+      "rows": 16,
+      "hier": false,
+      "ms": [
+        33.30174705479294,
+        31.03749395813793
+      ],
+      "ratio": 0.9320079786526055
+    },
+    {
+      "n": 65536,
+      "rows": 16,
+      "hier": true,
+      "ms": [
+        32.89538493845612,
+        30.96890600863844
+      ],
+      "ratio": 0.9414361943651999
+    }
+  ],
+  "tiny_previous_runtime": [
+    {
+      "n": 4096,
+      "bins": 1,
+      "old_us": 41.97965026833117,
+      "new_us": 42.00765397399664,
+      "ratio": 1.0006670781077611
+    },
+    {
+      "n": 4096,
+      "bins": 4,
+      "old_us": 43.62069885246456,
+      "new_us": 43.738947715610266,
+      "ratio": 1.002710842931372
+    },
+    {
+      "n": 16384,
+      "bins": 1,
+      "old_us": 58.86174621991813,
+      "new_us": 53.59490169212222,
+      "ratio": 0.9105217757536783
+    },
+    {
+      "n": 16384,
+      "bins": 4,
+      "old_us": 61.48670217953622,
+      "new_us": 63.16735525615513,
+      "ratio": 1.0273336025033761
+    },
+    {
+      "n": 32768,
+      "bins": 1,
+      "old_us": 161.82864783331752,
+      "new_us": 125.83674979396164,
+      "ratio": 0.7775925429691083
+    },
+    {
+      "n": 32768,
+      "bins": 4,
+      "old_us": 175.68610492162406,
+      "new_us": 176.2847474310547,
+      "ratio": 1.0034074550727714
+    }
+  ],
+  "resources": [
+    {
+      "file": "tierb_16384_onebin.spv",
+      "stats": {
+        "Driver pipeline hash": 557477789563947657,
+        "SGPRs": 128,
+        "VGPRs": 96,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 18,
+        "Code size": 18360,
+        "LDS size": 65536,
+        "Scratch size": 1280,
+        "Subgroups per SIMD": 16,
+        "Combined inputs": 0,
+        "Combined outputs": 0,
+        "Hash": 409828522,
+        "Instructions": 3471,
+        "Copies": 334,
+        "Branches": 141,
+        "Latency": 9174,
+        "Inverse Throughput": 2783,
+        "VMEM Clause": 71,
+        "SMEM Clause": 18,
+        "Pre-Sched SGPRs": 16,
+        "Pre-Sched VGPRs": 100,
+        "VALU": 2168,
+        "SALU": 447,
+        "VMEM": 96,
+        "SMEM": 18,
+        "VOPD": 0
+      }
+    },
+    {
+      "file": "refine_16384_onebin.spv",
+      "stats": {
+        "Driver pipeline hash": 17527899824988209288,
+        "SGPRs": 128,
+        "VGPRs": 96,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 18,
+        "Code size": 18416,
+        "LDS size": 65536,
+        "Scratch size": 1280,
+        "Subgroups per SIMD": 16,
+        "Combined inputs": 0,
+        "Combined outputs": 0,
+        "Hash": 2158241425,
+        "Instructions": 3476,
+        "Copies": 334,
+        "Branches": 141,
+        "Latency": 9367,
+        "Inverse Throughput": 2783,
+        "VMEM Clause": 71,
+        "SMEM Clause": 19,
+        "Pre-Sched SGPRs": 16,
+        "Pre-Sched VGPRs": 100,
+        "VALU": 2168,
+        "SALU": 448,
+        "VMEM": 96,
+        "SMEM": 20,
+        "VOPD": 0
+      }
+    },
+    {
+      "file": "tierb_32768_onebin.spv",
+      "stats": {
+        "Driver pipeline hash": 13443041161107014128,
+        "SGPRs": 128,
+        "VGPRs": 96,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 974,
+        "Code size": 55388,
+        "LDS size": 65536,
+        "Scratch size": 30720,
+        "Subgroups per SIMD": 16,
+        "Combined inputs": 0,
+        "Combined outputs": 0,
+        "Hash": 1220522757,
+        "Instructions": 9783,
+        "Copies": 872,
+        "Branches": 450,
+        "Latency": 80795,
+        "Inverse Throughput": 10099,
+        "VMEM Clause": 1262,
+        "SMEM Clause": 34,
+        "Pre-Sched SGPRs": 16,
+        "Pre-Sched VGPRs": 212,
+        "VALU": 4543,
+        "SALU": 978,
+        "VMEM": 1740,
+        "SMEM": 34,
+        "VOPD": 0
+      }
+    },
+    {
+      "file": "refine_32768_onebin.spv",
+      "stats": {
+        "Driver pipeline hash": 470845247520323274,
+        "SGPRs": 128,
+        "VGPRs": 96,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 974,
+        "Code size": 55388,
+        "LDS size": 65536,
+        "Scratch size": 30720,
+        "Subgroups per SIMD": 16,
+        "Combined inputs": 0,
+        "Combined outputs": 0,
+        "Hash": 3158423472,
+        "Instructions": 9788,
+        "Copies": 872,
+        "Branches": 450,
+        "Latency": 80985,
+        "Inverse Throughput": 10123,
+        "VMEM Clause": 1262,
+        "SMEM Clause": 35,
+        "Pre-Sched SGPRs": 16,
+        "Pre-Sched VGPRs": 212,
+        "VALU": 4543,
+        "SALU": 979,
+        "VMEM": 1740,
+        "SMEM": 36,
+        "VOPD": 0
+      }
+    },
+    {
+      "file": "tierb_65536_onebin.spv",
+      "stats": {
+        "Driver pipeline hash": 2090696410567633368,
+        "SGPRs": 128,
+        "VGPRs": 96,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 6407,
+        "Code size": 230172,
+        "LDS size": 65536,
+        "Scratch size": 87552,
+        "Subgroups per SIMD": 16,
+        "Combined inputs": 0,
+        "Combined outputs": 0,
+        "Hash": 1033265388,
+        "Instructions": 38371,
+        "Copies": 2579,
+        "Branches": 1448,
+        "Latency": 1012096,
+        "Inverse Throughput": 126512,
+        "VMEM Clause": 9501,
+        "SMEM Clause": 66,
+        "Pre-Sched SGPRs": 25,
+        "Pre-Sched VGPRs": 436,
+        "VALU": 12093,
+        "SALU": 2987,
+        "VMEM": 11853,
+        "SMEM": 66,
+        "VOPD": 0
+      }
+    },
+    {
+      "file": "refine_65536_onebin.spv",
+      "stats": {
+        "Driver pipeline hash": 2159194971533170168,
+        "SGPRs": 128,
+        "VGPRs": 96,
+        "Spilled SGPRs": 0,
+        "Spilled VGPRs": 6407,
+        "Code size": 230184,
+        "LDS size": 65536,
+        "Scratch size": 87552,
+        "Subgroups per SIMD": 16,
+        "Combined inputs": 0,
+        "Combined outputs": 0,
+        "Hash": 1675518160,
+        "Instructions": 38376,
+        "Copies": 2579,
+        "Branches": 1448,
+        "Latency": 1012289,
+        "Inverse Throughput": 126536,
+        "VMEM Clause": 9501,
+        "SMEM Clause": 67,
+        "Pre-Sched SGPRs": 25,
+        "Pre-Sched VGPRs": 436,
+        "VALU": 12093,
+        "SALU": 2988,
+        "VMEM": 11853,
+        "SMEM": 68,
+        "VOPD": 0
+      }
+    }
+  ],
+  "portable_16384_repeat": [
+    {
+      "n": 16384,
+      "rows": 1,
+      "hier": false,
+      "ms": [
+        0.05877818912267685,
+        0.05674040876328945
+      ],
+      "ratio": 0.9653310115571218
+    },
+    {
+      "n": 16384,
+      "rows": 1,
+      "hier": true,
+      "ms": [
+        0.07072659209370613,
+        0.06771099288016558
+      ],
+      "ratio": 0.9573625828097985
+    },
+    {
+      "n": 16384,
+      "rows": 16,
+      "hier": false,
+      "ms": [
+        0.2109054010361433,
+        0.18908039201050997
+      ],
+      "ratio": 0.8965175433231644
+    },
+    {
+      "n": 16384,
+      "rows": 16,
+      "hier": true,
+      "ms": [
+        0.22642058320343494,
+        0.2046355977654457
+      ],
+      "ratio": 0.903785313465005
+    },
+    {
+      "n": 16384,
+      "rows": 64,
+      "hier": false,
+      "ms": [
+        2.3823732044547796,
+        2.0951404003426433
+      ],
+      "ratio": 0.8794341694344773
+    },
+    {
+      "n": 16384,
+      "rows": 64,
+      "hier": true,
+      "ms": [
+        2.446366986259818,
+        2.1709647960960865
+      ],
+      "ratio": 0.8874240080451763
+    }
+  ]
+}

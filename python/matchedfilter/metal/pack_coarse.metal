@@ -3,6 +3,26 @@
 #include <metal_texture>
 using namespace metal;
 
+#line 11218 "hlsl.meta.slang"
+uint firstbithigh_0(uint value_0)
+{
+
+#line 11231
+    if(value_0 == 0U)
+    {
+
+#line 11232
+        return 4294967295U;
+    }
+
+#line 11233
+    uint _S1 = clz(value_0);
+
+#line 11233
+    return 31U - _S1;
+}
+
+
 #line 3 "/home/ahnitz/projects/claude/searchdev/work/peak-fft/src/gpu/pack_coarse.slang"
 struct EntryPointParams_0
 {
@@ -47,36 +67,29 @@ struct KernelContext_0
         return;
     }
 
-#line 11
-    uint _S1 = i_0 / (&kernelContext_0)->entryPointParams_0->band_0;
+#line 10
+    float2 _S2 = float2(*((&kernelContext_0)->entryPointParams_data_0+((i_0 >> (firstbithigh_0((&kernelContext_0)->entryPointParams_0->band_0))) * (&kernelContext_0)->entryPointParams_0->n_0 + (i_0 & ((&kernelContext_0)->entryPointParams_0->band_0 - 1U))))) ;
 
-#line 11
-    uint _S2 = _S1 * (&kernelContext_0)->entryPointParams_0->n_0;
 
-#line 11
-    uint _S3 = i_0 % (&kernelContext_0)->entryPointParams_0->band_0;
-
-#line 11
-    float2 _S4 = float2(*((&kernelContext_0)->entryPointParams_data_0+(_S2 + _S3))) ;
     if(((&kernelContext_0)->entryPointParams_0->packed_0) != 0U)
     {
 
-#line 13
-        *((&kernelContext_0)->entryPointParams_coarse_0+i_0) = (as_type<ushort>((half)((_S4.x)))) | ((as_type<ushort>((half)((_S4.y)))) << 16U);
+#line 14
+        *((&kernelContext_0)->entryPointParams_coarse_0+i_0) = (as_type<ushort>((half)((_S2.x)))) | ((as_type<ushort>((half)((_S2.y)))) << 16U);
 
-#line 12
+#line 13
     }
     else
     {
-        uint _S5 = 2U * i_0;
+        uint _S3 = 2U * i_0;
 
-#line 15
-        *((&kernelContext_0)->entryPointParams_coarse_0+_S5) = (as_type<uint>((_S4.x)));
-        *((&kernelContext_0)->entryPointParams_coarse_0+(_S5 + 1U)) = (as_type<uint>((_S4.y)));
+#line 16
+        *((&kernelContext_0)->entryPointParams_coarse_0+_S3) = (as_type<uint>((_S2.x)));
+        *((&kernelContext_0)->entryPointParams_coarse_0+(_S3 + 1U)) = (as_type<uint>((_S2.y)));
 
-#line 12
+#line 13
     }
 
-#line 18
+#line 19
     return;
 }

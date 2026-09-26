@@ -79,7 +79,7 @@ def capture_gpu():
                       file=sys.stderr, flush=True)
                 continue
             push_bytes = (8 if path.stem.startswith('coarse_') else
-                          12 if path.stem.startswith('compact_') else
+                          12 if path.stem.startswith('compact') else
                           16 if path.stem == 'pack_coarse' else
                           4 if path.stem.startswith('forward_') else 28)
             print('AUDIT_KERNEL ' + path.name, file=sys.stderr, flush=True)

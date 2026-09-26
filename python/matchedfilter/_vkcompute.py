@@ -434,6 +434,18 @@ class Context(InputUploads):
             return info["portable"]["file"]
         return "refine_%d.spv" % n
 
+    def _peak_file(self, n, nbins, refine=False):
+        general = self._refine_file(n) if refine else self._kernel_file(n)
+        info = _manifest().get("modules", {}).get(str(n), {})
+        if refine:
+            info = info.get("refine", {})
+        one = info.get("one_bin") if nbins == 1 else None
+        if one:
+            if general.endswith("_lds32.spv"):
+                return one.get("portable", {}).get("file", general)
+            return one["file"]
+        return general
+
     def pipeline(self, n):
         """Build (and cache) the compute pipeline for transform length ``n``.
 
@@ -675,9 +687,10 @@ class Context(InputUploads):
         # VGPRs with 18 SPILLED and 2304 bytes of scratch: the worst kernel
         # in the build, existing only to be compiled.
         kpipe, klayout, kset_layout = self._build_pipeline(
-            ("compact", n), "compact_%d.spv" % n, 5, 12)
+            "compact", "compact.spv", 5, 12)
+        refine_file = self._peak_file(n, nbins, refine=True)
         rpipe, rlayout, rset_layout = self._build_pipeline(
-            ("refine", n), self._refine_file(n), 5, _PUSH_BYTES)
+            ("refine", refine_file), refine_file, 5, _PUSH_BYTES)
         pairs = nd * nt
         b = {
             "data":  shared_buffer(data, self) or _Buffer(self, nd * n * 8),
@@ -884,7 +897,9 @@ class Context(InputUploads):
     def _make_batch(self, key, n, nd, nt, nbins, binsize, shift, lo, hi, t2, data=None, tmpl=None):
         """Buffers, descriptor set and a recorded command buffer for one shape."""
         vk = self.vk
-        pipe, layout, set_layout = self.pipeline(n)
+        filename = self._peak_file(n, nbins)
+        pipe, layout, set_layout = self._build_pipeline(
+            ("peaks", filename), filename, _NBIND, _PUSH_BYTES)
         out = nd * nt * nbins
         b_data = shared_buffer(data, self) or _Buffer(self, nd * n * 8)
         b_tmpl = shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8)

@@ -120,6 +120,9 @@ static const uint CH  = ((CAP / WG) > R) ? R : ((CAP / WG > 0) ? (CAP / WG) : 1)
 #ifndef PPG
 #define PPG 1
 #endif
+#ifndef SINGLE_BIN
+#define SINGLE_BIN 0
+#endif
 //: The transform's own type. half2 halves register occupancy per point --
 //: R=16 complex drops from 32 VGPRs to 16 -- which is what lets independent
 //: transforms sit in registers together and cover each other's exchange
@@ -593,6 +596,12 @@ void filterPair(uint pair, uint tid,
 #endif
 {
 #if !COARSE16
+#if SINGLE_BIN
+    // The host selects this build only when the searched window has one
+    // output bin. Constant propagation removes the general bin tables and
+    // their live ranges without changing the FFT or tied-winner election.
+    nbins = 1u;
+#endif
     _tid = tid;
     uint d = pair / ntmpl, t = pair % ntmpl;
 #endif

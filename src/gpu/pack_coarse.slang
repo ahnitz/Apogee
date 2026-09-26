@@ -8,7 +8,8 @@ void packCoarse(uint3 tid: SV_DispatchThreadID,
 {
     uint i = tid.x;
     if (i >= count) return;
-    float2 x = data[(i / band)*n + i % band];
+    // The host accepts only positive power-of-two coarse bands.
+    float2 x = data[(i >> firstbithigh(band))*n + (i & (band-1))];
     if (packed != 0)
         coarse[i] = f32tof16(x.x) | (f32tof16(x.y) << 16);
     else {

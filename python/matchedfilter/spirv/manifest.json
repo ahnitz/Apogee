@@ -38,7 +38,7 @@
       "file": "tierb_64.spv",
       "bytes": 18852,
       "compact": {
-        "file": "compact_64.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -100,7 +100,7 @@
       "file": "tierb_128.spv",
       "bytes": 19360,
       "compact": {
-        "file": "compact_128.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -162,7 +162,7 @@
       "file": "tierb_256.spv",
       "bytes": 21296,
       "compact": {
-        "file": "compact_256.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -224,7 +224,7 @@
       "file": "tierb_512.spv",
       "bytes": 25372,
       "compact": {
-        "file": "compact_512.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -286,7 +286,7 @@
       "file": "tierb_1024.spv",
       "bytes": 26064,
       "compact": {
-        "file": "compact_1024.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -348,7 +348,7 @@
       "file": "tierb_2048.spv",
       "bytes": 26572,
       "compact": {
-        "file": "compact_2048.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -410,7 +410,7 @@
       "file": "tierb_4096.spv",
       "bytes": 28508,
       "compact": {
-        "file": "compact_4096.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -472,7 +472,7 @@
       "file": "tierb_8192.spv",
       "bytes": 32584,
       "compact": {
-        "file": "compact_8192.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -557,7 +557,7 @@
       "file": "tierb_16384.spv",
       "bytes": 33276,
       "compact": {
-        "file": "compact_16384.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -566,6 +566,18 @@
         "portable": {
           "file": "refine_16384_lds32.spv",
           "lds_bytes": 32768
+        },
+        "one_bin": {
+          "file": "refine_16384_onebin.spv",
+          "portable": {
+            "file": "refine_16384_onebin_lds32.spv"
+          }
+        }
+      },
+      "one_bin": {
+        "file": "tierb_16384_onebin.spv",
+        "portable": {
+          "file": "tierb_16384_onebin_lds32.spv"
         }
       },
       "metal": {
@@ -642,7 +654,7 @@
       "file": "tierb_32768.spv",
       "bytes": 43760,
       "compact": {
-        "file": "compact_32768.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -651,6 +663,18 @@
         "portable": {
           "file": "refine_32768_lds32.spv",
           "lds_bytes": 32768
+        },
+        "one_bin": {
+          "file": "refine_32768_onebin.spv",
+          "portable": {
+            "file": "refine_32768_onebin_lds32.spv"
+          }
+        }
+      },
+      "one_bin": {
+        "file": "tierb_32768_onebin.spv",
+        "portable": {
+          "file": "tierb_32768_onebin_lds32.spv"
         }
       },
       "metal": {
@@ -727,7 +751,7 @@
       "file": "tierb_65536.spv",
       "bytes": 34180,
       "compact": {
-        "file": "compact_65536.spv",
+        "file": "compact.spv",
         "descriptors": 5
       },
       "refine": {
@@ -736,6 +760,18 @@
         "portable": {
           "file": "refine_65536_lds32.spv",
           "lds_bytes": 32768
+        },
+        "one_bin": {
+          "file": "refine_65536_onebin.spv",
+          "portable": {
+            "file": "refine_65536_onebin_lds32.spv"
+          }
+        }
+      },
+      "one_bin": {
+        "file": "tierb_65536_onebin.spv",
+        "portable": {
+          "file": "tierb_65536_onebin_lds32.spv"
         }
       },
       "metal": {
@@ -894,10 +930,10 @@
     "metal": "pack_coarse.metal"
   },
   "source_hashes": {
-    "tierb.slang": "f6f2a33483e895d722bdb82feccf2e797680bed5a7163a29ab5f52b8265ebaae",
+    "tierb.slang": "0570ac954bcfeda48f461f8f1e0ed405cf05998b5bc9dd864c5cebcb60ffe597",
     "fft_transform.slang": "7cdbdab1dac4e36ce0c0ae483fb170a210057cea205bb846425d04e2693e617e",
     "coarse_tile.slang": "e63fc4b013211c57f1f561dad822420665f9c69764815c96148e8f37cfa218e8",
     "series_forward.slang": "1ed347cedae7d1f7543ccfbfd6a4ea1971f6be1eb4fdd504c9e6b0a17b849ee5",
-    "pack_coarse.slang": "cd22cec0258100bd27cfab36d573a5fcf5cc09ce83bd3248815e7275d7e2a408"
+    "pack_coarse.slang": "6599e775732a3d54ef2517a469aaa311a38028b41a92a87e166fce94ef3076c2"
   }
 }
