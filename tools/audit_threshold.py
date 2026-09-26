@@ -46,13 +46,22 @@ and not enough to certify a single cell -- the shipped rows were measured
 at that count and this is the tool that found them wrong.
 """
 import argparse
+import os
+import statistics
 import sys
 import time
 
 import numpy as np
 
-sys.path.insert(0, "tests")
+# Resolved against THIS file, not the working directory. A cwd-relative
+# entry only works when the tool is run from the checkout root, which is
+# the same defect already fixed once in tests/test_low_ratio_corner.py.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _p in (os.path.join(os.path.dirname(_HERE), "tests"), _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 import matchedfilter as mf                                   # noqa: E402
+import hmf_tune as ht                                        # noqa: E402
 from test_api import inspiral_power, template_with_power, noise  # noqa: E402
 
 
@@ -136,11 +145,11 @@ def repeatability(n, band, f_target, ratio, snr, fd, trials, steps, seeds):
     19.9% band spread at f=0.60 about twenty sigma and real, and the 3.1%
     at f=0.995 indistinguishable from re-running the same cell.
     """
-    import statistics
-    import hmf_tune as ht
+    # The reference does not depend on the seed, and make_ref runs a
+    # 60-step bisection of its own to hit the target bandwidth.
+    power = ht.make_ref(n, band, f_target, band / ratio)
     vals = []
     for seed in seeds:
-        power = ht.make_ref(n, band, f_target, band / ratio)
         cell = Cell(n, power, band, snr, fd, seed=seed)
         lo, hi = 2.0, 4.6
         for _ in range(steps):
@@ -167,12 +176,11 @@ def coverage(paths):
     reach. The grid not covering the operating range is the visible symptom
     of that, and it is mechanical to check.
     """
-    from test_api import inspiral_power as ip
     q = []
     for n in (2048, 4096, 8192, 16384):
         for e in (-7 / 3.0, -2.0, -5 / 3.0):
             for knee in (0.0150, 0.05, 0.002):
-                power = ip(n, exponent=e, knee_frac=knee)
+                power = inspiral_power(n, exponent=e, knee_frac=knee)
                 for band in (128, 256, 512, 1024, 2048):
                     if band >= n:
                         continue
