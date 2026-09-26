@@ -30,12 +30,27 @@ digits at band 1024 with a 0.6% escalation rate:
     snr 6.0 band 1024   coarse 95%   refine  5%
 
 So extra reconstructions are not cheap at the operating point, they are the
-larger half of it. The int8 plan's "+23% reconstructions" costs 0.23 x 0.55
-= +13% of total time where the doc assumed 0.23 x 0.16 = +4%. That does not
-kill the idea -- halving a 45% coarse stage still wins -- but it roughly
-halves the margin of the argument, and the phase-3 cost model below needs
-re-deriving against the measured share before it is used to justify
-anything.
+larger half of it. Any variant that trades accuracy for trigger rate --
+including the "+23% reconstructions" int8-as-primary row in the table below
+-- costs 0.23 x 0.55 = +13% of total time where this doc assumed
+0.23 x 0.16 = +4%.
+
+**But it cuts the other way for phase 3, and a first pass at this correction
+got that backwards.** Phase 3 is an int8 REJECT pass with an upward bias,
+which creates no extra reconstructions by construction. Its saving is
+confined to the coarse stage, so its end-to-end payoff is pure Amdahl on the
+coarse share, and the measured share is much larger than 84%-of-nothing this
+doc assumed:
+
+    coarse share   0.56C coarse cost -> end to end
+      0.26   (snr 6.0 band 256)          1.13x
+      0.44   (snr 6.5 band 256)          1.24x
+      0.58   (snr 5.5 band 512)          1.34x
+      0.73   (snr 5.0 band 1024)         1.47x
+
+So the stale 16% flattered every variant that spends trigger rate and
+understated the one that does not. Phase 3 is the better bet of the two by
+more than the doc suggests, not less.
 
 Measured over 520 real pairs, margin placed where the true statistic gives a 5%
 trigger rate:
