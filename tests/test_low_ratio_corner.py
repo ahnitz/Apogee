@@ -100,7 +100,8 @@ import numpy as np
 import pytest
 
 import matchedfilter as mf
-from test_api import inspiral_power, template_with_power, noise
+from test_api import inspiral_power, template_with_power
+from _gatelib import dismissal_by_template
 
 
 N = 4096
@@ -108,32 +109,11 @@ SNR = 5.0
 FD = 1e-3
 
 
-def _dismissal(power, band, reps=12, nb=64, nt=16):
+def _dismissal(power, band, nt=16):
+    """Aggregate (detected, dismissed); the shape is not needed here."""
     H = np.stack([template_with_power(N, power) for _ in range(nt)])
-    flat = mf.MatchedFilter(N, nb, nt)
-    flat.set_templates(H)
-    hier = mf.HierarchicalFilter(N, nb, nt, snr=SNR, fd=FD, band=band, taps=8)
-    hier.set_reference(power)
-    hier.set_templates(H)
-    ph = np.exp(2j * np.pi * np.arange(N) / N)
-    rng = np.random.default_rng(23)
-    detected = omitted = 0
-    for _ in range(reps):
-        D = noise((nb, N), rng)
-        which = rng.integers(0, nt, nb)
-        for b in range(nb):
-            lag = int(rng.integers(0, N))
-            D[b] += (1.04 * SNR * H[which[b]] * ph ** lag).astype(np.complex64)
-        flat.set_data(D)
-        hier.set_data(D)
-        a = flat.run(binsize=N, threshold=SNR)
-        c = hier.run(binsize=N, threshold=SNR)
-        for b in range(nb):
-            t = which[b]
-            if a["index"][b, t, 0] >= 0:
-                detected += 1
-                omitted += int(c["index"][b, t, 0] < 0)
-    return detected, omitted
+    det, om = dismissal_by_template(N, H, power, band, SNR, FD)
+    return int(det.sum()), int(om.sum())
 
 
 def test_the_low_ratio_corner_still_misses_its_budget():

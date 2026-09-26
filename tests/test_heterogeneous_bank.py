@@ -39,10 +39,10 @@ is what the tables are calibrated against, and this is the cost of departing
 from it.
 """
 import numpy as np
-import pytest
 
 import matchedfilter as mf
-from test_api import inspiral_power, template_with_power, noise
+from test_api import inspiral_power, template_with_power
+from _gatelib import dismissal_by_template
 
 
 N = 4096
@@ -50,41 +50,11 @@ SNR = 5.0
 FD = 1e-3
 
 
-def _by_template(H, ref, band, reps=12, nb=64):
-    """(detected, dismissed) per template, injecting each into noise."""
-    nt = H.shape[0]
-    flat = mf.MatchedFilter(N, nb, nt)
-    flat.set_templates(H)
-    hier = mf.HierarchicalFilter(N, nb, nt, snr=SNR, fd=FD, band=band, taps=8)
-    hier.set_reference(ref)
-    hier.set_templates(H)
-    ph = np.exp(2j * np.pi * np.arange(N) / N)
-    rng = np.random.default_rng(23)
-    det = np.zeros(nt, int)
-    om = np.zeros(nt, int)
-    for _ in range(reps):
-        D = noise((nb, N), rng)
-        which = rng.integers(0, nt, nb)
-        for b in range(nb):
-            lag = int(rng.integers(0, N))
-            D[b] += (1.04 * SNR * H[which[b]] * ph ** lag).astype(np.complex64)
-        flat.set_data(D)
-        hier.set_data(D)
-        a = flat.run(binsize=N, threshold=SNR)
-        c = hier.run(binsize=N, threshold=SNR)
-        for b in range(nb):
-            t = which[b]
-            if a["index"][b, t, 0] >= 0:
-                det[t] += 1
-                om[t] += int(c["index"][b, t, 0] < 0)
-    return det, om
-
-
 def test_a_matched_bank_keeps_its_signals():
     """The contract: one reference that describes the bank."""
     ref = inspiral_power(N)
     H = np.stack([template_with_power(N, ref) for _ in range(16)])
-    det, om = _by_template(H, ref, 512)
+    det, om = dismissal_by_template(N, H, ref, 512, SNR, FD)
     assert det.sum() > 300, "too few detections: %d" % det.sum()
     rate = om.sum() / det.sum()
     assert rate <= 1e-2, \
@@ -104,7 +74,7 @@ def test_a_mismatched_bank_loses_signals_in_order_of_their_own_f():
     exps = np.linspace(-7 / 3.0, -4 / 3.0, 16)
     H = np.stack([template_with_power(N, inspiral_power(N, exponent=e))
                   for e in exps])
-    det, om = _by_template(H, ref, 512)
+    det, om = dismissal_by_template(N, H, ref, 512, SNR, FD)
     assert det.sum() > 300, "too few detections: %d" % det.sum()
 
     fs = np.array([mf._band_features(inspiral_power(N, exponent=e), 512)[0]

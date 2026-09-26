@@ -39,7 +39,8 @@ import numpy as np
 import pytest
 
 import matchedfilter as mf
-from test_api import inspiral_power, template_with_power, noise
+from test_api import inspiral_power, template_with_power
+from _gatelib import dismissal_by_template, noise_trigger_loss
 
 
 N = 4096
@@ -61,32 +62,8 @@ def _bank(nt=16):
                      for e in np.linspace(-7 / 3.0, -4 / 3.0, nt)])
 
 
-def _noise_trigger_loss(band, reps=12, nb=64):
-    """(flat triggers, of which the gate dismissed) on pure noise."""
-    rng = np.random.default_rng(5)
-    power = inspiral_power(N)
-    H = _bank()
-    flat = mf.MatchedFilter(N, nb, H.shape[0])
-    flat.set_templates(H)
-    hier = mf.HierarchicalFilter(N, nb, H.shape[0], snr=SNR, fd=FD,
-                                 band=band, taps=8)
-    hier.set_reference(power)
-    hier.set_templates(H)
-    total = missed = 0
-    for _ in range(reps):
-        D = noise((nb, N), rng)
-        flat.set_data(D)
-        hier.set_data(D)
-        a = flat.run(binsize=N, threshold=SNR)
-        b = hier.run(binsize=N, threshold=SNR)
-        fi, hi = a["index"], b["index"]
-        total += int((fi >= 0).sum())
-        missed += int(((fi >= 0) & (hi < 0)).sum())
-        # The one-sided guarantee holds on this population too: the gate may
-        # dismiss, never promote.
-        assert int(((fi < 0) & (hi >= 0)).sum()) == 0, \
-            "band %d: the gate promoted a trigger the flat filter never had" % band
-    return total, missed
+def _noise_trigger_loss(band):
+    return noise_trigger_loss(N, _bank(), inspiral_power(N), band, SNR, FD)
 
 
 @pytest.mark.parametrize("band", (512, 1024))
@@ -108,36 +85,10 @@ def test_injected_signals_meet_the_budget(band):
     not the mechanism and the question is still open; see
     docs/hierarchical.md.
     """
-    rng = np.random.default_rng(23)
     power = inspiral_power(N)
     H = np.stack([template_with_power(N, power) for _ in range(16)])
-    nt = H.shape[0]
-    nb = 64
-    flat = mf.MatchedFilter(N, nb, nt)
-    flat.set_templates(H)
-    hier = mf.HierarchicalFilter(N, nb, nt, snr=SNR, fd=FD_INJ, band=band,
-                                 taps=8)
-    hier.set_reference(power)
-    hier.set_templates(H)
-
-    ph = np.exp(2j * np.pi * np.arange(N) / N)
-    detected = omitted = 0
-    for r in range(12):
-        D = noise((nb, N), rng)
-        which = rng.integers(0, nt, nb)
-        for b in range(nb):
-            t = which[b]
-            lag = int(rng.integers(0, N))
-            D[b] += (1.04 * SNR * H[t] * ph ** lag).astype(np.complex64)
-        flat.set_data(D)
-        hier.set_data(D)
-        a = flat.run(binsize=N, threshold=SNR)
-        b_ = hier.run(binsize=N, threshold=SNR)
-        for b in range(nb):
-            t = which[b]
-            if a["index"][b, t, 0] >= 0:
-                detected += 1
-                omitted += int(b_["index"][b, t, 0] < 0)
+    det, om = dismissal_by_template(N, H, power, band, SNR, FD_INJ)
+    detected, omitted = int(det.sum()), int(om.sum())
     assert detected * FD_INJ > 3, \
         "only %d detections: %.1f events expected at a %.0e budget, which " \
         "cannot separate a pass from a failure" % (detected, detected * FD_INJ,
