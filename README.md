@@ -144,7 +144,7 @@ This is an alpha release. Pin a version when reproducibility matters.
 Hierarchical calibration covers a subset of input conditions; unsupported
 requests require additional measurements or explicit coarse parameters.
 
-Wheels target CPython 3.9–3.14 on Linux x86-64 and macOS arm64. Other platforms
+Wheels target CPython 3.10–3.14 on Linux x86-64 and macOS arm64. Other platforms
 build from source and need NumPy and a C compiler. CPU filtering uses one
 thread; callers control parallelism across independent filters.
 

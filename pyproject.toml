@@ -13,7 +13,7 @@ name = "matchedfilter"
 version = "0.1.0a2"
 description = "Fast single-threaded batched matched filter with peak-only output (x86-64)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = ["numpy>=1.20"]
@@ -25,7 +25,6 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "Programming Language :: C",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -84,7 +83,7 @@ python_files = ["test_*.py"]
 # Free-threaded builds (cp313t, cp314t) are deliberately NOT here. The
 # extension releases the GIL around the filter and would need its plan
 # state auditing for concurrent use before claiming to support them.
-build = "cp39-* cp310-* cp311-* cp312-* cp313-* cp314-*"
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_i686 *_i686 pp*"
 build-frontend = "build"
 test-requires = "pytest"
