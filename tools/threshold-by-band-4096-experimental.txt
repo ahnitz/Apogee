@@ -1,4 +1,10 @@
-# EXPERIMENTAL: measured coarse thresholds BY BAND. Not installed.
+# EXPERIMENTAL: measured coarse thresholds BY BAND. Not installed, and now
+# SUPERSEDED. The measured threshold table these rows were to correct has
+# been replaced by the analytic gate in python/matchedfilter/gatemodel.py,
+# and tools/regen/threshold_lowratio.py, which produced them, went with it.
+# Kept as the measurement that showed band belongs in the key: the model
+# reproduces bisected thresholds to about 2%, and distinguishes bands the
+# old table could not.
 #
 # The shipped threshold.txt is keyed on (n, f, ratio, snr, fd) and leaves
 # band out, on the argument that samples across the correlation peak is

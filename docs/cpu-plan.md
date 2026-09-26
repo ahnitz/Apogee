@@ -196,6 +196,30 @@ It chooses 512 at 4.53x where 1024 measures 5.13x -- 1.13x left on the
 table, against 1.84x before. The cost-table finding stands in kind and is
 much smaller in degree.
 
+### What survives of this investigation, and what does not
+
+    still live    the cost table is a grid and is still interpolated, so
+                  it can still misrank -- 1.13x, down from 1.84x.
+                  `audit_threshold.py --coverage` reports its grid against
+                  the range real references query.
+                  `--repeat N` gives the bisection's noise floor, 1.0-1.3%.
+                  tests/test_heterogeneous_bank.py -- the reference
+                  normalisation in hmf.c refresh_template() is unchanged.
+                  tools/cost-retuned-4096-experimental.txt, worth 1.51x
+                  over the points where the pick changes.
+
+    superseded    everything about the measured THRESHOLD table: its band
+                  key, its low-ratio corner, its trial counts. The table is
+                  gone and gatemodel.py replaces it.
+                  tools/regen/threshold_lowratio.py, removed with it.
+                  tools/threshold-by-band-4096-experimental.txt, kept only
+                  as the measurement that showed band belongs in the key.
+
+    confirmed     band 128 is not worth selecting. Reached here by measuring
+                  that a safe gate admits 92% of pairs; reached again under
+                  the model, which gives it 0 of 523 dismissed at 0.98x of
+                  flat.
+
 ## The overnight investigation, 2026-09-26
 
 Eleven cycles of measure-commit-review so far, of twenty. One change

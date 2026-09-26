@@ -214,6 +214,8 @@ def main():
              [("f", 6), ("B_eff", 7)]),
             ("tools/cost-small-bands-4096-experimental.txt", "COST",
              [("f", 6), ("B_eff", 7)]),
+            ("tools/cost-retuned-4096-experimental.txt", "COST",
+             [("f", 6), ("B_eff", 7)]),
         ])
         return 0
 
