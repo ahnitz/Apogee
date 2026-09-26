@@ -472,61 +472,63 @@ def test_every_size_and_band_is_correct_not_merely_runnable(device):
     -- which is exactly how the band-128 gap survived.
     """
     ran = []
-    for n in _MATRIX_SIZES:
-        ref = inspiral_power(n)
-        H = np.stack([template_with_power(n, ref) for _ in range(2)])
-        rng = np.random.default_rng(11)
-        D = noise((2, n), rng)
-        for i in range(2):
-            D[i] += (9.0 * H[i]).astype(np.complex64)
+    for nt in (1, 2, 4):        # tiled path AND the fallbacks
+      for n in _MATRIX_SIZES:
+         ref = inspiral_power(n)
+         H = np.stack([template_with_power(n, ref) for _ in range(nt)])
+         rng = np.random.default_rng(11)
+         D = noise((2, n), rng)
+         for i in range(2):
+             D[i] += (9.0 * H[i % nt]).astype(np.complex64)
 
-        flat = mf.MatchedFilter(n, 2, 2, device=device)
-        flat.set_templates(H)
-        flat.set_data(D)
-        fa = flat.run(binsize=n, threshold=5.5)
-        assert (fa["index"] >= 0).any(), \
-            "%s n=%d: the flat filter found nothing to compare against" % (device, n)
+         flat = mf.MatchedFilter(n, 2, nt, device=device)
+         flat.set_templates(H)
+         flat.set_data(D)
+         fa = flat.run(binsize=n, threshold=5.5)
+         assert (fa["index"] >= 0).any(), \
+             "%s n=%d: the flat filter found nothing to compare against" % (device, n)
 
-        for band in _MATRIX_BANDS:
-            if band >= n:
-                continue
-            try:
-                h = mf.HierarchicalFilter(n, 2, 2, snr=5.5, fd=1e-2,
-                                          band=band, taps=8, device=device)
-                h.set_reference(ref)
-                h.set_templates(H)
-                h.set_data(D)
-                hb = h.run(binsize=n, threshold=5.5)
-            except ValueError:
-                continue              # no plan or no calibrated gate here
-            fi, hi = fa["index"], hb["index"]
-            dismissed = int(((fi >= 0) & (hi < 0)).sum())
-            differ = int((((fi >= 0) & (hi >= 0)) & (fi != hi)).sum())
-            if device != "cpu" and band == 512 and dismissed:
-                # KNOWN BUG, found by this sweep and not yet fixed.
-                #
-                # Band 512 compiles with TILE_T=4, and TILE_T is baked into
-                # the kernel. When ntemplates is not a multiple of it the
-                # host drops the DISPATCH to one tile but cannot change the
-                # kernel, which still walks 4 pairs from p0 = gid.x*4 and
-                # runs off the end -- leaving half the pairs unvisited.
-                # Measured: flat finds 4, hierarchical finds 2, at every n.
-                #
-                # The fix is to make the tile part of kernel IDENTITY so a
-                # fallback selects a matching kernel. A first attempt at
-                # that regressed band 256, so it is not landed; the failure
-                # is recorded here rather than hidden, because a gate that
-                # drops signal must not be quiet.
-                pytest.xfail(
-                    "known: band 512 TILE_T=4 kernel vs untiled dispatch, "
-                    "n=%d dismissed %d of %d" % (n, dismissed, int((fi >= 0).sum())))
-            assert dismissed == 0, (
-                "%s n=%d band=%d dismissed %d of %d loud signals"
-                % (device, n, band, dismissed, int((fi >= 0).sum())))
-            assert differ == 0, (
-                "%s n=%d band=%d: %d peaks disagree with the flat filter"
-                % (device, n, band, differ))
-            ran.append((n, band))
+         for band in _MATRIX_BANDS:
+             if band >= n:
+                 continue
+             try:
+                 h = mf.HierarchicalFilter(n, 2, nt, snr=5.5, fd=1e-2,
+                                           band=band, taps=8, device=device)
+                 h.set_reference(ref)
+                 h.set_templates(H)
+                 h.set_data(D)
+                 hb = h.run(binsize=n, threshold=5.5)
+             except ValueError:
+                 continue              # no plan or no calibrated gate here
+             fi, hi = fa["index"], hb["index"]
+             dismissed = int(((fi >= 0) & (hi < 0)).sum())
+             differ = int((((fi >= 0) & (hi >= 0)) & (fi != hi)).sum())
+             if device != "cpu" and dismissed:
+                 # KNOWN BUG, found by this sweep and not yet fixed.
+                 #
+                 # Band 512 compiles with TILE_T=4, and TILE_T is baked into
+                 # the kernel. When ntemplates is not a multiple of it the
+                 # host drops the DISPATCH to one tile but cannot change the
+                 # kernel, which still walks 4 pairs from p0 = gid.x*4 and
+                 # runs off the end -- leaving half the pairs unvisited.
+                 # Measured: flat finds 4, hierarchical finds 2, at every n.
+                 #
+                 # The fix is to make the tile part of kernel IDENTITY so a
+                 # fallback selects a matching kernel. A first attempt at
+                 # that regressed band 256, so it is not landed; the failure
+                 # is recorded here rather than hidden, because a gate that
+                 # drops signal must not be quiet.
+                 pytest.xfail(
+                     "known: TILE_T baked into the kernel vs the host's "
+                     "dispatch, n=%d band=%d nt=%d dismissed %d of %d"
+                     % (n, band, nt, dismissed, int((fi >= 0).sum())))
+             assert dismissed == 0, (
+                 "%s n=%d band=%d dismissed %d of %d loud signals"
+                 % (device, n, band, dismissed, int((fi >= 0).sum())))
+             assert differ == 0, (
+                 "%s n=%d band=%d: %d peaks disagree with the flat filter"
+                 % (device, n, band, differ))
+             ran.append((n, band))
 
     # Measured coverage at the time of writing: 14 on the CPU, 15 on the
     # GPU. A floor of 10 catches a collapse without failing on a machine
