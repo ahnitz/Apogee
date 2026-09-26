@@ -136,6 +136,110 @@ speedup and a different coarse statistic from the GPU's. Measured, band 128
 costs 0.067 us/pair against band 256's 0.351: a factor of 5.2 that the
 fallback would have thrown away.
 
+## The overnight investigation, 2026-09-26
+
+Twenty cycles of measure-commit-review. One change shipped; the rest is
+diagnosis, and three of the commits retract earlier ones of mine.
+
+### Shipped
+
+**Split-radix product codelets** (72ec6c4). The Stockham `fft*_prod`
+codelets bounce through a scratch buffer between their two passes, indexed
+at the OUTPUT stride so successive calls walk the whole element buffer. The
+split-radix codelets do the whole DAG in registers -- they carry
+`(void)br;(void)bi;` -- and gen.py had no product variant. Adding one
+deletes the traffic rather than blocking it better. Paired and interleaved:
+
+    AVX-512  band 256 1.04-1.16x   band 512 1.137x   band 1024 1.073x
+    AVX2     band 256 1.103x       band 512 1.100x
+    SSE4     band 256 1.053x       band 512 1.072x
+    flat n=4096 1.054x (5 of 5)
+
+m=32 and m=64 gated to AP_W >= 16: ungated, m=32 measured 1.075x on
+AVX-512 but 0.991x on AVX2 with the new side swinging 292-332us against a
+steady 305-308. n=128 is a built-in control (it uses neither changed
+codelet) and measures 1.00.
+
+### The threshold table is keyed on the wrong thing
+
+Chasing why bands 64/128 cannot be selected ended somewhere unexpected. The
+blocker was recorded as a performance regression; it is a correctness one --
+band 128 dismisses 2.9e-2 of INJECTED SIGNALS against a 1e-3 budget.
+
+The cause is the table's key, `(n, f, ratio, snr, fd)`, which omits band on
+the argument that samples-across-the-peak is `band/B_eff` with no band left
+in it. At a fixed (f=0.70, ratio=1.20) the safe threshold runs 2.8078,
+2.9797, 3.1000, 3.2719 across bands 128/256/512/1024 -- **16.5% on the band
+axis alone**. It is the coarse maximum: a max over `band` lags grows like
+sqrt(2 ln band), and sqrt(ln band) predicts the other three points within
+2.7%.
+
+The full grid (`tools/threshold-by-band-4096-experimental.txt`, 59 rows)
+shows the spread is ordered by f -- 19.9% at f=0.60 down to 3.1% at
+f=0.995 -- because as f approaches 1 the signal dominates the noise floor.
+**That is why both shipped tables could omit band and look correct.**
+threshold.txt is measured at one band per n. accuracy.txt justifies the
+same omission with a 1.14x spread measured, its own header's words, "across
+band/B_eff from 16 to 128" -- every cell at ratio >= 16, where band does
+not matter. Real references run at ratio 1.3-5.3. Both validated the
+omission outside the operating range, so the third key is two tables.
+
+Applying a sqrt(ln band) correction at lookup INSTEAD was measured and
+rejected: 2.13x slower at band 256, 1.88x at 512, to fix a 4% margin that
+dismisses 0 of 523 injections. A gate is nonlinear in its threshold and
+few-percent accuracy is not enough to apply to one.
+
+### `fd` is a promise about signals, not about trigger lists
+
+Marginal NOISE triggers are dismissed at 2.4e-2 (captured) to 3.7e-1
+(synthetic) while injections are dismissed at 0 of 2400. Not a defect: a
+signal's in-band fraction is fixed by the template, a noise fluctuation's
+is an independent draw. At f=1.0 nothing is dismissed at all, which is the
+mechanism check. It matters anyway -- a background estimated from the
+trigger distribution is not filtering signals.
+
+### A bank that does not match its reference spends headroom
+
+`src/hmf.c` refresh_template(): `f = p->ref_on ? p->ref_f : p->fpow[t]`.
+The per-template fraction is computed and used only when no reference is
+set. Loss is monotone in the template's own f: 0 above 0.936, 48.3% at
+0.739. The captured pycbc bank sits FURTHER from its reference and loses
+nothing, because it runs at band 1024/ratio 5.33 where the threshold audits
+2.5% BELOW safe rather than 4.1% above.
+
+### Everything left is about 1.2x
+
+    corner turn        1.16x   structural to the four-step; the pair-batched
+                               path avoids it and its buffers are 2 MiB at
+                               n=16384 against a 1 MiB L2
+    plain int16        1.15x   precision is FREE (0.01% against 4.1% of
+                               headroom, 400x); throughput is the question
+    int8 reject pass   1.19x at band 512, 1.31x at 1024, 0.99x at 256
+
+Phase 3's "unsafe flips stay at zero by construction" is a fit to 520 pairs
+and every wider sample breaks it, including the captured data (worst
+0.96387 against a 1.0166 bias). A safe bias rejects less, so its 6.2% pass
+rate is really 17.9-52.7%.
+
+### Tools left behind
+
+    tools/audit_threshold.py --coverage   table grids vs the operating range
+    tools/audit_threshold.py --repeat N   the noise floor (sd 1.0-1.3%)
+    tools/regen/threshold_lowratio.py     per-band rows, resumable
+    AP_NOXPOSE=1 build                    ablate the corner turn
+    tests/_gatelib.py                     one gate measurement, per template
+
+### Traps hit, in case they recur
+
+  * An ablation gated on a plan field measures its own branch. The ablated
+    build came out SLOWER than the real one. Make it compile-time.
+  * A cost measurement on data with a signal in every block reads 90-100%
+    escalation and says nothing. Use pure noise.
+  * Never compare threshold rows across band; it cost a whole wrong
+    diagnosis (a070137, retracted in 6a9878e).
+  * Quote no spread without the noise floor.
+  * cwd-relative `sys.path.insert` -- hit three times.
+
 ## Also outstanding
 
   * **SWAR** -- the CPU equivalent of fp16 for the coarse stage. Queued
