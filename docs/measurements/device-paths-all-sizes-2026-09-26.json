@@ -1,0 +1,468 @@
+{
+  "backend": "AVX3",
+  "devices": [
+    "cpu:0",
+    "gpu:0",
+    "gpu:1"
+  ],
+  "method": "warm run(), pure Gaussian noise, inspiral-shaped normalized templates, 60% window, one bin, threshold 5.5; hierarchical snr=5.5 fd=.001 from files; all supported CPU lengths, 128 x 512 reduced to a 64 MiB input budget; independent near-tie checks",
+  "rounds": 9,
+  "results": [
+    {
+      "n": 64,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 0.9456721413880587,
+          "us_per_pair": 0.014429811727723063,
+          "min_ms": 0.93244998017326,
+          "max_ms": 1.017091718968004
+        },
+        "cpu_hier": {
+          "unavailable": "no measured tuning for n=64 snr=5.50 fd=1e-03 -- n=64 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.5344747402705252,
+          "us_per_pair": 0.008155437321022418,
+          "min_ms": 0.4934945586137474,
+          "max_ms": 0.5780084594152868
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=64 snr=5.50 fd=1e-03 -- n=64 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    },
+    {
+      "n": 128,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 2.2045940422685817,
+          "us_per_pair": 0.0336394354594205,
+          "min_ms": 2.091464625361065,
+          "max_ms": 2.404121080568681
+        },
+        "cpu_hier": {
+          "unavailable": "no measured tuning for n=128 snr=5.50 fd=1e-03 -- n=128 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.558366880286485,
+          "us_per_pair": 0.008520002445777664,
+          "min_ms": 0.49996128072962165,
+          "max_ms": 0.63855507876724
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=128 snr=5.50 fd=1e-03 -- n=128 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    },
+    {
+      "n": 256,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 5.3088460001163185,
+          "us_per_pair": 0.08100656128107175,
+          "min_ms": 5.151978204958141,
+          "max_ms": 5.326130497269332
+        },
+        "cpu_hier": {
+          "unavailable": "no measured tuning for n=256 snr=5.50 fd=1e-03 -- n=256 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.5814767605625093,
+          "us_per_pair": 0.008872631234169148,
+          "min_ms": 0.5043546995148063,
+          "max_ms": 0.6150344200432301
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=256 snr=5.50 fd=1e-03 -- n=256 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    },
+    {
+      "n": 512,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 12.36415424500592,
+          "us_per_pair": 0.18866202156075929,
+          "min_ms": 12.026541982777417,
+          "max_ms": 13.005165004869923
+        },
+        "cpu_hier": {
+          "unavailable": "no measured tuning for n=512 snr=5.50 fd=1e-03 -- n=512 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 0.7125090202316642,
+          "us_per_pair": 0.010872024844843509,
+          "min_ms": 0.6603106204420328,
+          "max_ms": 0.7713193609379232
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=512 snr=5.50 fd=1e-03 -- n=512 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    },
+    {
+      "n": 1024,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 28.324314043857157,
+          "us_per_pair": 0.43219473333522274,
+          "min_ms": 27.073290897533298,
+          "max_ms": 30.42076202109456
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 256,
+          "ms_per_batch": 6.758097293121474,
+          "us_per_pair": 0.10312038105959281,
+          "min_ms": 6.650216561476035,
+          "max_ms": 7.1669387231980055,
+          "refine_rate": 0.0092620849609375
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 1.3099332003750734,
+          "us_per_pair": 0.019987994390488793,
+          "min_ms": 1.2327664454157152,
+          "max_ms": 1.3547119555167026
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.34075408009812236,
+          "us_per_pair": 0.005199494630403478,
+          "min_ms": 0.3263733396306634,
+          "max_ms": 0.35376102197915316,
+          "refine_rate": 0.0149383544921875
+        }
+      }
+    },
+    {
+      "n": 2048,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 90.35032603424042,
+          "us_per_pair": 1.3786365666845768,
+          "min_ms": 88.73639302328229,
+          "max_ms": 92.94779202900827
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 256,
+          "ms_per_batch": 8.204828501523783,
+          "us_per_pair": 0.12519574739873937,
+          "min_ms": 8.139309162894884,
+          "max_ms": 8.339238682917008,
+          "refine_rate": 0.016204833984375
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 2.2312771338461475,
+          "us_per_pair": 0.034046587125337945,
+          "min_ms": 2.205291228495877,
+          "max_ms": 2.2949259040284566
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 0.33023938070982695,
+          "us_per_pair": 0.005039053050381881,
+          "min_ms": 0.3222263604402542,
+          "max_ms": 0.34835550002753735,
+          "refine_rate": 0.028076171875
+        }
+      }
+    },
+    {
+      "n": 4096,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 194.68762096948922,
+          "us_per_pair": 2.9706973414533877,
+          "min_ms": 184.27574902307242,
+          "max_ms": 199.00333404075354
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 512,
+          "ms_per_batch": 24.65594804380089,
+          "us_per_pair": 0.3762199103363173,
+          "min_ms": 22.40750700002536,
+          "max_ms": 27.59231795789674,
+          "refine_rate": 0.0321502685546875
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 6.5225647163710425,
+          "us_per_pair": 0.09952643915361087,
+          "min_ms": 6.02762886722173,
+          "max_ms": 6.850667713609125
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 256,
+          "ms_per_batch": 1.918595355574883,
+          "us_per_pair": 0.02927544182700932,
+          "min_ms": 1.7606407749436557,
+          "max_ms": 2.0113888406945817,
+          "refine_rate": 0.24560546875
+        }
+      }
+    },
+    {
+      "n": 8192,
+      "data": 128,
+      "templates": 512,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 418.90729800798,
+          "us_per_pair": 6.392018097045593,
+          "min_ms": 415.54557101335377,
+          "max_ms": 429.03371597640216
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 2048,
+          "ms_per_batch": 133.59014899469912,
+          "us_per_pair": 2.0384239043380603,
+          "min_ms": 131.06070994399488,
+          "max_ms": 143.44051002990454,
+          "refine_rate": 0.0495452880859375
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 17.31310268708815,
+          "us_per_pair": 0.26417698191968003,
+          "min_ms": 16.659848974086344,
+          "max_ms": 18.27297732234001
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 512,
+          "ms_per_batch": 7.592553331051022,
+          "us_per_pair": 0.11585316972428927,
+          "min_ms": 7.308095499562721,
+          "max_ms": 7.7173788255701465,
+          "refine_rate": 0.4319000244140625
+        }
+      }
+    },
+    {
+      "n": 16384,
+      "data": 64,
+      "templates": 256,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 196.78217393811792,
+          "us_per_pair": 12.010630733527705,
+          "min_ms": 193.79083102103323,
+          "max_ms": 208.3821709966287
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 2048,
+          "ms_per_batch": 61.0572969308123,
+          "us_per_pair": 3.726641658374774,
+          "min_ms": 56.797767989337444,
+          "max_ms": 63.510240986943245,
+          "refine_rate": 0.1474609375
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 8.681648333246509,
+          "us_per_pair": 0.5298857625272527,
+          "min_ms": 8.288967655971646,
+          "max_ms": 8.947028836701065
+        },
+        "gpu_hier": {
+          "device": "gpu:0",
+          "band": 1024,
+          "ms_per_batch": 6.408476256183349,
+          "us_per_pair": 0.3911423496205657,
+          "min_ms": 6.244373871595599,
+          "max_ms": 7.067518250551075,
+          "refine_rate": 0.759033203125
+        }
+      }
+    },
+    {
+      "n": 32768,
+      "data": 32,
+      "templates": 128,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 113.68167807813734,
+          "us_per_pair": 27.75431593704525,
+          "min_ms": 108.24706789571792,
+          "max_ms": 117.6606509834528
+        },
+        "cpu_hier": {
+          "device": "cpu:0",
+          "band": 4096,
+          "ms_per_batch": 50.10958109050989,
+          "us_per_pair": 12.233784445925266,
+          "min_ms": 48.95933601073921,
+          "max_ms": 51.787573960609734,
+          "refine_rate": 0.25390625
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 23.74186646193266,
+          "us_per_pair": 5.796354116682778,
+          "min_ms": 22.539824480190873,
+          "max_ms": 25.180260476190597
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=32768 snr=5.50 fd=1e-03 -- no measured configuration at snr 5.50 meets fd=1e-03. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=[5.0, 5.5, 5.75, 6.0, 6.5], and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    },
+    {
+      "n": 65536,
+      "data": 16,
+      "templates": 64,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 63.31694999244064,
+          "us_per_pair": 61.83295897699281,
+          "min_ms": 59.756410075351596,
+          "max_ms": 70.73367200791836
+        },
+        "cpu_hier": {
+          "unavailable": "no calibrated coarse threshold for n=65536 band=16384: provide a covering threshold file, or set both band and coarse threshold"
+        },
+        "gpu_flat": {
+          "device": "gpu:0",
+          "ms_per_batch": 72.29372404981405,
+          "us_per_pair": 70.59933989239653,
+          "min_ms": 69.90654196124524,
+          "max_ms": 75.59877401217818
+        },
+        "gpu_hier": {
+          "unavailable": "no measured tuning for n=65536 snr=5.50 fd=1e-03 -- no measured configuration at snr 5.50 meets fd=1e-03. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=[5.0, 5.5, 6.0, 6.5], and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        }
+      }
+    },
+    {
+      "n": 131072,
+      "data": 8,
+      "templates": 32,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 38.11212792061269,
+          "us_per_pair": 148.87549968989333,
+          "min_ms": 33.427504007704556,
+          "max_ms": 41.497919941321015
+        },
+        "cpu_hier": {
+          "unavailable": "no calibrated coarse threshold for n=131072 band=32768: provide a covering threshold file, or set both band and coarse threshold"
+        },
+        "gpu_flat": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 131072. Larger transforms need more than 1024 threads and are not implemented yet, so they would have to be split across dispatches."
+        },
+        "gpu_hier": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 131072"
+        }
+      }
+    },
+    {
+      "n": 262144,
+      "data": 4,
+      "templates": 16,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 20.681233028881252,
+          "us_per_pair": 323.14426607626956,
+          "min_ms": 20.6006970256567,
+          "max_ms": 21.101700549479574
+        },
+        "cpu_hier": {
+          "unavailable": "no calibrated coarse threshold for n=262144 band=65536: provide a covering threshold file, or set both band and coarse threshold"
+        },
+        "gpu_flat": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 262144. Larger transforms need more than 1024 threads and are not implemented yet, so they would have to be split across dispatches."
+        },
+        "gpu_hier": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 262144"
+        }
+      }
+    },
+    {
+      "n": 524288,
+      "data": 2,
+      "templates": 8,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 11.092079250374809,
+          "us_per_pair": 693.2549531484256,
+          "min_ms": 10.925161506747827,
+          "max_ms": 11.407246987801045
+        },
+        "cpu_hier": {
+          "unavailable": "no measured tuning for n=524288 snr=5.50 fd=1e-03 -- n=524288 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        },
+        "gpu_flat": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 524288. Larger transforms need more than 1024 threads and are not implemented yet, so they would have to be split across dispatches."
+        },
+        "gpu_hier": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 524288"
+        }
+      }
+    },
+    {
+      "n": 1048576,
+      "data": 1,
+      "templates": 4,
+      "paths": {
+        "cpu_flat": {
+          "device": "cpu:0",
+          "ms_per_batch": 7.138750150001475,
+          "us_per_pair": 1784.6875375003688,
+          "min_ms": 6.954293282303427,
+          "max_ms": 7.411222006859524
+        },
+        "cpu_hier": {
+          "unavailable": "no measured tuning for n=1048576 snr=5.50 fd=1e-03 -- n=1048576 is not in the tables. The tables cover n=[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144], snr=none at this n, and a threshold ABOVE that range is answered conservatively; below or between it is not, because a lower threshold is a harder problem and nothing measured bounds it. Either pass band/taps explicitly, or generate coverage with tools/hmf_tune.py and point MF_ACCURACY and MF_COST at it. See docs/hierarchical.md."
+        },
+        "gpu_flat": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 1048576. Larger transforms need more than 1024 threads and are not implemented yet, so they would have to be split across dispatches."
+        },
+        "gpu_hier": {
+          "unavailable": "device='gpu' supports n in [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]; got 1048576"
+        }
+      }
+    }
+  ],
+  "source_commit": "bdfdad6"
+}

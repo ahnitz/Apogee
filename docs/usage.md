@@ -99,8 +99,9 @@ instead of guessing.
 
 CPU lengths are powers of two from 64 to 1048576. GPU lengths are powers
 of two from 64 to 65536, subject to device limits. The
-hierarchical mode additionally needs measured tuning coverage at that length;
-`tools/hmf_tune.py` generates more.
+hierarchical mode additionally needs a covering calibration file, or an
+explicit coarse size and coarse threshold. `tools/hmf_tune.py` can generate
+more measured tuning coverage.
 
 ## Running on a GPU
 
@@ -135,13 +136,11 @@ The GPU path is a Vulkan compute backend. The kernels ship compiled inside
 the wheel, so there is no toolchain to install, no second wheel to pick, and
 nothing extra to import — but it does need a working Vulkan driver.
 
-Two limits, both of which raise rather than working around you:
-
-- **Transform length 1024 to 16384.** One workgroup carries a whole
-  transform; longer ones need more than 1024 threads and are not implemented.
-- **At most 2048 bins per call**, that is `ceil((end - start) / binsize)`.
-  The per-bin table shares the kernel's 8 KB of workgroup memory, and
-  enlarging it would halve occupancy.
+GPU transform lengths are powers of two from **64 to 65536**. Device
+workgroup limits can reject individual lengths; unsupported requests raise.
+The GPU supports arbitrary output bin counts by splitting calls internally
+past 2048 bins. That split may repeat transforms and is a performance
+consideration, not a public bin-count limit.
 
 A GPU that reports no devices on a machine that has one is usually a
 shadowed C++ runtime rather than a driver problem — `matchedfilter` says so
@@ -156,7 +155,7 @@ not ask for.
 
 | | CPU | GPU |
 |---|---|---|
-| transform lengths | 1024 – 1048576 | **1024 – 16384** |
+| transform lengths | powers of two **64–1048576** | powers of two **64–65536**, subject to device limits |
 | flat filter | yes | yes |
 | hierarchical filter | yes | yes |
 | `run_series` | yes | yes |
@@ -215,7 +214,7 @@ the second is stricter than CI alone would tell you:
   and 1.29x at n=16384. Halving the staging doubles the exchange chunks
   and their barriers, and that costs more than the occupancy it buys — so
   this is a real penalty at those two sizes, not a formality.
-- **Every supported length runs** — n=1024 through 16384, verified against
+- **Historical Metal validation** — n=1024 through 16384 was verified against
   the CPU index-for-index on an Apple M2, flat and hierarchical.
 
   It nearly did not. How many threads a device allows depends on the

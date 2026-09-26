@@ -188,3 +188,17 @@ def test_historical_benchmark_artifacts_use_representative_targets():
 
 def test_readme_horizontal_rules_are_not_literal_dashes():
     assert build_report.md("before\n\n---\n\nafter") == "<p>before</p><hr><p>after</p>"
+
+
+def test_all_sizes_page_is_published_and_contains_every_length():
+    import pathlib
+    import json
+    root = pathlib.Path(ROOT)
+    assert any(page[0] == 'all-sizes.html' and page[3] == 'docs/local-device-timings.md'
+               for page in build_report.PAGES)
+    page = build_report.md((root / 'docs/local-device-timings.md').read_text())
+    rows = json.loads((root / 'docs/measurements/device-paths-all-sizes-2026-09-26.json').read_text())['results']
+    assert [r['n'] for r in rows] == [2**i for i in range(6, 21)]
+    for row in rows:
+        assert '<td>%d</td>' % row['n'] in page
+    assert 'not calibrated' in page and 'unsupported' in page

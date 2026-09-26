@@ -103,10 +103,11 @@ and failure modes without being asked. Both devices return the same fields,
 the same shapes and the same `index == -1` convention for a bin that nothing
 cleared, which is what lets one set of tests assert against both.
 
-The GPU path covers transform lengths **1024 to 16384** — one workgroup
-carries a whole transform, and that is what 1024 threads reach. Longer
-transforms raise, naming the sizes that work, rather than quietly running
-somewhere else. The CPU covers 1024 to 1048576. See
+The CPU supports every power of two from **64 to 1,048,576**. The GPU supports
+powers of two from **64 to 65,536**, subject to device workgroup limits.
+Unsupported GPU sizes raise instead of silently using the CPU. Hierarchical
+calibration coverage is separate: supply a covering file or explicitly set
+both the coarse size and coarse threshold. See
 [Current capabilities](https://ahnitz.github.io/matchedfilter/using-it.html)
 for the rest of what the GPU backend does and does not do yet.
 
@@ -157,12 +158,20 @@ Measure it on your own machine:
 python -m matchedfilter.benchmark
 ```
 
+[CPU/GPU timings at every supported size](https://ahnitz.github.io/matchedfilter/all-sizes.html)
+include the batch shape and calibration gaps.
+
 ### Run the benchmarks
 
 ```bash
 python -m pip install pyfftw       # optional FFTW reference
-python -m matchedfilter.benchmark --n 1024 4096 16384 --reps 7 --json bench.json
+python -m matchedfilter.benchmark --reps 7 --json bench.json
 ```
+
+The default sweep includes all 15 CPU lengths, with GPU timings at supported
+lengths. Batch sizes shrink at large lengths to bound memory use. Use `--n`
+only when deliberately selecting a subset. Missing hierarchical calibration
+is reported explicitly; it does not remove a flat-filter timing.
 
 Install `mkl-fft` and `mkl` for an optional MKL reference where supported.
 Reference columns time only the inverse FFT; matchedfilter includes the product

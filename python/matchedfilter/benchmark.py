@@ -233,9 +233,8 @@ _HIER_MAX_PAIRS = 16 * 128
 def default_shape(n, budget=_SHAPE_BUDGET, cap=_MAX_PAIRS):
     """(ndata, ntemplates) for a transform length: as big as memory allows.
 
-    Flat at 64 x 512 through n=32768, then quartering. The ratio is held at
-    1:8 so both scale together rather than one of them collapsing to a
-    larger allocation than the input budget permits.
+    Flat at 64 x 512 while inputs fit, then quartering the pair count.
+    The 1:8 ratio is preserved down to 1 x 8, including the largest lengths.
     """
     k = 0
     while True:

@@ -19,7 +19,9 @@ in natural order.  Ingest only rearranges - templates are conjugated and both
 sides are stored in the layout the correlation loop walks - which measures at
 2-4% of total and shrinks as the number of templates grows.
 
-Supported lengths are 1024 and the powers of two from 4096 to 1048576.
+CPU lengths are powers of two from 64 to 1048576. GPU lengths are powers
+of two from 64 to 65536, subject to device limits. Hierarchical calibration
+coverage is separate from transform support.
 """
 import math
 import os

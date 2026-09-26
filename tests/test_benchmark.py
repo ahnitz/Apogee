@@ -49,3 +49,26 @@ def test_representative_targets_do_not_repeat_auto(monkeypatch):
     monkeypatch.setattr(benchmark.mf, 'targets', lambda: ['NEON_BF16', 'NEON', 'NEON_WITHOUT_AES'])
     monkeypatch.setattr(benchmark.mf, 'backend', lambda: 'NEON_BF16')
     assert benchmark.benchmark_targets() == ['auto']
+
+
+def test_default_sweep_covers_every_supported_length(monkeypatch, tmp_path):
+    seen = []
+    def one(n, *args):
+        seen.append(n)
+        return 1.0, {}, 'indices match', None
+    monkeypatch.setattr(benchmark, '_one', one)
+    monkeypatch.setattr(benchmark, 'available_engines', lambda: [])
+    monkeypatch.setattr(benchmark, '_plan_seconds', {})
+    output = tmp_path / 'all.json'
+    assert benchmark.main(['--no-hier', '--json', str(output)]) == 0
+    expected = [2**i for i in range(6, 21)]
+    assert seen == expected
+    assert [r['n'] for r in json.loads(output.read_text())['flat']] == expected
+
+
+def test_default_batches_respect_input_memory_budget():
+    for n in benchmark.SUPPORTED_LENGTHS:
+        nd, nt = benchmark.default_shape(n)
+        assert nd >= 1 and nt >= 1
+        assert (nd + nt) * n * 8 <= benchmark._SHAPE_BUDGET
+        assert nd * nt <= benchmark._MAX_PAIRS
