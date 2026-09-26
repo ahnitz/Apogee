@@ -297,9 +297,31 @@ lot: band 256 on the inspiral reference at snr 5.5 measures 1.22, 0.95 and
 table picks the wrong band, not that it is wrong by a particular factor.
 The 1.40-1.84x figures are one draw's worth.
 
-`hmf_tune.py --retune-cost` re-measures the table for a machine and is the
-obvious thing to run. The scope is now known: this is a table-wide problem,
-not a single bad cell, and re-measuring is the only route.
+`hmf_tune.py --retune-cost` re-measures the table for a machine. It could
+not run at all until this session -- it died on the first configuration the
+library declines (band 64 has no calibrated threshold) after 160 rows, which
+is a fair explanation for how the table drifted this far unnoticed.
+
+**Re-measuring helps and does not fix it.** Against a partial retune (48
+keys at n=4096; the run was still going), ranking the same six points:
+
+    reference   snr    old     new    clock
+    inspiral    5.5    512     512     512     already right
+    inspiral    6.0    256     512     512     FIXED
+    shallow     5.5    512    1024    1024     FIXED
+    shallow     6.0    512     512    1024     still wrong
+    steep       5.5    256     512     512     FIXED
+    steep       6.0    256     512     256     REGRESSED
+
+Right at 2 of 6 before, 4 of 6 after -- but one point that was right is now
+wrong, so this is not a case of the rows simply being stale. Some of the
+error is in the lookup rather than the rows: `score_cost_rule.py` measured
+candidate pricing rules spanning 54% to 88% of the best available speedup,
+which is the same magnitude as the misranking here.
+
+PROVISIONAL. The retune had not finished. Re-run this comparison against
+the complete table before drawing conclusions from the two that did not
+improve.
 
 **The faster band is admissible**, which is the check that makes this a
 defect rather than selection being right for a reason I had not measured.
