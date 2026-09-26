@@ -62,3 +62,35 @@ The native extension was rebuilt, all production shader artifacts regenerated,
 and the full suite ran with Radeon 8060S access: **755 passed, 6 skipped**.
 The skipped tests include platform-specific Metal execution; macOS CI is the
 runtime check for those changes. `git diff --check` is clean.
+
+## Fast coarse-calibration transfer regression
+
+`tests/test_coarse_fdr.py` directly compares CPU coarse peaks with every
+shipped Vulkan option at bands 64, 128, 256, 512, 1024 and 2048: fp32,
+packed fp16, pair-packed, template-tiled, and the separate fp32 tiled kernels.
+That is 39 implementations (30 fp16 variants, six fp32, three tiled).
+On Metal it checks the production fp32 coarse implementation at those sizes.
+Larger coarse sizes are not part of this quick sweep.
+
+Each size uses 32,768 seeded independent noise/injection trials and four
+spectral profiles with different widths and phases. Lags lie on an 8-times
+finer grid than the coarse transform. An independently evaluated sample at
+the injected fine lag selects signals known to exceed the fine threshold
+5.5; this avoids a full refinement FFT and leaves at least 15,000 detections.
+The comparison therefore covers a defined subset of detectable injections,
+not every signal that might trigger elsewhere in the full lag window.
+
+CPU empirical quantiles set thresholds for 0.01 and 0.001 false dismissal.
+The GPU must use those exact thresholds. Paired admission disagreements
+(including disagreements that cancel in the aggregate rate) may not exceed
+12.5% of the CPU dismissal count, rounded up to an integer. A separate
+0.6% pointwise magnitude bound catches scale drift away from these particular
+thresholds. The diagnostic includes threshold, counts, rates and kernel;
+JUnit properties retain each measured comparison. A deliberately biased
+synthetic result verifies the guard rejects a small systematic scale drift.
+
+This is a calibration-transfer regression, not an independent certification
+of the shipped tables' population false-dismissal probabilities. Finite tails
+and limited spectral profiles cannot establish that claim. No thresholds are
+recalibrated independently for the GPU, and no runtime code changes are needed.
+Validation on Radeon 8060S: **7 passed in 19.71 seconds**.
