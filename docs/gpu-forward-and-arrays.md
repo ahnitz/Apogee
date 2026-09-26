@@ -94,3 +94,10 @@ Final Linux validation: **687 passed, 5 skipped** in the isolated commit
 snapshot; **721 passed, 5 skipped** in the concurrent shared checkout.
 The common-source extraction reproduced byte-identical existing correlation
 SPIR-V at lengths 1024, 4096 and 16384, preserving those hot kernels.
+
+## Class-level scheduling follow-up
+
+The [class execution audit](class-execution-audit.md) measures series grouping,
+layout validation, caller chunking and dispatch-cache overhead with unchanged
+kernels. It identifies different CPU/GPU batching controls and proposes shared
+planning and result handling while preserving backend-specific layouts.
