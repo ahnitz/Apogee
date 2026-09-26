@@ -1153,8 +1153,19 @@ def bench_pair(runs):
     return "".join(o)
 
 
+#: Engines worth charting. FFTW is the reference that means something, and
+#: MKL where the runner has it. numpy and scipy are NOT shown: both normally
+#: wrap pocketfft, but a wheel linked against MKL makes them silently the
+#: same engine as the MKL line -- and their numbers came out close enough to
+#: FFTW to suggest exactly that. A comparison whose backend depends on how
+#: the wheel was built is not a comparison. They stay in the details table,
+#: where the engine is at least named.
+_CHART_ENGINES = ("fftw", "mkl")
+
+
 def bench_refs(runs, engines):
-    """Against FFTW and numpy, one panel per runner."""
+    """Against FFTW and MKL, one panel per runner."""
+    engines = [e for e in engines if e in _CHART_ENGINES]
     o = ['<p>The reference lines time <strong>one inverse transform and '
          'nothing else</strong> -- batched, single precision, one thread. '
          'This library\'s line covers the whole matched filter: the product, '
@@ -1164,8 +1175,12 @@ def bench_refs(runs, engines):
          'library and does not implement a general transform; the question is '
          'whether computing only the binned maxima beats doing the transform '
          'at all, which is the step that would otherwise dominate. FFTW is '
-         'the reference worth caring about. numpy and scipy are floors that '
-         'run everywhere.</div>']
+         'the reference worth caring about, and MKL where the runner has it. '
+         'numpy and scipy are not charted: both normally wrap pocketfft, but '
+         'a wheel linked against MKL turns them into the MKL line under '
+         'another name, so what they measure depends on how they were built '
+         'rather than on this library. Their numbers are in the table '
+         'below.</div>']
     panels = []
     for r in runs:
         pts = [(f["n"], f["us_per_pair"]) for f in r.get("flat", [])
@@ -1187,8 +1202,31 @@ def bench_refs(runs, engines):
     return "".join(o) if panels else ""
 
 
-def _bench_runs(runs):
+#: ISA suffixes worth a row of their own on the results pages.
+#:
+#: A bare platform label -- "linux-x86_64", "macos-arm64" -- is the `auto`
+#: run, which resolves to the best target the runner has and is what a user
+#: actually gets. Everything else the build happens to hold is a duplicate
+#: for these pages: NEON_BF16 and NEON_WITHOUT_AES differ from NEON only in
+#: features an FFT never touches, and NEON/AVX3 simply repeat `auto` on
+#: their own hardware. AVX2 is kept because 256-bit against 512-bit is a
+#: real contrast for anyone on older x86.
+#:
+#: Ten rows across three machines said less than four do. The complete
+#: per-target numbers are unchanged and still in the details table, which
+#: passes all_targets=True.
+_SHOWN_ISAS = ("AVX2",)
+
+
+def _bench_runs(runs, all_targets=False):
     runs = [r for r in runs if r.get("flat") or r.get("hierarchical")]
+    if not all_targets:
+        def keep(label):
+            parts = label.split("-")
+            if len(parts) <= 2:
+                return True              # the bare platform: the `auto` run
+            return parts[-1] in _SHOWN_ISAS
+        runs = [r for r in runs if keep(r["host"]["label"])]
     runs.sort(key=lambda r: r["host"]["label"])
     return runs
 
@@ -1202,10 +1240,11 @@ def filter_benchmarks_page(runs):
     numbers are ratios against THIS one -- mixing them on a page made it easy
     to read a margin speedup as though it were raw throughput.
     """
+    all_runs = _bench_runs(runs, all_targets=True)
     runs = _bench_runs(runs)
     if not runs:
         return "<p>No benchmark results were available when this page was built.</p>"
-    engines = sorted({e for r in runs for f in r.get("flat", [])
+    engines = sorted({e for r in all_runs for f in r.get("flat", [])
                       for e in (f.get("reference_us_per_pair") or {})})
     fastest = min((f["us_per_pair"] for r in runs for f in r.get("flat", [])),
                   default=0)
@@ -1224,9 +1263,9 @@ def filter_benchmarks_page(runs):
     o.append("<h3>What was tested</h3>")
     o.append(workload_note(runs, "flat"))
     o.append(bench_what(runs))
-    o.append(details("All numbers (%d rows)"
-                     % sum(len(r.get("flat", [])) for r in runs),
-                     bench_flat_raw(runs, engines)))
+    o.append(details("All numbers (%d rows, every target)"
+                     % sum(len(r.get("flat", [])) for r in all_runs),
+                     bench_flat_raw(all_runs, engines)))
     return "".join(o)
 
 
