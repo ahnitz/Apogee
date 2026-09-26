@@ -1,0 +1,6 @@
+{"pairs":1536,"repetitions":20000,"results":[
+{"scaled":false,"twiddle":false,"packed_ns_per_pair":0.076169,"native_ns_per_pair":0.080148,"speedup":1.052237,"exact":true},
+{"scaled":false,"twiddle":true,"packed_ns_per_pair":1.832466,"native_ns_per_pair":0.187578,"speedup":0.102364,"exact":true},
+{"scaled":true,"twiddle":false,"packed_ns_per_pair":0.142078,"native_ns_per_pair":0.134114,"speedup":0.943950,"exact":true},
+{"scaled":true,"twiddle":true,"packed_ns_per_pair":1.662057,"native_ns_per_pair":0.194141,"speedup":0.116807,"exact":true}
+]}
