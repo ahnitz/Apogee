@@ -114,3 +114,15 @@ transitions, raw dtype checks, and refinement counters that count work rather
 than detections. See [the parity audit](cpu-gpu-parity.md) for remaining feature
 and operational differences. Final shared-checkout validation: 595 passed,
 5 skipped on CPU plus Radeon 8060S.
+
+## CI launch-directory and dependency regression
+
+CI runs the installed package's tests from a scratch directory. The new tuner
+regression tests exposed `tools/hmf_tune.py` importing `tests` and `tools`
+relative to the current directory; from `/tmp`, four tests failed to import
+`hmf_design`. That import also eagerly required SciPy, absent from the declared
+NumPy/pytest runtime test environment. Resolve helper paths from `__file__` and
+load the SciPy-backed legacy design helper only when a design sweep uses it.
+CLI regressions now launch outside the repository, and an import test blocks
+SciPy and the legacy design module. Full scratch-directory validation on the
+local CPU/Radeon 8060S: 596 passed, 5 skipped in 46.72 seconds.

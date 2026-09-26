@@ -19,6 +19,7 @@ def load_tuner():
     'ACC 4096 256 2 8 6.00 0.99 16.0 1.000 0.001',
 ])
 def test_retune_cost_current_and_legacy_accuracy(tmp_path,monkeypatch,row):
+    monkeypatch.chdir(tmp_path)
     tuner=load_tuner()
     accuracy=tmp_path/'accuracy.txt'; accuracy.write_text(row+'\n')
     out=tmp_path/'cost.txt'
@@ -45,14 +46,14 @@ def test_retune_rejects_empty_accuracy_without_overwriting(tmp_path):
     assert out.read_text()=='existing'
 
 
-def test_hier_bench_cli_uses_current_raw_results():
+def test_hier_bench_cli_uses_current_raw_results(tmp_path):
     import subprocess
     import sys
     root=Path(__file__).resolve().parents[1]
     result=subprocess.run([sys.executable,str(root/'tools/hier_bench.py'),
         '--n','1024','--templates','4','--series','8192','--taps','128',
         '--inject','2','--reps','1','--band','256','--no-profile'],
-        cwd=root,capture_output=True,text=True,timeout=30)
+        cwd=tmp_path,capture_output=True,text=True,timeout=30)
     assert result.returncode==0, result.stdout+result.stderr
     assert 'proof:' in result.stdout
 
@@ -66,6 +67,17 @@ def test_retune_cli_defines_helpers_before_entrypoint(tmp_path):
     output=tmp_path/'cost.txt'
     result=subprocess.run([sys.executable,str(root/'tools/hmf_tune.py'),
         '--retune-cost',str(accuracy),'--out',str(output)],
-        cwd=root,capture_output=True,text=True,timeout=30)
+        cwd=tmp_path,capture_output=True,text=True,timeout=30)
     assert result.returncode==0, result.stdout+result.stderr
     assert 'COST 128 64' in output.read_text()
+
+
+def test_cost_tuner_import_does_not_require_scipy(tmp_path, monkeypatch):
+    import sys
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, 'scipy', None)
+    monkeypatch.setitem(sys.modules, 'hmf_design', None)
+    tuner=load_tuner()
+    reference=tuner.make_ref(1024,256,.99,16.)
+    assert reference.shape==(1024,)
+    assert np.isfinite(reference).all()

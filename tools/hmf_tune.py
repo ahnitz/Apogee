@@ -129,11 +129,18 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, "tests")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_ROOT, "tests"))
 from test_api import (inspiral_power, template_with_power, noise)  # noqa: E402
 import matchedfilter as mf                                    # noqa: E402
-sys.path.insert(0, "tools")
-import hmf_design as D_design                                 # noqa: E402
+sys.path.insert(0, os.path.join(_ROOT, "tools"))
+
+
+def _design_template(*args):
+    # Only legacy design sweeps need SciPy. Empirical cost regeneration and
+    # the runtime test suite require NumPy alone.
+    from hmf_design import make_template
+    return make_template(*args)
 
 
 #: Trials per call when measuring on a GPU. The CPU's 64 is a throughput
@@ -385,7 +392,7 @@ def profile(n, want_f):
     """A reference whose SNR accumulation puts `want_f` of the power below the
     n/8 band edge -- the same parameterisation hmf_design uses, so the two
     tables are indexed alike."""
-    H = D_design.make_template(n, n // 8, want_f)
+    H = _design_template(n, n // 8, want_f)
     return (np.abs(H) ** 2).astype(np.float32)
 
 
@@ -460,7 +467,7 @@ def f_min(n, band, U, K, snr, fd, trials=4000, lo=0.50, hi=0.999, tol=0.01):
     """
     while hi - lo > tol:
         mid = 0.5 * (lo + hi)
-        ref = (np.abs(D_design.make_template(n, band, mid)) ** 2).astype(np.float32)
+        ref = (np.abs(_design_template(n, band, mid)) ** 2).astype(np.float32)
         dm, det, _ = measure(n, band, U, K, snr, trials, power=ref)
         if det and dm <= fd:
             hi = mid          # this much accumulation is enough
@@ -473,7 +480,7 @@ def _cell(job):
     """One (n, band, U, K, snr, fd, want_f) measurement. Top level for pickling."""
     n, band, U, K, snr, fd, wf, trials, device = job
     try:
-        ref = (np.abs(D_design.make_template(n, band, wf)) ** 2).astype(np.float32)
+        ref = (np.abs(_design_template(n, band, wf)) ** 2).astype(np.float32)
         dm, det, sec = measure(n, band, U, K, snr, trials, power=ref,
                                device=device)
         return dict(n=n, band=band, U=U, K=K, snr=snr, fd=fd, want_f=wf,
