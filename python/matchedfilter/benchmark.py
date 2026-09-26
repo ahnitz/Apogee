@@ -742,7 +742,7 @@ def main(argv=None):
     hier_rows = []
     if not a.no_hier:
         print(f"\n\nHierarchical vs flat filter, pure noise, "
-              f"false dismissal {a.fd:g}")
+              f"requested false-dismissal budgets {FD_SWEEP}")
         print(f"  {'n':>8} {'fd':>7} {'snr':>5} {'flat':>11} {'hierarchical':>11} "
               f"{'speedup':>9} {'triggered':>10} {'chosen':>14}")
         for n in a.n:
@@ -755,8 +755,8 @@ def main(argv=None):
                         n, hnd, hnt, snr, fd, a.reps)
                 except (ValueError, RuntimeError) as e:
                     # An uncovered (n, snr, fd) is a refusal, not a failure:
-                    # the tables are measured and the library will not answer
-                    # outside them. Report it as a gap in coverage.
+                    # cost coverage or model resolution may be insufficient.
+                    # Report the reason rather than fabricating a result.
                     first = str(e).strip().split("\n")[0]
                     print(f"  {n:>8} {fd:>7.0e} {snr:>5.1f}   not tuned: {first}")
                     hier_rows.append({"n": n, "snr": snr, "fd": fd,

@@ -316,30 +316,77 @@ def test_the_library_model_matches_this_one():
             "%.3e at gate %.1f" % (b, a, thr))
 
 
-#: SCOPE of the validation, stated so it is not over-read: every agreement
-#: check here injects a signal.
-#:
-#: That is not a limitation in the way it first looks. Conditional on the
-#: observed fine SNR the two populations are the same distribution -- with
-#: X = sqrt(f) u + sqrt(1-f) w, u | X has mean sqrt(f) X and variance 1-f,
-#: so a signal at rho_t gives the coarse statistic mean sqrt(f) rho and a
-#: noise trigger at the same rho gives mean sqrt(f) rho too. rho_t cancels.
-#: That is the sufficient-statistic argument in handoff/fdr-overshoot and
-#: it holds: the coarse statistic cannot know where the SNR came from,
-#: because if it could, it would separate signal from noise better than a
-#: matched filter.
-#:
-#: So a gate calibrated on injections is calibrated for noise triggers too.
-def test_the_model_is_validated_on_injections_only():
-    """The scope of the validation, asserted so it is not over-read.
 
-    Every agreement check in this file injects a signal. The noise-trigger
-    population is measured in test_gate_population.py and is NOT covered
-    here, which is the whole of the open question above.
-    """
+@pytest.mark.parametrize("fd", [.01, .001, .0001])
+def test_quantile_placement_uses_the_conditional_distribution(fd):
+    from matchedfilter import gatemodel as gm
     p = profile()
-    band, thr = 1024, 4.6
-    inj = filter_mc(p, thr, band=band)
-    mdl = model(p, thr, band=band)
-    assert 1 / 1.3 < inj / mdl < 1.3, (
-        "model %.3e against an injected-signal measurement of %.3e" % (mdl, inj))
+    gate = gm.gate_for(p, N, BAND, SNR, fd)
+    kept = gm._conditional(p, N, BAND, SNR, gm._nsamp_for(fd))
+    idx = int(np.floor(fd * len(kept)))
+    assert gate == float(kept[idx])
+    assert gm.dismissal(p, N, BAND, SNR, gate, fd_hint=fd) <= fd
+    # Adjacent order statistics, not arbitrary gate tolerances.
+    assert (idx + 1) / len(kept) > fd
+
+
+def test_full_band_has_no_independent_noise_but_still_has_grid_loss():
+    from matchedfilter import gatemodel as gm
+    p = np.zeros(1024); p[:512] = 1.
+    coarse, fine = gm._samples(p, 1024, 512, 5., 8000, 71)
+    assert np.all(coarse <= fine + 2e-6)
+    assert np.mean(coarse < .9 * fine) > .1
+    # With identical lag grids, both outputs must actually coincide.
+    coarse, fine = gm._samples(p, 1024, 1024, 5., 8000, 71)
+    np.testing.assert_array_equal(coarse, fine)
+
+
+@pytest.mark.parametrize("fd", [0., -1., 1., np.nan, np.inf])
+def test_invalid_model_budget_is_rejected(fd):
+    from matchedfilter import gatemodel as gm
+    with pytest.raises(ValueError, match="fd"):
+        gm.gate_for(np.ones(128), 128, 64, 5., fd)
+
+
+@pytest.mark.parametrize("power", [np.zeros(128), np.full(128, np.nan),
+                                   -np.ones(128), np.ones(127)])
+def test_invalid_model_profile_is_rejected(power):
+    from matchedfilter import gatemodel as gm
+    with pytest.raises(ValueError, match="power"):
+        gm.gate_for(power, 128, 64, 5., .01)
+
+
+def test_unresolvable_budget_refuses_without_sampling(monkeypatch):
+    from matchedfilter import gatemodel as gm
+    def forbidden(*args, **kwargs):
+        raise AssertionError("unresolvable request allocated samples")
+    monkeypatch.setattr(gm, '_conditional', forbidden)
+    assert gm.gate_for(np.ones(128), 128, 64, 5., 1e-8) is None
+
+
+def test_sampling_cache_includes_seed_and_exact_snr(monkeypatch):
+    from matchedfilter import gatemodel as gm
+    from collections import OrderedDict
+    monkeypatch.setattr(gm, '_CACHE', OrderedDict())
+    p = np.ones(128)
+    calls = []
+    original = gm._samples
+    def samples(*args):
+        calls.append(args[3:])
+        return original(*args)
+    monkeypatch.setattr(gm, '_samples', samples)
+    a = gm._conditional(p, 128, 64, 5., 1024, 1)
+    assert gm._conditional(8*p, 128, 64, 5., 1024, 1) is a
+    gm._conditional(p, 128, 64, 5., 1024, 2)
+    gm._conditional(p, 128, 64, 5.00001, 1024, 1)
+    assert len(calls) == 3
+
+
+def test_sampling_cache_respects_memory_limit(monkeypatch):
+    from matchedfilter import gatemodel as gm
+    from collections import OrderedDict
+    monkeypatch.setattr(gm, '_CACHE', OrderedDict())
+    monkeypatch.setattr(gm, '_CACHE_BYTES', 8192)
+    for seed in range(5):
+        gm._conditional(np.ones(128), 128, 64, 5., 1024, seed)
+    assert sum(len(k[0])+v.nbytes for k,v in gm._CACHE.items()) <= 8192

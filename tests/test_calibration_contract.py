@@ -102,6 +102,12 @@ def test_explicit_threshold_must_fit_float32(device):
     assert f._cal_thr is None
 
 
-def test_budget_below_file_coverage_is_refused():
-    tuning = {'thr': {(1024, 5., .001): [(.5,2.,3.)]}}
-    assert mf.choose_threshold(np.ones(1024),1024,5.,.0001,512,tuning=tuning) is None
+def test_budget_below_model_resolution_is_refused():
+    assert mf.choose_threshold(np.ones(1024),1024,5.,1e-8,512) is None
+
+
+@pytest.mark.parametrize('variable', ['MF_ACCURACY', 'MF_THRESHOLD'])
+def test_retired_gate_file_overrides_are_not_silently_ignored(monkeypatch, variable):
+    monkeypatch.setenv(variable, '/unused/legacy.txt')
+    with pytest.raises(ValueError, match=variable + ' is retired'):
+        mf.choose_threshold(np.ones(1024), 1024, 5., .01, 512)

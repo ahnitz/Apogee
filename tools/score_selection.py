@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Compare the selected configuration with measured admissible alternatives.
 
-Uses the library's ACC2 admission rules. Older accuracy-table generations
-are reported as unsupported rather than silently scored as empty.
+Uses the library's profile-based gate model and measured cost candidates.
 """
 import argparse
 import time
@@ -16,7 +15,7 @@ def score(n, snr, nd=8, nt=32, fd=1e-3):
     power = _inspiral_power(n)
     candidates = admissible(power, n, snr, fd, mf._load_tuning())
     if candidates is None:
-        raise ValueError(f"n={n}, snr={snr}: no ACC2 coverage; legacy scoring unsupported")
+        raise ValueError(f"n={n}, snr={snr}: no measured cost coverage")
     pick = mf.choose_config(power, n, snr, fd)
     rng = np.random.default_rng(7)
     h = (np.sqrt(power)*np.exp(1j*rng.uniform(0, 2*np.pi, (nt,n)))).astype(np.complex64)

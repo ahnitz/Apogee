@@ -29,7 +29,7 @@ def test_autotuning_refuses_outside_its_measured_coverage():
     # test must keep testing refusal rather than quietly starting to pass for
     # the wrong reason.
     t = mf._load_tuning()
-    covered = {r[0] for r in t["fdr"]}
+    covered = {r[0] for r in t["cost"]}
     n = next(v for v in (3072, 6144, 12288, 24576) if v not in covered)
     power = inspiral_power(n)
     hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=2, snr=5.0, fd=1e-3)
@@ -84,47 +84,6 @@ def test_autotuning_uses_the_reference_where_it_has_rows():
     assert all(b > 0 for b, _ in picks)   # config is (band, taps)
 
 
-# ------------------------------------------------ SNR coverage and fallback
-
-def test_snr_exact_hit_uses_only_that_row():
-    rows, why = mf._snr_rows_for(5.5, [5.0, 5.5, 6.0])
-    assert rows == (5.5,)
-    assert "measured at snr 5.5" in why
-
-
-def test_snr_above_the_range_uses_the_highest_measured_row():
-    """A threshold above everything measured is an EASIER problem.
-
-    So the nearest measurement BELOW it is the relevant one. Taking the worst
-    row across the whole range instead imported snr 5.0's behaviour into a
-    case easier than snr 6.0, and it cost real speed: snr 6.5 was handed band
-    1024 where snr 6.0 got band 256, so asking for a higher threshold
-    produced a slower filter.
-    """
-    rows, why = mf._snr_rows_for(9.0, [5.0, 5.5, 6.0])
-    assert rows == (6.0,)
-    assert "above the measured range" in why
-
-
-def test_snr_below_the_range_refuses():
-    """A lower threshold is a HARDER problem and nothing measured bounds it."""
-    rows, why = mf._snr_rows_for(4.5, [5.0, 5.5, 6.0])
-    assert rows is None
-    assert "below the lowest measured" in why
-
-
-def test_interior_thresholds_are_bounded_by_both_neighbours():
-    """Dismissal is not monotone in the threshold, so one neighbour is unsafe.
-
-    172 of 640 fully-measured cells in the shipped table RISE from snr 5.0 to
-    5.5, so a request at 5.2 cannot be answered from the 5.0 row alone. It is
-    bracketed, and the worse of the two neighbours is the honest bound.
-    """
-    rows, why = mf._snr_rows_for(5.2, [5.0, 5.5, 6.0])
-    assert rows == (5.0, 5.5), "must use both bracketing rows"
-    assert "between measured" in why
-
-
 def test_a_higher_threshold_never_gets_a_wider_first_pass():
     """Asking for more SNR must not make the filter work harder.
 
@@ -152,56 +111,14 @@ def test_a_higher_threshold_never_gets_a_wider_first_pass():
         prev = cfg[0]
 
 
-def test_dismissal_is_not_monotone_in_snr_in_the_shipped_table():
-    """Pins the fact the fallback rule is built around.
-
-    If a future table were monotone this test would fail, and the right
-    response would be to check whether the simpler nearest-row rule is now
-    safe -- not to delete the test.
-    """
-    import collections
-    t = mf._load_tuning()
-    cells = collections.defaultdict(dict)
-    for (n, band, U, K, snr, f, be, margin, dm) in t["fdr"]:
-        cells[(n, band, U, K, f, be, margin)][snr] = dm
-    snrs = sorted({r[4] for r in t["fdr"]})
-    rises = 0
-    full = 0
-    for v in cells.values():
-        if len(v) < len(snrs):
-            continue
-        full += 1
-        seq = [v[s] for s in snrs]
-        if any(b > a + 1e-12 for a, b in zip(seq, seq[1:])):
-            rises += 1
-    assert full > 0
-    assert rises > 0, "table is monotone in snr; revisit the fallback rule"
+def test_model_answers_outside_the_old_snr_grid():
+    p = inspiral_power(4096)
+    for snr in (4., 9.):
+        assert mf.choose_config(p, 4096, snr, 1e-3) is not None
 
 
-def test_autotuning_answers_above_the_table_and_refuses_below():
-    """End to end, through choose_config, on a real reference."""
-    from matchedfilter.benchmark import _inspiral_power
-    p = _inspiral_power(4096)
-    assert mf.choose_config(p, 4096, 9.0, 1e-3) is not None
-    assert mf.choose_config(p, 4096, 4.0, 1e-3) is None
-
-
-def test_threshold_lookup_refuses_below_the_measured_envelope():
-    """Never EXTRAPOLATE a gate downward past the measured rows.
-
-    Inverse-distance weighting extrapolates happily, and below the table's
-    hull it pushes the threshold UP -- the unsafe direction, since a gate
-    set too high dismisses signal and nothing downstream reports it.
-
-    Measured at n=4096 band=128: f = 0.697 against a floor of 0.800 and
-    ratio 1.24 against 1.50. It returned 4.1170, ABOVE band 256's properly
-    interpolated 4.0717, which is backwards -- band 128 captures less of the
-    signal (f 0.697 against 0.883) so its coarse statistic recovers less
-    SNR and its threshold must be LOWER. It merely looked efficient: refine
-    cost 0.007 ms against 0.150, because it was over-gating.
-
-    Above the hull is safe and is clamped rather than refused.
-    """
+def test_gates_increase_with_recovered_power_on_this_reference():
+    """A narrower band must not inherit a wider band's optimistic gate."""
     n = 4096
     ref = inspiral_power(n)
 
@@ -215,9 +132,25 @@ def test_threshold_lookup_refuses_below_the_measured_envelope():
             continue                      # outside coverage: correctly refused
         f, be = mf._band_features(ref.astype(np.float32), band)
         seen.append((f, band, t))
-    assert len(seen) >= 2, "the table answered for fewer than two bands"
+    assert len(seen) >= 2, "the model answered for fewer than two bands"
     seen.sort()
     for (f0, b0, t0), (f1, b1, t1) in zip(seen, seen[1:]):
         assert t1 >= t0 - 1e-6, (
             "threshold falls as f rises: band %d f=%.3f thr=%.4f "
             "then band %d f=%.3f thr=%.4f" % (b0, f0, t0, b1, f1, t1))
+
+
+def test_cost_override_does_not_poison_other_devices_or_default(monkeypatch, tmp_path):
+    default = mf._load_tuning()
+    path = tmp_path / 'cost.txt'
+    path.write_text('COST 1024 256 2 8 5.0 .8 50.0 1.2\n')
+    explicit = mf._load_tuning(str(path))
+    assert mf._load_tuning() is default
+    from matchedfilter.device import Device
+    monkeypatch.setenv('MF_COST', str(path))
+    gpu = mf._load_tuning_for(Device('gpu', 0, 'card', 'vulkan'))
+    assert gpu['cost'] == explicit['cost']
+    assert mf._TUNING is default
+    assert mf._load_tuning()['cost'] == explicit['cost']
+    monkeypatch.delenv('MF_COST')
+    assert mf._load_tuning()['cost'] == default['cost']

@@ -40,11 +40,14 @@ profile shapes, bands 512/1024/2048, snr 5.0/5.5/6.0 -- at ratios 0.88 to
 coarse stage (the GPU already runs it in half precision) shows up as a
 calibration change rather than passing quietly. See tests/test_gate_model.py.
 """
+from collections import OrderedDict
+
 import numpy as np
 
 #: Lag half-widths. The in-band correlation decays over ~n/B_eff samples,
-#: a few coarse steps, so the sums converge quickly: nb=12/w=6 and nb=4/w=3
-#: agree to 0.6%, and nb=48 or 192 change nothing at all.
+#: a few coarse steps in the validated broad-band cases: nb=12/w=6 and
+#: nb=4/w=3 agreed to 0.6% there. This is a local approximation, not a
+#: convergence guarantee for arbitrary narrow bands; see docs/gate-model.md.
 _NB = 4                      # coarse grid lags either side
 _W = 3                       # fine integer lags either side
 
@@ -52,8 +55,9 @@ _W = 3                       # fine integer lags either side
 #: is scaled by this. See the noise-convention note above.
 _SIG = np.sqrt(2.0)
 
-_CACHE = {}
+_CACHE = OrderedDict()
 _CACHE_MAX = 64
+_CACHE_BYTES = 64 * 1024 * 1024
 
 
 def _samples(power, n, band, snr, nsamp, seed):
@@ -64,15 +68,12 @@ def _samples(power, n, band, snr, nsamp, seed):
         return None
     pf = pf / tot
     f = float(pf[:band].sum())
-    if f <= 0 or f >= 1.0 + 1e-12:
-        f = min(max(f, 1e-12), 1.0)
+    f = min(max(f, 0.0), 1.0)
+    if f == 0:
+        return None
     step = n // band
-    kb = np.arange(band)
     qb = pf[:band] / f
     out_of_band = (1.0 - f) > 1e-9
-    if out_of_band:
-        ko = np.arange(band, n)
-        qo = pf[band:] / (1.0 - f)
 
     #: A(d) = sum_k q_k exp(2i.pi.k.d/n) is an inverse DFT of the profile,
     #: so ONE transform gives it at every lag. Evaluating it as explicit
@@ -120,18 +121,9 @@ def _samples(power, n, band, snr, nsamp, seed):
             nout = np.float32(0.0)
         sf = look(Af_t, taus - off).astype(np.complex64)
         sb = look(Ab_t, taus - off).astype(np.complex64)
-        #: The fine stage searches EVERY lag, so its maximum runs over all
-        #: of `taus` -- not just the few around the true lag. Restricting it
-        #: to those let the coarse maximum, which spans +-NB*step, exceed a
-        #: fine maximum that had only looked at +-W. That is impossible
-        #: whenever the coarse band is the whole band: there the coarse grid
-        #: is a SUBSET of the fine's lags and the coarse can never win. It
-        #: showed up as a full-band gate dismissing 7 of 78 triggers where
-        #: nothing is out of band to lose.
-        #:
-        #: Including the coarse grid lags is what matters and costs nothing:
-        #: they are already in `taus`, and a noise excursion the coarse can
-        #: see is one the fine sees too.
+        # Include every coarse lag in the fine maximum: they are a subset
+        # of the fine grid. Even at f=1, fine-only lags can exceed the coarse
+        # maximum because the coarse grid is still decimated.
         F_all.append(np.abs(np.float32(snr) * sf[None, :]
                             + np.float32(np.sqrt(f)) * nin
                             + np.float32(np.sqrt(1 - f)) * nout).max(1))
@@ -148,19 +140,30 @@ def _conditional(power, n, band, snr, nsamp, seed=13):
     into one array. That is why this costs one sample set rather than a
     root-find per budget.
     """
-    key = (np.asarray(power, dtype=np.float64).tobytes().__hash__(),
-           n, band, round(float(snr), 4), nsamp)
+    p = np.asarray(power, dtype=np.float64)
+    if (p.shape != (n,) or not np.isfinite(p).all() or (p < 0).any()
+            or not np.isfinite(p.sum()) or p.sum() <= 0):
+        raise ValueError("power must be a finite nonnegative length-n profile with positive sum")
+    p = p / p.sum()
+    # Use the complete bytes, not a hash alone, and include the seed and
+    # exact SNR. Cache collisions or rounded SNR must not change a gate.
+    key = (p.tobytes(), n, band, float(snr), nsamp, seed)
     hit = _CACHE.get(key)
     if hit is not None:
+        _CACHE.move_to_end(key)
         return hit
-    got = _samples(power, n, band, snr, nsamp, seed)
+    got = _samples(p, n, band, snr, nsamp, seed)
     if got is None:
         return None
     coarse, fine = got
     kept = np.sort(coarse[fine >= snr])
-    if len(_CACHE) >= _CACHE_MAX:
-        _CACHE.clear()
-    _CACHE[key] = kept
+    size = len(key[0]) + kept.nbytes
+    used = sum(len(k[0]) + v.nbytes for k, v in _CACHE.items())
+    while _CACHE and (len(_CACHE) >= _CACHE_MAX or used + size > _CACHE_BYTES):
+        oldkey, old = _CACHE.popitem(last=False)
+        used -= len(oldkey[0]) + old.nbytes
+    if size <= _CACHE_BYTES:
+        _CACHE[key] = kept
     return kept
 
 
@@ -182,8 +185,22 @@ def _nsamp_for(fd):
     return int(min(max(2.0e4, 200.0 / fd), 3.0e6))
 
 
+def _validate(n, band, snr, fd):
+    if (not isinstance(n, (int, np.integer)) or n < 64
+            or not isinstance(band, (int, np.integer)) or band < 1
+            or band > n or band & (band - 1) or n % band):
+        raise ValueError("n must be divisible by a power-of-two band <= n")
+    if not np.isfinite(snr) or snr <= 0:
+        raise ValueError("snr must be finite and positive")
+    if not np.isfinite(fd) or not 0 < fd < 1:
+        raise ValueError("fd must be finite and between zero and one")
+
+
 def dismissal(power, n, band, snr, gate, fd_hint=1e-3):
     """Modelled false-dismissal rate at `gate`."""
+    _validate(n, band, snr, fd_hint)
+    if not np.isfinite(gate) or gate < 0:
+        raise ValueError("gate must be finite and nonnegative")
     kept = _conditional(power, n, band, snr, _nsamp_for(fd_hint))
     if kept is None or not len(kept):
         return None
@@ -197,7 +214,11 @@ def gate_for(power, n, band, snr, fd):
     so the caller refuses rather than guessing -- the same contract the
     table had when a cell was unmeasured.
     """
-    kept = _conditional(power, n, band, snr, _nsamp_for(fd))
+    _validate(n, band, snr, fd)
+    nsamp = _nsamp_for(fd)
+    if fd * nsamp < 8:
+        return None
+    kept = _conditional(power, n, band, snr, nsamp)
     if kept is None or not len(kept):
         return None
     idx = int(np.floor(float(fd) * len(kept)))

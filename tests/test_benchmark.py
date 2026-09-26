@@ -72,3 +72,13 @@ def test_default_batches_respect_input_memory_budget():
         assert nd >= 1 and nt >= 1
         assert (nd + nt) * n * 8 <= benchmark._SHAPE_BUDGET
         assert nd * nt <= benchmark._MAX_PAIRS
+
+
+def test_one_in_ten_thousand_budget_runs_a_real_benchmark():
+    import math
+    assert 1e-4 in benchmark.FD_SWEEP
+    flat, hier, rate, cfg, speed = benchmark._bench_hier(
+        1024, 2, 4, 5.5, 1e-4, 1)
+    assert all(math.isfinite(v) and v > 0 for v in (flat, hier, speed))
+    assert 0 <= rate <= 1
+    assert len(cfg) == 2 and 64 <= cfg[0] < 1024

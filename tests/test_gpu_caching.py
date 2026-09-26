@@ -399,64 +399,6 @@ def test_the_chosen_kernel_fits_the_invocation_limit():
             ctx.destroy()
 
 
-def test_accuracy_table_resolution_order():
-    """Backend first, then any GPU, then the shipped default.
-
-    ONE table ships now. accuracy-gpu.txt existed because the two backends
-    ran different algorithms -- the CPU interpolated the coarse peak where
-    the GPU escalated the whole window -- and it went when the CPU stopped
-    interpolating. Measured after that, the GPU dismisses 0.86 to 0.97 of
-    the CPU's rate, so the CPU's is an upper bound and one table serves.
-
-    The ordering is still tested because it is what makes a future split
-    possible: dropping a backend table in must change what that backend
-    loads and nothing else. Tested by creating one, not by shipping one.
-    """
-    import os
-    from matchedfilter import accuracy_table_for
-    from matchedfilter.device import Device
-
-    cpu = Device("cpu", 0, "whatever", "AVX3")
-    vk = Device("gpu", 0, "some card", "vulkan")
-    mtl = Device("gpu", 0, "Apple", "metal")
-
-    # The CPU keeps the shipped default; it must never pick up a GPU table.
-    path, key = accuracy_table_for(cpu)
-    assert key is None and os.path.basename(path) == "accuracy.txt"
-
-    # With no GPU table shipped, both GPU backends take the default.
-    for dev in (vk, mtl):
-        path, key = accuracy_table_for(dev)
-        assert key is None, "%s resolved to %r" % (dev, key)
-        assert os.path.basename(path) == "accuracy.txt"
-
-    # Drop a shared GPU table in: both backends must pick it up, the CPU
-    # must not. This is the split that would be needed if they diverge.
-    here = os.path.dirname(path)
-    shared = os.path.join(here, "accuracy-gpu.txt")
-    open(shared, "w").close()
-    try:
-        assert accuracy_table_for(vk)[1] == "gpu"
-        assert accuracy_table_for(mtl)[1] == "gpu"
-        assert accuracy_table_for(cpu)[1] is None, "the CPU must never take it"
-        # A backend table outranks the shared one.
-        made = os.path.join(here, "accuracy-vulkan.txt")
-        open(made, "w").close()
-        try:
-            assert accuracy_table_for(vk)[1] == "vulkan"
-            assert accuracy_table_for(mtl)[1] == "gpu", "metal must not take it"
-        finally:
-            os.unlink(made)
-    finally:
-        os.unlink(shared)
-
-    os.environ["MF_ACCURACY"] = "/tmp/whatever.txt"
-    try:
-        assert accuracy_table_for(vk) == ("/tmp/whatever.txt", "MF_ACCURACY")
-    finally:
-        del os.environ["MF_ACCURACY"]
-
-
 def test_a_dropped_gpu_filter_gives_its_descriptors_back():
     """A filter that goes out of scope must release the Vulkan device.
 

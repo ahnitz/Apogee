@@ -1,3 +1,7 @@
+> Gate-model update: accuracy and threshold tables have been retired. See
+> [the current gate model](gate-model.md) for the execution contract. Table
+> and margin discussions below record historical measurements.
+
 # CPU dispatch and tool cleanup, 2026-09-26
 
 The matchedfilter library computes binned complex correlation peaks for batches
@@ -39,11 +43,11 @@ python tools/bench_pairbatch.py --include-ingest
 MF_ISA=AVX2 python -m pytest -q tests/test_pairbatch_policy.py
 MF_ISA=SSE4 python -m pytest -q tests/test_pairbatch_policy.py
 python tools/score_selection.py --n 4096 --snr 6
-python tools/hmf_tune.py --retune-cost path/to/accuracy.txt --out /tmp/cost.txt
+python tools/hmf_tune.py --retune-cost path/to/cost.txt --out /tmp/cost.txt
 FIXTURES=/path/to/captures PY=python3 BAND=2048 bash tools/hier_all.sh
 ```
 
-Full-table regeneration can be expensive. A small accuracy file containing the
+Full-table regeneration can be expensive. A small cost file containing the
 cells of interest is supported; do not treat sparse timing rows as universal
 coverage. Keep the generated output separate until selection is validated.
 

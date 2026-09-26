@@ -53,7 +53,7 @@ for KSIG in (4.0, 6.0, 8.0):
                 np.array([np.abs(x).max() for x in H]))
 
     # The gate is in units of the output's COMPONENT sigma -- that is what
-    # threshold.txt calibrates. Normalising by the mean noise MAXIMUM
+    # the profile model calibrates. Normalising by the mean noise MAXIMUM
     # instead puts everything near 1.0, so every trial reads as dismissed
     # and the escalation rate reads as zero.
     _nf, _ni, _nb, _nh = series(0.0, NOISE)

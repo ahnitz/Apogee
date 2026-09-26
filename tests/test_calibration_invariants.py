@@ -72,9 +72,7 @@ def test_gate_matches_reference_under_scaling_and_bank_partition(device, band):
 def test_threshold_lookup_is_independent_of_cost_and_reference_amplitude():
     n, band = 1024, 256
     power = np.exp(-np.arange(n)/180)
-    f, be = mf._band_features(power, band)
-    ratio = band/be
-    table = {'thr': {(n, 5., .001): [(f, ratio, 2.25)]}}
+    table = {'cost': {}}
     a = mf.choose_threshold(power, n, 5., .001, band, tuning=table)
     assert a is not None
     # Timing optimization may reorder candidates, but cannot change the
@@ -85,22 +83,11 @@ def test_threshold_lookup_is_independent_of_cost_and_reference_amplitude():
         assert b == pytest.approx(a, rel=1e-12)
 
 
-def test_shipped_threshold_rows_are_unambiguous_and_finite():
-    from pathlib import Path
-    path = Path(mf.__file__).parent / 'threshold.txt'
-    keys = set()
-    for number, line in enumerate(path.read_text().splitlines(), 1):
-        if not line.strip() or line.lstrip().startswith('#'):
-            continue
-        fields = line.split()
-        assert len(fields) == 7 and fields[0] == 'THR', (path, number, line)
-        n, snr, fraction, ratio, fd, threshold = map(float, fields[1:])
-        assert np.isfinite([n, snr, fraction, ratio, fd, threshold]).all(), number
-        assert n == int(n) and n >= 64 and snr > 0, number
-        assert 0 < fraction <= 1 and ratio > 0 and 0 < fd < 1 and threshold >= 0, number
-        # The loader rounds SNR to two decimal places: keys must remain
-        # unique after that normalization, otherwise order affects lookup.
-        key = (int(n), round(snr, 2), fraction, ratio, fd)
-        assert key not in keys, ('duplicate calibration cell', key, number)
-        keys.add(key)
-    assert keys, 'the shipped calibration table must not silently become empty'
+def test_shipped_cost_rows_are_finite_and_cannot_set_accuracy():
+    tuning = mf._load_tuning()
+    assert tuning['cost']
+    assert not ({'thr', 'acc2', 'acc2r', 'fdr'} & tuning.keys())
+    for key, rows in tuning['cost'].items():
+        assert len(key) == 5
+        assert np.isfinite(rows).all()
+        assert all(cost > 0 for _, _, cost in rows)

@@ -1164,13 +1164,10 @@ def bench_speedup(runs, names):
             if not any(h.get("fd") == f and "speedup" in h for h in hier)]
     note = ""
     if gone:
-        note = ('<div class="note warn">No bar for %s at any length: the '
-                'shipped accuracy table cannot resolve a budget that small. '
-                'It is measured at a few thousand trials a cell, so a rate '
-                'below roughly 3/trials is a floor rather than a result, and '
-                'the library refuses rather than answering from one. That is '
-                'a limit of the measurement, not of the method -- more trials '
-                'would open it.</div>'
+        note = ('<div class="note warn">No result for %s at any length. '
+                'See the recorded refusal reasons: cost coverage or gate-model '
+                'resolution may be insufficient. These are requested budgets, '
+                'not empirical dismissal measurements.</div>'
                 % ", ".join("fd = %g" % f for f in gone))
     return ('<p>The first pass correlates against a low-frequency slice of '
             'each template and pays for the full correlation only where that '
@@ -1178,7 +1175,8 @@ def bench_speedup(runs, names):
             'has bought nothing. Bars should climb with the threshold, because '
             'a higher threshold admits a narrower first pass -- and with a '
             'looser false-dismissal budget, which admits a tighter coarse '
-            'threshold.</p>' + tabs(panels, "transform length") + note)
+            'threshold. The fd labels are requested model budgets; this noise-only '
+            'timing benchmark does not measure signal dismissal.</p>' + tabs(panels, "transform length") + note)
 
 
 def bench_pair(runs):

@@ -41,7 +41,7 @@ def one(job):
     # No margin. choose_config used to return one and this passed it back
     # in, which measured a configuration the library never runs: the margin
     # is an axis of the measured grid, and what the filter is actually run
-    # at is the threshold from threshold.txt. Measuring the chosen config
+    # at is the profile-model threshold. Measuring the chosen config
     # means measuring it as the library will build it.
     band, K = cfg
     dm, det, _sec = t.measure(n, band, 1, K, snr, trials, power=p)

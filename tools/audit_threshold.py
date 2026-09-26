@@ -1,49 +1,13 @@
 #!/usr/bin/env python3
-"""Check the shipped coarse-threshold table against measurement, cell by cell.
+"""Independently check the profile-model coarse gate against filter injections.
 
-The table says, for a given (n, f, ratio, snr, fd), the highest coarse
-threshold whose false dismissal still meets `fd`.  Nothing checked that
-claim after the rows were written, and it does not hold uniformly: the rows
-are optimistic at low `ratio` and the error grows as the ratio falls.
+Bisection estimates the largest empirical gate meeting the requested budget.
+This implementation is deliberately independent of hmf_tune.measure and the
+model sampler. Rare budgets require enough detected injections: 100 events
+below the gate give roughly 10% relative counting uncertainty.
 
-    n=4096, snr 5.0, fd 1e-3, 6000 injections a bisection step
-
-    band   f       ratio   measured safe   table    table is
-     128   0.6970   1.24       2.8956      3.3341   15.1% HIGH
-     256   0.8832   1.66       3.3843      3.5307    4.3% high
-     512   0.9584   2.83       3.8774      4.0354    4.1% high
-    1024   0.9882   5.33       4.3502      4.2423    2.5% low
-
-A threshold that is too high dismisses signals, so "high" is the unsafe
-direction.  At ratio 5 and above the table is fine.  Below it the table is
-a few percent optimistic, which the configurations survive because they
-have slack, and at ratio 1.24 the error reaches 15% and breaks through --
-band 128 there dismisses 2.9e-2 against a 1e-3 budget, which is why bands
-64 and 128 are supported but not selectable.  See
-tests/test_low_ratio_corner.py and docs/tooling-cleanup.md.
-
-This measures the same quantity the table claims, in the same units, the
-way a caller experiences it: inject at the design SNR into noise, filter
-with the flat filter and the hierarchical one, and count the peaks the flat
-filter reports that the hierarchical one does not.
-
-It does NOT reuse hmf_tune.measure_tc, nor
-tools/regen/threshold_lowratio.py, and that duplication is DELIBERATE.
-Those are the producers; this is the check. A check sharing the producer's
-setup cannot see a fault in it, which is exactly how the original error
-survived -- the rows and their only validation came from one code path.
-Do not factor the three together.
-
-    python tools/audit_threshold.py                     # the four cells above
-    python tools/audit_threshold.py --band 128 --trials 20000
-    python tools/audit_threshold.py --n 8192 --snr 5.5 --fd 1e-2
-
-TRIALS. `fd` is a rate, so the trial count sets what can be resolved: at
-`trials` injections a budget of `fd` expects `trials * fd` events, and
-fewer than a handful cannot separate a pass from a draw. The default 6000
-expects 6 at 1e-3, which is enough to place the threshold to a few percent
-and not enough to certify a single cell -- the shipped rows were measured
-at that count and this is the tool that found them wrong.
+    python tools/audit_threshold.py --band 1024 --trials 100000
+    python tools/audit_threshold.py --n 1024 --band 256 --fd .0001 --trials 1500000
 """
 import argparse
 import os
@@ -166,16 +130,7 @@ def repeatability(n, band, f_target, ratio, snr, fd, trials, steps, seeds):
 
 
 def coverage(paths):
-    """Does each table's grid cover the range real references query?
-
-    Written after finding the same fault twice by hand. A table can leave a
-    variable out of its key and look correct if the check that justified
-    the omission ran where that variable does not matter -- accuracy.txt
-    measured a 1.14x spread across band, its header says "across band/B_eff
-    from 16 to 128", and band is worth 20% at the ratio 1.2 real references
-    reach. The grid not covering the operating range is the visible symptom
-    of that, and it is mechanical to check.
-    """
+    """Describe measured cost features; these are not accuracy limits."""
     q = []
     for n in (2048, 4096, 8192, 16384):
         for e in (-7 / 3.0, -2.0, -5 / 3.0):
@@ -255,8 +210,6 @@ def main():
 
     if a.coverage:
         coverage([
-            ("python/matchedfilter/threshold.txt", "THR",
-             [("f", 3), ("ratio", 4)]),
             ("python/matchedfilter/cost.txt", "COST",
              [("f", 6), ("B_eff", 7)]),
             ("tools/cost-small-bands-4096-experimental.txt", "COST",
@@ -270,7 +223,7 @@ def main():
           "at the budget%s" % (a.n, a.snr, a.fd, a.trials, expect,
                                "" if expect >= 5 else "  -- TOO FEW TO SEPARATE"))
     print("%6s %8s %8s %7s %10s %10s  %s"
-          % ("band", "f", "B_eff", "ratio", "measured", "table", "table is"))
+          % ("band", "f", "B_eff", "ratio", "measured", "model", "model is"))
     worst = None
     for band in a.band:
         f, be = mf._band_features(power, band)

@@ -13,15 +13,11 @@ def load_tuner():
     return module
 
 
-@pytest.mark.parametrize('row', [
-    'ACC2 4096 8 6.00 0.99 16.0 1.000 0.001',
-    'ACC2R 4096 8 6.00 0.99 16.0 1.000 0.001',
-    'ACC 4096 256 2 8 6.00 0.99 16.0 1.000 0.001',
-])
-def test_retune_cost_current_and_legacy_accuracy(tmp_path,monkeypatch,row):
+def test_retune_cost_uses_cost_references(tmp_path,monkeypatch):
+    row = 'COST 4096 256 2 8 6.00 0.99 16.0 1.0'
     monkeypatch.chdir(tmp_path)
     tuner=load_tuner()
-    accuracy=tmp_path/'accuracy.txt'; accuracy.write_text(row+'\n')
+    source=tmp_path/'source.txt'; source.write_text(row+'\n')
     out=tmp_path/'cost.txt'
     calls=[]
     def sweep(n,power,snr,configs):
@@ -29,20 +25,20 @@ def test_retune_cost_current_and_legacy_accuracy(tmp_path,monkeypatch,row):
         calls.append(configs)
         return {c:1. for c in configs},0.
     monkeypatch.setattr(tuner,'cost_sweep_one_reference',sweep)
-    tuner.retune_cost(accuracy,out,verbose=False)
+    tuner.retune_cost(source,out,verbose=False)
     rows=[line.split() for line in out.read_text().splitlines() if line.startswith('COST ')]
     assert calls and rows
     assert {64,128,256,512,1024,2048}=={int(r[2]) for r in rows}
-    assert all(len(r)==10 and float(r[-1])==1. for r in rows)
+    assert all(len(r)==9 and float(r[-1])==1. for r in rows)
     assert all(float(r[5])==6. for r in rows)
 
 
-def test_retune_rejects_empty_accuracy_without_overwriting(tmp_path):
+def test_retune_rejects_empty_source_without_overwriting(tmp_path):
     tuner=load_tuner()
-    accuracy=tmp_path/'empty.txt'; accuracy.write_text('# no rows\n')
+    source=tmp_path/'empty.txt'; source.write_text('# no rows\n')
     out=tmp_path/'cost.txt'; out.write_text('existing')
-    with pytest.raises(ValueError,match='no supported accuracy'):
-        tuner.retune_cost(accuracy,out,verbose=False)
+    with pytest.raises(ValueError,match='no supported cost'):
+        tuner.retune_cost(source,out,verbose=False)
     assert out.read_text()=='existing'
 
 
@@ -62,14 +58,11 @@ def test_retune_cli_defines_helpers_before_entrypoint(tmp_path, monkeypatch):
     import subprocess
     import sys
     root=Path(__file__).resolve().parents[1]
-    accuracy=tmp_path/'accuracy.txt'
-    accuracy.write_text('ACC2 128 8 6.0 .99 8.0 1.0 .001\n')
-    threshold=tmp_path/'threshold.txt'
-    threshold.write_text('THR 128 6.0 .01 .01 .0001 0.0\n')
-    monkeypatch.setenv("MF_THRESHOLD", str(threshold))
+    source=tmp_path/'source.txt'
+    source.write_text('COST 128 64 2 8 6.0 .99 8.0 1.0\n')
     output=tmp_path/'cost.txt'
     result=subprocess.run([sys.executable,str(root/'tools/hmf_tune.py'),
-        '--retune-cost',str(accuracy),'--out',str(output)],
+        '--retune-cost',str(source),'--out',str(output)],
         cwd=tmp_path,capture_output=True,text=True,timeout=30)
     assert result.returncode==0, result.stdout+result.stderr
     assert 'COST 128 64' in output.read_text()

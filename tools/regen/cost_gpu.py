@@ -6,8 +6,8 @@ with a completely different shape -- the CPU's coarse pass fits in L2 and
 its refinement does not, while on a GPU both are bandwidth-and-occupancy
 problems and the crossover sits somewhere else entirely.
 
-The ACCURACY rows are untouched. They describe the algorithm -- which pairs a
-coarse pass dismisses -- and that does not depend on the device.
+The gate comes from the shared profile-based model. Accuracy is tested
+against actual CPU and GPU execution.
 
 What is measured is the same quantity the CPU table holds: cost RELATIVE to
 a pivot configuration at the same transform length. A ratio, not a time, so
@@ -39,16 +39,11 @@ import hmf_tune as t
 from test_api import inspiral_power, template_with_power, noise
 
 SNRS = [5.0, 5.5, 6.0, 6.5]
-#: The margin axis is gone: there is one calibrated threshold per
-#: band now, read from threshold.txt, so a band has ONE cost rather
-#: than a curve. The column is still emitted as 1.0 so the reader
-#: is unchanged. Four times fewer cells.
-MARGINS = [1.00]
 KS = [4, 8]
 PAIRS = 4096
 
 
-def measure(n, band, margin, snr, reps=8):
+def measure(n, band, snr, reps=8):
     """Seconds per run for one configuration, with the data already resident."""
     nd = 16
     nt = PAIRS // nd
@@ -75,7 +70,7 @@ def measure(n, band, margin, snr, reps=8):
     # Device work only. Timing run() instead put the host's output
     # marshalling in the number, and that is the same for every
     # configuration -- it swamped the differences being measured and made
-    # adjacent margins come out non-monotonic.
+    # different bands appear indistinguishable.
     #
     # The two backends reach that the way each can. Vulkan already holds
     # recorded command buffers, so it resubmits them. Metal builds encoders
@@ -93,7 +88,7 @@ def measure(n, band, margin, snr, reps=8):
         for _ in range(reps):
             go()
             best = min(best, ctx.last_gpu_time)
-        # measure() is called once per (band, margin, snr) cell -- hundreds
+        # measure() is called once per (band, snr) cell -- hundreds
         # of times -- so the context has to go back with the early return
         # as well, not only on the path that falls through.
         ctx.destroy()
@@ -150,21 +145,20 @@ def main(argv=None):
         bands = [b for b in t.bands_for(n) if b < n]
         pivot_band = max(bands)
         for snr in SNRS:
-            pivot, _ = measure(n, pivot_band, 1.00, snr)
+            pivot, _ = measure(n, pivot_band, snr)
             for band in bands:
                 p = np.asarray(inspiral_power(n), float)
                 s = p[:band].sum()
                 q = p[:band] / s if s > 0 else p[:band]
                 f_in = float(s / p.sum())
                 beff = float(1.0 / np.sum(q ** 2))
-                for margin in MARGINS:
-                    sec, rate = measure(n, band, margin, snr)
-                    rel = sec / pivot
-                    for K in KS:
-                        rows.append((n, band, 2, K, snr, f_in, beff, margin, rel))
-                    print("  n=%-6d band=%-5d snr=%.1f margin=%.2f  rel=%.4f "
-                          "refine=%.3f" % (n, band, snr, margin, rel, rate),
-                          flush=True)
+                sec, rate = measure(n, band, snr)
+                rel = sec / pivot
+                for K in KS:
+                    rows.append((n, band, 2, K, snr, f_in, beff, rel))
+                print("  n=%-6d band=%-5d snr=%.1f  rel=%.4f "
+                      "refine=%.3f" % (n, band, snr, rel, rate),
+                      flush=True)
 
     with open(out, "w") as fh:
         fh.write("# matchedfilter COST table -- RELATIVE cost per configuration\n#\n")
@@ -178,11 +172,11 @@ def main(argv=None):
         fh.write("# U is always 2 and K is unused on this backend -- the kernel\n"
                  "# computes both coarse halves and escalates the interpolation\n"
                  "# window rather than interpolating it -- so rows sharing an\n"
-                 "# (n, band, snr, margin) share a measurement. They are emitted\n"
+                 "# (n, band, snr) share a measurement. They are emitted\n"
                  "# per (U, K) anyway so the table's key matches the CPU one.\n#\n")
-        fh.write("# COST n band U K snr f beff margin rel\n")
+        fh.write("# COST n band U K snr f beff rel\n")
         for r in rows:
-            fh.write("COST %d %d %d %d %.2f %.4f %.1f %.3f %.4f\n" % r)
+            fh.write("COST %d %d %d %d %.2f %.4f %.1f %.4f\n" % r)
     print("wrote %s (%d rows)" % (out, len(rows)))
     return 0
 

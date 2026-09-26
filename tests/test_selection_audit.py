@@ -11,8 +11,8 @@ def test_missing_measurements_are_not_silently_timed(monkeypatch):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module.mf, 'choose_threshold',
                         lambda power,n,snr,fd,band: None if band == 64 else 3.)
-    tuning = {'cost': {(1024, 64, 2, 8, 6., 1.): [],
-                       (1024, 256, 2, 8, 6., 1.): []}}
+    tuning = {'cost': {(1024, 64, 2, 8, 6.): [],
+                       (1024, 256, 2, 8, 6.): []}}
     rows = {r['band']: r for r in module.candidate_coverage(np.ones(1024),1024,6.,.001,tuning)}
     assert set(rows) == {64,128,256,512}
     assert rows[64]['cost_rows'] == 1 and not rows[64]['runnable']
@@ -37,4 +37,17 @@ def test_exported_costs_round_trip_through_the_library(tmp_path):
     table = module.mf._load_tuning(str(output))
     assert {key[1] for key in table['cost']} == {128}
     for taps in (4,8):
-        assert table['cost'][(1024,128,2,taps,6.,1.)] == [(.9,32.,.5)]
+        assert table['cost'][(1024,128,2,taps,6.)] == [(.9,32.,.5)]
+
+
+def test_empty_cost_export_refuses_without_overwriting(tmp_path):
+    import pytest
+    path = Path(__file__).resolve().parents[1]/'tools'/'audit_selection.py'
+    spec = importlib.util.spec_from_file_location('empty_export', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = tmp_path/'cost.txt'; output.write_text('existing')
+    result = dict(n=1024, data=8, templates=32, device='cpu', candidates=[])
+    with pytest.raises(ValueError, match='no calibrated candidates'):
+        module.export_cost(result, output)
+    assert output.read_text() == 'existing'

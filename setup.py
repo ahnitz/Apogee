@@ -140,9 +140,8 @@ setup(
         include_dirs=["python/matchedfilter", "src", HWY_INC])],
     cmdclass={"build_ext": BuildExt},
     # The tuning tables ship with the library and are read at run time.
-    # accuracy.txt describes the algorithm and travels; cost.txt is this
-    # machine's timings and is the one a user regenerates. Both are plain
-    # text so a wheel can be inspected and a local table diffed against it.
+    # Cost tables contain machine timings; accuracy is computed from the
+    # reference profile. The text costs can be inspected and regenerated.
     # Package data lives in pyproject.toml -- a pyproject build ignores a
     # package_data= given here, silently, which is how the SPIR-V came to be
     # absent from a wheel that built and installed without complaint.

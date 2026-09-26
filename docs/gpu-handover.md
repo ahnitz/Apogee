@@ -1,3 +1,7 @@
+> Gate-model update: accuracy and threshold tables have been retired. See
+> [the current gate model](gate-model.md) for the execution contract. Table
+> and margin discussions below record historical measurements.
+
 # GPU work: state and next steps
 
 Written at the end of a long optimisation session. `main` is clean and

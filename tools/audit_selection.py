@@ -85,16 +85,17 @@ def export_cost(result, path):
              (result['n'], result['data'], result['templates'], result['device']),
              "# Existing cost-covered bands only; new-band accuracy is not established.",
              "# Do not replace broad default coverage with this narrow measurement."]
+    header_lines = len(lines)
     for row in result['candidates']:
         if 'seconds' not in row or not row['cost_rows']:
             continue
         # Taps do not change the raw-max execution; retain both table keys.
         for taps in (4, 8):
-            lines.append("COST %d %d 2 %d %.2f %.9g %.9g 1.000 %.9g" %
+            lines.append("COST %d %d 2 %d %.2f %.9g %.9g %.9g" %
                          (result['n'], row['band'], taps, result['snr'],
                           row['fraction'], row['beff'],
                           row['seconds']/result['flat_seconds']))
-    if len(lines) == 3:
+    if len(lines) == header_lines:
         raise ValueError('no calibrated candidates were measured')
     with open(path, 'w') as stream:
         stream.write('\n'.join(lines)+'\n')

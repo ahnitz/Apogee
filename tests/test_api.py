@@ -491,19 +491,8 @@ def test_ratio_filter_shaped_workload():
     _ratio_filter_shaped_workload(pin=True)
 
 
-def test_pinning_reads_the_threshold_from_the_table():
-    """Pinning bypasses the CHOICE, not the evidence.
-
-    A pinned plan is built in __init__, which is BEFORE set_reference -- and
-    the threshold table is keyed on the reference's own (f, ratio), so the
-    lookup cannot run there. Nothing ran it later either, so a pinned plan
-    took its threshold from an empty reference, which is 0: the coarse gate
-    disabled and every pair escalated. That is silent in almost every other
-    test, because a plan that escalates everything still reports every peak
-    correctly -- it just does no gating, and any budget assertion resting on
-    it passes for the wrong reason. Hence the explicit check that a pinned
-    plan's threshold matches the table's, and is not 0.
-    """
+def test_pinning_reads_the_threshold_from_the_model():
+    """Pinning bypasses band selection, not profile-based gate calculation."""
     n = 4096
     k = np.arange(1, n // 2)
     power = np.zeros(n, np.float32)
@@ -517,12 +506,12 @@ def test_pinning_reads_the_threshold_from_the_table():
           for fd in (1e-2, 1e-3)]
     assert all(t is not None and t > 0 for t in ts), ts
     assert ts[0] >= ts[1], ts
-    assert mf.choose_threshold(power, n, 5.0, 1e-4, 512) is None
+    assert mf.choose_threshold(power, n, 5.0, 1e-8, 512) is None
     assert ts[1] < ts[0], ts            # somewhere in the range it must bite
 
-    # band is not in the key, so an off-grid band is answerable -- it enters
-    # only through the (f, B_eff) measured at its own edge
-    assert mf.choose_threshold(power, n, 5.0, 1e-3, 333) is not None
+    # The actual coarse grid is part of the model.
+    with pytest.raises(ValueError, match="power-of-two"):
+        mf.choose_threshold(power, n, 5.0, 1e-3, 333)
 
     # and the pinned plan actually RUNS at that number
     want = mf.choose_threshold(power, n, 5.0, 1e-3, 512)
@@ -849,8 +838,8 @@ def test_first_stage_threshold_is_independent_of_configuration():
         "rate must rise as the first-stage SNR falls, got " + repr(rates))
 
 
-def test_first_stage_below_the_measured_grid_is_refused():
-    """A lower SNR must not silently borrow the file's higher-SNR gate."""
+def test_first_stage_uses_its_own_snr_below_the_old_grid():
+    """The model computes the requested SNR rather than borrowing a row."""
     n = 4096
     hf = mf.HierarchicalFilter(n, band=512, snr=5.5)
     hf.set_reference(inspiral_power(n))
@@ -858,8 +847,9 @@ def test_first_stage_below_the_measured_grid_is_refused():
     hf.set_data(noise((1, n), np.random.default_rng(3)))
     for fs in (3.0, 0.01):
         hf.set_first_stage(fs)
-        with pytest.raises(ValueError, match="no calibrated coarse threshold"):
-            hf.run()
+        hf.run()
+        want = mf.choose_threshold(inspiral_power(n), n, fs, hf.fd, 512)
+        assert hf._ensure().coarse_threshold(fs) == pytest.approx(want, rel=1e-6)
 
 
 @pytest.mark.parametrize("klass", ["flat", "hier"])

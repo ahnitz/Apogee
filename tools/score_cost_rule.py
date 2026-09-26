@@ -1,39 +1,13 @@
 #!/usr/bin/env python3
-"""Score candidate cost-lookup rules against measured truth.
-
-The library picks the cheapest ADMISSIBLE configuration, and those are two
-separate decisions: which configurations meet the false-dismissal budget,
-and which of them is cheapest.  Admission is settled.  Pricing is a lookup
-into a sparse, unevenly sampled cost grid, and the rule that does it was
-chosen by running this -- an argument about it cost up to 56% of the
-available speedup when it was believed instead of measured.
-
-Candidates come from the library's own _admissible_v2, not from a second
-walk over the tables here.  The duplicate walk is how this tool came to be
-reading the FDR table after the FDR table stopped shipping: it scored
-happily against nothing at all.
-"""
+"""Score cost interpolation rules against measured model-gated alternatives."""
 import sys, numpy as np, time, matchedfilter as mf
 from matchedfilter.benchmark import _inspiral_power
 
 def admissible(p,n,snr,fd,t):
-    """[(band, U, K, margin, f, beff, crows)] for this reference.
-
-    Only the ACC2 generation of the accuracy table, which is what
-    _choose_v2 reads and what covers n up to 8192.  The larger sizes are
-    still served by the older ACC rows through a different path in
-    choose_config, where the pricing rule is fused into the admission loop
-    and cannot be varied from outside.  Scoring those would need that path
-    factored the same way; saying so beats printing "nothing admissible",
-    which reads like a measurement.
-    """
-    snrs=t.get("acc2r_snrs",{}).get(n) or t.get("acc2_snrs",{}).get(n)
-    if not snrs: return None
-    use,_=mf._snr_rows_for(snr,snrs)
-    if use is None: return None
-    floor=mf._dismissal_floor(t)
-    return [(c["band"],c["U"],c["K"],c["margin"],c["f"],c["beff"],c["crows"])
-            for c in mf._admissible_v2(p,n,snr,fd,t,use,floor)]
+    """[(band, U, K, f, beff, cost rows)] with a resolvable model gate."""
+    return [(c["band"],c["U"],c["K"],c["f"],c["beff"],c["crows"])
+            for c in mf._cost_candidates(p,n,snr,t)
+            if mf.choose_threshold(p,n,snr,fd,c["band"]) is not None]
 
 
 def _plane(rows, fq, bq, k=6):
@@ -94,10 +68,6 @@ RULES={
 def measure(n,snr,fd=1e-3,nd=8,nt=32):
     p=_inspiral_power(n); t=mf._load_tuning()
     adm=admissible(p,n,snr,fd,t)
-    if adm is None:
-        print("  n=%-7d snr %.1f : no ACC2 rows -- this size is selected from"
-              " the older ACC table, which this tool does not score"%(n,snr))
-        return
     rng=np.random.default_rng(7); amp=np.sqrt(p)
     h=(amp*np.exp(1j*rng.uniform(0,2*np.pi,(nt,n)))).astype(np.complex64)
     h/=np.sqrt((np.abs(h)**2).sum(axis=1,keepdims=True))
@@ -112,11 +82,8 @@ def measure(n,snr,fd=1e-3,nd=8,nt=32):
             dt=time.perf_counter()-t0
             if dt>=floor: return dt/k
             k*=2
-    # Configurations differing only in the margin they were ADMITTED at are
-    # the same filter now -- the margin indexes measured rows, it is not
-    # applied -- so they are timed once, under (band, K).
     true={}
-    for (band,U,K,mg,fq,bq,crows) in adm:
+    for (band,U,K,fq,bq,crows) in adm:
         key=(band,K)
         if key in true: continue
         hf=mf.HierarchicalFilter(n,nd,nt,snr,fd,band=band,taps=K)
@@ -131,7 +98,7 @@ def measure(n,snr,fd=1e-3,nd=8,nt=32):
           "best measured %.2fx"%(n,snr,len(adm),len(true),best))
     for name,rule in RULES.items():
         scored=[]
-        for (band,U,K,mg,fq,bq,crows) in adm:
+        for (band,U,K,fq,bq,crows) in adm:
             if crows: scored.append((rule(crows,fq,bq),(band,K)))
         if not scored: continue
         pick=min(scored)[1]

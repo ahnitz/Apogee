@@ -92,9 +92,10 @@ hf.set_data(data_spectra)
 peaks = hf.run(binsize=4096, threshold=5.5)
 ```
 
-A request needs a covering calibration file, or an explicit coarse size and
-coarse threshold. There is no calibration fallback. Transform support and
-calibration coverage are separate.
+The coarse gate is computed from the full reference profile and requested
+false-dismissal budget; measured cost files select the band. Alternatively,
+set an explicit band and coarse threshold. See the [gate model](docs/gate-model.md)
+for profile assumptions, sampling precision and validation.
 
 ## Performance
 
@@ -108,7 +109,9 @@ that require refinement.
 Measured on a Ryzen AI MAX+ 395 / Radeon 8060S, 2026-09-26: 16 data segments ×
 1,024 templates, 4,096 points. The matchedfilter bars time warm `run()` calls,
 including result assembly and GPU readback. FFTW and rocFFT time the inverse
-transform only. The two panels use separate scales; compare their printed
+transform only. All filter bars use the same matched-profile bank, and the
+hierarchical bars show requested FDR budgets 1e-2, 1e-3 and 1e-4. These
+noise-only timings do not measure FDR. The two panels use separate scales; compare their printed
 values. These measurements are a workload example, not a speed guarantee.
 
 The [flat](https://ahnitz.github.io/matchedfilter/benchmarks.html) and

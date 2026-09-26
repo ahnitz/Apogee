@@ -8,11 +8,8 @@ They differed only in what they summed at the end.
 
 Underscore-prefixed so pytest does not collect it as a test module.
 
-NOT shared with tools/audit_threshold.py or
-tools/regen/threshold_lowratio.py, which run the same measurement. Those
-are the table's checker and producer and their independence from each other
-is deliberate -- see the note in audit_threshold.py. These are tests of the
-filter, which is a third thing.
+Independent of tools/audit_threshold.py, whose injection harness provides
+another check of model gate placement.
 """
 import numpy as np
 
@@ -69,8 +66,7 @@ def noise_trigger_loss(n, H, reference, band, snr, fd, taps=8, reps=12,
                        nb=64, seed=5):
     """(flat triggers, of which the gate dismissed) on PURE NOISE.
 
-    A different population from the injections above and it behaves
-    differently -- see tests/test_gate_population.py. Also asserts the
+    Also asserts the
     one-sided guarantee, which has to hold on every population: the gate
     may dismiss, never promote.
     """
