@@ -270,9 +270,29 @@ operating range in (f, B_eff), so this is not the extrapolation failure the
 small-band cost rows have -- the rows exist and are wrong, or the IDW
 interpolation lands on rows from a different escalation regime.
 
+**It is not one query.** Sampled over five reference shapes and two SNRs,
+comparing table cost against the clock, both normalised to band 1024:
+
+    reference     snr    TABLE 256/512/1024      CLOCK 256/512/1024
+    inspiral      5.5    0.716 0.647 1.000       1.251 0.545 1.000
+    inspiral      6.0    0.496 0.565 1.000       0.940 0.509 1.000   MISRANKED 1.84x
+    shallow       5.5    1.854 0.956 1.000       1.832 1.689 1.000   MISRANKED 1.69x
+    shallow       6.0    1.750 0.778 1.000       1.899 1.402 1.000   MISRANKED 1.40x
+    steep         5.5    0.371 0.541 1.000       0.708 0.507 1.000   MISRANKED 1.40x
+    steep         6.0    0.317 0.521 1.000       0.339 0.539 1.000
+    late knee     5.5    1.159 ----- 1.000       1.610 ----- 1.000
+    late knee     6.0    1.057 ----- 1.000       1.888 ----- 1.000
+    early knee    5.5    0.300 0.519 1.000       0.226 0.494 1.000
+    early knee    6.0    0.289 0.518 1.000       0.230 0.492 1.000
+
+**4 of 10 misranked, costing 1.40x to 1.84x**, across three different
+reference shapes. The errors are not one-directional -- band 256 is
+underpriced on inspiral and steep, overpriced on early knee, and band 512
+is underpriced on shallow -- so this is not a constant to correct out.
+
 `hmf_tune.py --retune-cost` re-measures the table for a machine and is the
-obvious first thing to try. Whether the shipped rows are wrong everywhere
-or only near this query is not established.
+obvious thing to run. The scope is now known: this is a table-wide problem,
+not a single bad cell, and re-measuring is the only route.
 
 **The faster band is admissible**, which is the check that makes this a
 defect rather than selection being right for a reason I had not measured.
