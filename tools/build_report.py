@@ -522,6 +522,22 @@ def bar_chart(groups, series_names, title, ylabel, width=760, height=380):
 
 
 CSS = """
+:root{color-scheme:dark}
+@media(prefers-color-scheme:light){:root{color-scheme:light}}
+:root[data-theme="light"]{color-scheme:light}
+:root[data-theme="dark"]{color-scheme:dark}
+:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+#theme-toggle,.copy-code{font:13px system-ui;cursor:pointer;color:var(--fg);
+ background:var(--panel);border:1px solid var(--rule);padding:.45rem .65rem}
+#theme-toggle{margin:0 0 1rem}
+.code-block{position:relative}
+.copy-code{display:block;margin-left:auto;margin-bottom:-.6rem}
+.heading-link{text-decoration:none;font-size:.75em;margin-left:.5rem;opacity:0}
+h2:hover .heading-link,h3:hover .heading-link,.heading-link:focus{opacity:1}
+.skip-link{position:absolute;top:-100px;left:1rem;z-index:10;background:var(--bg);padding:.6rem}
+.skip-link:focus{top:1rem}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto!important}}
+
 /* Editorial rather than dashboard: a serif text face, hairline rules instead
    of filled cards, and square corners.  Dark by default, on the logo's own
    ink; the light variant is the same design on paper. */
@@ -573,8 +589,8 @@ nav .brandmark{display:flex;align-items:center;gap:.55rem;margin-bottom:.1rem;
 nav .brandmark svg{width:26px;height:26px;flex:none}
 h1{font-size:2.3rem;line-height:1.15;margin:0 0 .9rem;letter-spacing:-.022em;
    font-weight:700}
-h2{font-size:1.05rem;margin:3.2rem 0 .9rem;letter-spacing:.1em;
-   text-transform:uppercase;font-weight:600;color:var(--fg);
+h2{font-size:1.45rem;margin:2.5rem 0 .9rem;letter-spacing:-.01em;
+   text-transform:none;font-weight:600;color:var(--fg);
    font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;
    border-top:1px solid var(--rule);padding-top:.7rem}
 h3{font-size:1.2rem;margin:2.1rem 0 .45rem;font-weight:600;letter-spacing:-.01em}
@@ -591,10 +607,10 @@ li{margin:.35rem 0}
        background:none;border:0;border-top:1px solid var(--bd);
        border-bottom:1px solid var(--bd);padding:.9rem 0}
 .title{font-size:13px;font-weight:600;fill:var(--fg)}
-.tick{font-size:11px;fill:var(--mut)}
+.tick{font-size:13px;fill:var(--mut)}
 .ty{text-anchor:end}.tx{text-anchor:middle}
-.axis{font-size:11.5px;fill:var(--mut)}
-.legend{font-size:11.5px;fill:var(--fg)}
+.axis{font-size:13px;fill:var(--mut)}
+.legend{font-size:13px;fill:var(--fg)}
 .grid{stroke:var(--bd);stroke-width:1}
 .unity{stroke:var(--mut);stroke-width:1.2;stroke-dasharray:4 4}
 
@@ -614,7 +630,7 @@ code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
      font-size:.85em;background:var(--code);padding:.08em .3em}
 pre{background:var(--code);border:0;border-left:2px solid var(--bd);
     padding:.9rem 1.1rem;overflow-x:auto;margin:1rem 0}
-pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+pre code{background:none;padding:0;font-size:14px;line-height:1.55}
 .outlbl{font-size:10px;letter-spacing:.14em;text-transform:uppercase;
         color:var(--mut);margin:1rem 0 .25rem;
         font-family:ui-sans-serif,system-ui,sans-serif}
@@ -692,7 +708,7 @@ table.spec td{text-align:left;white-space:normal}
      border-left:2px solid transparent;text-decoration:none}
 .ghlinks a:hover{color:var(--accent)}
 footer{margin-top:4rem;padding-top:1.1rem;border-top:1px solid var(--bd);
-       color:var(--mut);font-size:12.5px;line-height:1.55;
+       color:var(--mut);font-size:14px;line-height:1.55;
        font-family:ui-sans-serif,system-ui,sans-serif}
 @media (max-width:820px){
   .wrap{grid-template-columns:1fr;gap:0}
@@ -880,20 +896,12 @@ def workload_note(runs, kind):
     return spec_table([
         ("Workload", "%s, single-threaded, complex64 throughout, peaks "
                      "searched over the middle 60%% of lags." % txt),
-        ("Batch shape", "Filtering D segments against T templates together is "
-                        "faster than the same pairs one at a time -- a d-by-t "
-                        "tile reads d+t operands to produce d*t products, so "
-                        "squarer tiles move less memory per product. A "
-                        "per-pair figure is only meaningful alongside the "
-                        "shape it was measured at. Choosing that shape is not "
-                        "yet automatic. It cannot change any reported peak."),
-        ("References", "Each reference column times ONE INVERSE TRANSFORM and "
-                       "nothing else -- batched, single precision, one thread. "
-                       "This library's column covers the whole matched filter: "
-                       "the product, the transform and the peak scan. That "
-                       "asymmetry is the comparison: it is not an FFT library, "
-                       "and the question is whether computing only the binned "
-                       "maxima beats doing the transform at all."),
+        ("Batch shape", "Batching can reuse inputs across pairs. Compare timings "
+         "at the same shape; the benchmark reduces batches at large lengths "
+         "to bound memory use."),
+        ("References", "FFTW and MKL time the inverse FFT only, in single "
+         "precision on one thread. matchedfilter also performs the product "
+         "and peak scan."),
     ])
 
 
@@ -951,7 +959,56 @@ def tabs(items, caption=""):
     return "".join(btn) + "</div>" + "".join(pan) + "</div>"
 
 
+# Apply a saved preference before styles are painted. Storage can be disabled.
+THEME_INIT = """
+try {
+  var savedTheme = localStorage.getItem('matchedfilter-theme');
+  if (savedTheme === 'light' || savedTheme === 'dark')
+    document.documentElement.dataset.theme = savedTheme;
+} catch (_) {}
+"""
+
 TABJS = """
+(function(){
+  var root=document.documentElement, button=document.getElementById('theme-toggle');
+  var preference=window.matchMedia('(prefers-color-scheme:dark)');
+  function dark(){return root.dataset.theme ? root.dataset.theme==='dark' : preference.matches;}
+  function label(){button.textContent=dark()?'Light mode':'Dark mode';
+    button.setAttribute('aria-label','Switch to '+(dark()?'light':'dark')+' mode');}
+  button.hidden=false;
+  label();
+  button.addEventListener('click',function(){
+    root.dataset.theme=dark()?'light':'dark';
+    try{localStorage.setItem('matchedfilter-theme',root.dataset.theme);}catch(_){}
+    label();
+  });
+  if(preference.addEventListener) preference.addEventListener('change',label);
+})();
+document.querySelectorAll('main h2,main h3').forEach(function(h){
+  if(!h.id){
+    var base=h.textContent.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'section';
+    var id=base, i=2;
+    while(document.getElementById(id)) id=base+'-'+i++;
+    h.id=id;
+  }
+  var link=document.createElement('a'); link.className='heading-link';
+  link.href='#'+h.id; link.textContent='#';
+  link.setAttribute('aria-label','Link to '+h.textContent); h.appendChild(link);
+});
+if(navigator.clipboard && navigator.clipboard.writeText){
+  document.querySelectorAll('pre:not(.out)').forEach(function(pre){
+    var wrapper=document.createElement('div'); wrapper.className='code-block';
+    pre.parentNode.insertBefore(wrapper,pre); wrapper.appendChild(pre);
+    var button=document.createElement('button'); button.type='button';
+    button.className='copy-code'; button.textContent='Copy code';
+    wrapper.insertBefore(button,pre);
+    button.addEventListener('click',async function(){
+      try{await navigator.clipboard.writeText(pre.textContent);button.textContent='Copied';}
+      catch(_){button.textContent='Select and copy manually';}
+      setTimeout(function(){button.textContent='Copy code';},2000);
+    });
+  });
+}
 document.addEventListener('click',function(e){
   var b=e.target.closest && e.target.closest('.tab'); if(!b) return;
   var bar=b.parentNode, panels=bar.nextElementSibling;
@@ -1054,33 +1111,14 @@ def reference_note(runs):
 
 
 def trials_note():
-    """Why the speedup falls as the transform lengthens, at a fixed threshold.
-
-    Shown rather than corrected away. A longer block searches more lags for
-    one reported peak, so more of them clear the coarse threshold and the
-    first pass rules out less. That is what happens if a caller holds the
-    threshold fixed, and it is what the charts above plot.
-    """
-    return ('<h3>Why the longer transforms do worse here</h3>'
-            '<p>At a fixed threshold the speedup falls as <code>n</code> '
-            'grows, and that is real. The first pass decides <strong>per '
-            'pair</strong>, over every lag in the block -- so doubling the '
-            'block doubles the chances that some lag clears the coarse '
-            'threshold and drags the whole pair through the full correlation. '
-            'Escalation is close to linear in the lags searched: measured at '
-            'n=4096, band 512, it runs 4.3%, 7.0%, 11.7%, 19.1% for 304, 608, '
-            '1216 and 2432 lags.</p>'
-            '<div class="note">These charts hold the threshold fixed across '
-            'every length, which asks the long transforms to do a harder job: '
-            'n=262144 searches 64x the lags of n=4096 for the same threshold, '
-            'so it carries 64x the trials factor. A real search would not do '
-            'that -- it would raise the threshold as the block grows, since '
-            'the flat filter alone expects n&middot;exp(-t&sup2;/2) noise '
-            'crossings per pair. At thresholds equalised for that (5.50, 5.75, '
-            '5.98, 6.21 for n = 4096, 16384, 65536, 262144) the decline goes '
-            'away: 2.29x, 3.26x, 2.80x, 3.08x. The drop above is a property of '
-            'the comparison, not of the filter -- but it is the comparison a '
-            'reader is most likely to make, so it is the one plotted.</div>')
+    """Explain the workload dependence without assuming a measured trend."""
+    return ('<h3>Interpreting hierarchical speedup</h3>'
+            '<p>Speedup is flat time divided by hierarchical time on the same '
+            'inputs. Values above 1 mean the hierarchical filter was faster. '
+            'At a fixed threshold, searching more lags gives noise more chances '
+            'to pass screening. The refinement rate below shows how often the '
+            'full transform was needed. Batch shape, calibration and device '
+            'also affect the result.</p>')
 
 
 def bench_speedup(runs, names):
@@ -1173,19 +1211,11 @@ _CHART_ENGINES = ("fftw", "mkl")
 def bench_refs(runs, engines):
     """Against FFTW and MKL, one panel per runner."""
     engines = [e for e in engines if e in _CHART_ENGINES]
-    o = ['<p>The reference lines time <strong>one inverse transform and '
-         'nothing else</strong> -- batched, single precision, one thread. '
-         'This library\'s line covers the whole matched filter: the product, '
-         'the transform, and the peak scan.</p>',
-         '<div class="note">That asymmetry is deliberate and is the only '
-         'comparison that means anything here. matchedfilter is not an FFT '
-         'library and does not implement a general transform; the question is '
-         'whether computing only the binned maxima beats doing the transform '
-         'at all, which is the step that would otherwise dominate. FFTW is '
-         'the reference worth caring about, and MKL where the runner has it. '
-         'NumPy supplies an independent float64 correctness check, not a '
-         'timing baseline. NumPy/SciPy timings are omitted to keep the '
-         'comparison focused on direct FFTW and MKL implementations.</div>']
+    o = ['<p>FFTW and MKL time a batched, single-precision inverse FFT on one '
+         'thread. matchedfilter includes the product, inverse transform and peak scan. '
+         'These are different workloads; the reference FFT is one part of a complete '
+         'matched filter.</p><p>NumPy supplies the float64 correctness reference. '
+         'Timing comparisons appear only where FFTW or MKL was available.</p>']
     panels = []
     for r in runs:
         pts = [(f["n"], f["us_per_pair"]) for f in r.get("flat", [])
@@ -1255,10 +1285,9 @@ def filter_benchmarks_page(runs):
                       for e in (f.get("reference_us_per_pair") or {}) if e in _CHART_ENGINES})
     fastest = min((f["us_per_pair"] for r in runs for f in r.get("flat", [])),
                   default=0)
-    o = ['<p>One (data, template) correlation with peak-only output, on every '
-         'platform the library is tested on. Shared CI runners are noisy, so '
-         'read these as comparisons between back ends rather than as figures '
-         'for any particular CPU.</p>',
+    o = ['<p>Time per data/template pair, including the product, inverse transform '
+         'and peak scan. Results cover the hosts and sizes listed below. '
+         'Shared CI timings vary with runner load.</p>',
          '<div class="cards">'
          '<div class="card"><div class="k">%d</div><div class="l">CPU configurations</div></div>'
          '<div class="card"><div class="k">%.2f</div><div class="l">fastest us per pair</div></div>'
@@ -1308,36 +1337,20 @@ def setup_section(runs, hier):
     cfgs = sorted({(h["band"], h["taps"])
                    for h in hier if "band" in h})
     rows = [
-        ("Workload", "%s. Pure noise -- the case the first pass is built for, "
-                     "where almost nothing survives and the skipped work is "
-                     "real. Single-threaded, complex64 throughout." % shape),
-        ("Lag window", "The middle 60% of lags, matching the flat filter's. An "
-                       "overlap-save search cannot use the wrap-around region, "
-                       "and searching it is not free here: every extra lag is "
-                       "another chance for a noise sample to clear the coarse "
-                       "threshold and force a reconstruction no real search "
-                       "would have asked for. At n=4096, band 512, that is "
-                       "18.8% of pairs escalating against 6.2%."),
-        ("Timing", "Interleaved: within each repeat the flat and hierarchical "
-                   "filters run back to back on the same data, and the speedup "
-                   "is the median of the per-repeat ratios. Each call repeats "
-                   "to a 20 ms floor. Timing one to completion and then the "
-                   "other puts drift between the two loops straight into the "
-                   "ratio."),
-        ("First stage", "Chosen by the library, not set here, from the "
-                        "reference and the threshold -- so it is a result of "
-                        "this benchmark rather than an input to it, and it "
-                        "should narrow as the threshold rises. Selected across "
-                        "these runs: %s."
-                        % ", ".join("%d/%d" % c for c in cfgs)),
-        ("Comparing runners",
-         "Don't. A speedup is a ratio of two machine-dependent times and they "
-         "do not scale together: the arm64 runner's flat filter is 4.1x the "
-         "x86 one while its coarse pass is only 2.7x, so the same algorithm "
-         "reads 18.8x there against 12.2x. Compare within a runner."),
+        ("Workload", (shape or "Batch shape not recorded") +
+         ". Gaussian noise; complex64 inputs; one CPU thread."),
+        ("Lag window", "The middle 60% of lags, matching the flat filter."),
+        ("Timing", "Flat and hierarchical calls alternate on the same data. "
+         "The reported speedup is the median of per-repeat ratios; each "
+         "timing loop runs for at least 20 ms."),
+        ("First stage", "Selected from the reference and calibration. "
+         "Recorded band/taps: " + (", ".join("%d/%d" % c for c in cfgs)
+                                    or "not recorded") + "."),
+        ("Comparing runners", "Compare ratios within a runner. CPU, device, "
+         "batch shape and calibration affect the relative costs."),
     ]
     o = ['<h3 id="setup">What was tested</h3>', spec_table(rows)]
-    o.append(reference_note(runs))
+    o.append(details("Reference spectrum", reference_note(runs)))
     o.append(coverage_and_escalation(runs))
     return "".join(o)
 
@@ -1348,38 +1361,29 @@ def coverage_and_escalation(runs):
     gaps = [(r["host"]["label"], h) for r in runs
             for h in r.get("hierarchical", []) if h.get("uncovered")]
     if gaps:
-        cells = sorted({(h["n"], h["snr"]) for _, h in gaps})
-        o.append("<h3>Where it declined to answer</h3>")
-        o.append('<p>The tuning tables are measured, and outside their '
-                 'coverage the library refuses rather than guessing a '
-                 'configuration it cannot stand behind. %d combination%s '
-                 'reported no result for that reason, identically on every '
-                 'runner -- a gap in the shipped tables, not a failure of the '
-                 'build. Coverage extends along the threshold axis, where '
-                 'anything at or above the lowest measured threshold is '
-                 'answered conservatively, but not across transform lengths, '
-                 'where nothing measured yet bounds the answer.</p>'
-                 % (len(cells), "" if len(cells) == 1 else "s"))
-        o.append(spec_table([("Not covered",
-                              ", ".join("n=%d at snr %g" % c for c in cells))]))
+        cells = sorted({(h["n"], h.get("fd", 0), h["snr"]) for _, h in gaps})
+        o.append("<h3>Calibration coverage</h3>")
+        o.append('<p>The following conditions had no covering calibration in '
+                 'at least one reported run. No hierarchical timing is available '
+                 'for those requests. See the raw results for measured conditions.</p>')
+        o.append(details("Conditions without calibration", table(
+            ["n", "fd", "snr"], [[str(n), "%g" % fd, "%g" % snr]
+                                    for n, fd, snr in cells])))
     fired = [h for r in runs for h in r.get("hierarchical", []) if _rate(h) > 0]
     if fired:
         by = collections.defaultdict(list)
         for h in fired:
-            by[(h["n"], h["snr"])].append(_rate(h))
-        o.append("<h3>How often the first pass escalated</h3>")
-        o.append('<p>On pure noise almost nothing should reach the full '
-                 'correlation. Where some does the work is wasted rather than '
-                 'wrong, and the speedup falls -- this is the first number to '
-                 'look at when a row is slower than expected. It is set by the '
-                 'algorithm and the data, not the machine, so agreement across '
-                 'runners is the check.</p>')
-        o.append(table(["n", "snr", "escalated", "across runners", "runners"],
-                       [["%d" % n, "%g" % snr, "%.2f%%" % (100 * min(v)),
+            by[(h["n"], h.get("fd", 0), h["snr"])].append(_rate(h))
+        o.append("<h3>Refinement rate</h3>")
+        o.append('<p>Fraction of pairs that reached the full transform. Each row '
+                 'keeps the transform size, false-dismissal budget and SNR fixed; '
+                 'the range covers the reported runs.</p>')
+        o.append(table(["n", "fd", "snr", "refined", "range", "runs"],
+                       [["%d" % n, "%g" % fd, "%g" % snr, "%.2f%%" % (100 * min(v)),
                          ("identical" if max(v) - min(v) < 1e-9
                           else "%.2f-%.2f%%" % (100 * min(v), 100 * max(v))),
                          "%d" % len(v)]
-                        for (n, snr), v in sorted(by.items())]))
+                        for (n, fd, snr), v in sorted(by.items())]))
     return "".join(o)
 
 
@@ -1426,7 +1430,7 @@ def bench_flat_raw(runs, engines):
 # index, or a notes file.
 NOTES = [("docs/hierarchical.md", "The hierarchical filter",
           "The cheap low-band pass, and how the tuning tables choose its "
-          "band and margin from your reference."),
+          "coarse parameters from your reference and calibration."),
          ("docs/design.md", "Batched matched filter design",
           "The four-step transform, the split layout, and the fused peak scan."),
          ("docs/simd.md", "The SIMD layer",
@@ -1448,15 +1452,15 @@ NOTES = [("docs/hierarchical.md", "The hierarchical filter",
 #: it built this way.
 PAGES = [("index.html", "Overview", "overview", None, "Start here"),
          ("using-it.html", "Using it", "tutorial", "docs/usage.md", "Start here"),
-         ("demo.html", "See it work", "demo", None, "Does it work"),
+         ("demo.html", "See it work", "demo", None, "Validation"),
          ("precision.html", "Numerical accuracy", "precision", None,
-          "Does it work"),
-         ("benchmarks.html", "Matched filter", "bench-flat", None, "How fast"),
+          "Validation"),
+         ("benchmarks.html", "Matched filter", "bench-flat", None, "Benchmarks"),
          ("hierarchical-benchmarks.html", "Hierarchical filter", "bench-hier",
-          None, "How fast"),
-         ("notes.html", "Design notes", "notes-index", None, "Why it is built this way"),
+          None, "Benchmarks"),
+         ("notes.html", "Design notes", "notes-index", None, "Reference"),
          ("caveats.html", "Caveats & contributing", "readme",
-          ["Status", "Contributing"], "Why it is built this way")]
+          ["Status", "Contributing"], "Reference")]
 
 
 #: (page, one-line reason to go there) for the Overview signpost.
@@ -1573,32 +1577,12 @@ def _snippet(src, out):
 
 
 def overview_page(readme):
-    """The landing page: what it is, one example, and where to go next."""
-    from matchedfilter import tutorial as tut
-    src, out = tut.run_teaser()
-    sign = "".join('<a href="%s"><div class="t">%s</div><div class="d">%s</div>'
-                   "</a>" % (f, html.escape(t), html.escape(d))
-                   for f, t, d in SIGNPOSTS)
-    logo = asset("logo.svg")
-    # The wordmark is in the logo, so the page's <h1> is there for screen
-    # readers and for anything that outlines the document.
-    hero = ('<h1 class="sr">matchedfilter</h1><div class="hero">%s</div>' % logo) \
-        if logo else "<h1>matchedfilter</h1>"
-    # The teaser goes ABOVE the prose: it is the one thing a visitor needs
-    # in order to decide whether to keep reading. Generated offline by
-    # tools/teaser_figure.py, because it measures FFTW and rocFFT and cannot
-    # run on a CI machine without either.
-    return (hero
-            + md(readme.get("_intro", ""))
-            + schematic()
-            + "<h2>What it looks like</h2>"
-            + "<p>Run when this page was built, not transcribed:</p>"
-            + _snippet(src, out)
-            + '<p class="note">The inputs are spectra you already have. '
-              "matchedfilter owns the correlation and the peak scan, not the "
-              "forward transform.</p>"
-            + "<h2>Where to go next</h2>"
-            + '<div class="toc">%s</div>' % sign)
+    """Keep the landing page and README quick start in sync."""
+    body = "<h1>matchedfilter</h1>" + md(readme.get("_intro", ""))
+    for title in ("Quick start", "Supported capabilities", "Performance", "Run the benchmarks", "Documentation"):
+        if readme.get(title):
+            body += md("## " + title + "\n\n" + readme[title])
+    return body
 
 
 def tutorial_page(prose):
@@ -1633,7 +1617,9 @@ def retarget_anchors(text):
     """
     for frag, page in ANCHORS.items():
         text = text.replace("](%s)" % frag, "](%s)" % page)
-    return text.replace("](docs/assets/", "](assets/")
+    return (text.replace("](docs/assets/", "](assets/")
+            .replace("](https://ahnitz.github.io/matchedfilter/)", "](index.html)")
+            .replace("](https://ahnitz.github.io/matchedfilter/", "]("))
 
 
 def strip_self_reference(text):
@@ -1665,7 +1651,9 @@ def shell(active, title, body, version, sub=None, prev_next=None):
     """Wrap one page's content in the shared nav and chrome."""
     nav = ['<nav><a class="brandmark" href="index.html">%s'
            '<span class="brand">matchedfilter</span></a>'
-           '<div class="ver">%s</div><div class="links">'
+           '<div class="ver">%s</div>'
+           '<button id="theme-toggle" type="button" hidden>Change theme</button>'
+           '<div class="links">'
            % (asset("mark.svg"), html.escape(version or "docs"))]
     group = None
     for fn, label, _, _, grp in PAGES:
@@ -1691,23 +1679,17 @@ def shell(active, title, body, version, sub=None, prev_next=None):
         pn = ('<div class="pagenav"><div>%s</div><div>%s</div></div>'
               % ('<a href="%s">← %s</a>' % (a[0], html.escape(a[1])) if a else "",
                  '<a href="%s">%s →</a>' % (b[0], html.escape(b[1])) if b else ""))
-    foot = ('<footer>Built by <code>tools/build_report.py</code> from the README, '
-            'the notes in <code>docs/</code>, and the artifacts of the Benchmark '
-            'workflow. Benchmark numbers come from shared CI runners and are '
-            'comparisons, not hardware specifications. '
-            '<a href="https://github.com/ahnitz/matchedfilter">Source on '
-            'GitHub</a> &middot; '
-            '<a href="https://github.com/ahnitz/matchedfilter/fork">fork it'
-            '</a> &middot; '
-            '<a href="https://github.com/ahnitz/matchedfilter/issues/new">'
-            'report an issue</a></footer>')
+    foot = ('<footer><a href="https://github.com/ahnitz/matchedfilter">Source</a>'
+            ' &middot; <a href="https://github.com/ahnitz/matchedfilter/issues/new">'
+            'Report an issue</a></footer>')
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<link rel="icon" href="assets/mark.svg" type="image/svg+xml">'
-            '<title>%s</title><style>%s</style></head><body>'
-            '<div class="wrap">%s<main>%s%s%s</main></div>'
+            '<title>%s</title><script>%s</script><style>%s</style></head><body>'
+            '<a class="skip-link" href="#main">Skip to content</a>'
+            '<div class="wrap">%s<main id="main">%s%s%s</main></div>'
             '<script>%s</script></body></html>'
-            % (html.escape(title), CSS, "".join(nav), body, pn, foot, TABJS))
+            % (html.escape(title), THEME_INIT, CSS, "".join(nav), body, pn, foot, TABJS))
 
 
 def build(runs, root=".", require_demo=False):
@@ -1762,7 +1744,10 @@ def build(runs, root=".", require_demo=False):
     notes = [(f, t) for f, t, _ in NOTES if read(os.path.join(root, f))]
     for i, (f, title) in enumerate(notes):
         fn = note_page_name(f)
-        body = md(read(os.path.join(root, f)))
+        body = ('<aside class="note">These engineering notes include historical '
+                'experiments and superseded designs. See the '
+                '<a href="using-it.html">usage guide</a> for the current API.</aside>'
+                + md(read(os.path.join(root, f))))
         prev = (note_page_name(notes[i - 1][0]), notes[i - 1][1]) if i else \
                ("notes.html", "Design notes")
         nxt = (note_page_name(notes[i + 1][0]), notes[i + 1][1]) \

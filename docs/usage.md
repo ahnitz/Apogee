@@ -1,15 +1,8 @@
 # Using matchedfilter
 
-What goes in, what comes back, and how the hierarchical mode is driven.
-
-Every example below is executed when this page is built, and the block
-underneath it is what it printed. None of it is transcribed. That matters
-more than it sounds: the page this replaced carried a hand-written table
-claiming 31x over numpy, which turned out to be measuring Python loop
-overhead in double precision, and it sat there until a reader questioned it.
-Run them yourself with `python -m matchedfilter.tutorial`.
-
-Measured performance lives on the benchmark pages, not here.
+This guide covers inputs, output bins, device selection and hierarchical
+calibration. The examples execute during the documentation build. Run them
+locally with `python -m matchedfilter.tutorial`.
 
 ## Install
 
@@ -17,243 +10,153 @@ Measured performance lives on the benchmark pages, not here.
 pip install matchedfilter
 ```
 
-Every release so far is an alpha, and pip installs a pre-release when that is
-all a project has. Once a stable version exists, getting an alpha will need
-`pip install --pre matchedfilter`.
+The current release is alpha. Pin its version for reproducible work.
+Wheels target CPython 3.9–3.14 on Linux x86-64 and macOS arm64. Source
+installation requires NumPy and a C compiler.
 
-Wheels are built for CPython 3.9 to 3.14 on Linux x86-64 (manylinux and
-musllinux) and macOS arm64. Anywhere else pip falls back to the source
-distribution, which needs numpy and a C compiler -- including Linux arm64,
-where it builds and passes but no wheel is published yet.
+## Inputs and normalization
 
-## Inputs and outputs
+`set_data()` and `set_templates()` accept frequency-domain arrays in natural
+order, with shapes `(ndata, n)` and `(ntemplates, n)`. Use `complex64` spectra
+from an unnormalized forward FFT, such as `numpy.fft.fft`. The filter computes
+the unnormalized inverse transform of `data * conj(template)`.
 
-Inputs are **frequency domain**: the unnormalised forward transform of each
-segment, in natural order. Produce them with whatever you already use (numpy,
-MKL, FFTW); matchedfilter does not own that step. Everything is
-**complex64**, and there is no double-precision path.
-
-`ndata` and `ntemplates` are declared to the constructor rather than inferred
-from the first call, because the plan, the twiddles and the working buffers
-all depend on them. Declaring them once lets plans reuse storage. First-use GPU dispatches and
-adaptive CPU layouts can still allocate.
+Declare the dimensions when constructing the filter. Plans reuse storage;
+first-use GPU dispatches and adaptive CPU layouts can still allocate.
 
 [[example:A complete example]]
 
-With unit-norm templates and unit-variance noise, `abs(peak["value"])` reads
-directly as a signal-to-noise ratio, which is why the examples are built that
-way.  A peak is `index` and `value` only: the magnitude was a third field once
-and equalled `abs(value)` exactly, so it carried no information and cost a copy
-on every call.
+For unit-norm template spectra and independent noise with unit variance in
+each real and imaginary component, the output magnitude has the normalization
+used in these SNR examples. Other input normalizations change the scale of
+`threshold`. Check the normalization of your data and template bank.
 
 [[example:What comes back]]
 
-## Bounding the output
+## Output bins and thresholds
 
-`binsize` sets how many lags share one reported peak. One record per bin, so
-`binsize=n` gives a single peak per pair and `binsize=1024` gives `n/1024`.
+`run()` returns an array with shape `(ndata, ntemplates, nbins)`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `index` | int64 | lag of the strongest sample in the bin; −1 if dismissed |
+| `value` | complex64 | complex correlation at that lag; zero if dismissed |
+
+`binsize` is the number of lags in each output bin. A full window with
+`binsize=n` returns one peak per pair. A partial final bin is included.
 
 [[example:One peak per window]]
 
-A bin whose peak did not exceed the threshold still occupies its slot, with
-`index == -1`, so `peaks[d, t, j]` is bin `j` without searching.
+`threshold` applies to the peak magnitude. Dismissed bins keep their place
+in the output, so `peaks[d, t, j]` always refers to bin `j`.
 
 [[example:Thresholding]]
 
-`window=(start, end)` bounds which lags are searched at all. An overlap-save
-caller should use it: the wrap-around region of each block is invalid, and
-searching it is not free -- particularly in the hierarchical mode, where
-every extra lag is another chance for noise to force a reconstruction.
+`window=(start, end)` restricts the searched lags to `[start, end)`. Use it to
+exclude the invalid wrap-around region when processing overlapping blocks.
 
 [[example:Bounding the lags searched]]
 
-`run_series` takes a whole time series plus the block layout (`starts`,
-`win_start`, `win_end`) and executes it in one call, which removes the
-per-block round trip and lets the library group blocks internally.
+## Output buffer lifetime
 
-## One thing to watch
+Results can reuse internal storage. Call `.copy()` to retain them after the
+next filtering call. `raw=True` returns separate index and value arrays.
 
 [[example:The output buffer is reused]]
 
-## The hierarchical mode
+## Filtering a time series
 
-`HierarchicalFilter` runs a cheap decimated pass first and only reconstructs
-the full correlation where that pass could not rule a peak out. It reports
-the same peaks as the flat filter, minus a controlled fraction it is allowed
-to miss: `fd` is that budget, and `snr` is the peak strength the budget is
-quoted at.
+`run_series(series, starts, win_start, win_end)` accepts a time series and a
+block layout. `starts` contains each block's starting sample; `win_start` and
+`win_end` specify its valid output window. The caller supplies the overlap
+layout. The library gathers and pads blocks, computes forward FFTs, and
+filters them on the selected device.
 
-It needs `set_reference(power)`: the expected power of the filter **output**,
-bin by bin. Not the template's own power -- the two differ whenever the data
-is coloured, and the configuration is chosen from this, so getting it wrong
-gets the configuration wrong.
+Templates must be set first. A later `run()` requires another `set_data()`
+call because series execution reuses the data slots. GPU execution is
+synchronous. See the source documentation for
+[GPU FFTs and shared storage](https://github.com/ahnitz/matchedfilter/blob/main/docs/gpu-forward-and-arrays.md)
+for memory and interoperability details.
+
+## Hierarchical filtering
+
+`HierarchicalFilter` screens pairs using a coarse frequency band and refines
+candidates with the full filter. Its output has the same format as `run()`;
+screening can omit detections. `snr` and `fd` specify the signal strength and
+requested false-dismissal budget used for calibration.
+
+`set_reference(power)` supplies the expected output-power spectrum, one value
+per frequency bin. Include the effect of the data's noise spectrum; a template's
+power alone is generally insufficient for colored noise.
 
 [[example:The hierarchical mode]]
 
-Where the shipped tables have no measurement covering the request, it raises
-instead of guessing.
+Automatic configuration requires a covering measured calibration file. Missing
+coverage raises an error. Alternatively, supply `band` when constructing the
+filter and call `set_coarse_threshold(value)` before execution. Both explicit
+parameters are required; no model or default threshold substitutes for them.
+An explicit threshold carries no measured false-dismissal guarantee.
 
 [[example:When it refuses]]
 
-## Choosing a transform length
+Validate the supplied calibration against your template population. A coarse
+pass is most useful when it dismisses many pairs; dense survivors can make it
+slower than flat filtering.
 
-CPU lengths are powers of two from 64 to 1048576. GPU lengths are powers
-of two from 64 to 65536, subject to device limits. The
-hierarchical mode additionally needs a covering calibration file, or an
-explicit coarse size and coarse threshold. `tools/hmf_tune.py` can generate
-more measured tuning coverage.
-
-## Running on a GPU
-
-Pass `device=`. The spelling is PyTorch's, because you already know it:
+## Devices and supported sizes
 
 ```python
 import matchedfilter as mf
 
-mf.devices()
-# [Device('cpu:0', 'AMD Ryzen 9 9950X', backend='AVX3'),
-#  Device('gpu:0', 'AMD Radeon 8060S', backend='vulkan')]
-
+print(mf.devices())
 filt = mf.MatchedFilter(4096, ndata=16, ntemplates=64, device="gpu")
 ```
 
-`"cpu"`, `"gpu"`, `"gpu:1"` and `"auto"` are all accepted, and `MF_DEVICE`
-sets the default from the environment so a benchmark harness can switch
-backends without editing the code that builds the plans.
+The default is CPU unless `MF_DEVICE` is set. `device="cpu"`, `"gpu"`,
+`"gpu:1"` and `"auto"` are supported. Linux and Windows use Vulkan; macOS
+uses Metal. GPU execution requires a compatible driver.
 
-**The default is the CPU even when a GPU is present.** Dispatching somewhere
-you did not name would change numerics and failure modes without being asked.
-`"auto"` exists for callers who want the library to choose, but they have to
-say so.
-
-Both devices return the same fields, the same shapes, and the same
-`index == -1` for a bin nothing cleared, so the same code reads either. They
-are not bit-identical: the transform sums in a different order, so values
-agree to single precision rather than exactly, and an index may differ where
-two samples tie.
-
-The GPU path is a Vulkan compute backend. The kernels ship compiled inside
-the wheel, so there is no toolchain to install, no second wheel to pick, and
-nothing extra to import — but it does need a working Vulkan driver.
-
-GPU transform lengths are powers of two from **64 to 65536**. Device
-workgroup limits can reject individual lengths; unsupported requests raise.
-The GPU supports arbitrary output bin counts by splitting calls internally
-past 2048 bins. That split may repeat transforms and is a performance
-consideration, not a public bin-count limit.
-
-A GPU that reports no devices on a machine that has one is usually a
-shadowed C++ runtime rather than a driver problem — `matchedfilter` says so
-in the error. See [the GPU notes](notes.html) for that and the rest.
-
-## Current capabilities
-
-The GPU backend is newer than the CPU one and deliberately covers less. What
-it does cover it holds to the same tests; where it does not, it refuses
-rather than falling back silently, so nothing is answered by a path you did
-not ask for.
-
-| | CPU | GPU |
+| Capability | CPU | GPU |
 |---|---|---|
-| transform lengths | powers of two **64–1048576** | powers of two **64–65536**, subject to device limits |
-| flat filter | yes | yes |
-| hierarchical filter | yes | yes |
-| `run_series` | yes | yes |
-| `binsize`, `window`, `threshold` | arbitrary | arbitrary |
-| bins per call | unlimited | unlimited (split internally past 2048) |
-| precision | float32 | float32 |
-| parallelism | single-threaded by design | the device |
+| Transform sizes | powers of two, 64–1,048,576 | powers of two, 64–65,536; device limits apply |
+| Flat / hierarchical filtering | yes | yes |
+| `run_series()` | yes | yes |
+| Input spectra / output values | complex64 | complex64 |
+| Flat and refinement arithmetic | float32 | float32 |
+| Coarse screening | float32 | may use reduced precision |
+| Output bins | arbitrary count | split internally above 2048 bins |
+| Execution | one CPU thread | selected device |
 
-Why 65536 on the GPU: one workgroup carries a whole transform, so
-`n = threads x points-per-thread` with threads capped at 1024. Sixteen
-points per thread reaches 16384; thirty-two reaches 32768 and sixty-four
-reaches 65536, each widening the decomposition radix along with the register
-file. Past that a thread would need 256 points -- more transform state than
-the register file holds -- so longer transforms need the decomposition split
-across dispatches, which is a different kernel and is not written. Asking
-for one raises, naming the sizes that work.
+GPU workgroup and shared-memory limits can reject individual sizes. Larger
+bin counts may repeat GPU transforms because output is processed in chunks.
+Unsupported requests raise an error; they do not switch devices.
 
-Shared CPU/GPU allocations are available through `filter.empty_shared()`.
-For zero-copy bank binding, DLPack interoperability, and the remaining
-device/stream limits, see [GPU forward FFT and shared arrays](gpu-forward-and-arrays.md).
+CPU and GPU results can differ slightly because arithmetic ordering and coarse
+screening differ. Near-equal maxima can select different lags. Transform support
+is independent of hierarchical calibration coverage.
 
-Other things worth knowing, all work in progress:
+## Shared arrays and input ownership
 
-- **Input must be host-resident.** Arrays are accepted over DLPack from any
-  library, but an array already on an accelerator is refused rather than
-  copied down and back — see *Running on a GPU* above.
-- **The hierarchical mode escalates its interpolation window** instead of
-  interpolating it. That is strictly more conservative — it can only refine
-  pairs the CPU would have dismissed, never the reverse — and costs about
-  1–2% more escalation.
-- **Per-device tuning is measured on one device.** The kernel's shared-memory
-  staging was tuned on a Radeon 8060S; other devices will run correctly but
-  not necessarily at their best until they have their own measurements.
-- **No float64 path**, on either device, and none planned.
+`filter.empty_shared(shape)` allocates NumPy arrays backed by GPU-accessible
+storage for GPU filters. Suitable contiguous `complex64` banks can bind without
+an extra input copy. Call the setter again after changing a shared bank so
+cached coarse templates are refreshed.
 
-### Which GPUs
+Host DLPack arrays are supported. Arbitrary CUDA or ROCm device allocations
+are not imported through this interface. Finish producer writes before
+filtering; cross-library GPU stream synchronization is not provided. Returned
+peaks use ordinary NumPy storage.
 
-Two backends, one API. On Linux and Windows it is Vulkan: the kernels ship
-as SPIR-V and the runtime loads whatever driver the system provides, so
-AMD, NVIDIA and Intel all work from the same wheel with nothing to install.
-On macOS it is Metal, chosen automatically — `device="gpu"` does not need
-to be told which. MoltenVK is not bundled and is not needed.
+The [CPU/GPU contract](https://github.com/ahnitz/matchedfilter/blob/main/docs/cpu-gpu-parity.md)
+describes buffer ownership, cache lifetime and interoperability limits.
 
-Both backends are generated from the same Slang source, so they are the
-same kernel rather than two implementations to keep in step. The wheel
-carries compiled `.metallib` files; if one is missing or stale the runtime
-compiles the shipped `.metal` source instead rather than refusing.
+## Platform checks
 
-**macOS status.** The whole suite passes on an Apple M2 — 367 passed, 0
-failed — and the GPU agrees with the CPU index for index. Two limits, and
-the second is stricter than CI alone would tell you:
+Linux x86-64, Linux arm64 and macOS arm64 are exercised in CI. That coverage
+does not establish performance or compatibility on every physical GPU.
+Metal was also tested on an Apple M2; historical measurements are in the GPU
+design notes. macOS x86-64 is not currently tested.
 
-- Apple caps threadgroup memory at 32 KB and the fastest builds here use
-  64 KB, so the two largest sizes fall back to a 32 KB build. Measured on
-  gfx1151, where both builds run: the 32 KB one is 1.11x slower at n=8192
-  and 1.29x at n=16384. Halving the staging doubles the exchange chunks
-  and their barriers, and that costs more than the occupancy it buys — so
-  this is a real penalty at those two sizes, not a formality.
-- **Historical Metal validation** — n=1024 through 16384 was verified against
-  the CPU index-for-index on an Apple M2, flat and hierarchical.
-
-  It nearly did not. How many threads a device allows depends on the
-  compiled kernel's register use, not only on the hardware, and it is asked
-  per pipeline. Left alone, Apple's compiler optimises for occupancy and
-  stops wherever the registers land — 576 for the n=16384 kernel against
-  the 1024 it is dispatched at, so that length was refused outright. Asked
-  for 1024 via `MTLComputePipelineDescriptor` it delivers 1024.
-
-  The library asks only when the default is short. Declaring the size
-  unconditionally also builds every pipeline, and it *changed the answer* at
-  n=4096, where the default already allowed 448 and nothing needed asking.
-
-A software rasteriser will not catch a mistake here. llvmpipe reports 32 KB
-and then runs a 64 KB kernel regardless, so the lavapipe CI path passes
-where real hardware would fail to create the pipeline.
-
-## Platforms
-
-One kernel source is compiled once per SIMD target the compiler can generate,
-and the target is chosen at run time from what the CPU reports. On x86-64
-that is AVX3, AVX2 and SSE4; on arm64 it is NEON.
-
-| platform | tested |
-|---|---|
-| Linux x86-64 | every push |
-| Linux arm64 | every push |
-| macOS arm64 | every push |
-| macOS x86-64 | no |
-
-macOS on Intel is untested rather than known-broken: hosted runners for it
-are being retired, so nothing measures it. `matchedfilter.targets()` lists
-what a build holds that the CPU can run, `matchedfilter.backend()` reports
-which one was selected, and `set_target()` or `MF_ISA` forces one.
-
-## CPU/GPU parity and lifecycle
-
-See the [parity audit](cpu-gpu-parity.md) for tested features and limits.
-Initialize every data/template row you request. After `run_series`, call
-`set_data` before a subsequent `run`; series execution uses internal data
-slots. Use setters again after changing caller-owned inputs. Copy results
-that must survive subsequent calls.
+`matchedfilter.targets()` lists the available CPU targets,
+`matchedfilter.backend()` reports the selected target, and `set_target()` or
+`MF_ISA` selects a specific target for testing.

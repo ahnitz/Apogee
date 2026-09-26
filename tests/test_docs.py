@@ -154,16 +154,18 @@ def test_readme_banner_renders_once_with_working_image_paths():
             if tag == 'img':
                 self.sources.append(dict(attrs).get('src'))
     with open(os.path.join(ROOT, 'README.md')) as stream:
-        intro = build_report.split_readme(stream.read())['_intro']
-    intro = build_report.strip_self_reference(build_report.retarget_anchors(intro))
-    page = build_report.overview_page({'_intro': intro})
+        sections = {k: build_report.retarget_anchors(v) for k, v in
+                    build_report.split_readme(stream.read()).items()}
+    sections['_intro'] = build_report.strip_self_reference(sections['_intro'])
+    page = build_report.overview_page(sections)
     parser = Images()
     parser.feed(page)
     assert parser.sources.count('assets/teaser.svg') == 1
     assert 'docs/assets/teaser.svg' not in page
     assert '&lt;p align=' not in page
-    assert '<strong>Batched matched filtering' in page
-    assert '537 MB' in page
+    assert 'Batched matched filtering' in page
+    assert page.index('Quick start') < page.index('assets/teaser.svg')
+    assert page.count('<h1>') == 1
 
 
 def test_historical_benchmark_artifacts_use_representative_targets():
@@ -218,3 +220,64 @@ def test_hier_chart_keeps_lengths_only_another_runner_measured():
     page = build_report.bench_speedup([preferred, other], [])
     assert 'n = 1048576' in page
     assert 'n=1048576 (linux-arm64)' in page
+
+
+def test_readme_quick_start_executes(capsys):
+    import re
+    text = open(os.path.join(ROOT, 'README.md')).read()
+    code = re.search(r'```python\n(.*?)```', text, re.S).group(1)
+    exec(compile(code, 'README.md', 'exec'), {})
+    assert capsys.readouterr().out.strip() == '37'
+
+
+def test_refinement_rates_keep_false_dismissal_budgets_separate():
+    page = build_report.coverage_and_escalation([{
+        'host': {'label': 'test'}, 'hierarchical': [
+            {'n': 4096, 'snr': 6, 'fd': .001, 'refine_rate': .2},
+            {'n': 4096, 'snr': 6, 'fd': .01, 'refine_rate': .4}]}])
+    assert '20.00%' in page and '40.00%' in page
+    assert '20.00-40.00%' not in page
+    assert '0.001' in page and '0.01' in page
+
+
+def test_theme_preference_and_storage_failure():
+    import json
+    import shutil
+    import subprocess
+    import pytest
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node required to exercise browser theme behavior')
+    script = r'''
+const vm=require('vm'), assert=require('assert');
+for (const stored of [null,'light','dark','invalid']) {
+  for (const systemDark of [false,true]) {
+    for (const blocked of [false,true]) {
+      const events={}, button={setAttribute(){},addEventListener(n,f){events[n]=f;}};
+      let saved=stored, change;
+      const context={document:{documentElement:{dataset:{}},
+        getElementById(){return button;},querySelectorAll(){return [];},addEventListener(){}},
+        window:{matchMedia(){return {matches:systemDark,addEventListener(n,f){change=f;}};}},
+        navigator:{},localStorage:{getItem(){if(blocked)throw Error();return saved;},
+          setItem(k,v){if(blocked)throw Error();saved=v;}}};
+      vm.createContext(context);
+      vm.runInContext(INIT,context); vm.runInContext(UI,context);
+      const initial=(!blocked && ['light','dark'].includes(stored))?stored:(systemDark?'dark':'light');
+      assert.equal(button.textContent,initial==='dark'?'Light mode':'Dark mode');
+      events.click();
+      const next=initial==='dark'?'light':'dark';
+      assert.equal(context.document.documentElement.dataset.theme,next);
+      assert.equal(button.textContent,next==='dark'?'Light mode':'Dark mode');
+      if(!blocked){assert.equal(saved,next);
+        context.document.documentElement.dataset={}; vm.runInContext(INIT,context);
+        assert.equal(context.document.documentElement.dataset.theme,next);}
+    }
+  }
+}
+'''
+    script = ('const INIT=' + json.dumps(build_report.THEME_INIT) + ';const UI='
+              + json.dumps(build_report.TABJS) + ';\n' + script)
+    subprocess.run([node, '-e', script], check=True, capture_output=True, text=True)
+    page = build_report.shell('index.html', 'Test', '<h1>Test</h1>', 'test')
+    assert page.index(build_report.THEME_INIT) < page.index('<style>')
+    assert 'id="theme-toggle"' in page

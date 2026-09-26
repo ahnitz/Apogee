@@ -1,211 +1,169 @@
-[![matchedfilter](docs/assets/logo.svg)](https://ahnitz.github.io/matchedfilter/)
+# matchedfilter
 
-**Batched matched filtering that returns peaks, not correlations.**
+Batched matched filtering with peak-only output, on CPU or GPU.
 
-Single precision throughout, on CPU or GPU, from one wheel.
+`matchedfilter` correlates data segments against a template bank and returns
+the strongest sample in each output bin. It accepts `complex64` spectra or
+time-series blocks through `run_series()`.
 
-[Documentation](https://ahnitz.github.io/matchedfilter/) · [See it work](https://ahnitz.github.io/matchedfilter/demo.html) · [Benchmarks](https://ahnitz.github.io/matchedfilter/benchmarks.html) · [Caveats](https://ahnitz.github.io/matchedfilter/caveats.html)
+[Documentation](https://ahnitz.github.io/matchedfilter/) ·
+[Usage guide](https://ahnitz.github.io/matchedfilter/using-it.html) ·
+[Benchmarks](https://ahnitz.github.io/matchedfilter/benchmarks.html)
 
----
+**Alpha software:** the API may change. Pin a version for reproducible work.
 
-![matchedfilter against FFTW and rocFFT at n=4096](docs/assets/teaser.svg)
-
-16384 correlations of 4096 points. FFTW and rocFFT time the **inverse transform alone**;
-matchedfilter times the product, transform **and** peak scan. These measurements
-show the benefit of avoiding the 537 MB correlation output.
-
-The same workload on an **Apple M2** (Metal): 12.03 ms flat and 1.88 ms hierarchical,
-10.2× and 7.8× over that machine's CPU.
-
----
-
-> [!WARNING]
-> **This is under rapid development.** The API still moves, the GPU backend
-> is new and covers a smaller range than the CPU one, and performance work
-> is ongoing. Pin a version if you depend on it.
->
-> **Contributions and collaboration are very welcome** — if you are working
-> on something this could serve, or want to help with it,
-> [open an issue](https://github.com/ahnitz/matchedfilter/issues/new) or get
-> in touch. Areas that would benefit most right now: a Metal/macOS backend,
-> per-device tuning on hardware other than a Radeon 8060S, and transform
-> lengths above 65536 on the GPU, which need the transform split across
-> dispatches rather than carried by one workgroup.
+## Quick start
 
 ```bash
 pip install matchedfilter
 ```
 
+This example finds a template shifted by 37 samples:
+
 ```python
+import numpy as np
 import matchedfilter as mf
 
-filt = mf.MatchedFilter(16384, ndata=16, ntemplates=64)
-filt.set_data(data_spectra)           # (16, 16384) complex64, already FFT'd
-filt.set_templates(template_spectra)  # (64, 16384) complex64
+n = 1024
+rng = np.random.default_rng(1)
+template = rng.standard_normal(n)
+data = np.roll(template, 37)
 
-peaks = filt.run(binsize=1024, threshold=5.5)
-peaks["index"], peaks["value"]        # where, and what
+filt = mf.MatchedFilter(n, ndata=1, ntemplates=1)
+filt.set_templates(np.fft.fft(template).astype(np.complex64)[None, :])
+filt.set_data(np.fft.fft(data).astype(np.complex64)[None, :])
+peaks = filt.run(binsize=n)
+print(peaks["index"][0, 0, 0])  # 37
 ```
 
-### Why it is faster
+The result has shape `(ndata, ntemplates, nbins)`, with `index` and `value`
+fields. `value` is complex; use `abs(value)` for its magnitude. Bins below
+the detection threshold have `index == -1` and `value == 0`. Results may
+reuse storage: copy any result you need to retain across calls.
 
-A frequency-domain matched filter is not usually limited by arithmetic. It is
-limited by **memory**: the inverse transform writes out a full correlation —
-`n` complex samples for every (data, template) pair — and the peak scan reads
-all of it back. For 16384 pairs of 4096 points that is 537 MB written and read
-to find a few thousand numbers.
+See the [usage guide](https://ahnitz.github.io/matchedfilter/using-it.html)
+for normalization, thresholds, search windows and time-series input.
 
-Most searches then threshold that output and throw the rest away. Saying so up
-front is the whole trick: this library **fuses the product, the transform and
-the peak scan into one pass**, so the correlation never reaches memory at all —
-only the peak per bin comes out. The arithmetic is the same as anyone else's.
-The traffic is what disappears, and the traffic was the cost.
+## Supported capabilities
 
-The optional hierarchical mode goes further: a cheap decimated pass rules most
-pairs out before the full correlation runs on them at all.
+| | CPU | GPU |
+|---|---|---|
+| Transform sizes | powers of two, 64–1,048,576 | powers of two, 64–65,536; device limits apply |
+| Flat and hierarchical filtering | yes | yes |
+| Time-series input with `run_series()` | yes | yes |
+| Input spectra and returned values | `complex64` | `complex64` |
+| Execution | one CPU thread | Vulkan or Metal |
 
-## What it does
+Flat filtering and refinement use single precision. GPU hierarchical
+screening can use reduced-precision kernels. There is no float64 filtering API.
 
-- **Peak-only output.** One record per bin, not n samples per pair. `binsize`
-  sets the output resolution; `window` bounds which lags are searched at all,
-  so an overlap-save caller never pays for the wrap-around it would discard.
-- **Batched.** D data segments against T templates is a symmetric product.
-  Hand over as much of both as you have; one pair at a time forfeits most of
-  the throughput.
-- **CPU or GPU, one wheel.** `device="gpu"` runs the same call on a Vulkan
-  device — AMD, NVIDIA, Intel or Apple. The kernels are compiled ahead of
-  time and ship inside the wheel: nothing to choose, nothing extra to
-  install, no toolchain on your machine.
-- **Frequency domain in, single precision throughout.** You bring the forward
-  transforms from whatever you already use; this owns the correlation and the
-  peak scan. In and out are `complex64`. There is no float64 path and none
-  is planned.
-- **Optional hierarchical mode.** A cheap decimated pass first, the full
-  correlation only where that pass cannot rule a peak out, with a budget for
-  how often it may miss one.
-- **Measured, not modelled.** Every tuning choice comes from a measurement of
-  the real code path, and where there is no measurement the library refuses
-  rather than guessing.
-
-## Choosing where it runs
+The default device is CPU unless `MF_DEVICE` is set. Select a GPU explicitly:
 
 ```python
-mf.devices()
-# [Device('cpu:0', 'AMD Ryzen 9 9950X', backend='AVX3'),
-#  Device('gpu:0', 'AMD Radeon 8060S', backend='vulkan')]
-
-mf.MatchedFilter(4096, device="gpu")    # or "gpu:1", or "auto"
+print(mf.devices())
+gpu_filter = mf.MatchedFilter(4096, device="gpu")
 ```
 
-The spelling is PyTorch's. The default is **always the CPU**: running
-somewhere else because that somewhere happens to exist would change numerics
-and failure modes without being asked. Both devices return the same fields,
-the same shapes and the same `index == -1` convention for a bin that nothing
-cleared, which is what lets one set of tests assert against both.
+Linux and Windows use Vulkan; macOS uses Metal. A compatible driver is
+required. Unsupported GPU requests raise an error. See the
+[usage guide](https://ahnitz.github.io/matchedfilter/using-it.html)
+for platform and device limits.
 
-The CPU supports every power of two from **64 to 1,048,576**. The GPU supports
-powers of two from **64 to 65,536**, subject to device workgroup limits.
-Unsupported GPU sizes raise instead of silently using the CPU. Hierarchical
-calibration coverage is separate: supply a covering file or explicitly set
-both the coarse size and coarse threshold. See
-[Current capabilities](https://ahnitz.github.io/matchedfilter/using-it.html)
-for the rest of what the GPU backend does and does not do yet.
+## Hierarchical filtering
 
-## The hierarchical mode
+`HierarchicalFilter` screens each pair using a low-frequency band, then runs
+the full filter on candidates. It is useful when most pairs can be dismissed
+and enough signal power lies in that band. Otherwise the screening stage can
+add work without a useful saving.
 
-Correlate a low-frequency slice of each template first, and pay for the full
-correlation only where that slice leaves a peak possible.
+Automatic selection uses your expected output-power spectrum and measured
+calibration files. `snr` specifies the signal strength and `fd` the requested
+false-dismissal budget for that calibration. Validate the calibration against
+your template population before relying on it.
+
+For example, with spectra and an output-power reference prepared as described
+in the usage guide:
 
 ```python
-hf = mf.HierarchicalFilter(16384, ndata=16, ntemplates=64,
-                           snr=6.0,    # the threshold you intend to use
-                           fd=1e-3)    # false-dismissal budget
-
-hf.set_reference(expected_output_power)   # what the tuning is keyed on
+hf = mf.HierarchicalFilter(4096, ndata=16, ntemplates=64, snr=5.5, fd=1e-2)
+hf.set_reference(expected_output_power)
 hf.set_templates(template_spectra)
 hf.set_data(data_spectra)
-peaks = hf.run(binsize=16384, threshold=6.0)
+peaks = hf.run(binsize=4096, threshold=5.5)
 ```
 
-It picks its own band, oversampling, taps and threshold margin from measured
-tables and the reference you supply. It can only omit peaks, never invent
-them; `fd` is the budget for how often it may omit one.
+A request needs a covering calibration file, or an explicit coarse size and
+coarse threshold. There is no calibration fallback. Transform support and
+calibration coverage are separate.
 
-**It assumes enough of the output power sits low in the band** for a narrow
-slice to bound the full result. That tends to hold for chirp-like templates.
-For templates whose power is flat or concentrated high, the slice bounds
-nothing useful and the first pass is pure added cost.
+## Performance
 
-`set_reference` wants the expected power of the filter **output**, not the
-template's own power — the two differ whenever the data is coloured. Check it
-against your own templates before relying on it.
+The implementation fuses the frequency-domain product and peak scan into the
+transform stages, avoiding a separate full correlation output. Performance
+depends on transform length, batch shape, device and the fraction of pairs
+that require refinement.
 
-## Documentation
+![CPU and GPU matched-filter measurements at 4096 points](docs/assets/teaser.svg)
 
-| | |
-|---|---|
-| [See it work](https://ahnitz.github.io/matchedfilter/demo.html) | plots generated by running the library, either side of the threshold |
-| [Using it](https://ahnitz.github.io/matchedfilter/using-it.html) | inputs, outputs, devices, and the hierarchical mode |
-| [Numerical accuracy](https://ahnitz.github.io/matchedfilter/precision.html) | single precision against a float64 reference, as a function of SNR |
-| [Benchmarks](https://ahnitz.github.io/matchedfilter/benchmarks.html) | cost per correlation, against FFTW and MKL (when installed) |
-| [Hierarchical benchmarks](https://ahnitz.github.io/matchedfilter/hierarchical-benchmarks.html) | what the first pass skips, per threshold |
-| [Design notes](https://ahnitz.github.io/matchedfilter/notes.html) | why it is built this way, including what measurement ruled out |
-| [Caveats](https://ahnitz.github.io/matchedfilter/caveats.html) | what it does not do, and where the tuning tables stop |
+Measured on a Ryzen AI MAX+ 395 / Radeon 8060S, 2026-09-26: 16 data segments ×
+1,024 templates, 4,096 points. The matchedfilter bars time warm `run()` calls,
+including result assembly and GPU readback. FFTW and rocFFT time the inverse
+transform only. The two panels use separate scales; compare their printed
+values. These measurements are a workload example, not a speed guarantee.
 
-Measure it on your own machine:
+The [flat](https://ahnitz.github.io/matchedfilter/benchmarks.html) and
+[hierarchical](https://ahnitz.github.io/matchedfilter/hierarchical-benchmarks.html)
+benchmark pages show results across available transform sizes.
+
+## Run the benchmarks
 
 ```bash
-python -m matchedfilter.benchmark
-```
-
-### Run the benchmarks
-
-```bash
-python -m pip install pyfftw       # optional FFTW reference
+python -m pip install pyfftw  # optional FFTW reference
 python -m matchedfilter.benchmark --reps 7 --json bench.json
 ```
 
-The default sweep includes all 15 CPU lengths, with GPU timings at supported
-lengths. Batch sizes shrink at large lengths to bound memory use. Use `--n`
-only when deliberately selecting a subset. Missing hierarchical calibration
-is reported explicitly; it does not remove a flat-filter timing.
+The default sweep covers all 15 CPU sizes, with GPU timings where supported.
+Batch sizes shrink at large lengths to bound memory use. `--n` selects a subset.
+Missing hierarchical calibration is reported explicitly.
 
 Install `mkl-fft` and `mkl` for an optional MKL reference where supported.
-Reference columns time only the inverse FFT; matchedfilter includes the product
-and peak scan. NumPy checks correctness but is not a timing baseline. Without
-FFTW/MKL, the library timings and correctness checks still run.
-Benchmark CI reports automatic CPU selection and a distinct AVX2 comparison;
-correctness CI continues to exercise every compiled SIMD target.
+NumPy provides the correctness reference. Without FFTW or MKL, library timings
+and correctness checks still run. Reference timing covers the inverse FFT;
+matchedfilter timing also includes the product and peak scan.
+
+## Documentation
+
+- [Usage guide](https://ahnitz.github.io/matchedfilter/using-it.html): inputs, normalization, devices and API behavior.
+- [Examples](https://ahnitz.github.io/matchedfilter/demo.html): noise and injected signals.
+- [Numerical accuracy](https://ahnitz.github.io/matchedfilter/precision.html): comparison with a float64 reference.
+- [Design notes](https://ahnitz.github.io/matchedfilter/notes.html): implementation details and historical experiments.
 
 ## Status
 
-Work in progress. The API still moves. The hierarchical tuning tables cover a
-limited range of transform lengths and refuse outside them rather than
-guessing. Single-threaded by design on the CPU; parallelism is the caller's
-to arrange. See [Caveats](https://ahnitz.github.io/matchedfilter/caveats.html).
+This is an alpha release. Pin a version when reproducibility matters.
+Hierarchical calibration covers a subset of input conditions; unsupported
+requests require additional measurements or explicit coarse parameters.
 
-Wheels for CPython 3.9–3.14 on Linux x86-64 and macOS arm64; elsewhere pip
-builds from source, which needs numpy and a C compiler.
+Wheels target CPython 3.9–3.14 on Linux x86-64 and macOS arm64. Other platforms
+build from source and need NumPy and a C compiler. CPU filtering uses one
+thread; callers control parallelism across independent filters.
 
 ## Contributing
 
-Issues and pull requests welcome at
-[github.com/ahnitz/matchedfilter](https://github.com/ahnitz/matchedfilter) —
-[fork it](https://github.com/ahnitz/matchedfilter/fork),
-[open an issue](https://github.com/ahnitz/matchedfilter/issues/new).
+[Issues](https://github.com/ahnitz/matchedfilter/issues/new) and pull requests
+are welcome. Useful contributions include device-specific benchmarks,
+calibration measurements and testing on additional hardware.
 
 ```bash
 git clone https://github.com/ahnitz/matchedfilter
 cd matchedfilter
-git submodule update --init third_party/highway   # the SIMD layer
+git submodule update --init third_party/highway
 pip install -e .
 pytest
 ```
 
-The GPU kernels are Slang, compiled to SPIR-V by `tools/build_spirv.py`.
-That needs [slangc](https://github.com/shader-slang/slang/releases) and is a
-build-time step only — the compiled blobs are committed, and nothing at run
-time imports a shader compiler.
+GPU kernels are written in Slang. Rebuild the shipped SPIR-V and Metal sources
+with `python tools/build_spirv.py --slangc /path/to/slangc`.
 
 ## License
 
