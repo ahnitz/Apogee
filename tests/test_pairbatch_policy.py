@@ -49,3 +49,29 @@ def test_hierarchical_pairbatch_matches_balanced(band,monkeypatch):
     assert (outputs[0]["index"]>=0).all()
     np.testing.assert_array_equal(outputs[0]["index"],outputs[1]["index"])
     np.testing.assert_allclose(outputs[0]["value"],outputs[1]["value"],rtol=2e-5,atol=1e-4)
+
+
+@pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])
+def test_pairbatch_scalar_data_and_partial_template_groups(n, monkeypatch):
+    """Distinct rows and lane tails must not contaminate broadcast data loads."""
+    monkeypatch.setenv("MF_PBMAX", "1024")
+    rng = np.random.default_rng(20260926 + n)
+    def noise(shape):
+        return (rng.normal(size=shape) + 1j*rng.normal(size=shape)).astype(np.complex64)
+    data, templates = noise((3, n)), noise((37, n))
+    data *= np.array([0.01j, 1, -10j], np.complex64)[:, None]
+    f = mf.MatchedFilter(n, 3, 37)
+    f.set_templates(templates)
+    for update in range(2):
+        if update:
+            data[1] = noise((n,))
+        f.set_data(data)
+        for start, count in ((0, 37), (1, 19), (16, 1)):
+            lo, hi = 3, n-5
+            got = f.run(templates=(start, count), window=(lo, hi), binsize=n)
+            want = np.fft.ifft(data[:, None, :].astype(np.complex128)
+                               * templates[None, start:start+count, :].conj(), axis=-1)*n
+            idx = np.abs(want[..., lo:hi]).argmax(axis=-1) + lo
+            val = np.take_along_axis(want, idx[..., None], axis=-1)
+            np.testing.assert_array_equal(got["index"], idx[..., None])
+            np.testing.assert_allclose(got["value"], val, rtol=2e-5, atol=1e-5)

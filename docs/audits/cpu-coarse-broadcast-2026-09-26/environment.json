@@ -1,0 +1,10 @@
+{
+  "cpu": "AMD Ryzen AI MAX+ 395",
+  "baseline_commit": "0bfb999",
+  "compiler": "g++ (GCC) 15.3.1 20260722 (Red Hat 15.3.1-1)",
+  "python": "/home/ahnitz/miniconda3/bin/python (3.13)",
+  "policy": "AVX3: direct scalar broadcasts; all other targets: staged vector loads",
+  "benchmark": "tools/bench_cpu_broadcast.py",
+  "accuracy": "Exact index and complex-value byte comparison in every benchmark case",
+  "validation_base": "600cd5c"
+}

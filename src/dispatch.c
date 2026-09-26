@@ -98,6 +98,10 @@ int ap_plan_pairbatch(const ap_plan *p){
   return p->be->pairbatch(p->h);
 }
 
+int ap_plan_broadcast_data(const ap_plan *p){
+  return p && p->be->broadcast_data && p->be->broadcast_data(p->h);
+}
+
 int ap_binmax_prod_batch(ap_plan *p,const float *dr,const float *di,
                          const float *tr,const float *ti,int nlane,
                          size_t binsize,float threshold,ap_peak *peaks,

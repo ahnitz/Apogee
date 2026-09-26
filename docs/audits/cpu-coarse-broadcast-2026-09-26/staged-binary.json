@@ -1,0 +1,14 @@
+{
+  "SSE4": {
+    "instructions": 4258,
+    "same_instructions": true
+  },
+  "AVX3": {
+    "instructions": 2787,
+    "same_instructions": true
+  },
+  "AVX2": {
+    "instructions": 3026,
+    "same_instructions": true
+  }
+}

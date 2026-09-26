@@ -59,7 +59,7 @@ struct ap_mf_plan {
      layout, and it has to be decided before ingest. */
   int pb;                     /* lanes per batch, 0 when not this path */
   int ntpad;                  /* template rows, rounded up to a multiple of pb */
-  float *ebr,*ebi;            /* [n][pb] one data spectrum, broadcast to lanes */
+  float *ebr,*ebi;            /* fallback lane-expanded data */
   float *tsr,*tsi;            /* [n][pb] gathered template group, when needed  */
   ap_peak *pkbuf;             /* [pb][nb] dense results, before placement      */
   size_t pkcap;
@@ -98,6 +98,7 @@ static ap_mf_plan *create_mf(size_t n, int ndata, int ntmpl, int pair){
   p->tile = 8;
   { const char *e=getenv("MF_MFTILE"); if(e){ int v=atoi(e); if(v>0) p->tile=v; } }
   p->pb = ap_plan_pairbatch(p->fft);
+  const int broadcast_data = ap_plan_broadcast_data(p->fft);
   /* Only the measured x86 targets opt in. MF_PBMAX remains a way to force
      either implementation in one build, without changing process state here. */
   const char *isa=ap_plan_backend(p->fft);
@@ -115,15 +116,18 @@ static ap_mf_plan *create_mf(size_t n, int ndata, int ntmpl, int pair){
   if(!p->dre||!p->dim||!p->tre||!p->tim||!p->pr||!p->pi||!p->scratch){
     ap_mf_destroy(p); return NULL; }
   if(p->pb){
+    if(!broadcast_data){
+      p->ebr=ap_alloc64((size_t)n*p->pb*sizeof(float));
+      p->ebi=ap_alloc64((size_t)n*p->pb*sizeof(float));
+      if(!p->ebr||!p->ebi){ ap_mf_destroy(p); return NULL; }
+    }
     /* The padding rows are transformed like any other lane and their results
        discarded, so they must be finite -- zero, not whatever malloc left. */
     memset(p->tre,0,(size_t)p->ntpad*n*sizeof(float));
     memset(p->tim,0,(size_t)p->ntpad*n*sizeof(float));
-    p->ebr=ap_alloc64((size_t)n*p->pb*sizeof(float));
-    p->ebi=ap_alloc64((size_t)n*p->pb*sizeof(float));
     p->tsr=ap_alloc64((size_t)n*p->pb*sizeof(float));
     p->tsi=ap_alloc64((size_t)n*p->pb*sizeof(float));
-    if(!p->ebr||!p->ebi||!p->tsr||!p->tsi){ ap_mf_destroy(p); return NULL; }
+    if(!p->tsr||!p->tsi){ ap_mf_destroy(p); return NULL; }
   }
   return p;
 }
@@ -296,10 +300,13 @@ static int run_pairs_pb(ap_mf_plan *p, int d0, int nd, int t0, int nt,
   int total=0;
   for(int d=0;d<nd;d++){
     const float *Dr=p->dre+(size_t)(d0+d)*n, *Di=p->dim+(size_t)(d0+d)*n;
-    for(size_t k=0;k<n;k++){
-      const float a=Dr[k], b=Di[k];
-      float *er=p->ebr+k*W, *ei=p->ebi+k*W;
-      for(int l=0;l<W;l++){ er[l]=a; ei[l]=b; }
+    if(p->ebr){
+      for(size_t k=0;k<n;k++){
+        const float a=Dr[k], b=Di[k];
+        float *er=p->ebr+k*W, *ei=p->ebi+k*W;
+        for(int l=0;l<W;l++){ er[l]=a; ei[l]=b; }
+      }
+      Dr=p->ebr; Di=p->ebi;
     }
     for(int tt=0;tt<nsel;tt+=W){
       const int cnt=(nsel-tt<W)?nsel-tt:W;
@@ -320,7 +327,7 @@ static int run_pairs_pb(ap_mf_plan *p, int d0, int nd, int t0, int nt,
         }
         Tr=p->tsr; Ti=p->tsi;
       }
-      if(ap_binmax_prod_batch(p->fft,p->ebr,p->ebi,Tr,Ti,cnt,binsize,threshold,
+      if(ap_binmax_prod_batch(p->fft,Dr,Di,Tr,Ti,cnt,binsize,threshold,
                               p->pkbuf,NULL,AP_BACKWARD,start,end)<0) return -1;
       for(int l=0;l<cnt;l++){
         const int t = tsel ? tsel[tt+l] : (tt+l);

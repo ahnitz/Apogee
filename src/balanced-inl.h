@@ -1073,8 +1073,16 @@ int split(void *vp,int *n1,int *n2){
    stored transposed across lanes. */
 int pairbatch(void *vp){ return ((BP*)vp)->small ? AP_W : 0; }
 
-/* nlane pairs in one call.  dr/di/tr/ti are [element][lane] with AP_W lanes
-   contiguous; lanes beyond nlane are transformed too (a vector is a vector)
+/* Direct broadcasts win on AVX-512. Keep the narrower targets staged:
+   the mixed AVX2 implementation regresses its length-64 fallback. */
+static inline int broadcast_data(void *vp){
+  BP *p=(BP*)vp;
+  return p->small && AP_W>=16;
+}
+
+/* nlane pairs in one call. dr/di are scalar when broadcast_data() is true;
+   otherwise all inputs have AP_W contiguous lanes. Lanes beyond nlane are
+   transformed too (a vector is a vector)
    and their results simply not written out. */
 int binmax_prod_batch(void *vp,const float*dr,const float*di,
                       const float*tr,const float*ti,int nlane,size_t binsize,
@@ -1083,7 +1091,10 @@ int binmax_prod_batch(void *vp,const float*dr,const float*di,
   if(!p->small||nlane<1||nlane>AP_W) return -1;
   const size_t nb=(we-ws+binsize-1)/binsize;
   if(bins_reserve(p,nb)) return -1;
-  efft_prod((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+  if(broadcast_data(p))
+    efft_prod_broadcast((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+  else
+    efft_prod((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
   small_scan(p,binsize,thr,out,nb,conj,ws,we,nlane);
   return 0;
 }
@@ -1123,7 +1134,7 @@ const ap_backend *Backend(void){
     hwy::TargetName(HWY_TARGET), AP_W,
     create, destroy, fft, supported,
     binmax, binmax_split, has_prod, split, binmax_prod, series_buf, series_stride, interp_max,
-    pairbatch, binmax_prod_batch, create_small
+    pairbatch, binmax_prod_batch, create_small, broadcast_data
   };
   return &be;
 }

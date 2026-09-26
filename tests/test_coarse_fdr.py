@@ -100,7 +100,7 @@ def assert_transfer(cpu, gpu, label):
 
 @pytest.mark.parametrize('backend', ['cpu-reference', 'gpu'])
 @pytest.mark.parametrize('band', BANDS)
-def test_coarse_kernel_fdr_transfer(band, backend, record_property, request):
+def test_coarse_kernel_fdr_transfer(band, backend, record_property, request, monkeypatch):
     dev = usable_gpu() if backend == 'gpu' else None
     if backend == 'gpu' and dev is None:
         if request.config.getoption('--require-coarse-gpu'):
@@ -109,9 +109,18 @@ def test_coarse_kernel_fdr_transfer(band, backend, record_property, request):
     vk = backend == 'gpu' and vulkan_runs()[0]
     kernels = []
     gpu = None
+    pair_cpu = None
     try:
         if backend == 'cpu-reference':
             kernels = [('NumPy independent reference', None)]
+            if band <= 1024:
+                # Four templates do not normally select pair batching at
+                # these lengths. Exercise its different data layout explicitly
+                # so a fast-path change cannot evade the calibration guard.
+                with monkeypatch.context() as patch:
+                    patch.setenv('MF_PBMAX', '1024')
+                    pair_cpu = mf.MatchedFilter(band, BATCH, 4, device='cpu')
+                kernels.append(('CPU pair-batched', None))
         elif vk:
             root = pathlib.Path(mf.__file__).parent / 'spirv'
             names = [f'tierb_{band}.spv']
@@ -133,6 +142,8 @@ def test_coarse_kernel_fdr_transfer(band, backend, record_property, request):
         templates = (np.sqrt(power) * np.exp(1j*rng.uniform(-np.pi, np.pi,
                                                           (4, band)))).astype(np.complex64)
         cpu.set_templates(templates)
+        if pair_cpu is not None:
+            pair_cpu.set_templates(templates)
         if gpu is not None:
             gpu.set_templates(templates)
         reference, observed = [], {name: [] for name, _ in kernels}
@@ -155,6 +166,11 @@ def test_coarse_kernel_fdr_transfer(band, backend, record_property, request):
             a = np.abs(cpu.run()['value']).reshape(BATCH, 4)
             reference.append(a[np.arange(BATCH), matched][detected])
             for name, kernel in kernels:
+                if name == 'CPU pair-batched':
+                    pair_cpu.set_data(data)
+                    b = np.abs(pair_cpu.run()['value']).reshape(BATCH, 4)
+                    observed[name].append(b[np.arange(BATCH), matched][detected])
+                    continue
                 if backend == 'cpu-reference':
                     # One independent FFT per injected template, not the full
                     # Cartesian bank: this keeps mandatory CPU coverage cheap.
