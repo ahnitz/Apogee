@@ -72,6 +72,11 @@ def _pack_half2(a):
     buffers, which is why survivors still get an exact peak.
     """
     a = np.ascontiguousarray(a, np.complex64)
+    if np.little_endian:
+        # Complex storage is already [real, imag]. Convert the interleaved
+        # components in one pass rather than allocating widened integers,
+        # shifting, and ORing two separately converted arrays.
+        return a.view(np.float32).astype(np.float16).view(np.uint32)
     re = a.real.astype(np.float16).view(np.uint16).astype(np.uint32)
     im = a.imag.astype(np.float16).view(np.uint16).astype(np.uint32)
     return np.ascontiguousarray(re | (im << 16), np.uint32)
@@ -242,6 +247,7 @@ _MemBarrier = _struct("VkMemoryBarrier",
 
 
 from ._errors import UnsupportedSize      # noqa: F401  (re-export)
+from ._gpu_cache import InputUploads
 
 
 class VulkanError(RuntimeError):
@@ -301,7 +307,7 @@ class _Buffer:
             self.handle = None
 
 
-class Context:
+class Context(InputUploads):
     """One Vulkan device, its compute queue, and the pipelines built on it."""
 
     def __init__(self, index=0):
@@ -320,6 +326,7 @@ class Context:
         self._pipelines = {}
         self._batches = {}
         self._hier = {}
+        self._uploaded = {"data": {}, "tmpl": {}}
 
         app = _vulkan._AppInfo(0, None, b"matchedfilter", 1, b"matchedfilter", 1,
                                (1 << 22) | (1 << 12))
@@ -561,6 +568,9 @@ class Context:
                                          upload_data=upload_data,
                                          upload_tmpl=upload_tmpl)
                 pi.append(i2); pv.append(v2)
+                # The first piece invalidated all old resident copies. Do not
+                # invalidate its fresh upload again on the remaining pieces.
+                upload_data = upload_tmpl = False
             return np.concatenate(pi, axis=2), np.concatenate(pv, axis=2)
         shift = (binsize.bit_length() - 1) if binsize & (binsize - 1) == 0 else -1
         t2 = float(threshold) ** 2 if threshold > 0 else 0.0
@@ -568,6 +578,8 @@ class Context:
         key = ("hier", n, band, nd, nt, nbins, binsize, shift, lo, hi,
                int(np.float32(t2).view(np.uint32)),
                float(even_thr), float(raw_thr))
+        upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
+            key, data, tmpl, upload_data, upload_tmpl)
         batch = self._hier.get(key)
         if batch is None:
             batch = self._make_hier(key, n, band, nd, nt, nbins, binsize,
@@ -584,6 +596,7 @@ class Context:
                 bufs["cdata"].write(_pack_half2(data[:, :band]))
             else:
                 bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
+            self._uploaded["data"][key] = dsig
         if upload_tmpl:
             bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
             if _use_c16(band) and not _COARSE_TILE.get(band):
@@ -591,6 +604,7 @@ class Context:
             else:
                 bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
             bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
+            self._uploaded["tmpl"][key] = tsig
 
         cmds = (_vp * 1)(cmd)
         submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)
@@ -602,6 +616,7 @@ class Context:
         idx = bufs["idx"].read(np.int32, out).reshape(nd, nt, nbins)
         val = bufs["val"].read(np.float32, out * 2).view(
             np.complex64).reshape(nd, nt, nbins)
+        self.last_refinements = int(bufs["args"].read(np.uint32, 1)[0])
         return idx, val
 
     def _descriptor_set(self, set_layout, bufs):
@@ -901,6 +916,7 @@ class Context:
                                     upload_tmpl=upload_tmpl)
                 parts_i.append(pi)
                 parts_v.append(pv)
+                upload_data = upload_tmpl = False
             return (np.concatenate(parts_i, axis=2),
                     np.concatenate(parts_v, axis=2))
         # Shift when the binsize is a power of two, divide when it is not --
@@ -920,6 +936,8 @@ class Context:
         # one, which would be wrong rather than slow.
         key = (n, nd, nt, nbins, binsize, shift, lo, hi,
                int(np.float32(t2).view(np.uint32)))
+        upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
+            key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
             batch = self._make_batch(key, n, nd, nt, nbins,
@@ -935,8 +953,10 @@ class Context:
 
         if upload_data:
             b_data.write(np.ascontiguousarray(data, np.complex64))
+            self._uploaded["data"][key] = dsig
         if upload_tmpl:
             b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
+            self._uploaded["tmpl"][key] = tsig
 
         cmds = (_vp * 1)(cmd)
         submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)

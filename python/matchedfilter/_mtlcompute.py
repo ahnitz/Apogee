@@ -53,6 +53,7 @@ _MAX_BINS = 2048
 
 
 from ._errors import UnsupportedSize      # noqa: F401  (re-export)
+from ._gpu_cache import InputUploads
 
 
 class MetalError(RuntimeError):
@@ -173,7 +174,7 @@ def describe_error(o, err):
 
 
 
-class Context:
+class Context(InputUploads):
     """One Metal device, its queue, and the pipelines built on it."""
 
     def __init__(self, index=0):
@@ -207,6 +208,7 @@ class Context:
         self._pipelines = {}
         self._batches = {}
         self._hier = {}
+        self._uploaded = {"data": {}, "tmpl": {}}
 
     # ---- kernels ----------------------------------------------------------
     def _library(self, stem):
@@ -411,6 +413,8 @@ class Context:
         t2 = float(threshold) ** 2 if threshold > 0 else 0.0
 
         key = (n, nd, nt, nbins)
+        upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
+            key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
             out = nd * nt * nbins
@@ -421,8 +425,10 @@ class Context:
         b_data, b_tmpl, b_idx, b_val = batch
         if upload_data:
             b_data.write(np.ascontiguousarray(data, np.complex64))
+            self._uploaded["data"][key] = dsig
         if upload_tmpl:
             b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
+            self._uploaded["tmpl"][key] = tsig
 
         pso = self.pipeline(n)
         cmd = self.o.call(self.queue, b"commandBuffer")
@@ -508,6 +514,8 @@ class Context:
         t2 = float(threshold) ** 2 if threshold > 0 else 0.0
 
         key = (n, band, nd, nt, nbins)
+        upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
+            key, data, tmpl, upload_data, upload_tmpl)
         bufs = self._hier.get(key)
         if bufs is None:
             bufs = {
@@ -537,10 +545,12 @@ class Context:
             bufs["data"].write(np.ascontiguousarray(data, np.complex64))
             bufs["cdata"].write(np.ascontiguousarray(data[:, :band],
                                                      np.complex64))
+            self._uploaded["data"][key] = dsig
         if upload_tmpl:
             bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
             bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
             bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
+            self._uploaded["tmpl"][key] = tsig
 
         coarse = self.pipeline(band)
         compact = self.pipeline(n, "compactPairs")
@@ -625,6 +635,7 @@ class Context:
         idx = bufs["idx"].read(np.int32, out).reshape(nd, nt, nbins)
         val = bufs["val"].read(np.float32, out * 2).view(
             np.complex64).reshape(nd, nt, nbins)
+        self.last_refinements = int(bufs["args"].read(np.uint32, 1)[0])
         return idx, val
 
     def _check_completed(self, cmd):

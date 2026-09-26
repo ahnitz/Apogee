@@ -84,8 +84,8 @@ def inject_scale(mf, n, h, power):
     f = mf.MatchedFilter(n, 1, 1)
     f.set_templates(h[:1])
     f.set_data((np.fft.fft(blk) / n).astype(np.complex64)[None, :])
-    _, _, m = f.run(binsize=n, threshold=0.0, raw=True)
-    return 1000.0 / float(m[0, 0, 0])
+    _, v = f.run(binsize=n, threshold=0.0, raw=True)
+    return 1000.0 / float(abs(v[0, 0, 0]))
 
 
 def noise_scale(mf, n, h, series):
@@ -101,8 +101,8 @@ def noise_scale(mf, n, h, series):
     f = mf.MatchedFilter(n, 1, 1)
     f.set_templates(h[:1])
     f.set_data((np.fft.fft(series[:n]) / n).astype(np.complex64)[None, :])
-    _, _, m = f.run(binsize=1, threshold=0.0, raw=True)
-    return float(np.sqrt(np.log(4.0)) / np.median(m[0, 0]))
+    _, v = f.run(binsize=1, threshold=0.0, raw=True)
+    return float(np.sqrt(np.log(4.0)) / np.median(np.abs(v[0, 0])))
 
 
 def dataset(mf, n, ntmpl, series_len, ninject, snr_lo, snr_hi, rng,
@@ -153,17 +153,17 @@ def flat_reference(mf, n, h, series, st, ws, we, threshold):
         buf[:have] = series[int(s0):int(s0) + have]
         buf[have:] = 0
         f.set_data((np.fft.fft(buf) / n).astype(np.complex64)[None, :])
-        i, _, m = f.run(binsize=n, threshold=threshold,
+        i, v = f.run(binsize=n, threshold=threshold,
                         window=(int(ws[b]), int(we[b])), raw=True)
         idx[b] = i[0, :, 0]
-        mag[b] = m[0, :, 0]
+        mag[b] = np.abs(v[0, :, 0])
     return idx, mag, (time.perf_counter() - t0) * 1e3
 
 
 def replay(mf, path, reps, a):
     """Re-run a captured pycbc call and check it against the captured output.
 
-    band / oversample / first stage can be overridden, which is the point: the
+    band / taps / first stage can be overridden, which is the point: the
     capture fixes the data, the bank and the thresholds, so a sweep over the
     margin's configuration is a clean experiment with a pass/fail attached.
     """
@@ -187,7 +187,6 @@ def replay(mf, path, reps, a):
     p = mf.HierarchicalFilter(n, ndata=1, ntemplates=nb, snr=thr,
                               fd=float(z["fd"]),
                               band=band,
-                              oversample=a.oversample if band else None,
                               taps=a.filter_taps if band else None)
     if len(z["reference"]):
         p.set_reference(z["reference"])
@@ -198,7 +197,7 @@ def replay(mf, path, reps, a):
     best = float("inf")
     for _ in range(reps + 1):
         t0 = time.perf_counter()
-        gi, gv, _ = p.run_series(series, st, ws, we, binsize=n,
+        gi, gv = p.run_series(series, st, ws, we, binsize=n,
                                  threshold=thr, raw=True)
         best = min(best, time.perf_counter() - t0)
     gi = np.array(gi[:, :, 0])
@@ -211,6 +210,7 @@ def replay(mf, path, reps, a):
     f = mf.MatchedFilter(n, 1, nb)
     f.set_templates(z["templates"])
     fi = np.empty((len(st), nb), np.int64)
+    fv = np.empty((len(st), nb), np.complex64)
     buf = np.zeros(n, np.complex64)
     t0 = time.perf_counter()
     for b, s0 in enumerate(z["starts"]):
@@ -218,9 +218,10 @@ def replay(mf, path, reps, a):
         buf[:have] = series[int(s0):int(s0) + have]
         buf[have:] = 0
         f.set_data((np.fft.fft(buf) / n).astype(np.complex64)[None, :])
-        i, _, _ = f.run(binsize=n, threshold=thr,
+        i, v = f.run(binsize=n, threshold=thr,
                         window=(int(ws[b]), int(we[b])), raw=True)
         fi[b] = i[0, :, 0]
+        fv[b] = v[0, :, 0]
     flat_ms = (time.perf_counter() - t0) * 1e3
 
     ci, cv = z["index"], z["value"]
@@ -245,7 +246,7 @@ def replay(mf, path, reps, a):
           % (n, thr, ("auto" if band is None else "%d bins (%.0f Hz)"
                       % (band, float(z["band_hz"]))),
              ("%.2f" % fs) if fs > 0 else "derived", float(z["fd"])))
-    print("%d blocks x %d templates = %d pairs, band/oversample/taps %s\n"
+    print("%d blocks x %d templates = %d pairs, band/taps %s\n"
           % (len(st), nb, len(st) * nb, p.config))
     print("  %-24s %10s" % ("flat filter", "%.2f ms" % flat_ms))
     print("  %-24s %10s   %.2fx" % ("hierarchical", "%.2f ms" % (best * 1e3),
@@ -255,6 +256,11 @@ def replay(mf, path, reps, a):
     print("  %-24s %10d" % ("the flat filter finds", int(truth.sum())))
 
     bad = []
+    fired = gi >= 0
+    if np.any(fired & (gi != fi)):
+        bad.append("hierarchical reported an index absent from the flat result")
+    if not np.allclose(gv[fired], fv[fired], rtol=1e-5, atol=1e-5):
+        bad.append("hierarchical complex values differ from the flat result")
     if replayed:
         print("  (replayed at %.2f, captured at %.2f: pycbc's triggers are not "
               "comparable)" % (thr, float(z["threshold"])))
@@ -276,9 +282,9 @@ def replay(mf, path, reps, a):
     if extra_c.any() and not replayed:
         print("         %d MORE than pycbc got, which the flat filter confirms"
               % int(extra_c.sum()))
-    print("  against the flat filter: %d of %d missed (%.2e, budget 1.0e-03)"
+    print("  against the flat filter: %d of %d missed (%.2e, budget %.2e)"
           % (int(lost_f.sum()), int(truth.sum()),
-             lost_f.sum() / max(1, truth.sum())))
+             lost_f.sum() / max(1, truth.sum()), float(z["fd"])))
     return 1 if bad else 0
 
 
@@ -292,7 +298,6 @@ def main(argv=None):
     ap.add_argument("--threshold", type=float, default=5.0)
     ap.add_argument("--band", type=int, default=0,
                     help="0 lets the design table choose, which is what a\ncaller gets by default and where the calibration defect lives")
-    ap.add_argument("--oversample", type=int, default=2)
     ap.add_argument("--filter-taps", type=int, default=8)
     ap.add_argument("--first-stage", type=float, default=0.0,
                     help="first-stage SNR; 0 uses the derived level")
@@ -342,7 +347,6 @@ def main(argv=None):
     p = mf.HierarchicalFilter(a.n, ndata=1, ntemplates=a.templates,
                               snr=a.threshold, fd=1e-3,
                               band=a.band or None,
-                              oversample=a.oversample if a.band else None,
                               taps=a.filter_taps if a.band else None)
     p.set_reference(power)
     p.set_templates(h)
@@ -354,11 +358,11 @@ def main(argv=None):
     best = float("inf")
     for _ in range(a.reps + 1):
         t0 = time.perf_counter()
-        gi, gv, gm = p.run_series(series, st, ws, we, binsize=a.n,
+        gi, gv = p.run_series(series, st, ws, we, binsize=a.n,
                                   threshold=a.threshold, raw=True)
         best = min(best, time.perf_counter() - t0)
     gi = np.array(gi).reshape(len(st), a.templates)
-    gm = np.array(gm).reshape(len(st), a.templates)
+    gm = np.abs(np.array(gv)).reshape(len(st), a.templates)
     hier_ms = best * 1e3
     rate = p.refine_rate
 
@@ -373,10 +377,10 @@ def main(argv=None):
     # Internal check: the lowest first-stage level the design grid offers has
     # to report a superset of this run, with identical values where both fire.
     p.set_first_stage(0.01)
-    li, lv, lm = p.run_series(series, st, ws, we, binsize=a.n,
+    li, lv = p.run_series(series, st, ws, we, binsize=a.n,
                               threshold=a.threshold, raw=True)
     li = np.array(li).reshape(len(st), a.templates)
-    lm = np.array(lm).reshape(len(st), a.templates)
+    lm = np.abs(np.array(lv)).reshape(len(st), a.templates)
     p.set_first_stage(a.first_stage if a.first_stage else None)
     lost = (gi >= 0) & (li < 0)
     drift = (gi >= 0) & (li >= 0) & ((li != gi) | (lm != gm))
@@ -387,7 +391,7 @@ def main(argv=None):
              ("%.2f" % a.first_stage) if a.first_stage else "derived",
              "pinned" if a.band else "from the design table"))
     print("%d blocks x %d templates = %d pairs, %d injections, "
-          "band/oversample/taps %s\n"
+          "band/taps %s\n"
           % (len(st), a.templates, npair, a.inject, p.config))
 
     print("  %-24s %10s" % ("flat filter", "%.2f ms" % flat_ms))

@@ -9,7 +9,7 @@ configuration the captures show triggering 60% of the time, and which misses
 tune the code.
 
 So every candidate here is built as an actual HierarchicalFilter with that
-(band, oversample, taps), handed the same reference and bank, and run against
+(band, taps), handed the same reference and bank, and run against
 injections.  The full MatchedFilter on the same data is the truth, exactly
 as tools/hier_bench.py does it, and a dismissal is a peak the flat filter
 reports that the hierarchical one does not.  Cost is wall time of the same
@@ -150,6 +150,39 @@ def device_batch(device, default=64):
     return default if device in (None, "cpu") else _GPU_BATCH
 
 
+def _apply_margin(hf, margin, snr):
+    """Scale this filter's coarse threshold by `margin`.
+
+    The margin is a MULTIPLIER ON THE COARSE THRESHOLD and there is no
+    longer a setter for it: the library has exactly one knob, the absolute
+    threshold, which is the point of the margin removal.  So read back the
+    threshold this configuration would otherwise use and scale it here,
+    which is what the setter did anyway.
+
+    THE BASE CHANGED.  It used to be the Rice-MODELLED threshold.  It is now
+    the MEASURED one wherever threshold.txt covers the cell, and the
+    modelled one only where it does not.  Margin 0.97 therefore does not
+    mean what it meant in the shipped ACC and ACC2 rows, and rows measured
+    either side of this must not be mixed -- if that grid is regenerated it
+    has to be regenerated as a block.
+
+    Read AFTER set_reference, because the threshold depends on the band
+    power fraction the reference fixes.  Through the PUBLIC setter rather
+    than hf._ensure(), because the two are the same call on the CPU and not
+    on the GPU, which reads the threshold from the filter at calibration
+    time rather than from the plan object: reaching through _ensure once
+    wrote it somewhere the GPU never looks, and a 7000-cell GPU sweep came
+    back with every margin giving the identical answer.
+
+    1.0 is a no-op and says so by doing nothing, rather than by setting the
+    threshold to the value it already has.
+    """
+    if float(margin) == 1.0:
+        return
+    hf.set_coarse_threshold(hf._ensure().coarse_threshold(float(snr))
+                            * float(margin))
+
+
 def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
             margin=1.0, device=None, thr=None):
     """Measured (dismissal, seconds-per-pair) for one configuration.
@@ -184,25 +217,12 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
     hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=1, snr=snr, fd=1e-3,
                                band=band, taps=K, device=device)
     hf.set_reference(power)
-    # Always, including 1.0. The margin is an independent variable of this
-    # sweep, and a pinned plan now takes one from the table when the caller
-    # does not state one -- so skipping the call at 1.0 would measure the
-    # table's margin and label it 1.0.
-    # Through the PUBLIC setter, not hf._ensure().set_coarse_margin(). Those
-    # are the same call on the CPU and not on the GPU, where the margin is
-    # read from the filter at calibration time rather than from the plan
-    # object -- so reaching through _ensure wrote it somewhere the GPU never
-    # looks. A whole 7000-cell GPU sweep came back with every margin giving
-    # the identical answer, which is exactly the shape this failure makes:
-    # the strongest lever in the table doing nothing at all.
     if thr is not None:
         # An ABSOLUTE coarse threshold, which is what direct calibration
-        # bisects. It overrides the margin entirely: the margin is a
-        # multiplier on a MODELLED threshold, and the whole point of passing
-        # thr is that no model is involved.
+        # bisects. It overrides the margin entirely: no base, no scale.
         hf.set_coarse_threshold(float(thr))
     else:
-        hf.set_coarse_margin(float(margin))
+        _apply_margin(hf, margin, snr)
     flat.set_templates(H[None, :])
     hf.set_templates(H[None, :])
 
@@ -245,10 +265,10 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
 def tune(n, snr, fd, trials=1500, seed=13, bands=None, verbose=True,
          power=None, device=None):
     if bands is None:
-        bands = [b for b in (256, 512, 1024, 2048, 4096) if b <= n // 2]
+        bands = [b for b in (64, 128, 256, 512, 1024, 2048, 4096) if b <= n // 2]
     rows = []
     for band in bands:
-        for U in (1, 2):
+        for U in (2,):  # compatibility column; oversampling is no longer selectable
             for K in (4, 8):
                 try:
                     dm, det, sec = measure(n, band, U, K, snr, trials, seed,
@@ -280,43 +300,45 @@ def _cpu_name():
 
 
 def retune_cost(accuracy, out, trials=4000, jobs=None, verbose=True):
-    """Re-measure only the COST rows, keeping the FDR rows as they are.
+    """Regenerate relative costs on references represented in an accuracy file.
 
-    This is the half that is about your machine.  The FDR rows describe the
-    statistic and travel; the COST rows are wall time on one CPU with one
-    build, so they are the ones worth regenerating locally.
+    ACC2 has no band column. Treating it as legacy FDR shifted every field
+    and produced invalid worker jobs. Build references at supported anchor
+    bands, then compare configurations together on each reference instead.
+    Serial interleaved timing avoids competition between independent workers.
+    ``trials`` and ``jobs`` remain accepted for old callers; costs are timed,
+    not estimated from an injection count.
     """
-    import multiprocessing as mp
-    fdr = [l.rstrip("\n") for l in open(accuracy)
-           if l.startswith(("ACC", "FDR"))]
-    jobs = jobs or max(1, (os.cpu_count() or 2) - 2)
-    work, seen = [], set()
-    for ln in fdr:
-        f = ln.split()
-        key = (int(f[1]), int(f[2]), int(f[3]), int(f[4]), float(f[5]),
-               float(f[6]), float(f[7]))
-        if key in seen:
+    cells=set()
+    for line in open(accuracy):
+        f=line.split()
+        if not f or f[0].startswith('#'):
             continue
-        seen.add(key)
-        work.append((key[0], key[1], key[2], key[3], key[4], key[5], key[6], trials))
-    if verbose:
-        print("re-measuring %d cost cells on %d cores" % (len(work), jobs), flush=True)
-    with mp.Pool(jobs) as pool:
-        rows = list(pool.imap_unordered(_cost_cell, work, chunksize=1))
-    with open(out, "w") as fh:
-        fh.write("# matchedfilter COST table -- microseconds per pair, measured\n")
-        fh.write("# cpu     %s\n" % _cpu_name())
-        fh.write("# trials  %d pure-noise per cell at the search threshold\n#\n"
-                 % trials)
-        fh.write("# n band U K snr f beff us_per_pair\n")
-        for r in sorted(rows, key=lambda x: (x["band"], x["K"], x["snr"], x["f"])):
-            if "error" in r:
-                continue
-            fh.write("COST %d %d %d %d %.2f %.4f %.1f %.4f\n"
-                     % (r["n"], r["band"], r["U"], r["K"], r["snr"], r["f"],
-                        r["beff_act"], r["sec"] * 1e6))
-    if verbose:
-        print("wrote %s" % out)
+        if f[0] in ('ACC2', 'ACC2R'):
+            cells.add((int(f[1]),float(f[3]),float(f[4]),float(f[5]),f[0]))
+        elif f[0] in ('ACC', 'FDR'):
+            cells.add((int(f[1]),float(f[5]),float(f[6]),float(f[7]),f[0]))
+    if not cells:
+        raise ValueError('accuracy file contains no supported accuracy rows')
+    with open(out, 'w') as fh:
+        fh.write('# Relative CPU COST rows; current runtime gate; serial interleaved timing\n')
+        fh.write('# cpu '+_cpu_name()+'\n')
+        fh.write('# n band U K snr f beff margin relative_cost\n')
+        for n,snr,f,be,kind in sorted(cells):
+            bands=[1 << k for k in range(6,n.bit_length()-1)]
+            configs=[(b,2,k,1.) for b in bands for k in (4,8)]
+            for anchor in bands:
+                bandwidth=anchor/be if kind == "ACC2R" else be
+                if bandwidth>anchor:
+                    continue
+                power=make_ref(n,anchor,f,bandwidth)
+                ratios,_=cost_sweep_one_reference(n,power,snr,configs)
+                for (band,u,k,margin),ratio in sorted(ratios.items()):
+                    ff,bb=_feat(power,band)
+                    fh.write('COST %d %d %d %d %.2f %.6f %.3f %.3f %.6f\n' %
+                             (n,band,u,k,snr,ff,bb,margin,ratio))
+            if verbose:
+                print('cost n=%d snr=%.2f f=%.4f beff=%.2f' % (n,snr,f,be),flush=True)
 
 
 def main():
@@ -357,8 +379,6 @@ def main():
     print("\nPICK: %s" % (best if best else "nothing met the target"))
 
 
-if __name__ == "__main__":
-    main()
 
 
 def profile(n, want_f):
@@ -618,11 +638,7 @@ def measure_cost(n, band, U, K, snr, power, nt=1, nd=64, reps=5,
     hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=snr, fd=1e-3,
                                band=band, taps=K)
     hf.set_reference(power)
-    # Always, including 1.0. The margin is an independent variable of this
-    # sweep, and a pinned plan now takes one from the table when the caller
-    # does not state one -- so skipping the call at 1.0 would measure the
-    # table's margin and label it 1.0.
-    hf.set_coarse_margin(float(margin))
+    _apply_margin(hf, margin, snr)
     hf.set_templates(H)
     # Cap the call count. A 1x1 shape would otherwise need `pairs_target`
     # separate run() calls per repeat -- 40000 of them, each paying full
@@ -748,8 +764,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
             hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=nt, snr=snr,
                                        fd=1e-3, band=band, taps=K)
             hf.set_reference(power)
-            # always, including 1.0 -- see the note at the top of the file
-            hf.set_coarse_margin(float(margin))
+            _apply_margin(hf, margin, snr)
             hf.set_templates(H)
             plans[cfg] = hf
         acc = {c: [] for c in chunk}
@@ -826,7 +841,7 @@ def cost_grid(n, snr_list, bands, Ks, margins, f_list, be_fracs, reps=4,
     from, which is the mistake the first table made.
     """
     configs = [(b, 2, K, g) for b in bands for K in Ks for g in margins]
-    if COST_PIVOT not in configs:
+    if COST_PIVOT not in configs and COST_PIVOT[0] <= n // 2:
         configs.append(COST_PIVOT)
     rows, resids = [], []
     for snr in snr_list:
@@ -858,3 +873,7 @@ def _feat(power, m):
         return 0.0, 1.0
     q = inb / s
     return float(s / tot), float(1.0 / np.sum(q ** 2))
+
+
+if __name__ == "__main__":
+    main()

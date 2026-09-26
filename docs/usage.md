@@ -35,8 +35,8 @@ MKL, FFTW); matchedfilter does not own that step. Everything is
 
 `ndata` and `ntemplates` are declared to the constructor rather than inferred
 from the first call, because the plan, the twiddles and the working buffers
-all depend on them. Declaring them once means a run does no allocation and no
-planning.
+all depend on them. Declaring them once lets plans reuse storage. First-use GPU dispatches and
+adaptive CPU layouts can still allocate.
 
 [[example:A complete example]]
 
@@ -97,7 +97,8 @@ instead of guessing.
 
 ## Choosing a transform length
 
-Supported lengths are the powers of two from 1024 to 1048576. The
+CPU lengths are powers of two from 64 to 1048576. GPU lengths are
+1024, 2048, 4096, 8192 and 16384, subject to device limits. The
 hierarchical mode additionally needs measured tuning coverage at that length;
 `tools/hmf_tune.py` generates more.
 
@@ -241,3 +242,11 @@ macOS on Intel is untested rather than known-broken: hosted runners for it
 are being retired, so nothing measures it. `matchedfilter.targets()` lists
 what a build holds that the CPU can run, `matchedfilter.backend()` reports
 which one was selected, and `set_target()` or `MF_ISA` forces one.
+
+## CPU/GPU parity and lifecycle
+
+See the [parity audit](cpu-gpu-parity.md) for tested features and limits.
+Initialize every data/template row you request. After `run_series`, call
+`set_data` before a subsequent `run`; series execution uses internal data
+slots. Use setters again after changing caller-owned inputs. Copy results
+that must survive subsequent calls.

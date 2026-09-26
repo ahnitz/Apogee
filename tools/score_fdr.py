@@ -38,8 +38,13 @@ def one(job):
         return dict(n=n, snr=snr, fd=fd, ref=name, cfg=None, err=str(e))
     if cfg is None:
         return dict(n=n, snr=snr, fd=fd, ref=name, cfg=None, err="no config")
-    band, U, K, mg = cfg
-    dm, det, _sec = t.measure(n, band, U, K, snr, trials, power=p, margin=mg)
+    # No margin. choose_config used to return one and this passed it back
+    # in, which measured a configuration the library never runs: the margin
+    # is an axis of the measured grid, and what the filter is actually run
+    # at is the threshold from threshold.txt. Measuring the chosen config
+    # means measuring it as the library will build it.
+    band, K = cfg
+    dm, det, _sec = t.measure(n, band, 1, K, snr, trials, power=p)
     f, be = mf._band_features(p, band)
     return dict(n=n, snr=snr, fd=fd, ref=name, cfg=cfg, f=f, beff=be,
                 dismissal=dm, detected=det)
@@ -75,7 +80,7 @@ def main():
             over += 1
         print("%-7d %-5.1f %-7.0e %-9s %-20s %-7.0f %-11.2e %s%.2fx"
               % (r["n"], r["snr"], r["fd"], r["ref"],
-                 "%d/%d/%d m%.3f" % r["cfg"], r["beff"], r["dismissal"],
+                 "band %d / K %d" % r["cfg"], r["beff"], r["dismissal"],
                  "  " if ratio <= 1 else "OVER ", ratio))
     print("\n%d of %d over budget" % (over, tot))
 

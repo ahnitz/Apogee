@@ -160,6 +160,8 @@ class MatchedFilter:
         self.n = int(n)
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
+        if self.ndata < 1 or self.ntemplates < 1:
+            raise ValueError("ndata and ntemplates must be >= 1")
         self._buf = None
         self._sbuf = None
         #: Has any spectrum reached the plan? The hierarchical refine path
@@ -167,6 +169,8 @@ class MatchedFilter:
         #: SEGFAULT -- and only once a pair actually fired, which made it look
         #: intermittent rather than like a missing call.
         self._dataset = False
+        self._data_ready = set()
+        self._template_ready = set()
         # Arrays the plan holds pointers into. The C side keeps the caller's
         # spectrum rather than copying it, so the wrapper must keep it alive.
         self._held = {}
@@ -220,6 +224,33 @@ class MatchedFilter:
         """The live plan. Always built here; HierarchicalFilter defers."""
         return self._mf
 
+    def _input_index(self, index, size):
+        if index is None:
+            return None
+        index = int(index)
+        if index < 0 or index >= size:
+            raise IndexError("index %d out of range" % index)
+        return index
+
+    def _mark_ready(self, kind, index):
+        attr = "_" + kind + "_ready"
+        ready = getattr(self, attr)
+        if index is None:
+            setattr(self, attr, None)  # complete bank: constant-time hot-path check
+        elif ready is not None:
+            ready.add(index)
+            size = self.ndata if kind == "data" else self.ntemplates
+            if len(ready) == size:
+                setattr(self, attr, None)
+
+    def _missing(self, kind, start, count):
+        ready = getattr(self, "_" + kind + "_ready")
+        return ready is not None and any(i not in ready for i in range(start, start + count))
+
+    def _require_templates(self, start, count):
+        if self._missing("template", start, count):
+            raise ValueError("no templates for requested rows: call set_templates() first")
+
     def _gpu_set(self, store, spectra, index, what):
         if what == "data":
             self._ddirty = True
@@ -240,9 +271,12 @@ class MatchedFilter:
         Inputs are frequency domain - the unnormalised forward transform of the
         segment, natural order.
         """
+        index = self._input_index(index, self.ndata)
         if self._gpu is not None:
+            self._gpu_set(self._gdata, spectra, index, "data")
             self._dataset = True
-            return self._gpu_set(self._gdata, spectra, index, "data")
+            self._mark_ready("data", index)
+            return
         if index is not None:
             a = _as_c64(spectra, self.n, "spectrum")
             # The plan keeps this pointer -- the coarse band is read straight
@@ -253,6 +287,7 @@ class MatchedFilter:
             self._held[int(index)] = a
             self._ensure().set_data(int(index), a)
             self._dataset = True
+            self._mark_ready("data", index)
             return
         a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ndata, self.n):
@@ -261,22 +296,28 @@ class MatchedFilter:
         for i in range(self.ndata):
             self._ensure().set_data(i, a[i])
         self._dataset = True
+        self._mark_ready("data", None)
 
     def set_templates(self, spectra, index=None):
         """Set one template spectrum (with ``index``) or all from a (ntemplates, n) array.
 
         Conjugation happens here, once, rather than in the pair loop.
         """
+        index = self._input_index(index, self.ntemplates)
         if self._gpu is not None:
-            return self._gpu_set(self._gtmpl, spectra, index, "template")
+            self._gpu_set(self._gtmpl, spectra, index, "template")
+            self._mark_ready("template", index)
+            return
         if index is not None:
             self._ensure().set_template(int(index), _as_c64(spectra, self.n, "spectrum"))
+            self._mark_ready("template", index)
             return
         a = np.ascontiguousarray(spectra, dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ntemplates, self.n):
             raise ValueError(f"expected shape ({self.ntemplates}, {self.n}), got {a.shape}")
         for i in range(self.ntemplates):
             self._ensure().set_template(i, a[i])
+        self._mark_ready("template", None)
 
 
     def _gpu_hier(self, D, H, binsize, threshold, start, end):
@@ -320,19 +361,11 @@ class MatchedFilter:
             upload_data=self._ddirty, upload_tmpl=self._tdirty)
         self._ddirty = self._tdirty = False
 
-        # Refine-rate bookkeeping, in one reduction rather than three.
-        #
-        # This is a diagnostic -- refine_rate and stats read it -- and it
-        # used to cost three passes over the output on the hot path: a bool
-        # array, then mean(), then sum(). mean IS sum/size, so two of the
-        # three were free to remove. At 65536 pairs the block was about
-        # 0.1 ms against 0.31 ms of GPU, which is a lot to spend on a
-        # number nobody asked for.
+        # The indirect dispatch count records actual coarse survivors, including
+        # refinements that yield no final detection. Read after completion;
+        # no extra submission or host decision is needed.
         self._gpairs += idx.shape[0] * idx.shape[1]
-        fired = (idx >= 0).any(axis=2)
-        k = int(fired.sum())
-        self._last_refine = (k / fired.size) if fired.size else 0.0
-        self._gtrig += k
+        self._gtrig += self._gpu.last_refinements
         return idx, val
 
     def _run_gpu(self, binsize, threshold, start, end, data, templates,
@@ -350,19 +383,20 @@ class MatchedFilter:
            or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
             raise ValueError("data/templates sub-range out of bounds")
 
-        if not self._dataset:
+        if not self._dataset or self._missing("data", d0, nd):
             raise ValueError(
                 "no data: call set_data() before run(). The plan stores the "
                 "caller's spectrum pointer and the hierarchical refine path "
                 "is the first thing to dereference it, so this used to be a "
                 "segfault, and only once a pair fired.")
+        self._require_templates(t0, nt)
         idx, val = self._gpu.peaks(
             self.n, self._gdata[d0:d0 + nd], self._gtmpl[t0:t0 + nt],
             binsize=binsize, threshold=threshold, window=(start, end),
             upload_data=self._ddirty, upload_tmpl=self._tdirty)
         self._ddirty = self._tdirty = False
         if raw:
-            r = (idx, val)
+            r = (idx.astype(np.int64, copy=False), val)
             return (r, (idx >= 0).sum(axis=2).astype(np.int32)) if counts else r
         peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
         peaks["index"] = idx
@@ -373,6 +407,9 @@ class MatchedFilter:
 
     # ---- run ----------------------------------------------------------------
     def nbins(self, binsize, window=None):
+        binsize = int(binsize)
+        if binsize < 1:
+            raise ValueError("binsize must be >= 1")
         start, end = self._window(window)
         if self._gpu is not None:
             return 0 if start >= end else -(-(end - start) // int(binsize))
@@ -416,7 +453,7 @@ class MatchedFilter:
         structured-array slice at the other end -- which can exceed the filter
         work itself.
 
-        THE RESULT IS A REUSED BUFFER, on both paths.  The next ``run`` on this
+        Results may reuse buffers; do not rely on retention across calls.  The next ``run`` on this
         filter overwrites it in place; ``.copy()`` anything that must outlive
         that call.  Six allocations are nothing beside a 2^20 transform, but a
         caller driving small batches pays them every time -- at 37 templates
@@ -427,6 +464,8 @@ class MatchedFilter:
         """
         n = self.n
         binsize = n if binsize is None else int(binsize)
+        if binsize < 1:
+            raise ValueError("binsize must be >= 1")
         start, end = self._window(window)
         if self._gpu is not None:
             return self._run_gpu(binsize, threshold, start, end, data,
@@ -437,12 +476,13 @@ class MatchedFilter:
            or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
             raise ValueError("data/templates sub-range out of bounds")
         nb = self._ensure().nbins(binsize, start, end)
-        if not self._dataset:
+        if not self._dataset or self._missing("data", d0, nd):
             raise ValueError(
                 "no data: call set_data() before run(). The plan stores the "
                 "caller's spectrum pointer and the hierarchical refine path "
                 "is the first thing to dereference it, so this used to be a "
                 "segfault, and only once a pair fired.")
+        self._require_templates(t0, nt)
         rows = nd * nt
         # Reuse the output buffers.  Six allocations per call is nothing beside
         # a 2^20 transform, but a caller driving small batches in a tight loop
@@ -457,6 +497,7 @@ class MatchedFilter:
             peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
             buf = self._buf = ((rows, nb), idx, val, mag, cnt, peaks)
         _, idx, val, mag, cnt, peaks = buf
+        peaks = peaks.reshape(nd, nt, nb)
         self._ensure().run(d0, nd, t0, nt, binsize, float(threshold), start, end,
                      idx, val, mag, cnt)
         if raw:
@@ -467,6 +508,41 @@ class MatchedFilter:
         return (peaks, cnt.reshape(nd, nt)) if counts else peaks
 
 
+
+    def _series_layout(self, series, starts, win_start, win_end, binsize, templates):
+        """Validate the shared series contract before either native backend."""
+        ser = np.ascontiguousarray(series, dtype=np.complex64)
+        st = np.ascontiguousarray(starts, dtype=np.uintp)
+        ws = np.ascontiguousarray(win_start, dtype=np.uintp)
+        we = np.ascontiguousarray(win_end, dtype=np.uintp)
+        if any(a.ndim != 1 for a in (ser, st, ws, we)):
+            raise ValueError("series, starts, win_start and win_end must be one-dimensional")
+        if not (st.size == ws.size == we.size):
+            raise ValueError("starts, win_start and win_end must be the same length")
+        if st.size < 1:
+            raise ValueError("run_series needs at least one block")
+        # Negative signed offsets wrap on conversion to uintp. Also reserve
+        # room for the block's sample offsets in the GPU's signed gather.
+        if np.any(st > np.iinfo(np.intp).max - self.n):
+            raise ValueError("starts must be nonnegative and fit in the sample index range")
+        binsize = self.n if binsize is None else int(binsize)
+        if binsize < 1:
+            raise ValueError("binsize must be >= 1")
+        t0, nt = (0, self.ntemplates) if templates is None else (
+            int(templates[0]), int(templates[1]))
+        if nt < 1 or t0 < 0 or t0 + nt > self.ntemplates:
+            raise ValueError("templates sub-range out of bounds")
+        self._require_templates(t0, nt)
+        # A single output stride cannot represent different bin counts.
+        nbset = {self.nbins(binsize, (int(a), int(b))) for a, b in zip(ws, we)}
+        if len(nbset) > 1:
+            raise ValueError(
+                "every block's window must give the same bin count; these "
+                "give %s. Use a binsize that divides each window equally, or "
+                "call run_series once per distinct window." % sorted(nbset))
+        if not nbset or min(nbset) < 1:
+            raise ValueError("every block must have a nonempty search window")
+        return ser, st, ws, we, binsize, t0, nt
 
     def run_series(self, series, starts, win_start, win_end,
                    binsize=None, threshold=0.0, templates=None, raw=False):
@@ -489,40 +565,20 @@ class MatchedFilter:
         would only let the two disagree.  A filter built with ``ndata=1``
         still gives the same answers, one block at a time.
 
-        THE RETURNED ARRAYS ARE REUSED BUFFERS, as with ``run``.  The next call
-        overwrites them; copy anything that has to outlive it.
+        Raw CPU results reuse buffers; copy retained results.
+        A later run() requires set_data() again because series execution
+        uses the plan's data slots. This rule applies on both devices.
         """
-        ser = np.ascontiguousarray(series, dtype=np.complex64)
-        st = np.ascontiguousarray(starts, dtype=np.uintp)
-        ws = np.ascontiguousarray(win_start, dtype=np.uintp)
-        we = np.ascontiguousarray(win_end, dtype=np.uintp)
-        if not (st.size == ws.size == we.size):
-            raise ValueError("starts, win_start and win_end must be the same length")
-        if st.size < 1:
-            raise ValueError("run_series needs at least one block")
+        ser, st, ws, we, binsize, t0, nt = self._series_layout(
+            series, starts, win_start, win_end, binsize, templates)
         nblk = st.size
-        self._dataset = True   # run_series supplies its own blocks
-        # Every window must give the same bin count: the result has ONE
-        # nbins in its shape and the C addresses peaks at a single stride, so
-        # a shorter window at a segment's edge writes into the next block's
-        # row and past the end of the buffer. That is reachable from ordinary
-        # overlap-save input, and it corrupted the heap rather than failing.
-        nbset = {self.nbins(binsize if binsize is not None else self.n,
-                            (int(a), int(b))) for a, b in zip(ws, we)}
-        if len(nbset) > 1:
-            raise ValueError(
-                "every block's window must give the same bin count; these "
-                "give %s. Use a binsize that divides each window equally, or "
-                "call run_series once per distinct window."
-                % sorted(nbset))
+        # CPU series execution reuses the data slots. Require fresh spectra
+        # before a later run(), consistently on both devices.
+        self._dataset = False
+        self._data_ready = set()
         if self._gpu is not None:
             return self._run_series_gpu(ser, st, ws, we, binsize, threshold,
                                         templates, raw)
-        t0, nt = (0, self.ntemplates) if templates is None else (
-            int(templates[0]), int(templates[1]))
-        if nt < 1 or t0 < 0 or t0 + nt > self.ntemplates:
-            raise ValueError("templates sub-range out of bounds")
-        binsize = self.n if binsize is None else int(binsize)
         nb = self._ensure().nbins(binsize, int(ws[0]), int(we[0]))
         need = nblk * nt * nb
         sb = self._sbuf
@@ -551,7 +607,7 @@ class MatchedFilter:
         gi, gv = self._gpu.peaks(
             self.n, spec, H, binsize=binsize, threshold=threshold,
             window=(w0, w1), upload_data=True,
-            upload_tmpl=first or self._tdirty)
+            upload_tmpl=self._tdirty)
         self._tdirty = False
         return gi, gv
 
@@ -591,16 +647,20 @@ class MatchedFilter:
         # _gpu_hier saw |D|max 304.633 against run()'s 0.0743734 at n=4096,
         # exactly 4096 -- so every pair cleared a threshold calibrated for
         # the real scale.
-        if nblk:
+        if ser.size:
             grid = (st[:, None].astype(np.int64)
                     + np.arange(n, dtype=np.int64)[None, :])
             inside = grid < ser.size
             # np.minimum keeps the gather in bounds; `inside` zeroes the tail.
-            blocks = np.where(inside, ser[np.minimum(grid, max(ser.size - 1, 0))],
+            blocks = np.where(inside, ser[np.minimum(grid, ser.size - 1)],
                               np.complex64(0))
-            spec = (np.fft.fft(blocks, axis=1) / n).astype(np.complex64)
+            spec = np.fft.fft(blocks, axis=1)
+            spec /= n
+            # NumPy 2 preserves complex64 here; older NumPy promotes it.
+            # Avoid copying an already correctly typed full spectrum bank.
+            spec = spec.astype(np.complex64, copy=False)
         else:
-            spec = np.zeros((0, n), dtype=np.complex64)
+            spec = np.zeros((nblk, n), dtype=np.complex64)
 
         nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
         idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
@@ -608,8 +668,13 @@ class MatchedFilter:
         first = True
         for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
             rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
+            # Normal overlap-save groups are contiguous. A slice keeps the
+            # freshly computed spectra in place; fancy indexing would copy
+            # the entire group immediately before the device upload.
+            group = (spec[rows[0]:rows[-1] + 1]
+                     if rows[-1] - rows[0] + 1 == rows.size else spec[rows])
             gi, gv = self._series_window(
-                np.ascontiguousarray(spec[rows]), H, binsize, threshold,
+                np.ascontiguousarray(group), H, binsize, threshold,
                 w[0], w[1], first)
             first = False
             if gi.shape[2] != nb:
@@ -1328,13 +1393,47 @@ def _choose_v2(power, n, snr, fd, t):
         return None
     floor = _dismissal_floor(t)
 
+    best, bcost, bcfg = None, float("inf"), None
+    for cand in _admissible_v2(power, n, snr, fd, t, use, floor):
+        c = _idw(cand["crows"], cand["f"], cand["beff"])
+        if c is not None and c < bcost:
+            # (band, taps). The margin is an AXIS OF THE MEASURED GRID, not
+            # a control: it says which measured rows admitted and priced
+            # this configuration. What the filter runs at is the measured
+            # threshold from threshold.txt, which no margin multiplies. It
+            # used to be returned as a third element and a caller then
+            # applied it -- tools/score_fdr.py measured a configuration the
+            # library never runs.
+            #
+            # U is gone from the interface. The shipped cost rows still
+            # carry the column because every one of them was measured at
+            # U=2; it is a lookup detail and disappears when the tables are
+            # regenerated without it.
+            best, bcost, bcfg = 1, c, (cand["band"], cand["K"])
+    return bcfg
+
+
+def _admissible_v2(power, n, snr, fd, t, use, floor):
+    """Every configuration whose ESTIMATED dismissal meets `fd`, with the
+    cost rows that price it.
+
+    Split out of _choose_v2 because admission and pricing are two decisions
+    and only one of them is settled.  The pricing rule was chosen by
+    measurement against the real best configuration, and changing it on an
+    argument has already cost up to 56% of the available speedup once -- so
+    tools/score_cost_rule.py exists to re-run that comparison, and it needs
+    the candidates WITHOUT a rule already applied.  Duplicating this walk in
+    the tool is how it came to be scoring against the FDR table, which no
+    longer ships.
+
+    Yields dicts with band, K, margin, f, beff, ratio and crows.
+    """
     bands, kus = set(), set()
     for (cn, cb, cU, cK, _cs, _cm) in t["cost"]:
         if cn == n and cb < n:
             bands.add(cb)
             kus.add((cU, cK))
 
-    best, bcost, bcfg = None, float("inf"), None
     for band in sorted(bands):
         f, be = _band_features(power, band)
         if be < _BEFF_MIN:
@@ -1369,7 +1468,6 @@ def _choose_v2(power, n, snr, fd, t):
             if not crows:
                 # the cost grid is coarser in margin than the accuracy grid;
                 # price at the nearest measured margin rather than skipping
-                have = t["cost_cfg"].get((n, band, U, K)) or []
                 near = min((abs(m2 - mg), m2) for m2 in
                            {m3 for (c1, c2, c3, c4, _s, m3) in t["cost"]
                             if (c1, c2, c3, c4) == (n, band, U, K)} or {1.0})[1]
@@ -1377,14 +1475,8 @@ def _choose_v2(power, n, snr, fd, t):
                     crows += t["cost"].get((n, band, U, K, round(cs, 2), near)) or []
             if not crows:
                 continue
-            c = _idw(crows, f, be)
-            if c is not None and c < bcost:
-                # U is gone from the interface. The shipped cost rows still
-                # carry the column because every one of them was measured at
-                # U=2; it is a lookup detail here and disappears when the
-                # tables are regenerated without it.
-                best, bcost, bcfg = (band, K), c, (band, K, round(mg, 4))
-    return bcfg
+            yield dict(band=band, U=U, K=K, margin=mg, f=f, beff=be,
+                       ratio=ratio, crows=crows)
 
 
 def choose_config(power, n, snr, fd, tuning=None):
@@ -1511,22 +1603,42 @@ def choose_config(power, n, snr, fd, tuning=None):
             # configuration is cheaper, while dismissal rises. That argument
             # says this rule should under-price narrow bands, and it does.
             #
-            # Three replacements were tried and MEASURED against the real best
-            # of every admissible configuration, at four (n, snr) points:
+            # Replacements were tried and MEASURED against the real best of
+            # every admissible configuration. Re-run after the margin was
+            # removed, so the filters are timed at the threshold they
+            # actually use and configurations differing only in the margin
+            # they were admitted at are one filter. Percent of the best
+            # admissible configuration's measured speedup:
             #
-            #     rule                        4096@5.0 4096@6.0 8192@5.0 16384@5.5
-            #     covering (this one)              80%      90%     100%      100%
-            #     pessimistic (f <= ours)          80%      72%      45%       47%
-            #     nearest in (f, beff)             63%      70%      57%       44%
-            #     interpolate in f                 57%      83%      60%      100%
+            #   rule                   4096  4096  4096  8192  8192   mean
+            #                          @5.0  @6.0  @6.5  @5.0  @6.0
+            #   covering (this one)     96%   65%   94%  100%   83%   87.6
+            #   IDW (what _choose_v2    74%   65%   94%   93%  100%   85.2
+            #        uses)
+            #   plane fit k=6           74%   65%   94%   93%  100%   85.2
+            #   nearest in (f, beff)    74%  100%  100%   93%   56%   84.6
+            #   interpolate in f        71%   65%   94%   93%   83%   81.2
+            #   plane fit k=4           74%   65%   94%   68%  100%   80.2
+            #   pessimistic (f <= ours) 74%   49%   49%   68%   29%   53.8
             #
             # The theory is right about the direction and wrong about what
             # follows from it: the rows are sparse and spread over B_eff as
-            # well as f, and every alternative reasoning about f alone lands
-            # on a row describing a different problem. Do not change this on
-            # an argument -- re-run tools/score_cost_rule.py, because the
-            # argument that looked conclusive cost up to 56% of the available
-            # speedup when it was believed.
+            # well as f, and reasoning about f alone lands on a row
+            # describing a different problem -- which is why the pessimistic
+            # rule is last by a wide margin and nothing else is close to it.
+            #
+            # Among the top four the spread is 3 points over five cells,
+            # which is not a ranking. That is why _choose_v2 using IDW here
+            # and this path using covering is not an inconsistency worth
+            # forcing: neither is measurably better. What IS measured is
+            # that the pessimistic rule costs up to 56% of the available
+            # speedup, so do not change this on an argument -- re-run
+            # tools/score_cost_rule.py.
+            #
+            # That tool scores the ACC2 path only. These sizes are on the
+            # older ACC rows, where the rule is fused into this loop and
+            # cannot be varied from outside; the numbers above transfer
+            # because the rule and the cost table are the same.
             cf = [c for (tf, tbe, c) in crows
                   if tf >= fq - 1e-9 and tbe >= bq - 1e-9]
             ccurve.append((margin,
@@ -1564,10 +1676,18 @@ def choose_config(power, n, snr, fd, tuning=None):
             best, bcost, bmargin = (band, U, K), c, margin
     if best is None:
         return None
-    # (band, taps, margin). The oversample used to sit between band and
-    # taps; it is gone, and this path is the only one that still had it,
-    # because the lengths it serves are the ones ACC2 never covered.
-    return (best[0], best[2], round(bmargin, 4))
+    # (band, taps).  The oversample used to sit between them and is gone.
+    #
+    # The margin used to be returned as a third element and it is not any
+    # more.  It is an AXIS OF THE MEASURED GRID, not a control: the shipped
+    # accuracy and cost rows were measured on a margin ladder, so admitting
+    # and pricing a configuration means picking a point on that ladder. What
+    # the filter is actually run at is the measured threshold from
+    # threshold.txt, which no margin multiplies. Returning it invited
+    # exactly the confusion that a caller then applies it -- which is what
+    # tools/score_fdr.py did, measuring a configuration the library never
+    # runs.
+    return (best[0], best[2])
 
 
 def _dismissal_floor(t):
@@ -1647,11 +1767,11 @@ class HierarchicalFilter(MatchedFilter):
         >>> peaks = hf.run(binsize=1024, threshold=t)
         >>> hf.refine_rate        # fraction of pairs that needed the full filter
 
-    The guarantee is one-sided and exact.  Every peak it reports is
-    bit-identical to :class:`MatchedFilter`'s, because when the coarse pass escalates it
-    runs that filter.  It never invents a peak and never shifts one.  What it can
-    do is MISS one, with probability at most ``fd`` for a signal of strength
-    ``snr``.  If that is not acceptable, use :class:`MatchedFilter`.
+    Every reported peak is refined by the full filter. Compare values across
+    devices within float32 roundoff, not bitwise. The coarse gate can omit
+    peaks; ``fd`` is its measured false-dismissal target at strength ``snr``,
+    not a distribution-independent bound. Use :class:`MatchedFilter` to
+    avoid coarse-gate omissions.
 
     ``snr`` is the |rho| of the weakest signal that must be kept; ``fd`` is the
     tolerated false-dismissal probability for such a signal.  Lowering either
@@ -1669,6 +1789,16 @@ class HierarchicalFilter(MatchedFilter):
         self.n = int(n)
         self.ndata = int(ndata)
         self.ntemplates = int(ntemplates)
+        if self.ndata < 1 or self.ntemplates < 1:
+            raise ValueError("ndata and ntemplates must be >= 1")
+        if band is not None:
+            band = int(band)
+            if band < 64 or band >= self.n or band & (band - 1):
+                raise ValueError("band must be a power of two, >= 64 and < n")
+        if taps is not None:
+            taps = int(taps)
+            if taps < 2 or taps > 64 or taps % 2:
+                raise ValueError("taps must be even and between 2 and 64")
         self.snr = float(snr)
         self.fd = float(fd)
         self._buf = None
@@ -1678,6 +1808,8 @@ class HierarchicalFilter(MatchedFilter):
         #: SEGFAULT -- and only once a pair actually fired, which made it look
         #: intermittent rather than like a missing call.
         self._dataset = False
+        self._data_ready = set()
+        self._template_ready = set()
         self._held = {}
         self._pending_ref = None
         self._cal_thr = None
@@ -1743,7 +1875,8 @@ class HierarchicalFilter(MatchedFilter):
                     and self._pending_ref is not None):
                 self._thr_applied = True
                 try:
-                    tv = choose_threshold(self._pending_ref, self.n, self.snr,
+                    tv = choose_threshold(self._pending_ref, self.n,
+                                          self._fs_snr or self.snr,
                                           self.fd, int(self.config[0]))
                 except Exception:
                     tv = None
@@ -1762,7 +1895,7 @@ class HierarchicalFilter(MatchedFilter):
             # said what to run. Pinning exists precisely to run something
             # the tables do not describe, which is what the tuner does on
             # every cell.
-            cfg = self._pinned + (1.0,)
+            cfg = self._pinned
         elif self._pending_ref is not None:
             try:
                 cfg = choose_config(self._pending_ref, self.n, self.snr, self.fd)
@@ -1795,7 +1928,7 @@ class HierarchicalFilter(MatchedFilter):
                         "with no low-frequency cutoff."
                         % (self.n, _BEFF_MIN))
             raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
-        b, k, margin = cfg
+        b, k = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
                              self.snr, self.fd, int(b), 1, int(k))
         # The MEASURED threshold for this reference at this band, if the
@@ -1805,17 +1938,13 @@ class HierarchicalFilter(MatchedFilter):
         # to meet the budget.
         if self._cal_thr is None and self._pending_ref is not None:
             try:
-                tv = choose_threshold(self._pending_ref, self.n, self.snr,
+                tv = choose_threshold(self._pending_ref, self.n,
+                                          self._fs_snr or self.snr,
                                       self.fd, int(b))
             except Exception:
                 tv = None
             if tv is not None:
                 self._mf.set_threshold(float(tv))
-                # The margin no longer means anything -- it scaled a modelled
-                # threshold and there is no model now -- but it is still
-                # recorded and formatted downstream, so leave it at 1.0
-                # rather than None. set_threshold overrides it regardless.
-                margin = 1.0
         if self._cal_thr is not None:
             # A caller-supplied threshold overrides whatever the table chose.
             self._mf.set_threshold(self._cal_thr)
@@ -1905,7 +2034,8 @@ class HierarchicalFilter(MatchedFilter):
                 tv = float(self._cal_thr)
             else:
                 try:
-                    tv = choose_threshold(self._pending_ref, self.n, self.snr,
+                    tv = choose_threshold(self._pending_ref, self.n,
+                                          self._fs_snr or self.snr,
                                           self.fd, int(pin["band"]))
                 except Exception:
                     tv = None
@@ -1977,7 +2107,7 @@ class HierarchicalFilter(MatchedFilter):
             raise ValueError("data/templates sub-range out of bounds")
         if self._pending_ref is None:
             raise ValueError("set_reference is required before running on a GPU")
-        if not self._dataset:
+        if not self._dataset or self._missing("data", d0, nd):
             raise ValueError(
                 "no data: call set_data() before run(). The plan stores the "
                 "caller's spectrum pointer and the hierarchical refine path "
@@ -1985,6 +2115,7 @@ class HierarchicalFilter(MatchedFilter):
                 "segfault, and only once a pair fired.")
 
 
+        self._require_templates(t0, nt)
         D = self._gdata[d0:d0 + nd]
         H = self._gtmpl[t0:t0 + nt]
 
@@ -2019,10 +2150,14 @@ class HierarchicalFilter(MatchedFilter):
         """
         if value is None:
             self._cal_thr = None
+            self._thr_applied = False
             if self._mf is not None:
                 self._mf.set_threshold(-1.0)
             return
-        self._cal_thr = float(value)
+        value = float(value)
+        if not np.isfinite(value) or value < 0:
+            raise ValueError("coarse threshold must be finite and nonnegative, or None")
+        self._cal_thr = value
         if self._mf is not None:
             self._mf.set_threshold(float(value))
 
@@ -2048,8 +2183,12 @@ class HierarchicalFilter(MatchedFilter):
 
         Pass ``None`` or a non-positive value to go back to deriving it.
         """
-        self._fs_snr = None if snr is None else float(snr)
-        self._ensure().set_first_stage(0.0 if snr is None else float(snr))
+        self._fs_snr = max(4.5, float(snr)) if snr is not None and float(snr) > 0 else None
+        self._thr_applied = False
+        if self._mf is not None and self._cal_thr is None:
+            self._mf.set_threshold(-1.0)
+        if self._gpu is None:
+            self._ensure().set_first_stage(self._fs_snr or 0.0)
 
     def set_reference(self, power):
         """Set the reference SNR distribution.
@@ -2071,14 +2210,25 @@ class HierarchicalFilter(MatchedFilter):
         ingest measurement.  Pass ``None`` to go back to measuring each
         template.
         """
+        if power is not None:
+            p = np.ascontiguousarray(power, dtype=np.float32)
+            if p.shape != (self.n,):
+                raise ValueError("reference must be a one-dimensional array of length %d" % self.n)
+            if not np.isfinite(p).all() or np.any(p < 0) or not np.any(p > 0):
+                raise ValueError("reference must be finite, nonnegative, with positive total power")
+        if self._gpu is not None:
+            # Calibration and scaled coarse templates depend on the reference,
+            # even when the template spectra themselves have not changed.
+            self._gcal = None
+            self._tdirty = True
+        self._thr_applied = False
+        if self._mf is not None and self._cal_thr is None:
+            self._mf.set_threshold(-1.0)
         if power is None:
             self._pending_ref = None
             if self._mf is not None:
                 self._mf.set_reference(None)
             return
-        p = np.ascontiguousarray(power, dtype=np.float32)
-        if p.size != self.n:
-            raise ValueError(f"reference must have {self.n} values, got {p.size}")
         self._pending_ref = p
         if self._mf is not None:
             self._mf.set_reference(p)
@@ -2089,6 +2239,9 @@ class HierarchicalFilter(MatchedFilter):
 
         Everything else in run_series is the base class's.
         """
+        # spec is freshly computed for this group. An allocator can reuse the
+        # previous group's address, so a pointer comparison is not freshness.
+        self._ddirty = True
         return self._gpu_hier(spec, H, binsize, threshold, w0, w1)
 
     def run_series(self, series, starts, win_start, win_end,
@@ -2118,36 +2271,19 @@ class HierarchicalFilter(MatchedFilter):
         Calling once per block, as an earlier version of the caller did,
         forfeits it.
 
-        The returned arrays are the plan's own buffers and the next call
-        overwrites them.  Copy anything that has to outlive the call.
+        Raw CPU results reuse the plan's buffers; copy retained results.
+        A later run() requires set_data() again on both devices.
         """
-        ser = np.ascontiguousarray(series, dtype=np.complex64)
-        st = np.ascontiguousarray(starts, dtype=np.uintp)
-        ws = np.ascontiguousarray(win_start, dtype=np.uintp)
-        we = np.ascontiguousarray(win_end, dtype=np.uintp)
-        if not (st.size == ws.size == we.size):
-            raise ValueError("starts, win_start and win_end must be the same length")
+        ser, st, ws, we, binsize, t0, nt = self._series_layout(
+            series, starts, win_start, win_end, binsize, templates)
         nblk = st.size
-        self._dataset = True   # run_series supplies its own blocks
-        # Every window must give the same bin count: the result has ONE
-        # nbins in its shape and the C addresses peaks at a single stride, so
-        # a shorter window at a segment's edge writes into the next block's
-        # row and past the end of the buffer. That is reachable from ordinary
-        # overlap-save input, and it corrupted the heap rather than failing.
-        nbset = {self.nbins(binsize if binsize is not None else self.n,
-                            (int(a), int(b))) for a, b in zip(ws, we)}
-        if len(nbset) > 1:
-            raise ValueError(
-                "every block's window must give the same bin count; these "
-                "give %s. Use a binsize that divides each window equally, or "
-                "call run_series once per distinct window."
-                % sorted(nbset))
+        # CPU series execution reuses the data slots. Require fresh spectra
+        # before a later run(), consistently on both devices.
+        self._dataset = False
+        self._data_ready = set()
         if self._gpu is not None:
             return self._run_series_gpu(ser, st, ws, we, binsize, threshold,
                                         templates, raw)
-        t0, nt = (0, self.ntemplates) if templates is None else (
-            int(templates[0]), int(templates[1]))
-        binsize = self.n if binsize is None else int(binsize)
         nb = self._ensure().nbins(binsize, int(ws[0]), int(we[0]))
         need = nblk * nt * nb
         # Reuse the buffers, as run() does.  Re-allocated per call they are a
@@ -2217,10 +2353,7 @@ class HierarchicalFilter(MatchedFilter):
         workload, filter it with a plan that has seen nothing else.
         """
         if self._gpu is not None:
-            # No C plan to accumulate counters, so this is the LAST run's
-            # rate rather than a lifetime one. Stated because the CPU's is
-            # a lifetime figure and comparing them silently would mislead.
-            return self._last_refine
+            return self._gtrig / self._gpairs if self._gpairs else 0.0
         pairs, trig = self._ensure().stats()
         return trig / pairs if pairs else 0.0
 

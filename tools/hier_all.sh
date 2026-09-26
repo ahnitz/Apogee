@@ -1,21 +1,23 @@
 #!/bin/bash
-# Replay every captured pycbc segment and total the result.  This is the
-# number to move: the operating point that misses no triggers.
-#   MF_GATE_MARGIN=0.94 bash tools/hier_all.sh
-#   BAND=512 bash tools/hier_all.sh
+# Replay captures with the current band/taps API; propagate every failure.
+# FIXTURES=/path/to/captures PY=python3 BAND=512 REPS=3 bash tools/hier_all.sh
+set -euo pipefail
 cd "$(dirname "$0")/.."
-DIR=${FIXTURES:-/home/ahnitz/projects/claude/searchdev/work/fixtures}
-PY=${PY:-/tmp/env-hwy/bin/python}
-tru=0; miss=0; ms=0; sp=0; nf=0; tr=0; ok=1
-for F in $DIR/hier-*.npz; do
-  out=$(OMP_NUM_THREADS=1 $PY tools/hier_bench.py --fixture $F --no-profile --reps ${REPS:-3} ${BAND:+--band $BAND} ${OVS:+--oversample $OVS} ${TAPS:+--filter-taps $TAPS} ${FS:+--first-stage $FS} 2>&1)
-  echo "$out"|grep -q "proof: all" || ok=0
-  t=$(echo "$out"|grep -oP "the flat filter finds\s+\K[0-9]+"); m=$(echo "$out"|grep -oP "flat filter: \K[0-9]+")
-  v=$(echo "$out"|grep -oP 'hierarchical\s+\K[0-9.]+'); x=$(echo "$out"|grep -oP 'hierarchical.*\s\K[0-9.]+(?=x)')
-  r=$(echo "$out"|grep -oP 'triggered\s+\K[0-9.]+')
-  tru=$((tru+t)); miss=$((miss+m)); nf=$((nf+1))
-  ms=$(echo "$ms+$v"|bc); sp=$(echo "$sp+$x"|bc); tr=$(echo "$tr+$r"|bc)
+DIR=${FIXTURES:-work/fixtures}
+PY=${PY:-python3}
+shopt -s nullglob
+files=("$DIR"/hier-*.npz)
+if ((${#files[@]} == 0)); then
+  echo "No hier-*.npz captures in $DIR" >&2
+  exit 1
+fi
+args=(--no-profile --reps "${REPS:-3}")
+[[ -z ${BAND:-} ]] || args+=(--band "$BAND")
+[[ -z ${TAPS:-} ]] || args+=(--filter-taps "$TAPS")
+[[ -z ${FS:-} ]] || args+=(--first-stage "$FS")
+failed=0
+for file in "${files[@]}"; do
+  OMP_NUM_THREADS=1 "$PY" tools/hier_bench.py --fixture "$file" "${args[@]}" || failed=$((failed+1))
 done
-printf "%d segments  band=%s/U%s/K%s  gate=%s  missed %d/%d (%s)  triggered %s%%  %s ms/seg  %sx\n" \
-  $nf "${BAND:-auto}" "${OVS:-2}" "${TAPS:-8}" "${MF_GATE_MARGIN:-1.00}" $miss $tru "$(echo "scale=5;$miss/$tru"|bc)" \
-  "$(echo "scale=2;$tr/$nf"|bc)" "$(echo "scale=2;$ms/$nf"|bc)" "$(echo "scale=2;$sp/$nf"|bc)"
+printf '%d segments replayed; %d failed\n' "${#files[@]}" "$failed"
+((failed == 0))
