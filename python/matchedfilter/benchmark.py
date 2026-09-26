@@ -767,7 +767,8 @@ def main(argv=None):
                                       "data": hnd, "templates": hnt,
                                       "uncovered": first})
                     continue
-                tag = "%d/%d/%d" % cfg
+                band, taps = cfg
+                tag = f"{band}/{taps}"
                 print(f"  {n:>8} {fd:>7.0e} {snr:>5.1f} {tf * 1e3:>10.2f}ms "
                       f"{th * 1e3:>10.2f}ms {speed:>8.2f}x {rate:>9.1%} "
                       f"{tag:>14}")
@@ -775,8 +776,8 @@ def main(argv=None):
                                   "data": hnd, "templates": hnt,
                                   "flat_ms": tf * 1e3, "hier_ms": th * 1e3,
                                   "speedup": speed, "refine_rate": rate,
-                                  "band": cfg[0],
-                                  "taps": cfg[2]})
+                                  "band": band,
+                                  "taps": taps})
         print("\nThe margin skips a pair when a cheap low-band estimate rules out\n"
               "any sample reaching the threshold, so the speedup grows with the\n"
               "threshold and falls to ~1 on data where everything triggers.\n"

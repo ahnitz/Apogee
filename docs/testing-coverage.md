@@ -126,3 +126,11 @@ load the SciPy-backed legacy design helper only when a design sweep uses it.
 CLI regressions now launch outside the repository, and an import test blocks
 SciPy and the legacy design module. Full scratch-directory validation on the
 local CPU/Radeon 8060S: 596 passed, 5 skipped in 46.72 seconds.
+
+## Benchmark CLI configuration reporting
+
+The hierarchical configuration is now `(band, taps)`. The benchmark CLI still
+formatted three fields and indexed `cfg[2]`, crashing both console reporting
+and JSON export after the flat timings completed. The CLI regression stubs only
+the expensive timing operations and exercises successful two-field reporting,
+JSON output, and an uncovered calibration row in the same run.
