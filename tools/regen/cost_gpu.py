@@ -39,7 +39,11 @@ import hmf_tune as t
 from test_api import inspiral_power, template_with_power, noise
 
 SNRS = [5.0, 5.5, 6.0, 6.5]
-MARGINS = [0.90, 0.94, 0.97, 1.00]
+#: The margin axis is gone: there is one calibrated threshold per
+#: band now, read from threshold.txt, so a band has ONE cost rather
+#: than a curve. The column is still emitted as 1.0 so the reader
+#: is unchanged. Four times fewer cells.
+MARGINS = [1.00]
 KS = [4, 8]
 PAIRS = 4096
 
@@ -64,7 +68,6 @@ def measure(n, band, margin, snr, reps=8):
                               taps=8, device="gpu")
     f.set_reference(reference)
     f.set_templates(H)
-    f.set_coarse_margin(margin)
     f.set_data(D)
     f.run(binsize=n, threshold=snr)          # records the command buffer
     rate = f.refine_rate
