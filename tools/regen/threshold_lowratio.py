@@ -31,6 +31,31 @@ tens of hours; nothing here assumes it completes in one go.
     python tools/regen/threshold_lowratio.py --out /tmp/thr_low.txt \
            --fd 1e-3 --snr 5.0 --ratio 1.2 1.5
 
+AND RE-MEASURING IS NOT SUFFICIENT. The table's key is (n, f, ratio, snr,
+fd), and band is left out on the argument that samples across the peak is
+band / B_eff with no band left in it. Measured at a fixed (f = 0.70,
+ratio = 1.20), realising that ratio at four different bands:
+
+    band    safe threshold      n=4096, snr 5.0, fd 1e-3
+     128        2.8078
+     256        2.9797
+     512        3.1000
+    1024        3.2719          16.5% across the band axis alone
+
+The rows are measured at band n/8, so a query at a smaller band gets a
+threshold measured for a larger one and dismisses signals, and a query at a
+larger band gets a conservative one and merely runs slow. That is the
+observed pattern exactly.
+
+It is the coarse maximum, not a fudge: the coarse statistic is a max over
+`band` lags and the max of N draws grows like sqrt(2 ln N), so the safe
+threshold goes as sqrt(ln band). Normalised at 512 that predicts 2.7339,
+2.9227, 3.1000, 3.2677 against the measurements above -- within 2.7%.
+
+So --band is a sweep here, and rows carry the band as a trailing column the
+shipped format has no place for. A table that serves every band needs a
+third key, or that correction applied at lookup.
+
 Merging into python/matchedfilter/threshold.txt is a SEPARATE step and
 deliberately not done here: the rows should be checked with
 audit_threshold.py first, which does not share this code path.
@@ -112,8 +137,8 @@ def load_done(path):
         return done
     for line in open(path):
         p = line.split()
-        if len(p) >= 7 and p[0] == "THR":
-            done.add((int(p[1]), p[2], p[3], p[4], p[5]))
+        if len(p) >= 8 and p[0] == "THR":
+            done.add((int(p[1]), p[2], p[3], p[4], p[5], int(p[7])))
     return done
 
 
@@ -121,8 +146,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="threshold-lowratio.txt")
     ap.add_argument("--n", type=int, nargs="*", default=[4096])
-    ap.add_argument("--band", type=int, default=0,
-                    help="band the ratio is realised at; 0 picks n/8")
+    ap.add_argument("--band", type=int, nargs="*", default=[0],
+                    help="bands the ratio is realised at; 0 picks n/8. The "
+                         "safe threshold varies 16.5%% across band at a fixed "
+                         "(f, ratio) -- the coarse max is over `band` lags "
+                         "and grows as sqrt(ln band) -- so a row measured at "
+                         "one band does not serve another, and sweeping this "
+                         "is what a third table key would need.")
     ap.add_argument("--f", type=float, nargs="*",
                     default=[0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.995])
     ap.add_argument("--ratio", type=float, nargs="*", default=[1.2, 1.5])
@@ -142,17 +172,20 @@ def main():
         fh.write("# Re-measured low-ratio coarse thresholds.\n")
         fh.write("# %d events expected at the budget a bisection step, "
                  "%d steps.\n" % (a.events, a.steps))
-        fh.write("# n snr f ratio fd threshold\n")
+        fh.write("# n snr f ratio fd threshold band\n")
         fh.flush()
     t_start = time.time()
-    todo = [(n, snr, f, r, fd) for n in a.n for fd in a.fd
-            for snr in a.snr for f in a.f for r in a.ratio]
+    todo = [(n, snr, f, r, fd, b) for n in a.n for fd in a.fd
+            for snr in a.snr for f in a.f for r in a.ratio for b in a.band]
     print("%d cells requested" % len(todo))
-    for (n, snr, f, r, fd) in todo:
-        key = (n, "%.2f" % snr, "%.4f" % f, "%.3f" % r, "%.0e" % fd)
+    for (n, snr, f, r, fd, band0) in todo:
+        band = band0 or (n // 8)
+        # Band is part of the identity of a row even though the shipped
+        # format has no column for it, so it goes in the resume key --
+        # otherwise a second band silently skips every cell.
+        key = (n, "%.2f" % snr, "%.4f" % f, "%.3f" % r, "%.0e" % fd, band)
         if key in done:
             continue
-        band = a.band or (n // 8)
         trials = int(a.events / fd)
         t0 = time.time()
         try:
@@ -162,7 +195,11 @@ def main():
             print("  n=%d snr=%.1f f=%.2f ratio=%.1f fd=%.0e  FAILED: %s"
                   % (n, snr, f, r, fd, str(e)[:50]))
             continue
-        fh.write("THR %d %.2f %.4f %.3f %.0e %.4f\n" % (n, snr, f, r, fd, safe))
+        # The band is a trailing column the shipped format does not have.
+        # It is written because the rows are not interchangeable across it;
+        # strip it when merging into a table that is still band-blind.
+        fh.write("THR %d %.2f %.4f %.3f %.0e %.4f %d\n"
+                 % (n, snr, f, r, fd, safe, band))
         fh.flush()
         new += 1
         print("  n=%d snr=%.1f f=%.2f ratio=%.1f fd=%.0e  measured %.4f  "

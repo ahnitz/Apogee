@@ -49,6 +49,38 @@ That is what 6000 trials a bisection step buys against a 1e-3 budget -- six
 expected events -- so the fix is re-measurement below ratio 1.5 with enough
 trials, not a constant subtracted here.
 
+WHY re-measuring the rows is not enough, found after the above: the table's
+key is incomplete. It is (n, f, ratio, snr, fd), and band is left out on the
+argument that samples across the peak is band / B_eff with no band left in
+it. Measured at a FIXED (f = 0.70, ratio = 1.20), n=4096, snr 5.0, fd 1e-3,
+realising that ratio at four different bands:
+
+    band    safe threshold
+     128        2.8078
+     256        2.9797
+     512        3.1000
+    1024        3.2719        16.5% across the band axis alone
+
+The rows are measured at band n/8, which is 512 at n=4096, so a query at a
+smaller band is handed a threshold measured for a larger one and dismisses
+signals -- and a query at a larger band gets a conservative one and merely
+runs slow. That is the observed pattern exactly: band 128 misses its budget,
+band 1024 audits 2.5% LOW.
+
+It is not a fudge factor, it is the coarse maximum. The coarse statistic is
+a max over `band` lags, and the max of N draws grows like sqrt(2 ln N), so
+the safe threshold should go as sqrt(ln band). Against the measurements,
+normalised at band 512:
+
+    band    measured   sqrt(ln band)   error
+     128      2.8078      2.7339        2.7%
+     256      2.9797      2.9227        1.9%
+     512      3.1000      3.1000        0.0%
+    1024      3.2719      3.2677        0.1%
+
+So the fix is a third key, or that correction applied at lookup. Both are
+changes to the shipped selection path and neither is made here.
+
 Selection cannot reach the failing corner today: the lowest ratio it picks
 over 352 sampled (n, reference, snr, fd) combinations is 1.29, at f = 0.787,
 and that measures 0 of 598. Installing the small-band cost rows is what
@@ -135,6 +167,38 @@ def test_band_128_is_sound_away_from_the_corner():
     assert rate <= FD * 10, \
         "band 128 dismissed %d of %d at ratio %.2f, %.2e" \
         % (omitted, detected, 128 / be, rate)
+
+
+def test_the_threshold_table_is_still_band_blind():
+    """Pins the incomplete key, cheaply.
+
+    Re-measuring this costs ~100s a cell, so it is not re-measured here.
+    What is asserted instead is the property that makes the measurement
+    matter: the shipped table hands back the SAME threshold for two bands
+    that measure 16.5% apart. If a third key or the sqrt(ln band)
+    correction lands, this fails -- and that failure is the fix arriving,
+    so update the test rather than relaxing it.
+    """
+    # Two references that put DIFFERENT bands at the same ratio, so the
+    # only thing separating the two queries is the band itself.
+    import sys
+    sys.path.insert(0, "tools")
+    import hmf_tune as ht
+    thresholds = {}
+    for band in (128, 1024):
+        power = ht.make_ref(N, band, 0.70, band / 1.20)
+        f, be = mf._band_features(power, band)
+        assert abs(band / be - 1.20) < 0.05, \
+            "band %d landed at ratio %.2f, not 1.20" % (band, band / be)
+        assert abs(f - 0.70) < 0.02, "band %d landed at f %.3f" % (band, f)
+        thresholds[band] = mf.choose_threshold(power, N, SNR, FD, band)
+    spread = abs(thresholds[1024] / thresholds[128] - 1)
+    assert spread < 0.02, (
+        "the table now separates band 128 (%.4f) from band 1024 (%.4f) at "
+        "the same (f, ratio), by %.1f%%. Measured, those cells are 16.5%% "
+        "apart, so a key that distinguishes them is the FIX -- update this "
+        "test and re-check tests/test_low_ratio_corner.py's corner case."
+        % (thresholds[128], thresholds[1024], 100 * spread))
 
 
 def test_selection_does_not_reach_the_corner_today():
