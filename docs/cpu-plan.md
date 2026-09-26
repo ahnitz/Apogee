@@ -290,6 +290,13 @@ reference shapes. The errors are not one-directional -- band 256 is
 underpriced on inspiral and steep, overpriced on early knee, and band 512
 is underpriced on shallow -- so this is not a constant to correct out.
 
+Re-run over three independent noise realisations, the RANKING is stable at
+every point -- the same band wins each draw -- while the magnitudes move a
+lot: band 256 on the inspiral reference at snr 5.5 measures 1.22, 0.95 and
+1.79 relative to band 1024 across seeds. So the claim to make is that the
+table picks the wrong band, not that it is wrong by a particular factor.
+The 1.40-1.84x figures are one draw's worth.
+
 `hmf_tune.py --retune-cost` re-measures the table for a machine and is the
 obvious thing to run. The scope is now known: this is a table-wide problem,
 not a single bad cell, and re-measuring is the only route.
