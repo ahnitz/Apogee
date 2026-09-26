@@ -714,7 +714,9 @@ def _uncovered_reference(power, n, t):
     correlation of nearly constant magnitude -- there is no peak to find
     coarsely and refine, so the method does not apply. See `_BEFF_MIN`.
     """
-    bands = {cb for (cn, cb, _U, _K, _s) in t["cost"] if cn == n and cb < n}
+    bands = {key[1] for rows in (t["cost"], t.get("cost_fd", {}),
+                                t.get("cost_fd_pairs", {}))
+             for key in rows if key[0] == n and key[1] < n}
     if not bands:
         return False
     return all(_band_features(power, b)[1] < _BEFF_MIN for b in bands)
@@ -722,7 +724,9 @@ def _uncovered_reference(power, n, t):
 
 def _uncovered_message(n, snr, fd):
     t = _load_tuning()
-    ns = sorted({k[0] for k in t["cost"]})
+    ns = sorted({k[0] for rows in (t["cost"], t.get("cost_fd", {}),
+                                  t.get("cost_fd_pairs", {}))
+                 for k in rows})
     return ("no measured tuning for n=%d snr=%.2f fd=%.0e: cost coverage "
             "is n=%s, and the gate model must resolve the requested budget. "
             "Provide a reference and measured costs (tools/hmf_tune.py, "
@@ -735,7 +739,7 @@ def _uncovered_message(n, snr, fd):
 #: skipped and the text is parsed as before.
 def _cache_path(paths):
     import hashlib
-    key = hashlib.sha1(("cost-v2|" + "|".join(
+    key = hashlib.sha1(("cost-v6|" + "|".join(
         "%s:%d:%d" % (q, os.stat(q).st_mtime_ns, os.path.getsize(q)) for q in paths
         if os.path.exists(q))).encode()).hexdigest()[:16]
     here = os.path.dirname(os.path.abspath(__file__))
@@ -846,31 +850,51 @@ def _load_tuning_paths(paths, cache=True):
         if cache:
             _TUNING = cached
         return cached
-    cost, meta = {}, {}
+    cost, cost_fd, cost_fd_pairs, meta = {}, {}, {}, {}
     for one in paths:
+        fd_format = False
+        fd_pairs_format = False
         with open(one) as fh:
             for number, line in enumerate(fh, 1):
                 f = line.split()
                 if not f:
                     continue
                 if f[0] == "#":
+                    if f[1:] == ["format", "cost-fd-v1"]:
+                        fd_format = True
+                    if f[1:] == ["format", "cost-fd-pairs-v1"]:
+                        fd_pairs_format = True
                     if len(f) > 2 and f[1] in ("cpu", "commit", "trials"):
                         meta[f[1]] = " ".join(f[2:])
                     continue
                 if f[0].startswith("#"):
                     continue
-                if f[0] != "COST" or len(f) != 9:
-                    raise ValueError("%s:%d: expected COST n band U K snr f beff relative_cost; "
+                if (f[0] != "COST" or len(f) not in (9, 10, 11)
+                        or len(f) == 10 and not fd_format
+                        or len(f) == 11 and not fd_pairs_format):
+                    raise ValueError("%s:%d: expected COST n band U K snr [fd [pairs]] f beff relative_cost; "
                                      "regenerate old tuning files" % (one, number))
                 n, band, u, k = map(int, f[1:5])
-                snr, fraction, beff, value = map(float, f[5:])
+                snr = float(f[5])
+                fd = float(f[6]) if len(f) >= 10 else None
+                pairs = int(f[7]) if len(f) == 11 else None
+                fraction, beff, value = map(float, f[-3:])
                 if (n <= band or band < 64 or band & (band - 1)
                         or not np.isfinite([snr, fraction, beff, value]).all()
+                        or fd is not None and (not np.isfinite(fd) or not 0 < fd < 1)
+                        or pairs is not None and pairs < 1
                         or snr <= 0 or not 0 < fraction <= 1
                         or beff <= 0 or value <= 0):
                     raise ValueError("%s:%d: invalid cost row" % (one, number))
-                cost.setdefault((n, band, u, k, snr), []).append((fraction, beff, value))
-    t = {"cost": cost, "meta": meta, "paths": list(paths)}
+                target = (cost if fd is None else
+                          cost_fd if pairs is None else cost_fd_pairs)
+                key = ((n, band, u, k, snr) if fd is None else
+                       (n, band, u, k, snr, fd) if pairs is None else
+                       (n, band, u, k, snr, fd, pairs))
+                target.setdefault(key, []).append((fraction, beff, value))
+    t = {"cost": cost, "cost_fd": cost_fd,
+         "cost_fd_pairs": cost_fd_pairs, "meta": meta, "paths": list(paths)}
+    _cost_index(t)
     _store_tuning(t, tuple(paths))
     if cache:
         _TUNING = t
@@ -958,23 +982,54 @@ def choose_threshold(power, n, snr, fd, band, tuning=None):
     return gate_for(power, n, band, snr, fd)
 
 
-def _cost_candidates(power, n, snr, t):
-    """Rank configurations using measured costs at the nearest SNR per configuration.
+def _cost_index(t):
+    """Group measured row keys once; selection should not rescan the file."""
+    if "cost_index" not in t:
+        index = {}
+        for source in ("cost", "cost_fd", "cost_fd_pairs"):
+            for key in t.get(source, {}):
+                index.setdefault(key[:4], {}).setdefault(source, []).append(key)
+        t["cost_index"] = index
+    return t["cost_index"]
+
+
+def _cost_candidates(power, n, snr, t, fd=1e-3, pairs=None):
+    """Rank configurations using measured costs near SNR, FDR and pair count.
 
     Costs only rank candidates, never set the gate. Coverage is resolved per
     configuration so a partially measured SNR cannot hide other bands.
     """
-    configs = {}
-    for cn, band, u, k, s in t["cost"]:
-        if cn == n and band < n:
-            configs.setdefault((band, u, k), []).append(s)
+    if not np.isfinite(fd) or not 0 < fd < 1:
+        raise ValueError("fd must be finite and between zero and one")
+    if pairs is not None and (not isinstance(pairs, (int, np.integer)) or pairs < 1):
+        raise ValueError("pairs must be a positive integer")
     candidates = []
-    for (band, u, k), snrs in configs.items():
+    for (cn, band, u, k), keys in _cost_index(t).items():
+        if cn != n or band >= n:
+            continue
         f, be = _band_features(power, band)
         if be < _BEFF_MIN:
             continue
-        use = min(snrs, key=lambda s: (abs(s - snr), s))
-        rows = t["cost"][(n, band, u, k, use)]
+        measured_pairs = keys.get("cost_fd_pairs", ())
+        if measured_pairs:
+            # Direct library callers may omit a plan shape; use the smaller
+            # measured batch then. Plans pass their actual pair count.
+            query_pairs = 4096 if pairs is None else pairs
+            use = min(measured_pairs, key=lambda key: (
+                abs(key[4] - snr), abs(math.log(key[5] / fd)),
+                abs(math.log(key[6] / query_pairs)), key[4], key[5], key[6]))
+            rows = t["cost_fd_pairs"][use]
+        else:
+            measured = keys.get("cost_fd", ())
+            if measured:
+                # Compare FDR on a log scale: each decade is equally distant.
+                use = min(measured, key=lambda key: (abs(key[4] - snr),
+                          abs(math.log(key[5] / fd)), key[4], key[5]))
+                rows = t["cost_fd"][use]
+            else:
+                use = min(keys["cost"], key=lambda key:
+                          (abs(key[4] - snr), key[4]))
+                rows = t["cost"][use]
         value = _idw(rows, f, be)
         if value is not None:
             candidates.append(dict(band=band, U=u, K=k, f=f, beff=be,
@@ -982,7 +1037,7 @@ def _cost_candidates(power, n, snr, t):
     return sorted(candidates, key=lambda c: (c["cost"], c["band"], c["K"]))
 
 
-def choose_config(power, n, snr, fd, tuning=None):
+def choose_config(power, n, snr, fd, tuning=None, pairs=None):
     """Cheapest measured (band, taps) whose model gate resolves the budget.
 
     Only costs come from files. The model uses the complete reference at
@@ -990,7 +1045,7 @@ def choose_config(power, n, snr, fd, tuning=None):
     Cost measurements are approximate rankings, not runtime guarantees.
     """
     t = _load_tuning() if tuning is None else tuning
-    for candidate in _cost_candidates(power, n, snr, t):
+    for candidate in _cost_candidates(power, n, snr, t, fd, pairs):
         band = candidate["band"]
         if choose_threshold(power, n, snr, fd, band) is not None:
             return band, candidate["K"]
@@ -1211,7 +1266,8 @@ class HierarchicalFilter(MatchedFilter):
                 raise ValueError("set_reference is required for file-based configuration selection")
             _, self._cost_key = cost_table_for(self.device)
             cfg = choose_config(self._pending_ref, self.n, self.snr, self.fd,
-                                tuning=_load_tuning_for(self.device))
+                                tuning=_load_tuning_for(self.device),
+                                pairs=self.ndata * self.ntemplates)
         if cfg is None:
             raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
         band, taps = cfg

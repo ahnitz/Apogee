@@ -17,7 +17,9 @@ def candidate_coverage(power, n, snr, fd, tuning):
     rows = []
     bands = [2**k for k in range(6, n.bit_length()-1)]
     for band in bands:
-        costs = [key for key in tuning['cost'] if key[0] == n and key[1] == band]
+        costs = [key for source in (tuning['cost'], tuning.get('cost_fd', {}),
+                                   tuning.get('cost_fd_pairs', {}))
+                 for key in source if key[0] == n and key[1] == band]
         threshold = mf.choose_threshold(power, n, snr, fd, band)
         fraction, beff = mf._band_features(power, band)
         rows.append(dict(band=band, fraction=fraction, beff=beff,
@@ -85,15 +87,21 @@ def export_cost(result, path):
              (result['n'], result['data'], result['templates'], result['device']),
              "# Existing cost-covered bands only; new-band accuracy is not established.",
              "# Do not replace broad default coverage with this narrow measurement."]
+    if str(result['device']).startswith('gpu'):
+        lines.append('# format cost-fd-pairs-v1')
     header_lines = len(lines)
     for row in result['candidates']:
         if 'seconds' not in row or not row['cost_rows']:
             continue
         # Taps do not change the raw-max execution; retain both table keys.
         for taps in (4, 8):
-            lines.append("COST %d %d 2 %d %.2f %.9g %.9g %.9g" %
-                         (result['n'], row['band'], taps, result['snr'],
-                          row['fraction'], row['beff'],
+            prefix = "COST %d %d 2 %d %.2f" % (
+                result['n'], row['band'], taps, result['snr'])
+            if str(result['device']).startswith('gpu'):
+                prefix += " %.9g %d" % (result['fd'],
+                                          result['data']*result['templates'])
+            lines.append("%s %.9g %.9g %.9g" %
+                         (prefix, row['fraction'], row['beff'],
                           row['seconds']/result['flat_seconds']))
     if len(lines) == header_lines:
         raise ValueError('no calibrated candidates were measured')

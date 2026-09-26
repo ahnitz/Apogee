@@ -1,185 +1,219 @@
-"""Measure the cost table for a GPU.
+"""Retune GPU relative costs with the current profile gate at each FDR.
 
-Cost is a property of the machine, and the shipped table is a CPU's. Using
-it to choose a GPU configuration picks whatever is cheapest on a machine
-with a completely different shape -- the CPU's coarse pass fits in L2 and
-its refinement does not, while on a GPU both are bandwidth-and-occupancy
-problems and the crossover sits somewhere else entirely.
+The table ranks bands; gate accuracy always comes from the profile model.
+Each cell is timed through the warm public API (including GPU readback), with
+alternating order and block medians. Two matched profiles and two batch shapes
+supply separate cost rows. Run on an otherwise idle GPU and inspect the retained
+JSON measurements before shipping a table.
 
-The gate comes from the shared profile-based model. Accuracy is tested
-against actual CPU and GPU execution.
-
-What is measured is the same quantity the CPU table holds: cost RELATIVE to
-a pivot configuration at the same transform length. A ratio, not a time, so
-it stays meaningful across clocks and loads.
-
-Two things the GPU does not use, and the table has to record anyway because
-selection reads a fixed key: the oversample U is always 2 (the kernel
-computes both coarse halves), and the taps K are unused (the interpolation
-window is escalated rather than interpolated). Rows are therefore emitted
-for every (U, K) the CPU table carries, sharing the measured value, so the
-two tables stay interchangeable in shape.
-
-Run:  python tools/regen/cost_gpu.py [--out cost-gfx11.txt]
+Run: OPENBLAS_NUM_THREADS=1 PYTHONPATH=python python tools/regen/cost_gpu.py \
+  --out python/matchedfilter/cost-gfx11.txt --measurements docs/measurements/gpu-cost.json
 """
 import argparse
+import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
 
 import numpy as np
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "tests"))
-sys.path.insert(0, os.path.join(HERE, ".."))
-
 import matchedfilter as mf
-import hmf_tune as t
-from test_api import inspiral_power, template_with_power, noise
 
-SNRS = [5.0, 5.5, 6.0, 6.5]
-KS = [4, 8]
-PAIRS = 4096
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1] / 'tests'))
+sys.path.insert(0, str(HERE.parent))
+import hmf_tune as tuner
+from test_api import inspiral_power
 
 
-def measure(n, band, snr, reps=8):
-    """Seconds per run for one configuration, with the data already resident."""
-    nd = 16
-    nt = PAIRS // nd
-    reference = inspiral_power(n)
-    H = np.stack([template_with_power(n, inspiral_power(n, exponent=e))
-                  for e in np.linspace(-7 / 3.0, -4 / 3.0, nt)])
-    rng = np.random.default_rng(5)
-    D = noise((nd, n), rng)
-    # A few real signals, so the refinement path is exercised rather than
-    # measuring a pure coarse pass that never escalates.
-    for k in range(0, nd, 4):
-        D[k] += (9.0 * H[(k * 7) % nt]
-                 * np.exp(2j * np.pi * np.arange(n) * (300 + 11 * k) / n)
-                 ).astype(np.complex64)
+def _parse_ints(value):
+    return [int(x) for x in value.split(',')]
 
-    f = mf.HierarchicalFilter(n, nd, nt, snr=snr, fd=1e-2, band=band,
-                              taps=8, device="gpu")
-    f.set_reference(reference)
-    f.set_templates(H)
-    f.set_data(D)
-    f.run(binsize=n, threshold=snr)          # records the command buffer
-    rate = f.refine_rate
 
-    # Device work only. Timing run() instead put the host's output
-    # marshalling in the number, and that is the same for every
-    # configuration -- it swamped the differences being measured and made
-    # different bands appear indistinguishable.
-    #
-    # The two backends reach that the way each can. Vulkan already holds
-    # recorded command buffers, so it resubmits them. Metal builds encoders
-    # per dispatch and has nothing to replay, but reports the GPU's own
-    # start and end timestamps, which excludes the same host work.
-    import ctypes
-    ctx = f._gpu
-    if getattr(ctx, "last_gpu_time", None) is not None and \
-            type(ctx).__module__.endswith("_mtlcompute"):
-        def go():
+def _parse_floats(value):
+    return [float(x) for x in value.split(',')]
+
+
+def _bank(power, ntemplates, seed):
+    rng = np.random.default_rng(seed)
+    phase = rng.random((ntemplates, len(power)), dtype=np.float32)
+    spectra = (np.sqrt(power, dtype=np.float32)[None, :] *
+               np.exp((2j * np.pi * phase).astype(np.complex64))).astype(np.complex64)
+    spectra /= np.linalg.norm(spectra, axis=1, keepdims=True)
+    return spectra
+
+
+def _measure_group(n, snr, fd, exponent, nd, nt, bands, rounds):
+    if exponent == 'pycbc':
+        if n != 4096:
+            raise ValueError('the pycbc reference asset has n=4096')
+        power = np.load(HERE.parents[1] / 'tests' / 'data' /
+                        'reference_profile_pycbc.npy')
+    else:
+        power = np.asarray(inspiral_power(n, exponent=exponent), dtype=np.float32)
+    h = _bank(power, nt, 19)
+    rng = np.random.default_rng(1)
+    d = (rng.standard_normal((nd, n)) + 1j*rng.standard_normal((nd, n))).astype(np.complex64)
+    plans = []
+    try:
+        for band in bands:
+            f = mf.HierarchicalFilter(n, nd, nt, snr=snr, fd=fd,
+                                       band=band, taps=4, device='gpu')
+            plans.append((band, f))
+            f.set_reference(power)
+            f.set_data(d)
+            f.set_templates(h)
             f.run(binsize=n, threshold=snr)
-        for _ in range(3):
-            go()
-        best = float("inf")
-        for _ in range(reps):
-            go()
-            best = min(best, ctx.last_gpu_time)
-        # measure() is called once per (band, snr) cell -- hundreds
-        # of times -- so the context has to go back with the early return
-        # as well, not only on the path that falls through.
-        ctx.destroy()
-        return best, rate
+        samples = {band: [] for band in bands}
+        for round_number in range(rounds):
+            offset = round_number % len(plans)
+            order = plans[offset:] + plans[:offset]
+            if round_number % 2:
+                order = order[::-1]
+            for band, f in order:
+                # Warm each configuration immediately before its timing block.
+                until = time.perf_counter() + .05
+                while time.perf_counter() < until:
+                    f.run(binsize=n, threshold=snr)
+                start = time.perf_counter()
+                count = 0
+                while time.perf_counter() - start < .05:
+                    f.run(binsize=n, threshold=snr)
+                    count += 1
+                samples[band].append((time.perf_counter()-start)*1000/count)
+        rows = []
+        for band, f in plans:
+            frac, beff = mf._band_features(power, band)
+            rows.append(dict(n=n, snr=snr, fd=fd, exponent=exponent,
+                             ndata=nd, ntemplates=nt, band=band,
+                             ms=float(np.median(samples[band])),
+                             blocks_ms=samples[band], fraction=frac, beff=beff,
+                             refine_rate=f.refine_rate,
+                             gate=f._gpu_calibration(snr)[2]))
+        return rows
+    finally:
+        for _, f in plans:
+            if f._gpu is not None:
+                f._gpu.destroy()
 
-    from matchedfilter import _vkcompute as V
-    cmds = [b[1] for b in ctx._hier.values()] + [b[4] for b in ctx._batches.values()]
-    arr = (V._vp * len(cmds))(*cmds)
-    sub = V._SubmitInfo(4, None, 0, None, None, len(cmds), arr, 0, None)
 
-    def go():
-        ctx.vk.vkQueueSubmit(ctx.queue, 1, ctypes.byref(sub), None)
-        ctx.vk.vkQueueWaitIdle(ctx.queue)
-
-    for _ in range(3):
-        go()
-    best = float("inf")
-    for _ in range(reps):
-        t0 = time.perf_counter()
-        go()
-        best = min(best, time.perf_counter() - t0)
-    ctx.destroy()
-    return best, rate
+def _write_table(path, records, device, commit, shapes, profiles):
+    by_cell = {}
+    for row in records:
+        group = (row['n'], row['snr'], row['fd'], row['exponent'],
+                 row['ndata'], row['ntemplates'])
+        by_cell.setdefault(group, {})[row['band']] = row
+    lines = [
+        '# matchedfilter GPU COST table -- budget-aware relative costs',
+        '# format cost-fd-pairs-v1',
+        '# device  %s' % device,
+        '# commit  %s' % commit,
+        '# Profiles: %s; batch shapes: %s' % (profiles, shapes),
+        '# Costs are warm public-API ratios to the widest band at the same batch shape.',
+        '# Accuracy is independent and uses the profile gate.',
+        '# U=2; taps K are metadata on this GPU, so K=4 and K=8 share costs.',
+        '# COST n band U K snr fd pairs f beff relative_cost',
+    ]
+    for group in sorted(by_cell, key=lambda v: tuple(map(str, v))):
+        bands = by_cell[group]
+        base = bands[max(bands)]['ms']
+        if base <= 0:
+            raise ValueError('zero pivot time')
+        for band in sorted(bands):
+            row = bands[band]
+            rel = row['ms']/base
+            pairs = row['ndata']*row['ntemplates']
+            for k in (4, 8):
+                lines.append('COST %d %d 2 %d %.2f %.6g %d %.6f %.3f %.6f' %
+                             (row['n'], band, k, row['snr'], row['fd'], pairs,
+                              row['fraction'], row['beff'], rel))
+    path.write_text('\n'.join(lines)+'\n')
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--sizes", default="1024,2048,4096,8192,16384")
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--out', type=Path)
+    ap.add_argument('--measurements', type=Path)
+    ap.add_argument('--sizes', type=_parse_ints, default=[1024, 2048, 4096, 8192, 16384])
+    ap.add_argument('--snrs', type=_parse_floats, default=[5., 5.5, 6., 6.5])
+    ap.add_argument('--fds', type=_parse_floats, default=[.01, .001, .0001])
+    ap.add_argument('--profiles', type=_parse_floats, default=[-7/3, -2.])
+    ap.add_argument('--shapes', default='16x256,16x1024')
+    ap.add_argument('--rounds', type=int, default=5)
+    ap.add_argument('--repair-outliers', action='store_true',
+                    help='resume recorded measurements and remeasure groups with >25%% timing spread')
+    ap.add_argument('--include-pycbc', action='store_true',
+                    help='also measure the real n=4096 pycbc reference profile')
     args = ap.parse_args(argv)
-
-    dev = [d for d in mf.devices() if d.kind == "gpu" and not d.is_software]
-    if not dev:
-        print("no GPU", file=sys.stderr)
-        return 1
-    dev = dev[0]
-    key = dev.arch[1] if len(dev.arch) > 1 else (dev.arch or ["gpu"])[0]
-    out = args.out or os.path.join(os.path.dirname(mf.__file__),
-                                   "cost-%s.txt" % key)
-
-    # MF_COMMIT first: the Mac test machine gets the tree by rsync without
-    # .git, so rev-parse fails there and the table lands with no provenance
-    # at all -- which is the one field that cannot be reconstructed later.
-    commit = os.environ.get("MF_COMMIT")
-    if not commit:
-        try:
-            commit = subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-        except Exception:
-            commit = "unknown"
-
-    rows = []
-    for n in [int(x) for x in args.sizes.split(",")]:
-        bands = [b for b in t.bands_for(n) if b < n]
-        pivot_band = max(bands)
-        for snr in SNRS:
-            pivot, _ = measure(n, pivot_band, snr)
-            for band in bands:
-                p = np.asarray(inspiral_power(n), float)
-                s = p[:band].sum()
-                q = p[:band] / s if s > 0 else p[:band]
-                f_in = float(s / p.sum())
-                beff = float(1.0 / np.sum(q ** 2))
-                sec, rate = measure(n, band, snr)
-                rel = sec / pivot
-                for K in KS:
-                    rows.append((n, band, 2, K, snr, f_in, beff, rel))
-                print("  n=%-6d band=%-5d snr=%.1f  rel=%.4f "
-                      "refine=%.3f" % (n, band, snr, rel, rate),
-                      flush=True)
-
-    with open(out, "w") as fh:
-        fh.write("# matchedfilter COST table -- RELATIVE cost per configuration\n#\n")
-        fh.write("# device  %s\n" % dev.name)
-        fh.write("# arch    %s  (also used for: %s)\n"
-                 % (key, ", ".join(dev.arch)))
-        fh.write("# commit  %s\n#\n" % commit)
-        fh.write("# Measured on a GPU, with the data already resident: host\n"
-                 "# transfers are not part of the configuration's cost and\n"
-                 "# would swamp the differences between configurations.\n#\n")
-        fh.write("# U is always 2 and K is unused on this backend -- the kernel\n"
-                 "# computes both coarse halves and escalates the interpolation\n"
-                 "# window rather than interpolating it -- so rows sharing an\n"
-                 "# (n, band, snr) share a measurement. They are emitted\n"
-                 "# per (U, K) anyway so the table's key matches the CPU one.\n#\n")
-        fh.write("# COST n band U K snr f beff rel\n")
-        for r in rows:
-            fh.write("COST %d %d %d %d %.2f %.4f %.1f %.4f\n" % r)
-    print("wrote %s (%d rows)" % (out, len(rows)))
+    shapes = [tuple(map(int, s.split('x'))) for s in args.shapes.split(',')]
+    if args.rounds < 3 or any(nd < 1 or nt < 1 for nd, nt in shapes):
+        ap.error('need >=3 rounds and positive shapes')
+    devices = [d for d in mf.devices() if d.kind == 'gpu' and not d.is_software]
+    if not devices:
+        ap.error('no hardware GPU')
+    dev = devices[0]
+    key = dev.arch[1] if len(dev.arch) > 1 else (dev.arch or ['gpu'])[0]
+    args.out = args.out or Path(mf.__file__).resolve().parent / ('cost-%s.txt' % key)
+    args.measurements = args.measurements or Path('docs/measurements') / (
+        'gpu-cost-%s.json' % key)
+    try:
+        commit = subprocess.check_output(['git','rev-parse','--short','HEAD'],
+                                         text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        commit = 'unknown'
+    records = []
+    if args.repair_outliers:
+        records = json.loads(args.measurements.read_text())['records']
+        groups = {}
+        for row in records:
+            group = (row['n'], row['snr'], row['fd'], row['exponent'],
+                     row['ndata'], row['ntemplates'])
+            groups.setdefault(group, []).append(row)
+        redo = [group for group, rows in groups.items()
+                if any(max(row['blocks_ms'])/min(row['blocks_ms']) > 1.25
+                       for row in rows)]
+        if args.include_pycbc and 4096 in args.sizes:
+            redo.extend((4096, snr, fd, 'pycbc', nd, nt)
+                        for snr in args.snrs for fd in args.fds
+                        for nd, nt in shapes
+                        if (4096, snr, fd, 'pycbc', nd, nt) not in groups)
+        for group in redo:
+            n, snr, fd, exponent, nd, nt = group
+            bands = [band for band in tuner.bands_for(n) if band < n]
+            rows = _measure_group(*group, bands, args.rounds)
+            records = [row for row in records if (row['n'], row['snr'], row['fd'],
+                row['exponent'], row['ndata'], row['ntemplates']) != group]
+            records.extend(rows)
+            args.measurements.write_text(json.dumps(dict(
+                device=dev.name, commit=commit, records=records), indent=2)+'\n')
+            print('remeasured n=%d snr=%g fd=%g profile=%s shape=%dx%d' %
+                  group, flush=True)
+        _write_table(args.out, records, dev.name, commit, shapes,
+                     args.profiles + (['pycbc'] if args.include_pycbc else []))
+        print('wrote', args.out, flush=True)
+        return 0
+    for n in args.sizes:
+        bands = [band for band in tuner.bands_for(n) if band < n]
+        for snr in args.snrs:
+            for fd in args.fds:
+                profiles = args.profiles + (['pycbc'] if args.include_pycbc and n == 4096 else [])
+                for exponent in profiles:
+                    for nd, nt in shapes:
+                        rows = _measure_group(n,snr,fd,exponent,nd,nt,bands,args.rounds)
+                        records.extend(rows)
+                        print('n=%d snr=%g fd=%g exponent=%s shape=%dx%d best=%d' %
+                              (n,snr,fd,exponent,nd,nt,min(rows,key=lambda r:r['ms'])['band']),
+                              flush=True)
+                        args.measurements.parent.mkdir(parents=True,exist_ok=True)
+                        args.measurements.write_text(json.dumps(dict(
+                            device=dev.name, commit=commit, records=records),indent=2)+'\n')
+    args.out.parent.mkdir(parents=True,exist_ok=True)
+    _write_table(args.out, records, dev.name, commit, shapes,
+                 args.profiles + (['pycbc'] if args.include_pycbc else []))
+    print('wrote',args.out,flush=True)
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

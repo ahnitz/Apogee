@@ -154,3 +154,71 @@ def test_cost_override_does_not_poison_other_devices_or_default(monkeypatch, tmp
     assert mf._load_tuning()['cost'] == explicit['cost']
     monkeypatch.delenv('MF_COST')
     assert mf._load_tuning()['cost'] == default['cost']
+
+
+def test_budget_aware_gpu_costs_change_only_configuration(tmp_path, monkeypatch):
+    path = tmp_path / 'gpu-cost.txt'
+    path.write_text('''\
+# format cost-fd-v1
+COST 1024 256 2 4 5.5 .01 .8 80 .5
+COST 1024 512 2 4 5.5 .01 1 160 1
+COST 1024 256 2 4 5.5 .0001 .8 80 2
+COST 1024 512 2 4 5.5 .0001 1 160 1
+''')
+    table = mf._load_tuning(str(path))
+    assert not table['cost'] and len(table['cost_fd']) == 4
+    power = np.ones(1024)
+    monkeypatch.setattr(mf, 'choose_threshold', lambda *args: 3.)
+    assert mf.choose_config(power, 1024, 5.5, .01, tuning=table) == (256, 4)
+    assert mf.choose_config(power, 1024, 5.5, .0001, tuning=table) == (512, 4)
+
+
+@pytest.mark.parametrize('fd', ['0', '1', '-.01', 'nan'])
+def test_invalid_cost_budget_is_rejected(tmp_path, fd):
+    path = tmp_path / 'gpu-cost.txt'
+    path.write_text(f'# format cost-fd-v1\nCOST 1024 256 2 4 5.5 {fd} .8 80 .5\n')
+    with pytest.raises(ValueError, match='invalid cost row'):
+        mf._load_tuning(str(path))
+
+
+def test_legacy_ten_field_cost_cannot_be_misread_as_budget(tmp_path):
+    path = tmp_path / 'legacy-cost.txt'
+    path.write_text('COST 1024 256 2 4 5.5 .8 .8 80 .5\n')
+    with pytest.raises(ValueError, match='regenerate old tuning files'):
+        mf._load_tuning(str(path))
+
+
+def test_gpu_cost_rows_choose_for_budget_and_pair_count(tmp_path, monkeypatch):
+    path = tmp_path / 'gpu-cost.txt'
+    path.write_text('''\
+# format cost-fd-pairs-v1
+COST 1024 256 2 4 5.5 .01 4096 .8 80 .5
+COST 1024 512 2 4 5.5 .01 4096 1 160 1
+COST 1024 256 2 4 5.5 .01 16384 .8 80 2
+COST 1024 512 2 4 5.5 .01 16384 1 160 1
+COST 1024 256 2 4 5.5 .0001 4096 .8 80 2
+COST 1024 512 2 4 5.5 .0001 4096 1 160 1
+''')
+    table = mf._load_tuning(str(path))
+    assert len(table['cost_fd_pairs']) == 6
+    monkeypatch.setattr(mf, 'choose_threshold', lambda *args: 3.)
+    power = np.ones(1024)
+    assert mf.choose_config(power,1024,5.5,.01,tuning=table,pairs=4096) == (256,4)
+    assert mf.choose_config(power,1024,5.5,.01,tuning=table,pairs=16384) == (512,4)
+    assert mf.choose_config(power,1024,5.5,.0001,tuning=table,pairs=4096) == (512,4)
+
+
+def test_pair_count_cost_rows_require_explicit_format(tmp_path):
+    path = tmp_path / 'ambiguous-cost.txt'
+    path.write_text('COST 1024 256 2 4 5.5 .01 4096 .8 80 .5\n')
+    with pytest.raises(ValueError, match='regenerate old tuning files'):
+        mf._load_tuning(str(path))
+
+
+def test_invalid_cost_query_is_rejected_before_logarithms():
+    tuning = mf._load_tuning()
+    power = np.ones(1024)
+    with pytest.raises(ValueError, match='fd must'):
+        mf._cost_candidates(power,1024,5.5,tuning,fd=0)
+    with pytest.raises(ValueError, match='pairs must'):
+        mf._cost_candidates(power,1024,5.5,tuning,pairs=0)

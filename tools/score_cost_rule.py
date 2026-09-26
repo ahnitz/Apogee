@@ -6,7 +6,7 @@ from matchedfilter.benchmark import _inspiral_power
 def admissible(p,n,snr,fd,t):
     """[(band, U, K, f, beff, cost rows)] with a resolvable model gate."""
     return [(c["band"],c["U"],c["K"],c["f"],c["beff"],c["crows"])
-            for c in mf._cost_candidates(p,n,snr,t)
+            for c in mf._cost_candidates(p,n,snr,t,fd)
             if mf.choose_threshold(p,n,snr,fd,c["band"]) is not None]
 
 

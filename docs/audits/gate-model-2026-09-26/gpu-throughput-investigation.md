@@ -81,3 +81,7 @@ regression evidence. The original run's exact interference is unmeasured.
 The final sustained teaser run measured 82.01 / 41.43 / 21.30 M pairs/s
 at the three budgets, with automatic band 256 throughout. GPU block ranges
 were .193–.204 / .370–.405 / .748–.796 ms. All samples are in the teaser JSON.
+
+Follow-up: the 8060S now has a [retuned cost table](../../measurements/gpu-cost-retune-2026-09-26.md)
+with FDR and pair-count axes. The earlier teaser numbers above describe the
+pre-retune configuration; the current teaser is remeasured with that table.

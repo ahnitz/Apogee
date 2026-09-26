@@ -40,6 +40,23 @@ def test_exported_costs_round_trip_through_the_library(tmp_path):
         assert table['cost'][(1024,128,2,taps,6.)] == [(.9,32.,.5)]
 
 
+def test_gpu_cost_export_keeps_the_measured_budget(tmp_path):
+    path = Path(__file__).resolve().parents[1]/'tools'/'audit_selection.py'
+    spec = importlib.util.spec_from_file_location('gpu_selection_export', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = dict(n=1024, snr=6., fd=.0001, data=8, templates=32,
+                  device='gpu:0', flat_seconds=.002,
+                  candidates=[dict(band=128, fraction=.9, beff=32.,
+                                   seconds=.001, cost_rows=1)])
+    output = tmp_path/'gpu-cost.txt'
+    module.export_cost(result, output)
+    table = module.mf._load_tuning(str(output))
+    assert table['cost'] == {} and table['cost_fd'] == {}
+    for taps in (4, 8):
+        assert table['cost_fd_pairs'][(1024,128,2,taps,6.,.0001,256)] == [(.9,32.,.5)]
+
+
 def test_empty_cost_export_refuses_without_overwriting(tmp_path):
     import pytest
     path = Path(__file__).resolve().parents[1]/'tools'/'audit_selection.py'

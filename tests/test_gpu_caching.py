@@ -366,6 +366,9 @@ def test_cost_table_resolution_order():
 
     keys = arch_keys(0x1002, "AMD Radeon 8060S Graphics (RADV GFX1151)")
     assert keys == ["gfx1151", "gfx11", "amd"]
+    exact = Device("gpu", 0, "AMD Radeon 8060S", "vulkan", arch=tuple(keys))
+    path, key = cost_table_for(exact)
+    assert key == "gfx1151" and path.endswith("cost-gfx1151.txt")
     # nvidia and intel resolve to their vendor with no architecture tag
     assert arch_keys(0x10DE, "NVIDIA GeForce RTX 4090") == ["nvidia"]
     # a device with nothing measured falls back to the generic table

@@ -98,18 +98,21 @@ Cost measurements remain hardware-specific. The obsolete gate-scale axis
 had inconsistent provenance across generations and cannot be interpreted
 as an absolute gate for this model. Migration retains each cell's measured
 baseline (the scale nearest one), with its numeric cost unchanged, and
-removes the scale column. The new format is:
+removes the scale column. At that migration, the format was:
 
 ```
 COST n band U K snr f beff relative_cost
 ```
 
 Old ten-field cost files are rejected with a regeneration instruction.
-The CPU and GPU producers and selection-audit exporter use the new format.
+The GPU retune documented below uses an explicit
+`# format cost-fd-pairs-v1` header and places `fd` and `pairs` between
+`snr` and `f`; this distinguishes its eleven-field rows from the obsolete
+scale rows. CPU files keep nine fields.
 Cost SNR coverage is resolved per configuration, so a sparsely measured SNR
 cannot hide competing bands. Costs only rank bands; they never change a gate.
-The cost table is still an approximate ranking, without a budget or batch
-shape axis. Retuning for a workload remains useful; this migration does not
+At this migration the cost table was an approximate ranking without a budget
+or batch-shape axis. Retuning for a workload remains useful; this migration does not
 claim globally optimal band selection.
 
 Interleaved 8×32 timing on the same native build selected the same bands in
@@ -148,8 +151,8 @@ synchronization over eight executes. It is no longer labelled as saturating
 memory bandwidth based on an unrelated historical measurement. Historical
 Apple M2 constants are not mixed into a fresh model-generated figure.
 
-At fd=1e-4, the 16×1024, n=4096 teaser measures **11.96 ms CPU** and
-**.769 ms GPU**, versus flat **50.12 ms** and **1.400 ms**. This is a workload
+At fd=1e-4, the 16×1024, n=4096 teaser measures **8.82 ms CPU** and
+**.274 ms GPU**, versus flat **46.99 ms** and **1.347 ms**. This is a workload
 example, not a general speed guarantee.
 
 ## Verification and shared-checkout isolation
@@ -168,9 +171,19 @@ Uncommitted class/cache changes were excluded from both the validation and
 teaser timings. The shared checkout was not reset or overwritten.
 
 The teaser was remeasured after competing jobs finished, using sustained
-warmup and timing blocks: fd=.01 reaches **82.01 M/s**. See the
+warmup and timing blocks: with the retuned GPU costs, fd=.01 reaches
+**83.71 M/s**. See the
 [throughput investigation](audits/gate-model-2026-09-26/gpu-throughput-investigation.md)
 for historical timing differences and concurrent-workload evidence.
 
 After the concurrent class/cache changes were committed, the combined
 working tree passed **892 tests, 6 skipped** on CPU and Radeon 8060S.
+
+## Radeon 8060S cost retune
+
+The 8060S now ships a device-specific, FDR- and pair-count-aware cost table.
+It ranks bands separately at three budgets and two measured batch sizes;
+calibration still comes only from the reference gate model. See the
+[retune audit](measurements/gpu-cost-retune-2026-09-26.md), including raw
+measurements and independent holdout results. The prior gfx11 family table
+remains for other hardware.
