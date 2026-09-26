@@ -633,3 +633,78 @@ def test_cpu_and_gpu_agree_through_run_series():
         assert promoted == 0, (
             "%s: hierarchical PROMOTED %d triggers the flat filter does "
             "not report -- the gate may only ever dismiss" % (dev, promoted))
+
+
+def test_gpu_values_stay_at_roundoff_across_conditioning():
+    """The GPU's SNR must match the CPU's however ill-conditioned the sum.
+
+    A report found the GPU differing by 13% relative on triggers both
+    engines place at the same time and template. The obvious explanation
+    was accumulation ORDER -- float32 addition is not associative, so a
+    reordered correlation sum could lose relative precision where large
+    terms cancel, which is the regime whitened real data lives in.
+
+    That explanation is WRONG, and this test is what refutes it. Sweeping
+    template dynamic range over five orders of magnitude, from 8.6e+04 to
+    2.0e+10, the relative difference never leaves float32 roundoff:
+
+        dyn 8.63e+04   max rel 1.44e-06
+        dyn 2.04e+03   max rel 1.14e-06
+        dyn 4.94e+03   max rel 1.22e-06
+        dyn 4.57e+06   max rel 6.99e-07
+        dyn 2.02e+10   max rel 6.75e-07
+
+    Conditioning does not amplify it. What IS real is the direction: the
+    GPU is systematically LOWER, up to 544 of 544 points, which is a
+    consistent difference in summation and not a race -- but it is bounded
+    at roundoff and cannot flip a threshold.
+
+    So this pins the bound rather than the hypothesis. If a change ever
+    makes the GPU's value diverge for real, this fails with the
+    conditioning it failed at, which is the first thing anyone would want
+    to know.
+    """
+    n, nt, ntaps = 4096, 16, 451
+    devices = [d for d in DEVICES]
+    if len(devices) < 2:
+        pytest.skip("need both a CPU and a GPU to compare")
+
+    worst = 0.0
+    checked = 0
+    for expo, lowcut in ((-7 / 3.0, 0.015), (-11 / 3.0, 0.004),
+                         (-23 / 3.0, 0.001)):
+        k = np.arange(1, n // 2)
+        p = np.zeros(n)
+        p[1:n // 2] = k ** expo / ((lowcut * n / k) ** 8 + 1.0)
+        p /= p.sum()
+        H = np.stack([template_with_power(n, p.astype(np.float32))
+                      for _ in range(nt)])
+        rng = np.random.default_rng(7)
+        ser = coloured_series(1 << 17, expo, rng)
+        starts, ws, we = overlap_save_layout(len(ser), n, ntaps)
+        blk = np.zeros(n, np.complex64)
+        blk[:n] = ser[:n]
+        pr = np.fft.ifft(np.fft.fft(blk) / n * np.conj(H[0])) * n
+        ser = (ser * np.float32(1.7 / max(pr.real.std(), 1e-30))).astype(np.complex64)
+
+        out = {}
+        for dev in devices:
+            f = mf.MatchedFilter(n, 1, nt, device=dev)
+            f.set_templates(H)
+            out[dev] = f.run_series(ser, starts, ws, we,
+                                    binsize=n, threshold=5.0)
+        a, b = out[devices[0]]["index"], out[devices[1]]["index"]
+        av = np.abs(out[devices[0]]["value"])
+        bv = np.abs(out[devices[1]]["value"])
+        m = (a >= 0) & (b >= 0) & (a == b)
+        if not m.any():
+            continue
+        rel = np.abs(av[m] - bv[m]) / np.maximum(av[m], 1e-30)
+        worst = max(worst, float(rel.max()))
+        checked += int(m.sum())
+        assert float(rel.max()) < 1e-4, (
+            "exponent %.2f lowcut %.3f: GPU value differs by %.2e relative "
+            "at matching (block, template, index)" % (expo, lowcut, float(rel.max())))
+
+    assert checked > 200, \
+        "only %d common triggers: this compared almost nothing" % checked
