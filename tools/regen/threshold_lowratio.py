@@ -8,28 +8,20 @@ itself was measured on. A threshold above the safe value dismisses signals,
 so that is the unsafe direction, and at ratio 1.24 it breaks through into
 real false dismissal.
 
-The cause is visible in the rows: at f = 0.5000 they run 3.2441, 3.2500,
-3.2148, 3.2383 across ratio 1.2 to 3.0, a flat line with scatter on it
-where measurement shows a trend. 6000 trials a bisection step expects six
-events at a 1e-3 budget, which cannot place a rate.
+The first diagnosis here was the trial count: 6000 trials a bisection step
+expects 60 events at fd=1e-2 but only 6 at fd=1e-3, and re-measuring showed
+the shipped fd=1e-3 rows apparently 3.5% high against 0.5% for fd=1e-2.
+THAT WAS WRONG, and the error was in this file. It measured at band n//8
+while the shipped rows are measured at max(256, min(1024, n//4)) -- 512
+against 1024 at n=4096 -- and band is worth 5.5% between those two.
+Correcting for it:
 
-So this measures the same cells again with the trial count sized to the
-budget, and emits THR rows in the shipped format.
+    fd=1e-2   60 cells   shipped is -4.6% mean, -0.3% worst
+    fd=1e-3   15 cells   shipped is -1.8% mean, +2.1% worst
 
-    TRIALS = TARGET_EVENTS / fd
-
-which is why fd=1e-2 cells are ten times cheaper than fd=1e-3 ones and the
-default slice does more of them.
-
-RESUMABLE. Rows are appended as they are measured and the output file is
-read back on start, so an interrupted run continues where it stopped and a
-slice can be widened without redoing what is already there. The full
-low-ratio grid -- every n, f, ratio <= 2, snr and fd -- is 1152 cells and
-tens of hours; nothing here assumes it completes in one go.
-
-    python tools/regen/threshold_lowratio.py --out /tmp/thr_low.txt
-    python tools/regen/threshold_lowratio.py --out /tmp/thr_low.txt \
-           --fd 1e-3 --snr 5.0 --ratio 1.2 1.5
+So the grid rows are sound at both budgets, and the trial count, while a
+real weakness in the producer, is not what ails the table. The whole defect
+is the band key below.
 
 AND RE-MEASURING IS NOT SUFFICIENT. The table's key is (n, f, ratio, snr,
 fd), and band is left out on the argument that samples across the peak is
@@ -74,8 +66,15 @@ import hmf_tune as ht                               # noqa: E402
 from test_api import template_with_power, noise     # noqa: E402
 
 #: Events expected at the budget. Below ~10 a bisection step is reading its
-#: own scatter, which is how the shipped rows came to be flat in ratio.
+#: own scatter.
 TARGET_EVENTS = 12
+
+
+def ref_band(n):
+    """The band tools/regen/threshold_calibrate.py measured the shipped rows
+    at. Rows are NOT comparable across band -- it is worth 5.5% between 512
+    and 1024 -- so this has to agree with the producer exactly."""
+    return max(256, min(1024, n // 4))
 
 
 def measure_cell(n, band, f_target, ratio, snr, fd, trials, steps, nt=16,
@@ -153,7 +152,11 @@ def main():
     ap.add_argument("--out", default="threshold-lowratio.txt")
     ap.add_argument("--n", type=int, nargs="*", default=[4096])
     ap.add_argument("--band", type=int, nargs="*", default=[0],
-                    help="bands the ratio is realised at; 0 picks n/8. The "
+                    help="bands the ratio is realised at; 0 picks the band "
+                         "the SHIPPED rows were measured at, which is "
+                         "max(256, min(1024, n//4)) -- see "
+                         "tools/regen/threshold_calibrate.py. Anything else "
+                         "is not comparable to them. The "
                          "safe threshold varies 16.5%% across band at a fixed "
                          "(f, ratio) -- the coarse max is over `band` lags "
                          "and grows as sqrt(ln band) -- so a row measured at "
@@ -185,7 +188,7 @@ def main():
             for snr in a.snr for f in a.f for r in a.ratio for b in a.band]
     print("%d cells requested" % len(todo))
     for (n, snr, f, r, fd, band0) in todo:
-        band = band0 or (n // 8)
+        band = band0 or ref_band(n)
         # Band is part of the identity of a row even though the shipped
         # format has no column for it, so it goes in the resume key --
         # otherwise a second band silently skips every cell.

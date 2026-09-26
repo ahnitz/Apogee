@@ -133,12 +133,44 @@ are a few percent optimistic -- bands 256 and 512, which selection ships,
 run 4% hot and pass only because they have slack -- and by ratio 1.24 the
 error reaches 15% and breaks through into real dismissals.
 
-The rows barely move with ratio at all: at f = 0.5000 they run 3.2441,
-3.2500, 3.2148, 3.2383 across ratio 1.2 to 3.0, a flat line with noise on it
-rather than the trend measurement shows. That is what 6000 trials a
-bisection step buys against a 1e-3 budget -- six expected events. So
-enabling bands 64 and 128 needs the table re-measured below ratio 1.5 with
-enough trials, not a constant subtracted at the lookup.
+**The cause is the table's KEY, not its rows.** It is keyed on
+(n, f, ratio, snr, fd), and band is left out on the argument that samples
+across the peak is band/B_eff with no band in it. Measured at a fixed
+(f = 0.70, ratio = 1.20), n=4096 snr 5.0 fd 1e-3, realising that ratio at
+four bands: 2.8078, 2.9797, 3.1000, 3.2719 for bands 128, 256, 512, 1024 --
+**16.5% across band alone**. The rows are all measured at
+max(256, min(1024, n//4)), which is 1024 at n=4096, so a query at a smaller
+band gets a threshold calibrated for a larger one.
+
+It is the coarse maximum: the statistic is a max over `band` lags and the
+max of N draws grows like sqrt(2 ln N), so the threshold goes as
+sqrt(ln band). Across 20 cells at five different (f, ratio, snr, n) that
+law fits to 2.3% mean and 8.8% worst.
+
+An earlier entry here blamed the producer's trial count -- 6000 a bisection
+step expects 6 events at fd=1e-3 -- and a re-measurement appeared to confirm
+it. It did not. That re-measurement ran at band n//8 while the shipped rows
+are at n//4, and the apparent error was the band mismatch. Corrected for
+band the shipped rows are -1.8% mean at fd=1e-3 and -4.6% at fd=1e-2, i.e.
+sound. The trial count is a real weakness in the producer and is not what
+ails the table.
+
+**Applying the sqrt(ln band) correction at lookup is NOT the fix**, and that
+is measured rather than argued. On pure noise at n=4096, correcting the
+bands selection actually uses:
+
+    band   escalation table -> corrected   time
+     256        37.5% -> 84.4%             2.13x SLOWER
+     512         7.8% -> 21.9%             1.88x SLOWER
+    1024         9.4% -> 9.4%              unchanged
+
+It would cost about half the hierarchical speedup to fix a 4% margin that
+produces no measurable dismissals -- bands 256 and 512 dismiss 0 of 523
+injections today. The correction is too coarse: it is conservative by 6.7%
+at band 256, and that 6.7% is what costs 2.13x.
+
+So the fix is rows measured AT the band being queried -- a third key --
+which is why tools/regen/threshold_lowratio.py takes --band as a sweep.
 
 Selection cannot reach the corner today: over 352 sampled (n, reference, snr,
 fd) combinations the lowest ratio it picks is 1.29 at f = 0.787, which

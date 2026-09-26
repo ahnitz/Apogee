@@ -61,11 +61,19 @@ realising that ratio at four different bands:
      512        3.1000
     1024        3.2719        16.5% across the band axis alone
 
-The rows are measured at band n/8, which is 512 at n=4096, so a query at a
-smaller band is handed a threshold measured for a larger one and dismisses
-signals -- and a query at a larger band gets a conservative one and merely
-runs slow. That is the observed pattern exactly: band 128 misses its budget,
-band 1024 audits 2.5% LOW.
+The rows are measured at band max(256, min(1024, n//4)) -- 1024 at n=4096,
+see tools/regen/threshold_calibrate.py -- so a query at a smaller band is
+handed a threshold measured for a larger one and dismisses signals, while a
+query AT that band is correct. That is the observed pattern exactly: band
+128 misses its budget by 29x, band 512 audits 4.1% high, and band 1024,
+which IS the measured band, audits 2.5% LOW.
+
+An earlier reading of this blamed the producer's trial count -- 6000 a
+bisection step expects 6 events at fd=1e-3 -- and re-measurement seemed to
+confirm it. It did not: the re-measurement was itself run at band n//8 and
+the apparent fd=1e-3 error was that band mismatch. Corrected for band, the
+shipped rows are -1.8% mean at fd=1e-3 and -4.6% at fd=1e-2, i.e. sound.
+The whole defect is the missing band key.
 
 It is not a fudge factor, it is the coarse maximum. The coarse statistic is
 a max over `band` lags, and the max of N draws grows like sqrt(2 ln N), so
