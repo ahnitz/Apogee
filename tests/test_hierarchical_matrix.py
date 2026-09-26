@@ -21,7 +21,8 @@ import pytest
 
 import matchedfilter as mf
 
-from test_api import inspiral_power, template_with_power, noise
+from test_api import (inspiral_power, template_with_power, noise,
+                      coloured_series, overlap_save_layout)
 
 
 def devices():
@@ -333,11 +334,13 @@ def test_hierarchical_matches_flat_on_the_same_device(device):
     four -- and the kernel looked 2.27x faster because it was discarding
     three quarters of the work.
 
-    Nothing else here would have seen it. The cross-device tests need a CPU
-    hierarchical plan, and there is none for n=4096 band=128, so they skip
-    the very band the bug lived in. Comparing against the FLAT filter on
-    the SAME device needs no plan and no table, which is what makes it work
-    at bands the CPU cannot run.
+    Nothing else here would have seen it when it was written: the
+    cross-device tests need a CPU hierarchical plan, there was none for
+    n=4096 band=128, and so they skipped the very band the bug lived in.
+    The CPU has bands 64 and 128 now, but this stays as written -- comparing
+    against the FLAT filter on the SAME device needs no plan and no table,
+    so it is the one check here that does not depend on a band being
+    supported, which is exactly what made it catch this.
 
     Bands are pinned deliberately rather than autotuned: the point is to
     exercise the small ones, where WG = band/16 falls below a wave and the
@@ -514,8 +517,100 @@ def test_every_size_and_band_is_correct_not_merely_runnable(device):
                  % (device, n, band, differ))
              ran.append((n, band))
 
-    # Measured coverage at the time of writing: 14 on the CPU, 15 on the
-    # GPU. A floor of 10 catches a collapse without failing on a machine
-    # that legitimately supports fewer.
+    # Measured coverage: 24 on the CPU -- every (n, band) in the matrix with
+    # band < n -- and 15 on the GPU, which is missing plans or calibrated
+    # thresholds at several small bands. A floor of 10 catches a collapse on
+    # a machine that legitimately supports fewer.
     assert len(ran) >= 10, (
         "%s covered only %d (n, band) combinations: %s" % (device, len(ran), ran))
+    # The CPU's coverage is asserted exactly, because a gap there is the
+    # thing this session closed: bands 64 and 128 had no CPU plan, so every
+    # cross-device comparison skipped them, and a GPU bug at band 128 lived
+    # in that gap for as long as it did because of it. If a band stops
+    # running here the sweep must fail, not quietly shrink.
+    if device == "cpu":
+        want = {(n, b) for n in _MATRIX_SIZES for b in _MATRIX_BANDS if b < n}
+        assert set(ran) == want, (
+            "cpu did not run %s" % sorted(want - set(ran)))
+
+
+def test_cpu_and_gpu_agree_through_run_series():
+    """Same call, same input, both backends -- indices must be IDENTICAL.
+
+    A correctness report claimed the GPU "invents triggers": counts nearly
+    right but ~26% of the set at the wrong index, which would point at lag
+    mapping or bin assignment rather than magnitude. Nothing in the suite
+    could confirm or refute it, because every cross-device test used
+    single-block run() while the report used run_series over many blocks --
+    and the block loop is where a lag-mapping error would live.
+
+    It does not reproduce: 0 mismatches of 6139 overlapping triggers, flat
+    and hierarchical alike. The likely explanation for the original report
+    is downstream clustering -- with a cluster window, a legitimate
+    dismissal promotes the second-loudest trigger in the window, which
+    appears at a different time and reads as a trigger the reference never
+    had.
+
+    This pins that, so the question does not have to be reopened by
+    inspection. It also pins the ONE-SIDED GUARANTEE across the series
+    path: hierarchical may dismiss, never promote.
+
+    Scaling matters and is not decoration. An unscaled coloured series
+    produces ZERO triggers at any useful threshold, and this test then
+    passes while comparing two empty sets -- which is exactly how it would
+    fail to see the bug it exists to catch.
+    """
+    n, nt, ntaps, snr = 4096, 32, 451, 5.0
+    rng = np.random.default_rng(7)
+    ser = coloured_series(1 << 18, -7 / 3.0, rng)
+    ref = inspiral_power(n)
+    H = np.stack([template_with_power(n, inspiral_power(n, exponent=e))
+                  for e in np.linspace(-7 / 3.0, -4 / 3.0, nt)])
+    starts, ws, we = overlap_save_layout(len(ser), n, ntaps)
+
+    # Scale so the correlation output has unit-variance components, then
+    # lift it until triggers actually clear the threshold.
+    blk = np.zeros(n, np.complex64)
+    blk[:n] = ser[:n]
+    probe = np.fft.ifft(np.fft.fft(blk) / n * np.conj(H[0])) * n
+    ser = (ser * np.float32(1.7 / probe.real.std())).astype(np.complex64)
+
+    devices = [d for d in DEVICES]
+    if len(devices) < 2:
+        pytest.skip("need both a CPU and a GPU to compare")
+
+    out = {}
+    for dev in devices:
+        f = mf.MatchedFilter(n, 1, nt, device=dev)
+        f.set_templates(H)
+        out[("flat", dev)] = f.run_series(ser, starts, ws, we,
+                                          binsize=n, threshold=snr)
+        h = mf.HierarchicalFilter(n, 1, nt, snr=snr, fd=1e-2, device=dev)
+        h.set_reference(ref)
+        h.set_templates(H)
+        out[("hier", dev)] = h.run_series(ser, starts, ws, we,
+                                          binsize=n, threshold=snr)
+
+    found = int((out[("flat", devices[0])]["index"] >= 0).sum())
+    assert found > 500, \
+        "only %d triggers: the series is not scaled and this compares " \
+        "two nearly empty sets" % found
+
+    for kind in ("flat", "hier"):
+        a = out[(kind, devices[0])]["index"]
+        b = out[(kind, devices[1])]["index"]
+        both = (a >= 0) & (b >= 0)
+        assert int((both & (a != b)).sum()) == 0, (
+            "%s: %d of %d overlapping triggers at different indices"
+            % (kind, int((both & (a != b)).sum()), int(both.sum())))
+        assert int(((a >= 0) & (b < 0)).sum()) == 0, "%s: %s-only triggers" % (kind, devices[0])
+        assert int(((a < 0) & (b >= 0)).sum()) == 0, "%s: %s-only triggers" % (kind, devices[1])
+
+    # The one-sided guarantee, on the series path, per device.
+    for dev in devices:
+        fi = out[("flat", dev)]["index"]
+        hi = out[("hier", dev)]["index"]
+        promoted = int(((fi < 0) & (hi >= 0)).sum())
+        assert promoted == 0, (
+            "%s: hierarchical PROMOTED %d triggers the flat filter does "
+            "not report -- the gate may only ever dismiss" % (dev, promoted))

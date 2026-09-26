@@ -5,11 +5,11 @@ where something is a design rather than a result it says so.
 
 ## State
 
-`main` is green on the CPU surface: 293 passed, 3 skipped, 0 failed
-(`pytest -k "not gpu"`). The full suite also shows 2 GPU failures that are
-NOT from this work -- they come from the other agent's 18 uncommitted
-`.spv` files mid-rebuild. Do not "fix" them and do not `git checkout` those
-paths; that would destroy in-flight work.
+`main` is green: 427 passed, 3 skipped, 0 failed, GPU included. The GPU
+failures recorded here earlier were the other agent's uncommitted `.spv`
+files mid-rebuild and have since landed. A transient `test_spirv.py`
+failure during a run means that rebuild is in flight again -- do not "fix"
+it and do not `git checkout` those paths.
 
 **Coordination hazard.** Two agents share this working tree. `git add -A`
 cross-contaminates commits -- one of my changes already landed under an
@@ -36,65 +36,100 @@ Cumulative, interleaved old/new so drift cancels:
 Verified across ISAs: 424 passed under MF_ISA=AVX3, AVX2, SSE4. The 2^11
 split helps every ISA; 2^9 is an AVX-512 effect that costs others nothing.
 
-## THE outstanding item: CPU bands 64 and 128
+## CPU bands 64 and 128: DONE
 
-### Why they are missing
+Implemented as designed below, plus two things the design did not foresee.
 
-The CPU transform is a balanced two-stage split. Stage A lays AP_W lanes
-across n1, stage B across n2, so both factors need a full vector:
+    coverage of the (n, band) sweep   CPU 14 -> 24 of 24 cells
+    pytest                            427 passed, 3 skipped
+    ISAs                              294 passed under AVX3, AVX2 and SSE4
 
-    N >= AP_W^2     AVX3 (16) -> 256   AVX2 (8) -> 64   SSE4/NEON (4) -> 16
+### What landed
 
-On AVX-512 band 128 is therefore STRUCTURAL: it splits only as 16x8 and 8
-is half a vector. On the narrower targets it is POLICY -- supported()
-hard-codes `N<256u` (balanced-inl.h:85) so the accepted set cannot depend
-on the host.
+  * `pairbatch_size()` / `create_small()` in balanced-inl.h: a plan for
+    N <= 128 carrying only the element buffers, the element twiddles and the
+    bin accumulators. No four-step, no corner turn, no intermediate -- with
+    lanes across PAIRS the whole N-point transform is one element transform.
+  * `binmax_prod_batch` runs AP_W pairs per call; `small_scan` keeps one
+    running maximum per lane. Every lane shares the output index k, so the
+    scan is a plain walk over the window.
+  * `pairbatch`/`binmax_prod_batch` on the back-end struct, `split()` and
+    `has_prod()` returning 0 for these plans so the matched filter does not
+    store spectra group-major for a split that does not exist.
+  * matchfilt.c stores the template bank `[group][element][lane]` when the
+    plan asks, pads it to a multiple of AP_W with zeros, and broadcasts the
+    data spectrum into `[element][lane]` once per segment. A scattered
+    `tsel` gathers into a staging pair instead.
+  * `fft()`, `binmax()` and `binmax_split()` on a small plan reuse the pair
+    kernel with the input broadcast to every lane. They are setup-path calls
+    at these sizes; a second kernel would be a second correctness surface.
 
-### The design (validated against the code, not implemented)
+### The bug underneath it
+
+`fft8_prod` wrote its result into the SCRATCH buffer pair and said so in its
+return value. Every caller of `codelet_prod` ignores that return value, so
+an 8-point product codelet was silently wrong -- and nothing had asked for
+one, because `efft_prod` only fuses single-level element transforms and 8
+never arose as one. Band 128 factors 16x8, asked for it, and came back as
+noise at 1e34.
+
+Fixed in gen.py, where the other single-pass codelets already avoid it: a
+codelet that does not READ `ar` can write its result there and keep the
+ping-pong parity even, and the `prod` case was missing from that condition.
+Regenerating changes 9 lines, all inside fft8_prod; everything else is
+byte-identical. `codelet_prod` now states the contract.
+
+### The opportunity it exposed -- NEXT ITEM
+
+The pair-batched path is faster than the balanced split at the sizes the
+balanced split CAN do. Interleaved in one build (MF_PBMAX moves the cutoff),
+nd=8 nt=64:
+
+    N= 256   213.1 -> 86.5 us   2.16x
+    N= 512   583.8 -> 313.4 us  1.97x
+    N=1024   626.6 -> 381.4 us  1.61x    8 of 8 rounds at every size
+
+Larger than everything else measured on the CPU this session. It is NOT the
+default because lanes are pairs and a batch below AP_W pads:
+
+    N= 256  nd=1 nt=1  0.52x       N=1024  nd=1 nt=1  0.19x
+    N= 256  nd=8 nt=16 1.66x       N=1024  nd=8 nt=16 1.38x
+
+Crossover around nd*nt ~ 24. Raising the cutoff needs a policy on batch
+shape, and probably lanes that flatten (d, t) instead of spanning templates
+within one d, so a one-template batch can fill them from the data side.
+Shipping the cutoff at 128 on the strength of wide-batch numbers alone would
+be a fitted bound.
+
+### The design, as it was written and as it held
 
 Process AP_W PAIRS per call with lanes across pairs, so there are no stages
 and no corner turn.
 
-  1. `efft_prod(band, dr,di,tr,ti, X,Xi,S,Si, itwr,itwi)` already does
-     product + transform for AP_W independent lanes. For M2==1 it calls
-     `codelet_prod(M, ..., 1, AP_W)` -- S=1, DS=AP_W -- which ALREADY
-     expects `[freq][pair]` with AP_W pairs contiguous. That is the layout
-     this path produces, so the transform half needs no new kernel.
-     `efactor(64)` gives M2=1 (single codelet, no twiddles);
-     `efactor(128)` gives 16x8 with twiddles the plan already builds.
-     `esupported()` covers both.
-  2. **Transpose at INGEST, not in the loop.** p->dre/dim/tre/tim are
-     [row][n]. Gathering at stride n per element would cost more loads than
-     the path saves. Store a transposed copy of the coarse band when the
-     spectra are set -- once per upload, amortised over every pair that
-     references it. This is the same argument that made the GPU's packed
-     coarse banks worth keeping.
-  3. **One function replaces the pipeline.** With lanes = pairs,
-     stageA_prod_gm, stageB and binmax_one collapse into: form the
-     transposed product, efft_prod, then |v|^2 and a max per lane. The
-     window is a mask over k; nb is 1 on the coarse gate by construction.
-  4. Plan plumbing for the band-sized element buffers and twiddles, and a
-     branch in create()/supported() for N < AP_W^2.
+  1. `efft_prod` already does product + transform for AP_W independent
+     lanes, and for M2==1 calls `codelet_prod(M, ..., 1, AP_W)` -- S=1,
+     DS=AP_W -- which already expects `[freq][pair]`. Held exactly, for
+     band 64. Band 128 takes the M2!=1 branch, which had never run, which
+     is where fft8_prod was waiting.
+  2. **Transpose at INGEST, not in the loop.** Held: the template bank is
+     transposed in `ap_mf_set_template`, and the data side needs no
+     transpose at all because it is the same in every lane.
+  3. **One function replaces the pipeline.** Held: stageA_prod_gm, stageB
+     and binmax_one collapse into efft_prod + small_scan.
+  4. Plan plumbing. Held, plus two back-end entry points the design did not
+     account for.
 
-Roughly 200 lines across balanced-inl.h, hmf.c and the plan struct. It must
-land in one piece -- a half-converted path is worse than either endpoint.
+### Rejected fallback -- still rejected, now with a number
 
-### Rejected fallback
-
-Accepting band < 256 and internally using 256. It makes the API work but
-gives no speedup, which defeats the point of a small band, AND produces a
-different coarse statistic from the GPU's -- so it would not even fix the
-cross-device testing motivation.
-
-### Testing is already unblocked
-
-`test_hierarchical_matches_flat_on_the_same_device` compares hierarchical
-against the FLAT filter on the same device, needing no CPU plan or table.
-It covers band 128 on the GPU and is verified to FAIL on the wave-reduction
-bug. The gap is a missing capability now, not a blind spot.
+Accepting band < 256 and internally using 256. It would have given no
+speedup and a different coarse statistic from the GPU's. Measured, band 128
+costs 0.067 us/pair against band 256's 0.351: a factor of 5.2 that the
+fallback would have thrown away.
 
 ## Also outstanding
 
+  * **Raise the pair-batch cutoff above 128** -- see above. The biggest
+    single CPU number measured so far, blocked on batch-shape policy.
   * **SWAR** -- the CPU equivalent of fp16 for the coarse stage. Queued
     deliberately behind the structural work.
   * **A 2D-tile diagram** for the docs, to show what the tiling actually

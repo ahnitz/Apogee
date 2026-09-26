@@ -1341,63 +1341,94 @@ Plus MF_HMF_TRACE being read via getenv inside the per-pair loop.
     misleading.** stageA_prod_gm reads 1245 instructions before and after
     the ilay change because both store paths are compiled in; only one runs.
   * **I analysed dead code first.** The initial CPU instruction mix came
-    from fft64_prod, which has ZERO call sites. Sampling with gdb gave the
-    real set: stageA_prod_gm, codelet_prod, fftsr16, binmax_core.
+    from fft64_prod, which had ZERO call sites at the time. Sampling with
+    gdb gave the real set: stageA_prod_gm, codelet_prod, fftsr16,
+    binmax_core. (The small-N path has since given fft64_prod a caller --
+    band 64 is a single 64-point codelet -- which does not change the
+    lesson: check before you analyse.)
   * The coarse stage is now ~2.2x off single-core FMA peak, down from ~2.6x.
     What remains is spread across the transform machinery rather than
     concentrated anywhere: two 16x16 transposes per block in stageA_tail,
     and the codelets themselves.
 
-## The CPU/GPU band gap: why bands 64 and 128 have no CPU plan
+## The CPU/GPU band gap: CLOSED
 
-    band     CPU              GPU
-      64     absent           n=1024
-     128     absent           n=1024, 2048, 4096
-     256     all sizes        up to 4096
-     512     all sizes        up to 8192
-    1024     2048+            2048+
+             CPU before   GPU            CPU now
+      64     absent       n=1024         every n
+     128     absent       n=1024..4096   every n
+     256     all sizes    up to 4096     all sizes
+     512     all sizes    up to 8192     all sizes
+    1024     2048+        2048+          2048+
 
-This is why every cross-device test skips band 128, and skipping it is how
-the GPU wave-reduction bug survived: the only comparison that could see it
-needed a CPU plan that does not exist.
+Every cross-device test used to skip band 128, and skipping it is how the
+GPU wave-reduction bug survived: the only comparison that could see it
+needed a CPU plan that did not exist. The (n, band) sweep now runs 24 of 24
+cells on the CPU against 14 before, and the CPU's coverage is asserted
+EXACTLY in test_every_size_and_band_is_correct_not_merely_runnable, so a
+band cannot go missing again without the sweep failing.
 
 ### Root cause
 
-The CPU transform is a balanced two-stage split, N = n1 x n2. Stage A puts
-AP_W lanes across n1; stage B puts AP_W lanes across n2. Both therefore need
-at least a full vector:
+The balanced two-stage split puts AP_W lanes across n1 in stage A and across
+n2 in stage B, so both factors need a full vector: N >= AP_W^2, which is 256
+on AVX-512. On AVX2 and SSE4 it was policy rather than structure -- they
+could have split 64 as 8x8 -- but supported() hard-coded `N<256u` to keep
+the accepted set identical across back ends, so a plan could not succeed on
+one machine and fail on another.
 
-    n1 >= AP_W  and  n2 >= AP_W   =>   N >= AP_W^2
+### What closed it
 
-    AVX3       AP_W=16  ->  N >= 256   -> bands 256, 512, 1024
-    AVX2       AP_W= 8  ->  N >=  64   -> bands 64, 128 possible
-    SSE4/NEON  AP_W= 4  ->  N >=  16   -> bands 64, 128 possible
+A single-stage path for the small sizes with **lanes across independent
+pairs** instead of across n1. The coarse stage always has pairs to spare, so
+the lanes are free, and with lanes = pairs there are no stages at all: the
+whole N-point transform is one element transform, which efft/efft_prod
+already do. No four-step, no corner turn, no intermediate.
 
-So the gap has TWO different causes, and they need different answers:
+  * `create_small()` in balanced-inl.h builds a plan carrying only the
+    element buffers, the element twiddles and the bin accumulators.
+  * `binmax_prod_batch` runs AP_W pairs in one call; `small_scan` keeps one
+    running maximum per lane, and since every lane shares the output index
+    the scan is a plain walk over the window.
+  * The matched filter stores its template bank `[group][element][lane]`
+    when the plan asks for it, so the transposition is paid once per
+    template at ingest rather than per pair. The data spectrum is the same
+    in every lane, so it is broadcast once per segment.
+  * The cutoff is a constant 128, not AP_W^2, so the narrow targets do not
+    take a different path from the wide ones at 64.
 
-  * **On AVX-512 it is structural.** 128 splits only as 16x8, and 8 is half
-    a vector, so stage B cannot fill its lanes. No tuning fixes this.
-  * **On AVX2, SSE4 and NEON it is policy.** Those targets could run 64 and
-    128 today, but supported() hard-codes `N<256u` (balanced-inl.h:85) to
-    keep the supported set identical across back ends -- deliberately, so a
-    plan cannot succeed on one machine and fail on another, and so MF_ISA
-    does not change what the library accepts.
+### The bug it uncovered
 
-### What closing it actually requires
+`fft8_prod` wrote its result into the SCRATCH buffer pair and reported that
+in its return value. Every caller of codelet_prod ignores the return value,
+so an 8-point product codelet was silently wrong -- and nothing had ever
+asked for one, because efft_prod only fuses single-level element transforms
+and 8 never came up as one. Band 128 factors 16x8, asked for it, and came
+back as noise.
 
-A single-stage path for N < AP_W^2, with **lanes across independent pairs**
-rather than across n1. The coarse stage always has pairs to spare, so the
-lanes are free; what is new is the input layout, since the pair axis is not
-the contiguous one today. esupported() already covers 8..1024 as element
-sizes, so the codelet exists -- it is the plumbing that does not.
+The fix is in gen.py, where the other single-pass codelets already avoid it:
+a codelet that does not READ ar can write its result there and keep the
+ping-pong parity even. One condition was missing `prod`. Regenerating
+changes 9 lines, all in fft8_prod. codelet_prod now documents the contract.
 
-That also removes the corner turn for these sizes: with lanes = pairs there
-is no transpose between stages, because there are no stages.
+### The opportunity it exposed
 
-### Interim mitigation, already in place
+The pair-batched path is not just a fallback for sizes the balanced split
+cannot reach -- it is FASTER at the sizes it can. Interleaved in one build
+(MF_PBMAX moves the cutoff), nd=8 nt=64:
 
-test_hierarchical_matches_flat_on_the_same_device compares hierarchical
-against the FLAT filter on the SAME device, which needs no CPU plan and no
-table. It covers band 128 on the GPU, and it is what now catches the class
-of bug that hid there. The gap is a missing capability, not a hole in the
-testing any more.
+    N= 256   213.1 -> 86.5 us   2.16x
+    N= 512   583.8 -> 313.4 us  1.97x
+    N=1024   626.6 -> 381.4 us  1.61x     8 of 8 rounds at every size
+
+That is a larger win at the coarse sizes than everything else measured on
+the CPU this session. What stops it being the default is the small end:
+lanes are pairs, so a batch below AP_W pads, and the padding is real work --
+0.52x at N=256 nd=1 nt=1, 0.19x at N=1024. The crossover is around
+nd*nt ~ 24.
+
+Raising the cutoff therefore needs a policy on batch shape, and probably
+lanes that flatten (d, t) rather than spanning templates within one d, so a
+one-template batch can still fill them from the data side. Left as the next
+item rather than folded in here: this change is the bands, and a cutoff
+argued from a benchmark that only ever ran wide batches would be a fitted
+bound.

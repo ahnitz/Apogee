@@ -76,23 +76,57 @@ typedef struct {
   int small;
 } BP;
 
+/* Which lengths take the pair-batched path.
+ *
+ * 128 and below, because that is where no legal balanced split exists on the
+ * widest back end and the choice is not a choice.  The cutoff is a constant
+ * rather than AP_W*AP_W so every back end accepts and computes the same set:
+ * the narrow targets COULD split 64 as 8x8, and then which kernel ran would
+ * depend on which ISA the CPU happened to offer.
+ *
+ * It is not obviously the fastest cutoff.  Measured interleaved in one build
+ * (MF_PBMAX moves it, which is why the knob exists -- this machine drifts 18%
+ * between runs, so a cutoff argued from two separately compiled binaries would
+ * be measuring the room), pair-batched against balanced, nd=8 nt=64:
+ *
+ *     N= 256   213.1 -> 86.5 us   2.16x      N=1024   626.6 -> 381.4 us  1.61x
+ *     N= 512   583.8 ->313.4 us   1.97x      8 of 8 rounds at every size
+ *
+ * What stops that becoming the default is the other end of the batch. Lanes
+ * are pairs, so a batch smaller than AP_W pads, and the padding is real work:
+ *
+ *     N= 256  nd=1 nt=1  0.52x    N=1024  nd=1 nt=1  0.19x
+ *     N= 256  nd=8 nt=16 1.66x    N=1024  nd=8 nt=16 1.38x
+ *
+ * The crossover is around nd*nt ~ 24. Raising the cutoff therefore needs a
+ * policy on batch shape, and probably lanes that flatten (d,t) instead of
+ * spanning templates within one d, so a one-template batch can still fill
+ * them from the data side. That is a separate change; this one is the bands. */
+static inline int pairbatch_size(size_t N){
+  if(N>1024u||!esupported((int)N)) return 0;
+  size_t lim=128u;
+  { const char *e=getenv("MF_PBMAX"); if(e) lim=(size_t)atol(e); }
+  return N<=lim;
+}
+
 int supported(size_t N){
-  /* Powers of two from 256 to 2^20.  The lower bound used to be 4096, which was
-     arbitrary - what actually constrains it is that both halves of the split must
-     be at least one vector wide.  The hierarchical filter needs the small sizes:
-     its coarse pass is an N/R-point transform, and restricting R to keep N/R
-     above 4096 would remove most of the tuning range.
-     256 is the floor because 2^7 splits 16x8, and 8 is below the AVX-512 lane
-     count - the supported set is kept identical across back ends so it does not
-     depend on which one the CPU happens to select. */
+  /* Powers of two from 64 to 2^20.  The lower bound used to be 4096, which was
+     arbitrary - what actually constrains the BALANCED path is that both halves
+     of the split must be at least one vector wide.  The hierarchical filter
+     needs the small sizes: its coarse pass is an N/R-point transform, and
+     restricting R to keep N/R above 4096 would remove most of the tuning range.
+     256 was the floor for as long as the balanced split was the only path,
+     because 2^7 splits 16x8 and 8 is below the AVX-512 lane count.  The GPU
+     had bands 64 and 128 throughout; the CPU's floor is what made the cross
+     device tests skip band 128, and that is where the wave-reduction bug
+     survived.  Below the floor the pair-batched path runs instead: lanes are
+     independent (data, template) PAIRS rather than frequencies of one
+     transform, so the whole N-point transform is a single element transform
+     and neither stage needs a full vector of its own.  See create_small().
+     The supported set is still identical across back ends, which is what
+     keeps it from depending on which one the CPU happens to select. */
   if((N&(N-1))||N<64u||N>(1u<<20)) return 0;
-  /* Below AP_W^2 no balanced split exists, and the supported set must not
-     depend on which back end the CPU picked, so 64 and 128 are accepted at
-     EVERY width and run the pair-batched path instead: lanes are independent
-     (data, template) pairs rather than frequencies of one transform, so the
-     whole N-point transform is a single element transform and neither stage
-     needs a full vector of its own.  See create_small(). */
-  if(N<256u) return esupported((int)N);
+  if(pairbatch_size(N)) return esupported((int)N);
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
   /* The balanced split is not always best: what matters is which element sizes
@@ -129,8 +163,8 @@ int supported(size_t N){
      others nothing. 424 passed under MF_ISA=AVX3, AVX2 and SSE4.
      2^10 keeps the balanced 32x32: 16x64 and 64x16 measured 3.065 and
      3.049 against 2.802, six runs each. 2^8 has no choice -- 16x16 is the
-     only split with both halves at or above the vector width, and 2^7 is
-     below the floor, which is why the CPU has no band-128 plan at all.
+     only split with both halves at or above the vector width. 2^7 and 2^6
+     have no split at all and do not come here; see pairbatch_size().
 
      2^11, six runs each: 64x32 (balanced) median 5.954, 16x128 5.696,
      32x64 6.028, 128x16 5.540 -- and 128x16's worst run, 5.639, beats the
@@ -147,7 +181,7 @@ static void *create_small(size_t N);
 
 void *create(size_t N){
   if(!supported(N)) return NULL;
-  if(N<256u) return create_small(N);
+  if(pairbatch_size(N)) return create_small(N);
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
   /* The balanced split is not always best: what matters is which element sizes
@@ -184,8 +218,8 @@ void *create(size_t N){
      others nothing. 424 passed under MF_ISA=AVX3, AVX2 and SSE4.
      2^10 keeps the balanced 32x32: 16x64 and 64x16 measured 3.065 and
      3.049 against 2.802, six runs each. 2^8 has no choice -- 16x16 is the
-     only split with both halves at or above the vector width, and 2^7 is
-     below the floor, which is why the CPU has no band-128 plan at all.
+     only split with both halves at or above the vector width. 2^7 and 2^6
+     have no split at all and do not come here; see pairbatch_size().
 
      2^11, six runs each: 64x32 (balanced) median 5.954, 16x128 5.696,
      32x64 6.028, 128x16 5.540 -- and 128x16's worst run, 5.639, beats the
