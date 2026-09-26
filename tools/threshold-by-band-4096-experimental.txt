@@ -1,0 +1,99 @@
+# EXPERIMENTAL: measured coarse thresholds BY BAND. Not installed.
+#
+# The shipped threshold.txt is keyed on (n, f, ratio, snr, fd) and leaves
+# band out, on the argument that samples across the correlation peak is
+# band/B_eff with no band left in it. It is not so. Every row below is a
+# bisection against measured false dismissal at a FIXED (f, ratio), with
+# only the band the ratio is realised at changing.
+#
+#   f      ratio   128    256    512   1024    spread
+#   0.60   1.20   2.891  3.087  3.239  3.465   19.9%
+#   0.70   1.20   3.058  3.168  3.311  3.547   16.0%
+#   0.80   1.20   3.208  3.321  3.369  3.578   11.6%
+#   0.90   1.20   3.339  3.438  3.471  3.670    9.9%
+#   0.95   1.50   3.599  3.691  3.727  3.763    4.6%
+#   0.995  1.50   3.732  3.824  3.830  3.849    3.1%
+#
+# The spread is ordered by f, and that is the useful part: band matters
+# most where the band keeps LEAST of the signal. At f=0.60 it is worth
+# 20%; by f=0.995 it is 3%, which is the measurement noise. Physically the
+# coarse statistic is a max over `band` lags, so its noise floor grows as
+# sqrt(2 ln band); when f is near 1 the signal dominates that floor and the
+# band stops mattering.
+#
+# This is why the shipped tables could key band out and appear correct.
+# threshold.txt was measured at one band per n -- max(256, min(1024, n//4))
+# -- so it is right AT that band. accuracy.txt justifies the same omission
+# with a spread of 1.14x measured "across band/B_eff from 16 to 128", its
+# own header's words: every cell of that check sits at ratio >= 16, where
+# band genuinely does not matter. Real references run at ratio 1.3 to 5.3.
+#
+# Measured with tools/regen/threshold_lowratio.py, n=4096, snr 5.0,
+# fd 1e-2, 3000 injections a bisection step (30 events expected), 7 steps,
+# on Ryzen AI Max+ 395 AVX3.
+#
+# NOT installed as defaults. Keying the shipped table on band is a change
+# to the lookup and needs the fd=1e-3 half measured too; applying a
+# sqrt(ln band) correction INSTEAD was measured and rejected -- it costs
+# 2.13x at band 256. See docs/tooling-cleanup.md.
+#
+# THR n snr f ratio fd threshold band
+THR 4096 5.00 0.5000 1.200 1e-02 2.8162 128
+THR 4096 5.00 0.5000 1.200 1e-02 3.4099 1024
+THR 4096 5.00 0.5000 1.500 1e-02 3.2129 512
+THR 4096 5.00 0.6000 1.200 1e-02 2.8911 128
+THR 4096 5.00 0.6000 1.200 1e-02 3.0875 256
+THR 4096 5.00 0.6000 1.200 1e-02 3.2386 512
+THR 4096 5.00 0.6000 1.200 1e-02 3.4652 1024
+THR 4096 5.00 0.6000 1.500 1e-02 2.9343 128
+THR 4096 5.00 0.6000 1.500 1e-02 3.1043 256
+THR 4096 5.00 0.6000 1.500 1e-02 3.2931 512
+THR 4096 5.00 0.6000 1.500 1e-02 3.4908 1024
+THR 4096 5.00 0.7000 1.200 1e-02 3.0578 128
+THR 4096 5.00 0.7000 1.200 1e-02 3.1683 256
+THR 4096 5.00 0.7000 1.200 1e-02 3.3105 512
+THR 4096 5.00 0.7000 1.200 1e-02 3.5473 1024
+THR 4096 5.00 0.7000 1.500 1e-02 3.1203 128
+THR 4096 5.00 0.7000 1.500 1e-02 3.2020 256
+THR 4096 5.00 0.7000 1.500 1e-02 3.3672 512
+THR 4096 5.00 0.7000 1.500 1e-02 3.5420 1024
+THR 4096 5.00 0.8000 1.200 1e-02 3.2078 128
+THR 4096 5.00 0.8000 1.200 1e-02 3.3206 256
+THR 4096 5.00 0.8000 1.200 1e-02 3.3690 512
+THR 4096 5.00 0.8000 1.200 1e-02 3.5784 1024
+THR 4096 5.00 0.8000 1.500 1e-02 3.2865 128
+THR 4096 5.00 0.8000 1.500 1e-02 3.3726 256
+THR 4096 5.00 0.8000 1.500 1e-02 3.4823 512
+THR 4096 5.00 0.8000 1.500 1e-02 3.6169 1024
+THR 4096 5.00 0.9000 1.200 1e-02 3.3387 128
+THR 4096 5.00 0.9000 1.200 1e-02 3.4380 256
+THR 4096 5.00 0.9000 1.200 1e-02 3.4712 512
+THR 4096 5.00 0.9000 1.200 1e-02 3.6696 1024
+THR 4096 5.00 0.9000 1.500 1e-02 3.4767 128
+THR 4096 5.00 0.9000 1.500 1e-02 3.5494 256
+THR 4096 5.00 0.9000 1.500 1e-02 3.6274 512
+THR 4096 5.00 0.9000 1.500 1e-02 3.6980 1024
+THR 4096 5.00 0.9500 1.200 1e-02 3.3982 128
+THR 4096 5.00 0.9500 1.200 1e-02 3.5518 256
+THR 4096 5.00 0.9500 1.200 1e-02 3.5690 512
+THR 4096 5.00 0.9500 1.200 1e-02 3.6884 1024
+THR 4096 5.00 0.9500 1.500 1e-02 3.5989 128
+THR 4096 5.00 0.9500 1.500 1e-02 3.6908 256
+THR 4096 5.00 0.9500 1.500 1e-02 3.7265 512
+THR 4096 5.00 0.9500 1.500 1e-02 3.7632 1024
+THR 4096 5.00 0.9800 1.200 1e-02 3.4332 128
+THR 4096 5.00 0.9800 1.200 1e-02 3.5888 256
+THR 4096 5.00 0.9800 1.200 1e-02 3.6062 512
+THR 4096 5.00 0.9800 1.200 1e-02 3.7099 1024
+THR 4096 5.00 0.9800 1.500 1e-02 3.6923 128
+THR 4096 5.00 0.9800 1.500 1e-02 3.7658 256
+THR 4096 5.00 0.9800 1.500 1e-02 3.7923 512
+THR 4096 5.00 0.9800 1.500 1e-02 3.8298 1024
+THR 4096 5.00 0.9950 1.200 1e-02 3.5235 128
+THR 4096 5.00 0.9950 1.200 1e-02 3.5932 256
+THR 4096 5.00 0.9950 1.200 1e-02 3.6281 512
+THR 4096 5.00 0.9950 1.200 1e-02 3.7330 1024
+THR 4096 5.00 0.9950 1.500 1e-02 3.7317 128
+THR 4096 5.00 0.9950 1.500 1e-02 3.8240 256
+THR 4096 5.00 0.9950 1.500 1e-02 3.8300 512
+THR 4096 5.00 0.9950 1.500 1e-02 3.8488 1024

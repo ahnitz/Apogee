@@ -171,6 +171,31 @@ at band 256, and that 6.7% is what costs 2.13x.
 
 So the fix is rows measured AT the band being queried -- a third key --
 which is why tools/regen/threshold_lowratio.py takes --band as a sweep.
+`tools/threshold-by-band-4096-experimental.txt` is that sweep, 59 rows over
+14 (f, ratio) cells at four bands, and it shows the structure:
+
+    f      ratio   128    256    512   1024    spread
+    0.60   1.20   2.891  3.087  3.239  3.465   19.9%
+    0.70   1.20   3.058  3.168  3.311  3.547   16.0%
+    0.80   1.20   3.208  3.321  3.369  3.578   11.6%
+    0.90   1.20   3.339  3.438  3.471  3.670    9.9%
+    0.95   1.50   3.599  3.691  3.727  3.763    4.6%
+    0.995  1.50   3.732  3.824  3.830  3.849    3.1%
+
+The spread is ordered by f, and that is the useful part: band matters most
+where the band keeps LEAST of the signal. At f=0.60 it is worth 20%; by
+f=0.995 it is 3%, which is measurement noise. The coarse statistic is a max
+over `band` lags so its noise floor grows as sqrt(2 ln band), and when f is
+near 1 the signal dominates that floor and band stops mattering.
+
+**That is why both shipped tables could key band out and look correct.**
+threshold.txt is measured at one band per n and is right AT that band.
+accuracy.txt justifies the same omission with a 1.14x spread measured, in
+its own header's words, "across band/B_eff from 16 to 128" -- every cell of
+that check sits at ratio >= 16, where band genuinely does not matter. Real
+references run at ratio 1.3 to 5.3. Both tables validated the omission
+outside the operating range, and accuracy.txt needs the same treatment as
+threshold.txt before small bands can be selected.
 
 Selection cannot reach the corner today: over 352 sampled (n, reference, snr,
 fd) combinations the lowest ratio it picks is 1.29 at f = 0.787, which
