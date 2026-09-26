@@ -328,9 +328,11 @@ the SHIPPED rows at these six points:
     plane fit (f, beff) k=4    3 / 6   worst 3.00x
     IDW (f, beff) k=4          3 / 6   worst 2.14x   <- what ships
 
-No rule gets past 3 of 6. The shipped rows cannot support a correct ranking
-under any of them, while re-measured rows reach 4 of 6 under the rule that
-already ships. So the rows are the problem; changing how they are
+No rule gets past 3 of 6, and none of them raised -- 252 rule evaluations,
+0 exceptions, no band silently dropped from a ranking, which is the way a
+comparison like this flatters one rule by accident. The shipped rows cannot
+support a correct ranking under any of them, while re-measured rows reach
+4 of 6 under the rule that already ships. So the rows are the problem; changing how they are
 interpolated is not a route, and the single regression is more likely
 variance than evidence about the lookup.
 
