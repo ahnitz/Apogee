@@ -170,6 +170,10 @@ Why 16384 on the GPU: one workgroup carries a whole transform, and at
 transforms need the decomposition split across dispatches, which is not
 written. Asking for one raises, naming the sizes that work.
 
+Shared CPU/GPU allocations are available through `filter.empty_shared()`.
+For zero-copy bank binding, DLPack interoperability, and the remaining
+device/stream limits, see [GPU forward FFT and shared arrays](gpu-forward-and-arrays.md).
+
 Other things worth knowing, all work in progress:
 
 - **Input must be host-resident.** Arrays are accepted over DLPack from any

@@ -15,6 +15,7 @@ import pathlib
 import numpy as np
 
 from . import _vulkan
+from ._shared import empty_shared, shared_buffer, shared_key, write_input
 
 _SPIRV = pathlib.Path(__file__).resolve().parent / "spirv"
 
@@ -300,8 +301,8 @@ class _Buffer:
         vk, dev = self.ctx.vk, self.ctx.device
         if self.handle:
             vk.vkUnmapMemory(dev, self.memory)
-            vk.vkFreeMemory(dev, self.memory, None)
             vk.vkDestroyBuffer(dev, self.handle, None)
+            vk.vkFreeMemory(dev, self.memory, None)
             self.handle = None
 
 
@@ -554,13 +555,14 @@ class Context(InputUploads):
         key = ("hier", n, band, nd, nt, nbins, binsize, shift, lo, hi,
                int(np.float32(t2).view(np.uint32)),
                float(raw_thr))
+        key += (shared_key(data, self), shared_key(tmpl, self))
         upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
             key, data, tmpl, upload_data, upload_tmpl)
         batch = self._hier.get(key)
         if batch is None:
             self._cache_room(8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(24+12*nbins))
             batch = self._make_hier(key, n, band, nd, nt, nbins, binsize,
-                                    shift, lo, hi, t2, raw_thr)
+                                    shift, lo, hi, t2, raw_thr, data, tmpl)
             self._hier[key] = batch
             upload_data = upload_tmpl = True   # see the note in peaks()
         bufs, cmd = batch
@@ -568,25 +570,23 @@ class Context(InputUploads):
         # 512 templates, and re-sending it on every call dwarfed the
         # filtering it was feeding.
         if upload_data:
-            bufs["data"].write(np.ascontiguousarray(data, np.complex64))
-            if _use_c16(band) and not _COARSE_TILE.get(band):
+            write_input(bufs["data"], data)
+            if shared_buffer(data, self) is not None:
+                pass  # device band extraction is recorded before the coarse FFT
+            elif _use_c16(band) and not _COARSE_TILE.get(band):
                 bufs["cdata"].write(_pack_half2(data[:, :band]))
             else:
                 bufs["cdata"].write(np.ascontiguousarray(data[:, :band], np.complex64))
             self._uploaded["data"][key] = dsig
         if upload_tmpl:
-            bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
+            write_input(bufs["tmpl"], tmpl)
             if _use_c16(band) and not _COARSE_TILE.get(band):
                 bufs["ct0"].write(_pack_half2(ct0))
             else:
                 bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
             self._uploaded["tmpl"][key] = tsig
 
-        cmds = (_vp * 1)(cmd)
-        submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)
-        _check(vk.vkQueueSubmit(self.queue, 1, ctypes.byref(submit), None),
-               "vkQueueSubmit")
-        _check(vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle")
+        self._submit(cmd)
 
         out = nd * nt * nbins
         idx = bufs["idx"].read(np.int32, out).reshape(nd, nt, nbins)
@@ -621,7 +621,7 @@ class Context(InputUploads):
         return dset
 
     def _make_hier(self, key, n, band, nd, nt, nbins, binsize, shift, lo, hi,
-                   t2, raw_thr):
+                   t2, raw_thr, data=None, tmpl=None):
         vk = self.vk
         tile = _COARSE_TILE.get(band)
         _ppg = 1          # pairs per workgroup; raised only on the c16 path
@@ -685,8 +685,8 @@ class Context(InputUploads):
             ("refine", n), self._refine_file(n), 5, _PUSH_BYTES)
         pairs = nd * nt
         b = {
-            "data":  _Buffer(self, nd * n * 8),
-            "tmpl":  _Buffer(self, nt * n * 8),
+            "data":  shared_buffer(data, self) or _Buffer(self, nd * n * 8),
+            "tmpl":  shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
             "cdata": _Buffer(self, nd * band * (4 if _use_c16(band) and not tile else 8)),
             "ct0":   _Buffer(self, nt * band * (4 if _use_c16(band) and not tile else 8)),
             "cidx":  _Buffer(self, pairs * 4),
@@ -722,6 +722,12 @@ class Context(InputUploads):
         ds_listed = self._descriptor_set(
             rset_layout,
             [b["data"], b["tmpl"], b["idx"], b["val"], b["surv"]])
+
+        shared_data = shared_buffer(data, self) is not None
+        if shared_data:
+            ppipe, playout, psl = self._build_pipeline(
+                "pack_coarse", "pack_coarse.spv", 2, 16)
+            ds_pack = self._descriptor_set(psl, [b["data"], b["cdata"]])
 
         cb = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
         cmd = _vp()
@@ -773,6 +779,18 @@ class Context(InputUploads):
         vk.vkCmdFillBuffer(cmd, b["args"].handle, 4, 8, 1)   # y = z = 1
         barrier()
 
+        if shared_data:
+            vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, ppipe)
+            sets = (_vp * 1)(ds_pack)
+            vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, playout,
+                                      0, 1, sets, 0, None)
+            pc = (ctypes.c_uint32 * 4)(n, band, nd*band,
+                                      int(_use_c16(band) and not tile))
+            vk.vkCmdPushConstants(cmd, playout, _STAGE_COMPUTE, 0, 16,
+                                  ctypes.byref(pc))
+            vk.vkCmdDispatch(cmd, (nd*band + 255)//256, 1, 1)
+            barrier()
+
         coarse(ds_coarse)
         barrier()
 
@@ -800,13 +818,81 @@ class Context(InputUploads):
         _check(vk.vkEndCommandBuffer(cmd), "vkEndCommandBuffer")
         return b, cmd
 
-    def _make_batch(self, key, n, nd, nt, nbins, binsize, shift, lo, hi, t2):
+    def empty_shared(self, shape, dtype=np.complex64):
+        return empty_shared(self, _Buffer, shape, dtype)
+
+    def forward(self, n, series, starts, spectra, *, defer=False):
+        """Gather and normalize forward FFTs directly into shared spectra."""
+        vk = self.vk
+        pipe, layout, sl = self._build_pipeline(
+            ("forward", n), "forward_%d.spv" % n, 3, 4)
+        buffers = [shared_buffer(a, self) for a in (series, starts, spectra)]
+        if any(b is None for b in buffers):
+            raise ValueError("forward buffers must belong to this GPU context")
+        key = (n, series.size, spectra.shape[0],
+               *(a.ctypes.data for a in (series, starts, spectra)))
+        forwards = getattr(self, "_forwards", None)
+        if forwards is None:
+            forwards = self._forwards = {}
+        batch = forwards.get(key)
+        if batch is None:
+            self._cache_room(sum(b.nbytes for b in buffers))
+            ds = self._descriptor_set(sl, buffers)
+            cmd = _vp()
+            info = _CmdBufAlloc(40, None, self.command_pool, 0, 1)
+            _check(vk.vkAllocateCommandBuffers(self.device, ctypes.byref(info),
+                                               ctypes.byref(cmd)), "allocate forward")
+            begin = _CmdBufBegin(42, None, 0, None)
+            _check(vk.vkBeginCommandBuffer(cmd, ctypes.byref(begin)), "begin forward")
+            vk.vkCmdBindPipeline(cmd, _BIND_POINT_COMPUTE, pipe)
+            sets = (_vp * 1)(ds)
+            vk.vkCmdBindDescriptorSets(cmd, _BIND_POINT_COMPUTE, layout, 0, 1,
+                                      sets, 0, None)
+            params = _u32(series.size)
+            vk.vkCmdPushConstants(cmd, layout, _STAGE_COMPUTE, 0, 4,
+                                  ctypes.byref(params))
+            vk.vkCmdDispatch(cmd, spectra.shape[0], 1, 1)
+            # Publish FFT stores to later compute dispatches and mapped host
+            # readers. Queue completion alone is not a shader memory barrier.
+            mb = _MemBarrier(46, None, _ACCESS_SHADER_WRITE,
+                             _ACCESS_SHADER_READ | 0x2000)  # HOST_READ
+            vk.vkCmdPipelineBarrier(cmd, _STAGE_COMPUTE_BIT,
+                                    _STAGE_COMPUTE_BIT | 0x4000,  # HOST
+                                    0, 1, ctypes.byref(mb), 0, None, 0, None)
+            _check(vk.vkEndCommandBuffer(cmd), "end forward")
+            batch = (*buffers, cmd)
+            forwards[key] = batch
+        cmd = batch[-1]
+        if defer:
+            self._pending_forward = cmd
+        else:
+            self._submit(cmd)
+
+    def cancel_forward(self):
+        self._pending_forward = None
+
+    def _submit(self, cmd):
+        """Forward and correlation share one submit and completion wait."""
+        pending = getattr(self, "_pending_forward", None)
+        commands = ([pending] if pending is not None else [])
+        if cmd is not None:
+            commands.append(cmd)
+        self._pending_forward = None
+        if not commands:
+            return
+        cmds = (_vp * len(commands))(*commands)
+        submit = _SubmitInfo(4, None, 0, None, None, len(commands), cmds, 0, None)
+        _check(self.vk.vkQueueSubmit(self.queue, 1, ctypes.byref(submit), None),
+               "vkQueueSubmit")
+        _check(self.vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle")
+
+    def _make_batch(self, key, n, nd, nt, nbins, binsize, shift, lo, hi, t2, data=None, tmpl=None):
         """Buffers, descriptor set and a recorded command buffer for one shape."""
         vk = self.vk
         pipe, layout, set_layout = self.pipeline(n)
         out = nd * nt * nbins
-        b_data = _Buffer(self, nd * n * 8)
-        b_tmpl = _Buffer(self, nt * n * 8)
+        b_data = shared_buffer(data, self) or _Buffer(self, nd * n * 8)
+        b_tmpl = shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8)
         b_idx = _Buffer(self, out * 4, readback=True)
         b_val = _Buffer(self, out * 8, readback=True)
 
@@ -911,13 +997,14 @@ class Context(InputUploads):
         # one, which would be wrong rather than slow.
         key = (n, nd, nt, nbins, binsize, shift, lo, hi,
                int(np.float32(t2).view(np.uint32)))
+        key += (shared_key(data, self), shared_key(tmpl, self))
         upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
             key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
             self._cache_room(8*n*(nd+nt) + 12*nd*nt*nbins)
             batch = self._make_batch(key, n, nd, nt, nbins,
-                                     binsize, shift, lo, hi, t2)
+                                     binsize, shift, lo, hi, t2, data, tmpl)
             self._batches[key] = batch
             # A NEW batch has empty buffers. The caller's dirty flags describe
             # whether the arrays changed, not whether THIS batch has ever seen
@@ -928,17 +1015,13 @@ class Context(InputUploads):
         b_data, b_tmpl, b_idx, b_val, cmd = batch
 
         if upload_data:
-            b_data.write(np.ascontiguousarray(data, np.complex64))
+            write_input(b_data, data)
             self._uploaded["data"][key] = dsig
         if upload_tmpl:
-            b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
+            write_input(b_tmpl, tmpl)
             self._uploaded["tmpl"][key] = tsig
 
-        cmds = (_vp * 1)(cmd)
-        submit = _SubmitInfo(4, None, 0, None, None, 1, cmds, 0, None)
-        _check(vk.vkQueueSubmit(self.queue, 1, ctypes.byref(submit), None),
-               "vkQueueSubmit")
-        _check(vk.vkQueueWaitIdle(self.queue), "vkQueueWaitIdle")
+        self._submit(cmd)
 
         out = nd * nt * nbins
         # int32 as the kernel wrote it. The caller's PEAK_DTYPE index is
@@ -954,8 +1037,12 @@ class Context(InputUploads):
 
     def clear_cache(self):
         """Release completed dispatch storage while retaining pipelines."""
+        # A cache miss between preparation and filtering must materialize the
+        # forward result before freeing its recorded command buffer.
+        self._submit(None)
         vk = self.vk
         commands = [batch[-1] for batch in self._batches.values()]
+        commands += [batch[-1] for batch in getattr(self, "_forwards", {}).values()]
         commands += [batch[-1] for batch in self._hier.values()]
         if commands:
             array = (_vp * len(commands))(*commands)
@@ -967,6 +1054,7 @@ class Context(InputUploads):
         for bufs, _cmd in self._hier.values():
             for buf in bufs.values():
                 buf.destroy()
+        getattr(self, "_forwards", {}).clear()
         self._batches.clear()
         self._hier.clear()
         for pool in getattr(self, "_pools", []):
@@ -987,6 +1075,7 @@ class Context(InputUploads):
         for b_data, b_tmpl, b_idx, b_val, _cmd in self._batches.values():
             for buf in (b_data, b_tmpl, b_idx, b_val):
                 buf.destroy()
+        getattr(self, "_forwards", {}).clear()
         self._batches.clear()
         for bufs, _cmd in self._hier.values():
             for buf in bufs.values():

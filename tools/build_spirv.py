@@ -231,7 +231,7 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0, ppg=1):
     stem = "%s_%d%s" % (STEMS[entry], n, suffix)
     msl = outdir / (stem + ".metal")
     proc = subprocess.run(
-        [slangc, str(src), "-target", "metal", "-entry", entry,
+        [slangc, str(src), "-I", str(KERNEL.parent), "-target", "metal", "-entry", entry,
          "-stage", "compute", "-O3", "-o", str(msl)],
         capture_output=True, text=True)
     src.unlink()
@@ -276,7 +276,7 @@ def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0,
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(
-        [slangc, str(src), "-target", "spirv", "-entry", entry,
+        [slangc, str(src), "-I", str(KERNEL.parent), "-target", "spirv", "-entry", entry,
          "-stage", "compute", "-O3", "-o", str(spv)],
         capture_output=True, text=True)
     if proc.returncode != 0:
@@ -307,7 +307,7 @@ def main(argv=None):
                        + COARSE_KERNEL.read_text())
         spv = OUT / ("coarse_%d.spv" % band)
         proc = subprocess.run(
-            [slangc, str(src), "-target", "spirv", "-entry", "coarseTile",
+            [slangc, str(src), "-I", str(KERNEL.parent), "-target", "spirv", "-entry", "coarseTile",
              "-stage", "compute", "-O3", "-o", str(spv)],
             capture_output=True, text=True)
         if proc.returncode != 0:

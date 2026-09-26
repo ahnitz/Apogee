@@ -38,7 +38,10 @@ class InputUploads:
         for batch in self._hier.values():
             bufs = batch[0] if isinstance(batch, tuple) else batch
             used += sum(getattr(b, 'nbytes', 0) for b in bufs.values())
-        entries = len(self._batches) + len(self._hier)
+        forwards = getattr(self, "_forwards", {})
+        for batch in forwards.values():
+            used += sum(getattr(b, 'nbytes', 0) for b in batch)
+        entries = len(self._batches) + len(self._hier) + len(forwards)
         if entries and (used + estimate > self.cache_limit_bytes
                         or entries >= self.cache_limit_entries):
             self.clear_cache()

@@ -103,6 +103,8 @@ def _from_any(a):
     tensor reaching the CPU backend is a mistake worth reporting, not
     absorbing.
     """
+    if isinstance(a, np.ndarray):
+        return a
     if hasattr(a, "__dlpack_device__"):
         try:
             kind = int(a.__dlpack_device__()[0])
@@ -111,8 +113,9 @@ def _from_any(a):
         if kind not in _DLPACK_HOST:
             raise TypeError(
                 "array is on a %s device; matchedfilter will not copy it to "
-                "the host implicitly -- move it yourself (e.g. .cpu()) or "
-                "build the filter with the matching device="
+                "the host implicitly. External accelerator allocations cannot be "
+                "imported by the Vulkan/Metal backends; use empty_shared() "
+                "for host-visible GPU storage, or transfer explicitly"
                 % _DLPACK_NAMES.get(kind, "non-host"))
         try:
             return np.from_dlpack(a)
@@ -261,8 +264,18 @@ class MatchedFilter:
             if a.shape != store.shape:
                 raise ValueError("expected shape %s, got %s"
                                  % (store.shape, a.shape))
-            store[:] = a
+            from ._shared import shared_buffer
+            attr = "_gdata" if what == "data" else "_gtmpl"
+            if shared_buffer(a, self._gpu) is not None:
+                setattr(self, attr, a)
+            elif shared_buffer(store, self._gpu) is not None or not store.flags.writeable:
+                setattr(self, attr, a.copy())
+            else:
+                store[:] = a
         else:
+            if not store.flags.writeable:
+                store = store.copy()
+                setattr(self, "_gdata" if what == "data" else "_gtmpl", store)
             store[int(index)] = _as_c64(spectra, self.n, "spectrum")
 
     def set_data(self, spectra, index=None):
@@ -289,7 +302,7 @@ class MatchedFilter:
             self._dataset = True
             self._mark_ready("data", index)
             return
-        a = np.ascontiguousarray(spectra, dtype=np.complex64)
+        a = np.ascontiguousarray(_from_any(spectra), dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ndata, self.n):
             raise ValueError(f"expected shape ({self.ndata}, {self.n}), got {a.shape}")
         self._held[-1] = a                      # see the note above
@@ -312,7 +325,7 @@ class MatchedFilter:
             self._ensure().set_template(int(index), _as_c64(spectra, self.n, "spectrum"))
             self._mark_ready("template", index)
             return
-        a = np.ascontiguousarray(spectra, dtype=np.complex64)
+        a = np.ascontiguousarray(_from_any(spectra), dtype=np.complex64)
         if a.ndim != 2 or a.shape != (self.ntemplates, self.n):
             raise ValueError(f"expected shape ({self.ntemplates}, {self.n}), got {a.shape}")
         for i in range(self.ntemplates):
@@ -521,10 +534,10 @@ class MatchedFilter:
 
     def _series_layout(self, series, starts, win_start, win_end, binsize, templates):
         """Validate the shared series contract before either native backend."""
-        ser = np.ascontiguousarray(series, dtype=np.complex64)
-        st = np.ascontiguousarray(starts, dtype=np.uintp)
-        ws = np.ascontiguousarray(win_start, dtype=np.uintp)
-        we = np.ascontiguousarray(win_end, dtype=np.uintp)
+        ser = np.ascontiguousarray(_from_any(series), dtype=np.complex64)
+        st = np.ascontiguousarray(_from_any(starts), dtype=np.uintp)
+        ws = np.ascontiguousarray(_from_any(win_start), dtype=np.uintp)
+        we = np.ascontiguousarray(_from_any(win_end), dtype=np.uintp)
         if any(a.ndim != 1 for a in (ser, st, ws, we)):
             raise ValueError("series, starts, win_start and win_end must be one-dimensional")
         if not (st.size == ws.size == we.size):
@@ -631,28 +644,44 @@ class MatchedFilter:
         nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
         idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
         val = np.zeros((nblk, nt, nb), dtype=np.complex64)
-        # Conservative allowance for gather indices, masks, complex128 NumPy
-        # FFT temporaries, spectra, and dispatch readback. Returned output is
-        # necessarily proportional to the requested output shape.
+        # Only spectra, start offsets and dispatch results scale with batch
+        # size. Upload the source segment once; shared input needs no copy.
+        from ._shared import shared_buffer
+        if ser.size > np.iinfo(np.uint32).max:
+            raise ValueError("GPU series exceeds the 32-bit sample address range")
         budget = getattr(self, "_series_batch_bytes", 64 * 1024 * 1024)
-        batch = max(1, budget // (64*n + 12*nt*nb))
-        offsets = np.arange(n, dtype=np.int64)
+        batch = min(nblk, 65535, max(1, budget // (8*n + 4 + 12*nt*nb)))
+        source_shared = shared_buffer(ser, self._gpu) is not None
+        workspace_key = (ser.size, batch, n, source_shared)
+        workspace = getattr(self, "_series_workspace", None)
+        if workspace is None or workspace[0] != workspace_key:
+            workspace = (workspace_key,
+                         None if source_shared else self._gpu.empty_shared(ser.shape),
+                         self._gpu.empty_shared((batch, n)),
+                         self._gpu.empty_shared(batch, np.uint32))
+            self._series_workspace = workspace
+        _, source, spectra, starts = workspace
+        if source_shared:
+            source = ser
+        else:
+            source[:] = ser
         for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
             rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
             for begin in range(0, rows.size, batch):
                 selected = rows[begin:begin + batch]
-                if ser.size:
-                    grid = st[selected, None].astype(np.int64) + offsets
-                    blocks = np.where(grid < ser.size,
-                                      ser[np.minimum(grid, ser.size - 1)],
-                                      np.complex64(0))
-                    spec = np.fft.fft(blocks, axis=1)
-                    spec /= n
-                    spec = spec.astype(np.complex64, copy=False)
-                else:
-                    spec = np.zeros((selected.size, n), dtype=np.complex64)
-                gi, gv = self._series_window(np.ascontiguousarray(spec), H,
-                                             binsize, threshold, w[0], w[1])
+                count = selected.size
+                # Offsets beyond the input produce zero blocks, including
+                # uintp offsets too large to represent in a shader uint.
+                starts[:count] = np.minimum(st[selected], ser.size)
+                spec = spectra[:count]
+                self._gpu.forward(n, source, starts[:count], spec, defer=True)
+                try:
+                    gi, gv = self._series_window(spec, H, binsize, threshold,
+                                                 w[0], w[1])
+                finally:
+                    # Preparation is deferred on Vulkan. A validation error
+                    # must not leave work queued for an unrelated later call.
+                    self._gpu.cancel_forward()
                 idx[selected] = gi
                 val[selected] = gv
         if raw:
@@ -661,12 +690,27 @@ class MatchedFilter:
         peaks["index"], peaks["value"] = idx, val
         return peaks
 
+    def empty_shared(self, shape, dtype=np.complex64):
+        """Allocate a NumPy array backed by this filter's GPU shared memory.
+
+        CPU filters return ordinary NumPy storage. On GPU, contiguous full
+        banks passed to the setters bind directly without an input copy.
+        Keep mutations outside run/run_series calls; call the setter again
+        after editing a bank to invalidate hierarchical coarse caches.
+        NumPy views and CPU DLPack consumers retain the allocation's lifetime.
+        This does not export a CUDA/ROCm allocation or an asynchronous stream.
+        """
+        if self._gpu is None:
+            return np.empty(shape, dtype=dtype)
+        return self._gpu.empty_shared(shape, dtype)
+
     def set_memory_limits(self, *, cache_bytes=None, series_bytes=None):
         """Set GPU dispatch-cache and series-temporary budgets in bytes.
 
         Defaults: 512 MiB of dispatch buffers, 32 cache entries, and 64 MiB
         of series working storage. A single dispatch/block can exceed a
-        budget; final returned output is not included in the working budget.
+        budget. The source-series upload (unless already shared) and final
+        returned output are not included in the batch working budget.
         Changing the cache budget releases existing dispatch buffers.
         """
         if self._gpu is None:
@@ -684,6 +728,7 @@ class MatchedFilter:
         """Release GPU dispatch buffers, keeping spectra and compiled pipelines."""
         if self._gpu is not None:
             self._gpu.clear_cache()
+            self._series_workspace = None
             self._ddirty = self._tdirty = True
 
 
@@ -2114,7 +2159,7 @@ class HierarchicalFilter(MatchedFilter):
         Changing the reference refreshes already-loaded coarse templates.
         """
         if power is not None:
-            p = np.ascontiguousarray(power, dtype=np.float32)
+            p = np.ascontiguousarray(_from_any(power), dtype=np.float32)
             if p.shape != (self.n,):
                 raise ValueError("reference must be a one-dimensional array of length %d" % self.n)
             if not np.isfinite(p).all() or np.any(p < 0) or not np.any(p > 0):

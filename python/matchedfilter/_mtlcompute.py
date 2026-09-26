@@ -18,6 +18,7 @@ import pathlib
 import sys
 
 import numpy as np
+from ._shared import empty_shared, shared_buffer, shared_key, write_input
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _METAL_DIR = _HERE / "metal"
@@ -262,6 +263,10 @@ class Context(InputUploads):
         # or "the other one" -- which silently sends every new entry to the
         # gated library, where its function does not exist. The same
         # assumption was in the build script's artifact naming.
+        if entry == "packCoarse":
+            return "pack_coarse"
+        if entry == "seriesForward":
+            return "forward_%d" % n
         base = "%s_%d" % ({"fusedTierB": "tierb", "gatedTierB": "gated",
                            "compactPairs": "compact",
                            "refineListed": "refine"}[entry], n)
@@ -380,6 +385,54 @@ class Context(InputUploads):
         t1 = self.o.call(cmd, b"GPUEndTime", restype=ctypes.c_double)
         self.last_gpu_time = float(t1) - float(t0)
 
+    def empty_shared(self, shape, dtype=np.complex64):
+        return empty_shared(self, _Buffer, shape, dtype)
+
+    def forward(self, n, series, starts, spectra, *, defer=False):
+        pso = self.pipeline(n, "seriesForward")
+        buffers = [shared_buffer(a, self) for a in (series, starts, spectra)]
+        if any(b is None for b in buffers):
+            raise ValueError("forward buffers must belong to this GPU context")
+        cmd = self.o.call(self.queue, b"commandBuffer")
+        enc = self.o.call(cmd, b"computeCommandEncoder")
+        self.o.call(enc, b"setComputePipelineState:", restype=None,
+                    args=(pso,), argtypes=(ctypes.c_void_p,))
+        params = ctypes.c_uint32(series.size)
+        self.o.call(enc, b"setBytes:length:atIndex:", restype=None,
+                    args=(ctypes.byref(params), 4, 0),
+                    argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong))
+        for slot, buf in enumerate(buffers, start=1):
+            self.o.call(enc, b"setBuffer:offset:atIndex:", restype=None,
+                        args=(buf.handle, 0, slot),
+                        argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong))
+        self.o.call(enc, b"dispatchThreadgroups:threadsPerThreadgroup:",
+                    restype=None,
+                    args=(_MTLSize(spectra.shape[0], 1, 1), _MTLSize(n // 16, 1, 1)),
+                    argtypes=(_MTLSize, _MTLSize))
+        self.o.call(enc, b"endEncoding", restype=None)
+        if defer:
+            self.o.call(cmd, b"retain")
+            self._pending_metal = (cmd, buffers)
+            return
+        self.o.call(cmd, b"commit", restype=None)
+        self.o.call(cmd, b"waitUntilCompleted", restype=None)
+        self._check_completed(cmd)
+
+    def _command_buffer(self):
+        pending = getattr(self, "_pending_metal", None)
+        if pending is None:
+            return self.o.call(self.queue, b"commandBuffer")
+        self._pending_metal = None
+        self._forward_inflight = pending
+        return pending[0]
+
+    def cancel_forward(self):
+        for name in ("_pending_metal", "_forward_inflight"):
+            pending = getattr(self, name, None)
+            if pending is not None:
+                self.o.call(pending[0], b"release", restype=None)
+                setattr(self, name, None)
+
     def peaks(self, n, data, tmpl, binsize=None, threshold=0.0, window=None,
               upload_data=True, upload_tmpl=True):
         """Peak index and complex value per (data, template, bin).
@@ -413,26 +466,28 @@ class Context(InputUploads):
         t2 = float(threshold) ** 2 if threshold > 0 else 0.0
 
         key = (n, nd, nt, nbins)
+        key += (shared_key(data, self), shared_key(tmpl, self))
         upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
             key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
             self._cache_room(8*n*(nd+nt) + 12*nd*nt*nbins)
             out = nd * nt * nbins
-            batch = (_Buffer(self, nd * n * 8), _Buffer(self, nt * n * 8),
+            batch = (shared_buffer(data, self) or _Buffer(self, nd * n * 8),
+                     shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
                      _Buffer(self, out * 4), _Buffer(self, out * 8))
             self._batches[key] = batch
             upload_data = upload_tmpl = True
         b_data, b_tmpl, b_idx, b_val = batch
         if upload_data:
-            b_data.write(np.ascontiguousarray(data, np.complex64))
+            write_input(b_data, data)
             self._uploaded["data"][key] = dsig
         if upload_tmpl:
-            b_tmpl.write(np.ascontiguousarray(tmpl, np.complex64))
+            write_input(b_tmpl, tmpl)
             self._uploaded["tmpl"][key] = tsig
 
         pso = self.pipeline(n)
-        cmd = self.o.call(self.queue, b"commandBuffer")
+        cmd = self._command_buffer()
         enc = self.o.call(cmd, b"computeCommandEncoder")
         self.o.call(enc, b"setComputePipelineState:", restype=None,
                     args=(pso,), argtypes=(ctypes.c_void_p,))
@@ -514,14 +569,15 @@ class Context(InputUploads):
         t2 = float(threshold) ** 2 if threshold > 0 else 0.0
 
         key = (n, band, nd, nt, nbins)
+        key += (shared_key(data, self), shared_key(tmpl, self))
         upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
             key, data, tmpl, upload_data, upload_tmpl)
         bufs = self._hier.get(key)
         if bufs is None:
             self._cache_room(8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(24+12*nbins))
             bufs = {
-                "data":  _Buffer(self, nd * n * 8),
-                "tmpl":  _Buffer(self, nt * n * 8),
+                "data":  shared_buffer(data, self) or _Buffer(self, nd * n * 8),
+                "tmpl":  shared_buffer(tmpl, self) or _Buffer(self, nt * n * 8),
                 "cdata": _Buffer(self, nd * band * 8),
                 "ct0":   _Buffer(self, nt * band * 8),
                 "cidx":  _Buffer(self, pairs * 4),
@@ -542,12 +598,13 @@ class Context(InputUploads):
             # and every index came back -1.
             upload_data = upload_tmpl = True
         if upload_data:
-            bufs["data"].write(np.ascontiguousarray(data, np.complex64))
-            bufs["cdata"].write(np.ascontiguousarray(data[:, :band],
-                                                     np.complex64))
+            write_input(bufs["data"], data)
+            if shared_buffer(data, self) is None:
+                bufs["cdata"].write(np.ascontiguousarray(data[:, :band],
+                                                         np.complex64))
             self._uploaded["data"][key] = dsig
         if upload_tmpl:
-            bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
+            write_input(bufs["tmpl"], tmpl)
             bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
             self._uploaded["tmpl"][key] = tsig
 
@@ -562,14 +619,14 @@ class Context(InputUploads):
         # anyway. Only args needs a host write, and it is twelve bytes.
         bufs["args"].write(np.array([0, 1, 1], dtype=np.uint32))
 
-        cmd = self.o.call(self.queue, b"commandBuffer")
+        cmd = self._command_buffer()
         enc = self.o.call(cmd, b"computeCommandEncoder")
 
         def dispatch(pso, params, names, width, groups=pairs, tg=None):
             # tg is the kernel's own numthreads. Deriving it from width
-            # works for the transform kernels, where it is width//16,
-            # and is wrong for compactPairs, which is numthreads(256)
-            # and has no transform length at all.
+            # works for the transform kernels, where it is width//R, and
+            # is wrong for compactPairs, which is numthreads(256) and has
+            # no transform length at all.
             tg = (width // 16) if tg is None else tg
             self.o.call(enc, b"setComputePipelineState:", restype=None,
                         args=(pso,), argtypes=(ctypes.c_void_p,))
@@ -606,6 +663,11 @@ class Context(InputUploads):
 
         # Coarse even: ONE bin over the whole coarse span, so the reported
         # peak IS the maximum -- which is all the gate needs.
+        if shared_buffer(data, self) is not None:
+            dispatch(self.pipeline(4096, "packCoarse"),
+                     (n, band, nd*band, 0), ("data", "cdata"), 4096,
+                     groups=(nd*band + 255)//256, tg=256)
+
         dispatch(coarse,
                  (nt, 0, band, band, band.bit_length() - 1, 1, 0),
                  ("cdata", "ct0", "cidx", "cval"), band)

@@ -43,7 +43,7 @@ actual Metal execution still requires macOS CI.
 | Automatic configuration | CPU cost tables | Device cost tables, with documented fallback where absent |
 | Coarse arithmetic | Float32 | Vulkan uses packed half precision for selected coarse bands; Metal uses its own kernels |
 | Surviving peaks | Full filter arithmetic | Full float32 refinement; compare within roundoff, not bitwise |
-| Series forward FFT | Native CPU FFT | NumPy host FFT plus GPU correlations |
+| Series forward FFT | Native CPU FFT | Own GPU forward FFT, coarse extraction and correlations |
 | Series working memory | Internal block grouping | Materializes all block spectra; `ndata` is not a GPU memory cap |
 | Result ownership | `run` and raw series may reuse storage | Allocation/readback details differ; copy results that must persist |
 | Dispatch cache | CPU plan buffers; optional second pair-batch layout | Buffers/dispatches cached by shape and parameters; cache growth is not bounded by an eviction policy |
