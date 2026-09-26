@@ -71,6 +71,9 @@ typedef struct {
   unsigned nmask;
   int a1,a2,b1,b2;      /* codelet factorisation of N1 and N2 */
   emap ea,eb;           /* index maps for those factorisations */
+  /* 1 when N is below AP_W^2 and the plan runs the pair-batched path instead
+     of the balanced split.  See create_small(). */
+  int small;
 } BP;
 
 int supported(size_t N){
@@ -82,7 +85,14 @@ int supported(size_t N){
      256 is the floor because 2^7 splits 16x8, and 8 is below the AVX-512 lane
      count - the supported set is kept identical across back ends so it does not
      depend on which one the CPU happens to select. */
-  if((N&(N-1))||N<256u||N>(1u<<20)) return 0;
+  if((N&(N-1))||N<64u||N>(1u<<20)) return 0;
+  /* Below AP_W^2 no balanced split exists, and the supported set must not
+     depend on which back end the CPU picked, so 64 and 128 are accepted at
+     EVERY width and run the pair-batched path instead: lanes are independent
+     (data, template) pairs rather than frequencies of one transform, so the
+     whole N-point transform is a single element transform and neither stage
+     needs a full vector of its own.  See create_small(). */
+  if(N<256u) return esupported((int)N);
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
   /* The balanced split is not always best: what matters is which element sizes
@@ -133,8 +143,11 @@ int supported(size_t N){
   return n1>=AP_W && n2>=AP_W;
 }
 
+static void *create_small(size_t N);
+
 void *create(size_t N){
   if(!supported(N)) return NULL;
+  if(N<256u) return create_small(N);
   int m=0; while(((size_t)1<<m)<N) m++;
   int n1=1<<((m+1)/2), n2=1<<(m/2);
   /* The balanced split is not always best: what matters is which element sizes
@@ -353,6 +366,45 @@ void destroy(void *vp){
   free(p->TLr);free(p->TLi);free(p->w1r);free(p->w1i);free(p->w2r);free(p->w2i);
   free(p->hr);free(p->hi);free(p->lr);free(p->li);
   free(p->ser);free(p->scg);free(p);
+}
+
+/* ---- the small sizes: lanes are PAIRS, not frequencies -------------------
+ *
+ * The balanced split needs both factors at least one vector wide, so it has
+ * no legal factorisation below AP_W^2 -- 256 on AVX-512.  The hierarchical
+ * filter's coarse band wants 64 and 128, and the GPU has always had them.
+ *
+ * What the split is FOR is putting AP_W independent transforms in a vector.
+ * At these sizes there is another supply of independent transforms: the pair
+ * loop itself.  Run AP_W (data, template) pairs at once with lanes across
+ * pairs and the outer four-step disappears -- the N-point transform IS one
+ * element transform, efft/efft_prod handle it unchanged, and there is no
+ * corner turn, no intermediate and no twiddle between stages.
+ *
+ * The plan carries only what that needs: the element buffers, the element
+ * split's twiddles, and the bin accumulators.  Everything else in BP belongs
+ * to the balanced path and stays NULL, which destroy() already tolerates.  */
+static void *create_small(size_t N){
+  int M1,M2; efactor((int)N,&M1,&M2);
+  BP *p=ap_alloc64(sizeof(BP)); if(!p) return NULL;
+  memset(p,0,sizeof(BP));
+  p->N=N; p->N1=(int)N; p->N2=1; p->small=1;
+  p->a1=M1; p->a2=M2; p->b1=M1; p->b2=M2;
+  p->ea=emake(M1,M2); p->eb=p->ea;
+  const size_t se=(M2==1)?(size_t)N:(size_t)ESTRIDE(M1)*M2;
+  p->bstride=se;
+  p->bR=ap_alloc64(se*sizeof(vf)); p->bI=ap_alloc64(se*sizeof(vf));
+  p->sR=ap_alloc64(se*sizeof(vf)); p->sI=ap_alloc64(se*sizeof(vf));
+  p->w1r=ap_alloc64((size_t)N*sizeof(float));
+  p->w1i=ap_alloc64((size_t)N*sizeof(float));
+  if(!p->bR||!p->bI||!p->sR||!p->sI||!p->w1r||!p->w1i){ destroy(p); return NULL; }
+  /* itw[k2][e1] = W_N[e1*k2], the four-step twiddle efft consumes directly */
+  for(int k=0;k<(M2==1?1:M2);k++) for(int e=0;e<M1;e++){
+    double a=-2.0*M_PI*(double)e*k/(double)N;
+    p->w1r[(size_t)k*M1+e]=(float)cos(a);
+    p->w1i[(size_t)k*M1+e]=(float)sin(a);
+  }
+  return p;
 }
 
 
@@ -595,8 +647,87 @@ static void stageB(BP*p,int b,vf**RR,vf**RI,int exact){
 
 }
 
+/* ---- small-N kernel: one element transform, lanes across pairs -----------
+ *
+ * Output element k lives at eidx(), not at k -- the four-step inside the
+ * element transform leaves it transposed, exactly as the balanced path's
+ * stage B does, and undoing that costs more than indexing around it.
+ * The lane index is a PAIR here, so every lane shares the index k and the
+ * scan is a plain walk over the window with one running maximum per lane.  */
+
+/* Place one transform's input in the element buffers, broadcast to every lane.
+   Only the single-transform entry points use this (fft, binmax, binmax_split):
+   they are setup-path calls at these sizes, and paying AP_W times the
+   arithmetic to reuse the pair kernel is cheaper than a second kernel with its
+   own correctness surface. */
+static void small_load1(BP*p,const float*re,const float*im,int conj,int inter){
+  const int N=(int)p->N;
+  const int M1=p->ea.single?N:p->a1, M2=p->ea.single?1:p->a2, st=p->ea.st;
+  for(int e2=0;e2<M2;e2++) for(int e1=0;e1<M1;e1++){
+    const int n=e2*M1+e1;
+    float r,i;
+    if(inter){ r=re[2*n]; i=re[2*n+1]; } else { r=re[n]; i=im[n]; }
+    if(conj) i=-i;
+    p->bR[(size_t)e2*st+e1]=V_SET1(r);
+    p->bI[(size_t)e2*st+e1]=V_SET1(i);
+  }
+}
+
+/* Binned maximum over the transformed element buffers, one result per lane.
+   `out` is dense [nlane][nb] with row stride `ostride`; the caller places the
+   rows, because a scattered template selection has no single stride. */
+static void small_scan(BP*p,size_t binsize,float thr,ap_peak*out,size_t ostride,
+                       int conj,size_t ws,size_t we,int nlane){
+  const size_t nb=(we-ws+binsize-1)/binsize;
+  const float t2 = thr>0.f ? thr*thr : 0.f;
+  vf *const bmx=p->bmx,*const bre=p->bre,*const bim=p->bim; vi *const bix=p->bix;
+  const vf seed=V_SET1(t2), zero=V_ZERO(); const vi nix=VI_SET1(-1);
+  for(size_t j=0;j<nb;j++){ bmx[j]=seed; bre[j]=zero; bim[j]=zero; bix[j]=nix; }
+  const int bpow=(binsize&(binsize-1))?-1:(int)__builtin_ctzl(binsize);
+  for(size_t k=ws;k<we;k++){
+    const size_t j = bpow>=0 ? ((k-ws)>>bpow) : ((k-ws)/binsize);
+    const int e=eidx(&p->ea,(int)k);
+    const vf xr=p->bR[e], xi=p->bI[e];
+    const vf m2=V_FMADD(xr,xr,V_MUL(xi,xi));
+    const vm g=V_CMP_GT(m2,bmx[j]);
+    if(__builtin_expect(V_MASK_ANY(g),0)){
+      bmx[j]=V_SEL(g,bmx[j],m2);
+      bre[j]=V_SEL(g,bre[j],xr);
+      bim[j]=V_SEL(g,bim[j],xi);
+      bix[j]=VI_SEL(g,bix[j],VI_SET1((int)k));
+    }
+  }
+  for(size_t j=0;j<nb;j++){
+    float mv[AP_W],rv[AP_W],iv[AP_W]; int xv[AP_W];
+    V_STOREU(mv,bmx[j]); V_STOREU(rv,bre[j]); V_STOREU(iv,bim[j]);
+    VI_STOREU(xv,bix[j]);
+    for(int l=0;l<nlane;l++){
+      ap_peak *o=out+(size_t)l*ostride+j;
+      if(xv[l]<0){ o->index=-1; o->re=0.f; o->im=0.f; o->magnitude=0.f; }
+      else { o->index=xv[l]; o->re=rv[l];
+             o->im=conj?-iv[l]:iv[l]; o->magnitude=sqrtf(mv[l]); }
+    }
+  }
+}
+
+static void small_efft(BP*p){
+  efft((int)p->N,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+}
+
 void fft(void *vp,const float*in,float*out,int conj){
   BP *p=(BP*)vp; const int N1=p->N1,N2=p->N2;
+  if(p->small){
+    /* backward is conj(FFT(conj(x))), the same convention stageA uses */
+    small_load1(p,in,NULL,conj,1);
+    small_efft(p);
+    float t[AP_W];
+    for(int k=0;k<(int)p->N;k++){
+      const int e=eidx(&p->ea,k);
+      V_STOREU(t,p->bR[e]); out[2*k]=t[0];
+      V_STOREU(t,p->bI[e]); out[2*k+1]=conj?-t[0]:t[0];
+    }
+    return;
+  }
   const vf sg = conj?V_SIGNMASK():V_ZERO();
   stageA(p,in,conj);
   for(int b=0;b<N2/AP_W;b++){
@@ -629,6 +760,7 @@ static int bins_reserve(BP*p,size_t nb){
   if(!p->bmx||!p->bre||!p->bim||!p->bix){ p->nbcap=0; return -1; }
   p->nbcap=nb; return 0;
 }
+
 
 template <bool STORE>
 static void binmax_one(BP*p,float thr,ap_peak*out,int conj,size_t ws,size_t we){
@@ -802,12 +934,18 @@ int binmax(void *vp,const float*in,size_t binsize,float thr,ap_peak*out,
   BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
   if(bins_reserve(p,nb)) return -1;
+  if(p->small){ small_load1(p,in,NULL,conj,1); small_efft(p);
+                small_scan(p,binsize,thr,out,0,conj,ws,we,1); return 0; }
   stageA(p,in,conj);
   binmax_core(p,binsize,thr,out,conj,ws,we);
   return 0;
 }
 
-int has_prod(void *vp){ (void)vp; return 1; }   /* every length here is fused */
+/* The fused single-pair loader belongs to the balanced path.  A small plan
+   fuses too, but only AP_W pairs at a time, which is binmax_prod_batch --
+   reporting a fused single-pair path here would make the matched filter store
+   its spectra group-major for a split that does not exist. */
+int has_prod(void *vp){ return !((BP*)vp)->small; }
 
 /* Hand back a buffer holding the output series, or NULL to stop capturing it.
    The scan already has every output sample in registers, so keeping it is one
@@ -886,13 +1024,36 @@ float *series_buf(void *vp,int on){
 }
 
 int split(void *vp,int *n1,int *n2){
-  BP *p=(BP*)vp; *n1=p->N1; *n2=p->N2; return 1;
+  BP *p=(BP*)vp;
+  if(p->small) return 0;                 /* no four-step, so no split to report */
+  *n1=p->N1; *n2=p->N2; return 1;
+}
+
+/* AP_W when this plan runs the pair-batched path, 0 otherwise.  The matched
+   filter needs it before ingest: it decides whether the template bank is
+   stored transposed across lanes. */
+int pairbatch(void *vp){ return ((BP*)vp)->small ? AP_W : 0; }
+
+/* nlane pairs in one call.  dr/di/tr/ti are [element][lane] with AP_W lanes
+   contiguous; lanes beyond nlane are transformed too (a vector is a vector)
+   and their results simply not written out. */
+int binmax_prod_batch(void *vp,const float*dr,const float*di,
+                      const float*tr,const float*ti,int nlane,size_t binsize,
+                      float thr,ap_peak*out,int conj,size_t ws,size_t we){
+  BP *p=(BP*)vp;
+  if(!p->small||nlane<1||nlane>AP_W) return -1;
+  const size_t nb=(we-ws+binsize-1)/binsize;
+  if(bins_reserve(p,nb)) return -1;
+  efft_prod((int)p->N,dr,di,tr,ti,p->bR,p->bI,p->sR,p->sI,p->w1r,p->w1i);
+  small_scan(p,binsize,thr,out,nb,conj,ws,we,nlane);
+  return 0;
 }
 
 int binmax_prod(void *vp,const float*dr,const float*di,
                     const float*tr,const float*ti,size_t binsize,
                     float thr,ap_peak*out,int conj,size_t ws,size_t we){
   BP *p=(BP*)vp;
+  if(p->small) return -1;        /* use binmax_prod_batch */
   size_t nb=(we-ws+binsize-1)/binsize;
   if(bins_reserve(p,nb)) return -1;
   if(p->gmajor) stageA_prod_gm(p,dr,di,tr,ti);
@@ -906,6 +1067,8 @@ int binmax_split(void *vp,const float*inr,const float*ini,size_t binsize,
   BP *p=(BP*)vp;
   size_t nb=(we-ws+binsize-1)/binsize;
   if(bins_reserve(p,nb)) return -1;
+  if(p->small){ small_load1(p,inr,ini,0,0); small_efft(p);
+                small_scan(p,binsize,thr,out,0,conj,ws,we,1); return 0; }
   stageA_split(p,inr,ini,0);     /* caller already folded any input conjugation */
   binmax_core(p,binsize,thr,out,conj,ws,we);
   return 0;
@@ -920,7 +1083,8 @@ const ap_backend *Backend(void){
   static const ap_backend be = {
     hwy::TargetName(HWY_TARGET), AP_W,
     create, destroy, fft, supported,
-    binmax, binmax_split, has_prod, split, binmax_prod, series_buf, series_stride, interp_max
+    binmax, binmax_split, has_prod, split, binmax_prod, series_buf, series_stride, interp_max,
+    pairbatch, binmax_prod_batch
   };
   return &be;
 }

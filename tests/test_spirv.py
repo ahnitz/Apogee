@@ -183,3 +183,45 @@ def test_the_metal_column_is_recorded_and_fits_apple(manifest):
                     "n=%s %s asks Apple for %d KB with no portable build"
                     % (key, entry, info["metal_lds_bytes"] // 1024))
                 assert files["portable"]["lds_bytes"] <= 32768
+
+
+def test_base_coarse_kernels_are_untiled():
+    """TILE_T is compiled in, so the BASE coarse kernel must be TILE_T=1.
+
+    The host falls back to an untiled dispatch whenever ntemplates does not
+    divide by the tile -- nt=1, 3 and 5 never do. If the base kernel
+    carries the band's tile instead of 1, that fallback selects a TILED
+    kernel and dispatches for an untiled one. The kernel then walks TILE_T
+    consecutive templates from p0 = gid.x*TILE_T, past the end of the
+    bank: pairs are never visited and the gate silently drops signal, while
+    out-of-range groups write past the output buffer.
+
+    Traced at band 512, nt=2: 4 groups at p0 = 0, 4, 8, 12 with only pairs
+    0 and 1 reachable, so half the injections vanished.
+
+    A tiled variant must exist alongside it for every band that has a tile,
+    and must be a DIFFERENT kernel -- if they compile identical the tile
+    is not reaching the source.
+    """
+    import matchedfilter as mf
+    spv = pathlib.Path(mf.__file__).parent / "spirv"
+    if not any(spv.glob("tierb_*_c16.spv")):
+        pytest.skip("no coarse kernels in this build")
+
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+    from build_spirv import COARSE_TILE_T
+    checked = 0
+    for band, tile in COARSE_TILE_T.items():
+        base = spv / ("tierb_%d_c16.spv" % band)
+        tiled = spv / ("tierb_%d_c16t%d.spv" % (band, tile))
+        if not base.exists():
+            continue
+        assert tiled.exists(), (
+            "band %d has tile %d but no %s: the untiled fallback would "
+            "select a tiled kernel" % (band, tile, tiled.name))
+        assert base.read_bytes() != tiled.read_bytes(), (
+            "band %d: base and tiled kernels are identical, so TILE_T is "
+            "not reaching the source" % band)
+        checked += 1
+    assert checked, "no band with a tile was checked"

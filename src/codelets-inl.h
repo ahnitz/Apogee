@@ -1529,22 +1529,22 @@ static inline int fft8_prod(const float*restrict dr,const float*restrict di,cons
   vf u36_r=V_ADD(u16_r,v35_r), u36_i=V_ADD(u16_i,v35_i);
   vf u37_r=V_SUB(u16_r,v35_r), u37_i=V_SUB(u16_i,v35_i);
   vf t38_r=u27_r, t38_i=u27_i;
-  br[S*0]=t38_r; bi[S*0]=t38_i;
+  ar[S*0]=t38_r; ai[S*0]=t38_i;
   vf t39_r=u30_r, t39_i=u30_i;
-  br[S*1]=t39_r; bi[S*1]=t39_i;
+  ar[S*1]=t39_r; ai[S*1]=t39_i;
   vf t40_r=u33_r, t40_i=u33_i;
-  br[S*2]=t40_r; bi[S*2]=t40_i;
+  ar[S*2]=t40_r; ai[S*2]=t40_i;
   vf t41_r=u36_r, t41_i=u36_i;
-  br[S*3]=t41_r; bi[S*3]=t41_i;
+  ar[S*3]=t41_r; ai[S*3]=t41_i;
   vf t42_r=u28_r, t42_i=u28_i;
-  br[S*4]=t42_r; bi[S*4]=t42_i;
+  ar[S*4]=t42_r; ai[S*4]=t42_i;
   vf t43_r=u31_r, t43_i=u31_i;
-  br[S*5]=t43_r; bi[S*5]=t43_i;
+  ar[S*5]=t43_r; ai[S*5]=t43_i;
   vf t44_r=u34_r, t44_i=u34_i;
-  br[S*6]=t44_r; bi[S*6]=t44_i;
+  ar[S*6]=t44_r; ai[S*6]=t44_i;
   vf t45_r=u37_r, t45_i=u37_i;
-  br[S*7]=t45_r; bi[S*7]=t45_i;
-  return 1;
+  ar[S*7]=t45_r; ai[S*7]=t45_i;
+  return 0;
 }
 
 static inline int fft16_prod(const float*restrict dr,const float*restrict di,const float*restrict tr,const float*restrict ti,vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,const long S,const long DS){

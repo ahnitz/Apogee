@@ -270,11 +270,11 @@ def lds_bytes(n, cap):
     return ch * wg * 8
 
 
-def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0, ppg=1):
+def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0, ppg=1, tile=1):
     cap = LDS_CAP[n] if cap is None else cap
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   "#define PPG %d\n#define TILE_T %d\n" % (n, cap, coarse16, ppg, COARSE_TILE_T.get(n, 1) if coarse16 else 1) + KERNEL.read_text())
+                   "#define PPG %d\n#define TILE_T %d\n" % (n, cap, coarse16, ppg, tile) + KERNEL.read_text())
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(
@@ -399,6 +399,23 @@ def main(argv=None):
             for _p in (2, 4):
                 compile_one(slangc, n, OUT, entry=centry,
                             suffix="_c16p%d" % _p, coarse16=1, ppg=_p)
+            # The TILE is part of kernel IDENTITY. TILE_T is compiled in,
+            # so the base variants above MUST be TILE_T=1 and the tiled
+            # ones carry their own suffix -- otherwise the host's untiled
+            # fallback (taken whenever ntemplates does not divide by the
+            # tile, which nt=1, 3 and 5 never do) selects a TILED kernel.
+            # That kernel walks TILE_T templates from p0 = gid.x*TILE_T
+            # past the end of the bank: traced at band 512 with nt=2, four
+            # groups at p0 = 0, 4, 8, 12 left only pairs 0 and 1 reachable.
+            #
+            # Spelled exactly as the host spells it: "p1" is omitted.
+            _t = COARSE_TILE_T.get(n, 1)
+            if _t > 1:
+                for _p in (1, 2, 4):
+                    compile_one(slangc, n, OUT, entry=centry, coarse16=1,
+                                ppg=_p, tile=_t,
+                                suffix="_c16%st%d"
+                                       % ("p%d" % _p if _p > 1 else "", _t))
             compile_metal(slangc, n, mcap, centry, MSL, suffix="_c16", coarse16=1)
 
         for entry in ENTRIES:

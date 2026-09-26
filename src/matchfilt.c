@@ -52,6 +52,17 @@ struct ap_mf_plan {
      the flat path skip the per-slot spectrum array the hierarchical
      one needs. */
   float *sfwd,*sspec;         /* [2n] each */
+  /* Pair-batched small-N path.  Below AP_W^2 the transform has no balanced
+     split, so the back end puts AP_W independent PAIRS in a vector instead of
+     AP_W frequencies of one transform -- see create_small() in
+     balanced-inl.h.  What that costs here is a different template bank
+     layout, and it has to be decided before ingest. */
+  int pb;                     /* lanes per batch, 0 when not this path */
+  int ntpad;                  /* template rows, rounded up to a multiple of pb */
+  float *ebr,*ebi;            /* [n][pb] one data spectrum, broadcast to lanes */
+  float *tsr,*tsi;            /* [n][pb] gathered template group, when needed  */
+  ap_peak *pkbuf;             /* [pb][nb] dense results, before placement      */
+  size_t pkcap;
 };
 
 ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
@@ -81,15 +92,28 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
      per-batch getenv into a per-pair one. */
   p->tile = 8;
   { const char *e=getenv("MF_MFTILE"); if(e){ int v=atoi(e); if(v>0) p->tile=v; } }
+  p->pb = ap_plan_pairbatch(p->fft);
+  p->ntpad = p->pb ? ((ntmpl + p->pb - 1)/p->pb)*p->pb : ntmpl;
   p->dre=ap_alloc64((size_t)ndata*n*sizeof(float));
   p->dim=ap_alloc64((size_t)ndata*n*sizeof(float));
-  p->tre=ap_alloc64((size_t)ntmpl*n*sizeof(float));
-  p->tim=ap_alloc64((size_t)ntmpl*n*sizeof(float));
+  p->tre=ap_alloc64((size_t)p->ntpad*n*sizeof(float));
+  p->tim=ap_alloc64((size_t)p->ntpad*n*sizeof(float));
   p->pr =ap_alloc64(n*sizeof(float));
   p->pi =ap_alloc64(n*sizeof(float));
   p->scratch=ap_alloc64(2*n*sizeof(float));
   if(!p->dre||!p->dim||!p->tre||!p->tim||!p->pr||!p->pi||!p->scratch){
     ap_mf_destroy(p); return NULL; }
+  if(p->pb){
+    /* The padding rows are transformed like any other lane and their results
+       discarded, so they must be finite -- zero, not whatever malloc left. */
+    memset(p->tre,0,(size_t)p->ntpad*n*sizeof(float));
+    memset(p->tim,0,(size_t)p->ntpad*n*sizeof(float));
+    p->ebr=ap_alloc64((size_t)n*p->pb*sizeof(float));
+    p->ebi=ap_alloc64((size_t)n*p->pb*sizeof(float));
+    p->tsr=ap_alloc64((size_t)n*p->pb*sizeof(float));
+    p->tsi=ap_alloc64((size_t)n*p->pb*sizeof(float));
+    if(!p->ebr||!p->ebi||!p->tsr||!p->tsi){ ap_mf_destroy(p); return NULL; }
+  }
   return p;
 }
 
@@ -99,6 +123,7 @@ void ap_mf_destroy(ap_mf_plan *p){
   free(p->dre);free(p->dim);free(p->tre);free(p->tim);
   free(p->pr);free(p->pi);free(p->scratch);
   free(p->sfwd);free(p->sspec);
+  free(p->ebr);free(p->ebi);free(p->tsr);free(p->tsi);free(p->pkbuf);
   free(p);
 }
 
@@ -139,6 +164,21 @@ int ap_mf_set_data(ap_mf_plan *p, int d, const float *spec){
 
 int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
   if(!p||t<0||t>=p->nt) return -1;
+  if(p->pb){
+    /* Bank stored [group][element][lane], lane = t % pb.  The pair kernel
+       reads a whole group as one contiguous [element][lane] run, so the
+       transposition is paid once per template here rather than per pair --
+       the same trade that makes group-major storage worth it on the
+       balanced path. */
+    const size_t n=p->n; const int W=p->pb;
+    const size_t base=(size_t)(t/W)*n*W + (size_t)(t%W);
+    float *re=p->tre+base, *im=p->tim+base;
+    for(size_t k=0;k<n;k++){
+      re[k*W]= spec[2*k];
+      im[k*W]=-spec[2*k+1];          /* conjugated at ingest, as below */
+    }
+    return 0;
+  }
   /* conjugate at ingest, not per pair: this runs T times, the pair loop D*T */
   split_store(spec, p->tre+(size_t)t*p->n, p->tim+(size_t)t*p->n, p->n, 1,
               p->gmajor?p->n1:0, p->n2, p->w);
@@ -173,10 +213,81 @@ int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
    Output rows are indexed by the LOCAL template index either way, so a
    selected run writes into the same layout a full run would, leaving the rows
    it skipped untouched. */
+/* The pair loop for the small sizes.
+ *
+ * Lanes are PAIRS here, so the loop nest inverts: a group of pb templates is
+ * one call, and the tiling that exists to keep spectra resident is pointless
+ * at lengths where the whole bank fits L1.  The data spectrum is the same in
+ * every lane, so it is broadcast into [element][lane] once per segment and
+ * reused across every template group -- the one expansion this path pays, and
+ * it amortises over pb pairs.
+ *
+ * Results come back dense [lane][nbins] and are placed by the caller's row
+ * index, because a scattered template selection has no single stride. */
+static int run_pairs_pb(ap_mf_plan *p, int d0, int nd, int t0, int nt,
+                        const int *tsel, int nsel,
+                        size_t binsize, float threshold,
+                        ap_peak *peaks, int *counts, size_t start, size_t end){
+  const size_t n=p->n, nb=(end-start+binsize-1)/binsize;
+  const int W=p->pb;
+  if(p->pkcap < (size_t)W*nb){
+    free(p->pkbuf);
+    p->pkbuf=ap_alloc64((size_t)W*nb*sizeof(ap_peak));
+    if(!p->pkbuf){ p->pkcap=0; return -1; }
+    p->pkcap=(size_t)W*nb;
+  }
+  int total=0;
+  for(int d=0;d<nd;d++){
+    const float *Dr=p->dre+(size_t)(d0+d)*n, *Di=p->dim+(size_t)(d0+d)*n;
+    for(size_t k=0;k<n;k++){
+      const float a=Dr[k], b=Di[k];
+      float *er=p->ebr+k*W, *ei=p->ebi+k*W;
+      for(int l=0;l<W;l++){ er[l]=a; ei[l]=b; }
+    }
+    for(int tt=0;tt<nsel;tt+=W){
+      const int cnt=(nsel-tt<W)?nsel-tt:W;
+      const int base=t0+tt;
+      const float *Tr,*Ti;
+      if(!tsel && (base%W)==0){
+        /* the group is already contiguous in the bank, padding included */
+        Tr=p->tre+(size_t)(base/W)*n*W;
+        Ti=p->tim+(size_t)(base/W)*n*W;
+      } else {
+        memset(p->tsr,0,n*(size_t)W*sizeof(float));
+        memset(p->tsi,0,n*(size_t)W*sizeof(float));
+        for(int l=0;l<cnt;l++){
+          const int t=t0+(tsel?tsel[tt+l]:(tt+l));
+          const float *sr=p->tre+(size_t)(t/W)*n*W+(size_t)(t%W);
+          const float *si=p->tim+(size_t)(t/W)*n*W+(size_t)(t%W);
+          for(size_t k=0;k<n;k++){ p->tsr[k*W+l]=sr[k*W]; p->tsi[k*W+l]=si[k*W]; }
+        }
+        Tr=p->tsr; Ti=p->tsi;
+      }
+      if(ap_binmax_prod_batch(p->fft,p->ebr,p->ebi,Tr,Ti,cnt,binsize,threshold,
+                              p->pkbuf,NULL,AP_BACKWARD,start,end)<0) return -1;
+      for(int l=0;l<cnt;l++){
+        const int t = tsel ? tsel[tt+l] : (tt+l);
+        const size_t row=(size_t)d*nt+t;
+        int c=0;
+        for(size_t j=0;j<nb;j++){
+          const ap_peak pk=p->pkbuf[(size_t)l*nb+j];
+          peaks[row*nb+j]=pk;
+          if(pk.index>=0) c++;
+        }
+        if(counts) counts[row]=c;
+        total+=c;
+      }
+    }
+  }
+  return total;
+}
+
 static int run_pairs(ap_mf_plan *p, int d0, int nd, int t0, int nt,
                      const int *tsel, int nsel,
                      size_t binsize, float threshold,
                      ap_peak *peaks, int *counts, size_t start, size_t end){
+  if(p->pb) return run_pairs_pb(p,d0,nd,t0,nt,tsel,nsel,binsize,threshold,
+                                peaks,counts,start,end);
   const size_t n=p->n, nb=(end-start+binsize-1)/binsize;
   /* Tile the pair loop.  Running d outer already keeps one data spectrum resident
      across the t loop, but every template then streams once per d: D*(1+T)

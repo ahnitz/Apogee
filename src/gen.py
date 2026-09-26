@@ -57,7 +57,14 @@ class Gen:
         n=s.n; N=n; sstride=1; cur=n
         A=("ar","ai"); B=("br","bi")
         X,Y=A,B; flips=0
-        if (s.preload or s.tw) and len(radices)==1: Y=A
+        # A single-pass codelet does not READ ar - preload, tw and prod all
+        # bring their inputs in another way - so it can write its result there
+        # and keep the ping-pong parity even.  prod was left out of this test,
+        # so fft8_prod alone landed its result in the SCRATCH pair and said so
+        # in its return value, which efft_prod (and every other caller) ignores.
+        # Nothing asked for an 8-point product codelet until the small-N path
+        # did, and then band 128 came back as garbage.
+        if (s.preload or s.tw or s.prod) and len(radices)==1: Y=A
         # Fused twiddle: multiply the inputs by runtime factors as they are read,
         # instead of a separate pass that re-reads and re-writes the whole block.
         pre={}
@@ -142,7 +149,7 @@ class Gen:
 
 def build(n,radices,name,tw=False,preload=False,prod=False):
     g=Gen(n,name,tw,preload,prod); flip=g.run(radices)
-    if (preload or tw) and len(radices)==1: flip=0
+    if (preload or tw or prod) and len(radices)==1: flip=0
     body="\n".join(g.L)
     cdefs="\n".join("  const vf %s=V_SET1(%sf);"%(v,k) for k,v in g.consts.items())
     if prod:

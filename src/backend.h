@@ -41,6 +41,15 @@ typedef struct {
   float (*interp)(void *, size_t ws, size_t we, float evmax,
                   const float *hlo, const float *hhi, int K, int ncand,
                   float frac);
+  /* Lane count when this plan batches PAIRS instead of frequencies -- the
+     small-N path, where no balanced split exists.  0 for every other plan. */
+  int   (*pairbatch)(void *);
+  /* nlane pairs at once.  dr/di/tr/ti are [element][lane], AP_W lanes
+     contiguous; `out` is dense [nlane][nbins]. */
+  int   (*binmax_prod_batch)(void *, const float *dr, const float *di,
+                             const float *tr, const float *ti, int nlane,
+                             size_t binsize, float thr, ap_peak *out, int conj,
+                             size_t start, size_t end);
 } ap_backend;
 
 /* The kernel for the target Highway's runtime dispatch selected, or NULL if

@@ -101,7 +101,16 @@ static inline int codelet_tw(int m,vf*restrict ar,vf*restrict ai,vf*restrict br,
 }
 /* itwr/itwi hold W_M[e1*k2p] laid out [k2p][e1], so the second half can consume
    them directly. */
-/* Dispatch for the product-loading codelets. */
+/* Dispatch for the product-loading codelets.
+ *
+ * CONTRACT: the result lands in ar/ai.  The generated codelets ping-pong
+ * between the two buffer pairs and report the parity in their return value,
+ * and every caller here ignores it, so an odd-parity codelet would silently
+ * return the scratch buffer's contents.  gen.py keeps the parity even for all
+ * of them by writing a single-pass codelet's result into ar, which it does
+ * not read.  fft8_prod was the one exception; nothing asked for an 8-point
+ * product codelet until the small-N path did, and band 128 came back as
+ * noise.  If a new codelet is added here, check that it returns 0. */
 static inline int codelet_prod(int m,const float*restrict dr,const float*restrict di,
                                const float*restrict tr,const float*restrict ti,
                                vf*restrict ar,vf*restrict ai,vf*restrict br,vf*restrict bi,

@@ -634,6 +634,8 @@ class Context:
         vk = self.vk
         tile = _COARSE_TILE.get(band)
         _ppg = 1          # pairs per workgroup; raised only on the c16 path
+        _tile = 1         # templates per tile; compiled into the kernel,
+                          # so it is chosen with the kernel, not later
         if tile:
             cpipe, clayout, cset_layout = self._build_pipeline(
                 ("coarse", band), "coarse_%d.spv" % band, 3, 8)
@@ -658,12 +660,27 @@ class Context:
             _ppg = max(1, min(4, 512 // band))
             if (nd * nt) % _ppg:
                 _ppg = 1          # a partial group would index past the data
-            if (nd * nt) % _ppg:
-                _ppg = 1          # a partial group would index past the data
+
+            # TILE_T is COMPILED INTO the kernel, so it is part of kernel
+            # identity and must be decided HERE, where the kernel is
+            # chosen -- not at dispatch time, where the two could disagree.
+            #
+            # The tile walks TILE_T CONSECUTIVE TEMPLATES from one data
+            # row, so ntemplates must divide by it. The pair count dividing
+            # is NOT sufficient: nt=2 with tile=4 gives 4 % 4 == 0 while
+            # the tile still runs past the end of the bank. Traced at
+            # band 512: 4 groups at p0 = 0, 4, 8, 12 with only pairs 0 and
+            # 1 reachable, so half the signals were dismissed -- and at
+            # nt=4 the out-of-range groups WROTE past the output buffer.
+            _tile = _COARSE_TILE_T.get(band, 1)
+            if _tile > 1 and (nt % _tile or (nd * nt) % (_ppg * _tile)):
+                _tile = 1
+
             cpipe, clayout, cset_layout = self._build_pipeline(
-                ("coarse16", band, _ppg),
-                "tierb_%d_c16%s.spv" % (band,
-                    "p%d" % _ppg if _ppg > 1 else ""),
+                ("coarse16", band, _ppg, _tile),
+                "tierb_%d_c16%s%s.spv" % (band,
+                    "p%d" % _ppg if _ppg > 1 else "",
+                    "t%d" % _tile if _tile > 1 else ""),
                 _NBIND, _PUSH_BYTES)
         # gatedTierB is NOT built. Its only caller was coarse_odd(), the
         # last remnant of the even/odd split, which was never invoked after
@@ -741,11 +758,14 @@ class Context:
                                            band.bit_length() - 1, 1, 0)
                 vk.vkCmdPushConstants(cmd, clayout, _STAGE_COMPUTE, 0,
                                       _PUSH_BYTES, ctypes.byref(pc))
-                # PPG pairs per workgroup, so PPG times fewer groups.
-                _tt = _COARSE_TILE_T.get(band, 1) if _use_c16(band) else 1
-                if pairs % (_ppg * _tt):
-                    _tt = 1
-                vk.vkCmdDispatch(cmd, pairs // (_ppg * _tt), 1, 1)
+                # PPG pairs per workgroup and TILE_T templates per pair,
+                # so PPG*TILE_T times fewer groups.
+                #
+                # _tile is the one the KERNEL was compiled with -- it is
+                # chosen where the pipeline is chosen. Recomputing it here
+                # is what let the two disagree: the kernel carried tile 4
+                # while this dispatched for tile 1.
+                vk.vkCmdDispatch(cmd, pairs // (_ppg * _tile), 1, 1)
 
         def barrier():
             mb = _MemBarrier(46, None, _ACCESS_SHADER_WRITE, _ACCESS_SHADER_READ)
