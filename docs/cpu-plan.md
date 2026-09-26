@@ -313,11 +313,26 @@ keys at n=4096; the run was still going), ranking the same six points:
     steep       5.5    256     512     512     FIXED
     steep       6.0    256     512     256     REGRESSED
 
-Right at 2 of 6 before, 4 of 6 after -- but one point that was right is now
-wrong, so this is not a case of the rows simply being stale. Some of the
-error is in the lookup rather than the rows: `score_cost_rule.py` measured
-candidate pricing rules spanning 54% to 88% of the best available speedup,
-which is the same magnitude as the misranking here.
+Right at 2 of 6 before, 4 of 6 after.
+
+**The lookup is not the fix, and that was worth checking before anyone
+tuned it.** One point regressing suggested the pricing rule shared the
+blame. It does not. Every rule score_cost_rule.py implements, applied to
+the SHIPPED rows at these six points:
+
+    covering (f>=ours, max)    2 / 6   worst 1.83x
+    pessimistic (f<=ours,max)  2 / 6   worst 3.74x
+    nearest in (f, beff)       3 / 6   worst 2.14x
+    interp in f                3 / 6   worst 2.14x
+    plane fit (f, beff) k=6    3 / 6   worst 2.14x
+    plane fit (f, beff) k=4    3 / 6   worst 3.00x
+    IDW (f, beff) k=4          3 / 6   worst 2.14x   <- what ships
+
+No rule gets past 3 of 6. The shipped rows cannot support a correct ranking
+under any of them, while re-measured rows reach 4 of 6 under the rule that
+already ships. So the rows are the problem; changing how they are
+interpolated is not a route, and the single regression is more likely
+variance than evidence about the lookup.
 
 The obvious explanation is coverage, and it is wrong. The retuned rows
 span f 0.690-1.000 against the shipped table's 0.122-1.000 -- dense but
