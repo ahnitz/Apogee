@@ -30,9 +30,11 @@ def test_exported_costs_round_trip_through_the_library(tmp_path):
     spec.loader.exec_module(module)
     result = dict(n=1024, snr=6., data=8, templates=32, device='cpu',
                   flat_seconds=.002,
-                  candidates=[dict(band=128, fraction=.9, beff=32., seconds=.001)])
+                  candidates=[dict(band=128, fraction=.9, beff=32., seconds=.001, cost_rows=1),
+                              dict(band=64, fraction=.7, beff=32., seconds=.0001, cost_rows=0)])
     output = tmp_path/'cost.txt'
     module.export_cost(result, output)
     table = module.mf._load_tuning(str(output))
+    assert {key[1] for key in table['cost']} == {128}
     for taps in (4,8):
         assert table['cost'][(1024,128,2,taps,6.,1.)] == [(.9,32.,.5)]

@@ -146,3 +146,11 @@ reference change, dispatch eviction, and bounded series batches. Execution-only
 matrix/arity tests explicitly open the gate; statistical tests continue to use
 measured calibration. The benchmark's superset check now explicitly opens the
 gate instead of relying on below-grid SNR clamping.
+
+The exact cleanup snapshot, isolated from concurrent GPU-extension work and
+launched from `/tmp`, passed **660 tests, 5 skipped** on CPU/Radeon 8060S.
+The shared checkout also passed 676 tests, 5 skipped before the final below-grid
+budget and float32-range guards; those guards passed 134 focused tests, and their
+21 calibration-contract tests passed with warnings treated as errors. The cost
+export regression additionally verifies that newly measured bands without
+existing cost coverage are not exported into selection.

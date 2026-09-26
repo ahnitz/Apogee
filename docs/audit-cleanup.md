@@ -46,8 +46,10 @@ there is no interpolation in the raw-maximum gate.
 - `tools/audit_selection.py` measures all calibrated bands, including bands
   without cost rows, on a chosen device and batch shape. It reports missing
   calibration/cost coverage, times candidates in alternating order, and can
-  export a workload-specific file via `--cost-output` for an explicit `MF_COST`
-  override. It does not alter shipped defaults or perform runtime autotuning.
+  export repriced existing cost-covered bands via `--cost-output` for an
+  explicit `MF_COST` override. Newly measured bands remain diagnostic until
+  their accuracy is independently established; lookup alone is insufficient,
+  as the low-ratio small-band defect in `tests/test_low_ratio_corner.py` shows. It does not alter shipped defaults or perform runtime autotuning.
 
 Example: `python tools/audit_selection.py --n 4096 --data 8 --templates 32
 --device gpu --json selection.json --cost-output measured-cost.txt`.

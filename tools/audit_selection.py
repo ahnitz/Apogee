@@ -75,13 +75,18 @@ def audit(n=4096, snr=6., fd=1e-3, nd=8, nt=32, device='cpu', reps=7):
 
 
 def export_cost(result, path):
-    """Write a deliberately workload-specific MF_COST file for review."""
+    """Reprice existing bands; new bands need separate accuracy validation.
+
+    File lookup alone is not evidence that an unselected corner meets its
+    budget. The small-band low-ratio defect is a concrete counterexample.
+    """
     lines = ["# Measured by audit_selection.py; one reference and batch shape.",
              "# n=%d data=%d templates=%d device=%s" %
              (result['n'], result['data'], result['templates'], result['device']),
+             "# Existing cost-covered bands only; new-band accuracy is not established.",
              "# Do not replace broad default coverage with this narrow measurement."]
     for row in result['candidates']:
-        if 'seconds' not in row:
+        if 'seconds' not in row or not row['cost_rows']:
             continue
         # Taps do not change the raw-max execution; retain both table keys.
         for taps in (4, 8):
