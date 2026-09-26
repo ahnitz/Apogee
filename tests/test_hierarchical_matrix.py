@@ -534,31 +534,14 @@ def test_every_size_and_band_is_correct_not_merely_runnable(device):
             "cpu did not run %s" % sorted(want - set(ran)))
 
 
-def test_cpu_and_gpu_agree_through_run_series():
-    """Same call, same input, both backends -- indices must be IDENTICAL.
+@pytest.mark.parametrize("open_gate", [False, True])
+def test_cpu_and_gpu_agree_through_run_series(open_gate):
+    """Independent tuning can dismiss different peaks, never change survivors.
 
-    A correctness report claimed the GPU "invents triggers": counts nearly
-    right but ~26% of the set at the wrong index, which would point at lag
-    mapping or bin assignment rather than magnitude. Nothing in the suite
-    could confirm or refute it, because every cross-device test used
-    single-block run() while the report used run_series over many blocks --
-    and the block loop is where a lag-mapping error would live.
-
-    It does not reproduce: 0 mismatches of 6139 overlapping triggers, flat
-    and hierarchical alike. The likely explanation for the original report
-    is downstream clustering -- with a cluster window, a legitimate
-    dismissal promotes the second-loudest trigger in the window, which
-    appears at a different time and reads as a trigger the reference never
-    had.
-
-    This pins that, so the question does not have to be reopened by
-    inspection. It also pins the ONE-SIDED GUARANTEE across the series
-    path: hierarchical may dismiss, never promote.
-
-    Scaling matters and is not decoration. An unscaled coloured series
-    produces ZERO triggers at any useful threshold, and this test then
-    passes while comparing two empty sets -- which is exactly how it would
-    fail to see the bug it exists to catch.
+    Flat outputs and hierarchical outputs with an open gate must agree in
+    both index and complex value. Automatically tuned gates may omit different
+    peaks on different devices; each still obeys the one-sided guarantee.
+    The scaled series ensures this compares hundreds of real triggers.
     """
     n, nt, ntaps, snr = 4096, 32, 451, 5.0
     rng = np.random.default_rng(7)
@@ -585,8 +568,11 @@ def test_cpu_and_gpu_agree_through_run_series():
         f.set_templates(H)
         out[("flat", dev)] = f.run_series(ser, starts, ws, we,
                                           binsize=n, threshold=snr)
-        h = mf.HierarchicalFilter(n, 1, nt, snr=snr, fd=1e-2, device=dev)
+        h = mf.HierarchicalFilter(n, 1, nt, snr=snr, fd=1e-2, device=dev,
+                                  band=512 if open_gate else None)
         h.set_reference(ref)
+        if open_gate:
+            h.set_coarse_threshold(0)
         h.set_templates(H)
         out[("hier", dev)] = h.run_series(ser, starts, ws, we,
                                           binsize=n, threshold=snr)
@@ -603,36 +589,18 @@ def test_cpu_and_gpu_agree_through_run_series():
         assert int((both & (a != b)).sum()) == 0, (
             "%s: %d of %d overlapping triggers at different indices"
             % (kind, int((both & (a != b)).sum()), int(both.sum())))
-        assert int(((a >= 0) & (b < 0)).sum()) == 0, "%s: %s-only triggers" % (kind, devices[0])
-        assert int(((a < 0) & (b >= 0)).sum()) == 0, "%s: %s-only triggers" % (kind, devices[1])
+        if kind == "flat" or open_gate:
+            np.testing.assert_array_equal(a, b)
+        assert both.any()
+        np.testing.assert_allclose(out[(kind, devices[0])]["value"][both],
+                                   out[(kind, devices[1])]["value"][both],
+                                   rtol=1e-4, atol=1e-5)
 
-        # VALUES too, not just indices. Comparing indices alone missed a
-        # report of the GPU differing by 13% relative on triggers both
-        # engines found at the SAME time and template -- clustering cannot
-        # do that, since it decides which triggers survive, not what one
-        # is worth.
-        #
-        # Measured here: the GPU is systematically LOWER, ~97% of the
-        # differing points, but only by ~1.4e-06 relative -- float32
-        # accumulation order, not a defect. The bound is set well above
-        # that and far below anything that could flip a threshold, so it
-        # catches a real divergence without failing on roundoff.
-        av = np.abs(out[(kind, devices[0])]["value"])[both]
-        bv = np.abs(out[(kind, devices[1])]["value"])[both]
-        rel = np.abs(av - bv) / np.maximum(av, 1e-30)
-        assert float(rel.max()) < 1e-4, (
-            "%s: values differ by %.2e relative at matching (block, "
-            "template, index) -- %d of %d points over 1e-6"
-            % (kind, float(rel.max()), int((rel > 1e-6).sum()), int(rel.size)))
-
-    # The one-sided guarantee, on the series path, per device.
     for dev in devices:
-        fi = out[("flat", dev)]["index"]
-        hi = out[("hier", dev)]["index"]
-        promoted = int(((fi < 0) & (hi >= 0)).sum())
-        assert promoted == 0, (
-            "%s: hierarchical PROMOTED %d triggers the flat filter does "
-            "not report -- the gate may only ever dismiss" % (dev, promoted))
+        assert_one_sided(out[("flat", dev)], out[("hier", dev)], dev)
+        if open_gate:
+            np.testing.assert_array_equal(out[("flat", dev)]["index"],
+                                          out[("hier", dev)]["index"])
 
 
 def test_gpu_values_stay_at_roundoff_across_conditioning():
@@ -708,3 +676,91 @@ def test_gpu_values_stay_at_roundoff_across_conditioning():
 
     assert checked > 200, \
         "only %d common triggers: this compared almost nothing" % checked
+
+
+def test_devices_agree_across_windows_and_binsizes():
+    """Cross-device equality over the WINDOW and BINSIZE axes, values too.
+
+    A correctness report placed a GPU argmax bug in exactly this corner:
+    a restricted window with binsize equal to the WINDOW length rather than
+    the transform length -- one bin over a sub-range of lags, which is the
+    shape pycbc's flat path calls. The claim was that the peak search
+    lands on a smaller peak in 12.6% of (block, template) pairs.
+
+    A coverage audit explains why nothing here could have confirmed or
+    refuted it: of the tests that compared two devices at all, NONE passed
+    a restricted window and NONE passed binsize != n. Every cross-device
+    comparison ran one bin over the full transform.
+
+    It does not reproduce -- 270 configurations, zero mismatches -- but the
+    gap was real and this closes it. Both axes matter and they interact:
+    the window selects which lags are searched, the binsize partitions
+    them, and an off-by-one in either shows up only when the other is not
+    trivial.
+
+    Asserts INDEX and VALUE, because an argmax bug lands on a real peak at
+    a real lag: the value is self-consistent and only a cross-check against
+    the other device reveals it is not the maximum.
+    """
+    n, nd, nt = 4096, 8, 16
+    devices = [d for d in DEVICES]
+    if len(devices) < 2:
+        pytest.skip("need both a CPU and a GPU to compare")
+
+    rng = np.random.default_rng(5)
+    H = np.stack([template_with_power(n, inspiral_power(n, exponent=e))
+                  for e in np.linspace(-7 / 3.0, -4 / 3.0, nt)])
+    D = noise((nd, n), rng)
+    for i in range(0, nd, 2):
+        D[i] += (7.0 * H[i % nt]).astype(np.complex64)
+
+    cases = []
+    for ws, we in ((0, n), (n // 8, 7 * n // 8), (451, n), (1, n - 1),
+                   (n // 4, n // 2)):
+        for bs in (we - ws, n, max(1, (we - ws) // 4)):
+            if 0 < bs <= n:
+                cases.append((ws, we, bs))
+
+    compared = 0
+    for ws, we, bs in cases:
+        out = {}
+        for dev in devices:
+            f = mf.MatchedFilter(n, nd, nt, device=dev)
+            f.set_templates(H)
+            f.set_data(D)
+            out[dev] = f.run(binsize=bs, threshold=4.0, window=(ws, we))
+        a, b = out[devices[0]]["index"], out[devices[1]]["index"]
+        av = np.abs(out[devices[0]]["value"])
+        bv = np.abs(out[devices[1]]["value"])
+        both = (a >= 0) & (b >= 0)
+        tag = "window=(%d,%d) binsize=%d" % (ws, we, bs)
+
+        assert int(((a >= 0) & (b < 0)).sum()) == 0, \
+            "%s: %s reports peaks %s does not" % (tag, devices[0], devices[1])
+        assert int(((a < 0) & (b >= 0)).sum()) == 0, \
+            "%s: %s reports peaks %s does not" % (tag, devices[1], devices[0])
+        assert int((both & (a != b)).sum()) == 0, (
+            "%s: %d of %d peaks at DIFFERENT lags -- an argmax divergence"
+            % (tag, int((both & (a != b)).sum()), int(both.sum())))
+        if both.any():
+            rel = np.abs(av[both] - bv[both]) / np.maximum(av[both], 1e-30)
+            assert float(rel.max()) < 1e-4, \
+                "%s: values differ by %.2e relative" % (tag, float(rel.max()))
+            # Every lag reported must lie inside the requested window.
+            # "Scans the wrong range" and "misses a candidate inside the
+            # right range" are different bugs and this separates them.
+            #
+            # Indices are ABSOLUTE lags in [0, n), not window-relative --
+            # asserting the relative convention failed on the CPU, which
+            # was this test being wrong rather than the library.
+            for dev in devices:
+                idx = out[dev]["index"]
+                live = idx[idx >= 0]
+                if live.size:
+                    assert live.min() >= ws and live.max() < we, (
+                        "%s: %s returned a lag outside the window, "
+                        "min %d max %d" % (tag, dev, int(live.min()), int(live.max())))
+        compared += int(both.sum())
+
+    assert compared > 1000, \
+        "only %d peaks compared across %d cases" % (compared, len(cases))
