@@ -55,6 +55,7 @@ def test_explicit_configuration_is_always_honoured():
         hf = mf.HierarchicalFilter(n, ndata=1, ntemplates=2, snr=5.0, fd=1e-3,
                                    band=band, taps=8)
         assert hf.config == (band, 8)
+        hf.set_coarse_threshold(0.0)
         # and it works without a reference, which autotuning cannot do
         H = np.stack([template_with_power(n, inspiral_power(n))
                       for _ in range(2)])

@@ -132,8 +132,6 @@ _BIND_POINT_COMPUTE = 1
 _ONE_TIME_SUBMIT = 0x1
 _STAGE_COMPUTE_BIT = 0x800
 _ACCESS_SHADER_READ, _ACCESS_SHADER_WRITE = 0x20, 0x40
-_NBIND_GATED = 5   # data, tmpl, idx, val, coarse
-_PUSH_BYTES_GATED = 32  # 8 words: one threshold, not two
 _WHOLE_SIZE = 0xFFFFFFFFFFFFFFFF
 
 _u32, _u64, _vp = ctypes.c_uint32, ctypes.c_uint64, ctypes.c_void_p
@@ -426,19 +424,6 @@ class Context(InputUploads):
         raise VulkanError("no host-visible memory type available")
 
     # ---- pipeline ---------------------------------------------------------
-    def gated_pipeline(self, n):
-        """The coarse-gated refinement pipeline for length ``n``.
-
-        Same 32 KB fallback as the flat kernel, and for the same reason. It
-        was missing here: a device offering 32 KB of shared memory ran the
-        flat path happily and then could not create this pipeline at all, so
-        the hierarchical mode was unavailable on hardware the flat mode
-        supported. Every device tested here has 64 KB, which is exactly why
-        nothing caught it.
-        """
-        return self._build_pipeline(("gated", n), self._gated_file(n),
-                                    _NBIND_GATED, _PUSH_BYTES_GATED)
-
     def _refine_file(self, n):
         """refineListed for `n`, portable build where the device needs it."""
         info = (_manifest().get("modules", {}).get(str(n)) or {}).get("refine")
@@ -447,14 +432,6 @@ class Context(InputUploads):
                 > self.max_shared_memory:
             return info["portable"]["file"]
         return "refine_%d.spv" % n
-
-    def _gated_file(self, n):
-        info = (_manifest().get("modules", {}).get(str(n)) or {}).get("gated")
-        if info and info.get("portable") \
-                and _manifest()["modules"][str(n)].get("lds_bytes", 0) \
-                > self.max_shared_memory:
-            return info["portable"]["file"]
-        return "gated_%d.spv" % n
 
     def pipeline(self, n):
         """Build (and cache) the compute pipeline for transform length ``n``.
@@ -533,7 +510,7 @@ class Context(InputUploads):
         self._pipelines[key] = (pipe, layout, set_layout)
         return self._pipelines[key]
 
-    def hier_peaks(self, n, band, data, tmpl, ct0, ct1, even_thr, raw_thr,
+    def hier_peaks(self, n, band, data, tmpl, ct0, raw_thr,
                    binsize=None, threshold=0.0, window=None,
                    upload_data=True, upload_tmpl=True):
         """The whole hierarchical filter in ONE command buffer.
@@ -562,8 +539,7 @@ class Context(InputUploads):
             pi, pv = [], []
             for a in range(lo, hi, span):
                 bnd = min(a + span, hi)
-                i2, v2 = self.hier_peaks(n, band, data, tmpl, ct0, ct1,
-                                         even_thr, raw_thr, binsize=binsize,
+                i2, v2 = self.hier_peaks(n, band, data, tmpl, ct0, raw_thr, binsize=binsize,
                                          threshold=threshold, window=(a, bnd),
                                          upload_data=upload_data,
                                          upload_tmpl=upload_tmpl)
@@ -577,13 +553,14 @@ class Context(InputUploads):
 
         key = ("hier", n, band, nd, nt, nbins, binsize, shift, lo, hi,
                int(np.float32(t2).view(np.uint32)),
-               float(even_thr), float(raw_thr))
+               float(raw_thr))
         upload_data, upload_tmpl, dsig, tsig = self._input_uploads(
             key, data, tmpl, upload_data, upload_tmpl)
         batch = self._hier.get(key)
         if batch is None:
+            self._cache_room(8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(24+12*nbins))
             batch = self._make_hier(key, n, band, nd, nt, nbins, binsize,
-                                    shift, lo, hi, t2, even_thr, raw_thr)
+                                    shift, lo, hi, t2, raw_thr)
             self._hier[key] = batch
             upload_data = upload_tmpl = True   # see the note in peaks()
         bufs, cmd = batch
@@ -603,7 +580,6 @@ class Context(InputUploads):
                 bufs["ct0"].write(_pack_half2(ct0))
             else:
                 bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
-            bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
             self._uploaded["tmpl"][key] = tsig
 
         cmds = (_vp * 1)(cmd)
@@ -645,7 +621,7 @@ class Context(InputUploads):
         return dset
 
     def _make_hier(self, key, n, band, nd, nt, nbins, binsize, shift, lo, hi,
-                   t2, even_thr, raw_thr):
+                   t2, raw_thr):
         vk = self.vk
         tile = _COARSE_TILE.get(band)
         _ppg = 1          # pairs per workgroup; raised only on the c16 path
@@ -713,7 +689,6 @@ class Context(InputUploads):
             "tmpl":  _Buffer(self, nt * n * 8),
             "cdata": _Buffer(self, nd * band * (4 if _use_c16(band) and not tile else 8)),
             "ct0":   _Buffer(self, nt * band * (4 if _use_c16(band) and not tile else 8)),
-            "ct1":   _Buffer(self, nt * band * 8),
             "cidx":  _Buffer(self, pairs * 4),
             "cval":  _Buffer(self, pairs * 8),
             # The compacted survivor list and the indirect group count.
@@ -940,6 +915,7 @@ class Context(InputUploads):
             key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
+            self._cache_room(8*n*(nd+nt) + 12*nd*nt*nbins)
             batch = self._make_batch(key, n, nd, nt, nbins,
                                      binsize, shift, lo, hi, t2)
             self._batches[key] = batch
@@ -975,6 +951,28 @@ class Context(InputUploads):
         val = b_val.read(np.float32, out * 2).view(
             np.complex64).reshape(nd, nt, nbins)
         return idx, val
+
+    def clear_cache(self):
+        """Release completed dispatch storage while retaining pipelines."""
+        vk = self.vk
+        commands = [batch[-1] for batch in self._batches.values()]
+        commands += [batch[-1] for batch in self._hier.values()]
+        if commands:
+            array = (_vp * len(commands))(*commands)
+            vk.vkFreeCommandBuffers.argtypes = [_vp, _vp, _u32, ctypes.POINTER(_vp)]
+            vk.vkFreeCommandBuffers(self.device, self.command_pool, len(commands), array)
+        for batch in self._batches.values():
+            for buf in batch[:-1]:
+                buf.destroy()
+        for bufs, _cmd in self._hier.values():
+            for buf in bufs.values():
+                buf.destroy()
+        self._batches.clear()
+        self._hier.clear()
+        for pool in getattr(self, "_pools", []):
+            vk.vkDestroyDescriptorPool(self.device, pool, None)
+        self._pools = []
+        self._uploaded = {"data": {}, "tmpl": {}}
 
     def destroy(self):
         # Idempotent: __del__ calls this too, and a caller that already

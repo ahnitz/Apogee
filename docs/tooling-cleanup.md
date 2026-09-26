@@ -88,8 +88,44 @@ costs at n=4096, SNR 5/5.5/6/6.5, reference anchor fractions .9/.99 and bandwidt
 four rounds, pivot band1024/K8, on Ryzen AI Max+ 395 AVX3. These rows are **not
 installed as defaults**: appending their 64/128 rows made the sparse lookup
 select band128/K4 on the inspiral reference, measuring 4.37× over flat versus
-10.75× for band512/K4 in that run. That would be a selection performance
-regression. More representative reference/batch coverage and validation of the
+10.75× for band512/K4 in that run.
+
+**Followed up: that is a symptom, and the cause is a CORRECTNESS defect, not a
+performance one.** Band 128 at the reference it was picked for dismisses
+2.9e-2 of INJECTED SIGNALS against a 1e-3 budget. It should never have been
+admissible, and enabling the cost rows would have shipped a gate that misses
+its promise.
+
+Two separate things were wrong with the original diagnosis. The cost rows
+themselves are measured at reference anchors of B_eff 8 to 40, while real
+references query at 45 to 225 -- so every small-band lookup extrapolates,
+which is the same mistake ACC2 made and ACC2R was created to fix. But fixing
+that alone would not help, because the accuracy side admits band 128 anyway.
+
+The real limit is narrower than "small bands are bad":
+
+    band   f       ratio   table thr   injections dismissed
+     128   0.6970   1.24      3.3341    15 of 523 = 2.9e-2   <-- over
+     128   0.9476   2.68      3.9209     0 of 533
+     128   0.9858   6.60      4.3348     1 of 550
+     256   0.8832   1.66      3.5307     0 of 523
+
+Band 128 is sound everywhere except the low-ratio corner. Dropping its
+threshold 10%, to 3.0007, takes dismissal to 0 of 605 -- so the table row is
+about 11% too high, not the band unusable. `ratio` is band/B_eff and the
+table is keyed on it because band is supposed to drop out; near the grid edge
+it does not. The grid starts at ratio 1.200, the failing query is 1.24, and a
+query at 1.37 (f = 0.695, band 1024) passes.
+
+So enabling bands 64 and 128 needs the threshold table re-measured below
+ratio 1.5, with enough trials to resolve 1e-3 -- the existing rows use 6000
+per bisection step, which cannot. Not a constant subtracted at the lookup.
+
+Selection cannot reach the corner today: over 352 sampled (n, reference, snr,
+fd) combinations the lowest ratio it picks is 1.29 at f = 0.787, which
+measures 0 of 598. tests/test_low_ratio_corner.py pins all three facts --
+the corner fails, band 128 is fine away from it, and selection stays clear --
+so the cost rows cannot be installed without meeting this first. More representative reference/batch coverage and validation of the
 cost lookup are required before enabling those bands automatically. Explicit
 band=64/128 remains supported and tested.
 

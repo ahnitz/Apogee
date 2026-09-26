@@ -348,15 +348,22 @@ class MatchedFilter:
         # of the templates themselves, so a different t0 is a different key.
         ck = (band, f, H.ctypes.data, H.shape)
         if getattr(self, "_ckey", None) != ck or self._tdirty:
-            sc = 1.0 / np.sqrt(f) if f > 0 else 0.0
+            if f is None:
+                power = np.abs(H.astype(np.complex128)) ** 2
+                total = power.sum(axis=1)
+                fraction = np.divide(power[:, :band].sum(axis=1), total,
+                                     out=np.zeros_like(total), where=total > 0)
+                sc = np.divide(1.0, np.sqrt(fraction),
+                               out=np.zeros_like(fraction), where=fraction > 0)[:, None]
+            else:
+                sc = 1.0 / np.sqrt(f) if f > 0 else 0.0
             ct0 = (H[:, :band] * sc).astype(np.complex64)
-            ramp = np.exp(1j * np.pi * np.arange(band) / band).astype(np.complex64)
-            self._ct = (ct0, (ct0 * ramp).astype(np.complex64))
+            self._ct = ct0
             self._ckey = ck
-        ct0, ct1 = self._ct
+        ct0 = self._ct
 
         idx, val = self._gpu.hier_peaks(
-            self.n, band, D, H, ct0, ct1, thr, thr,
+            self.n, band, D, H, ct0, thr,
             binsize=binsize, threshold=threshold, window=(start, end),
             upload_data=self._ddirty, upload_tmpl=self._tdirty)
         self._ddirty = self._tdirty = False
@@ -406,6 +413,9 @@ class MatchedFilter:
         return peaks
 
     # ---- run ----------------------------------------------------------------
+    def _execution_plan(self):
+        return self._ensure()
+
     def nbins(self, binsize, window=None):
         binsize = int(binsize)
         if binsize < 1:
@@ -492,13 +502,13 @@ class MatchedFilter:
         if buf is None or buf[0] != (rows, nb):
             idx = np.empty(rows * nb, dtype=np.int64)
             val = np.empty(rows * nb, dtype=np.complex64)
-            mag = np.empty(rows * nb, dtype=np.float32)
+            mag = np.empty(0, dtype=np.float32)
             cnt = np.empty(rows, dtype=np.int32)
             peaks = np.empty((nd, nt, nb), dtype=PEAK_DTYPE)
             buf = self._buf = ((rows, nb), idx, val, mag, cnt, peaks)
         _, idx, val, mag, cnt, peaks = buf
         peaks = peaks.reshape(nd, nt, nb)
-        self._ensure().run(d0, nd, t0, nt, binsize, float(threshold), start, end,
+        self._execution_plan().run(d0, nd, t0, nt, binsize, float(threshold), start, end,
                      idx, val, mag, cnt)
         if raw:
             r = (idx.reshape(nd, nt, nb), val.reshape(nd, nt, nb))
@@ -586,10 +596,10 @@ class MatchedFilter:
             sb = self._sbuf = ((nblk, nt, nb),
                                np.empty(need, dtype=np.int64),
                                np.empty(need, dtype=np.complex64),
-                               np.empty(need, dtype=np.float32),
+                               np.empty(0, dtype=np.float32),
                                np.empty(nblk * nt, dtype=np.int32))
         _, idx, val, mag, cnt = sb
-        self._ensure().run_series(ser, st, ws, we, t0, nt, binsize,
+        self._execution_plan().run_series(ser, st, ws, we, t0, nt, binsize,
                                   float(threshold), idx, val, mag, cnt)
         if raw:
             return idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb)
@@ -598,7 +608,7 @@ class MatchedFilter:
         peaks["value"] = val.reshape(nblk, nt, nb)
         return peaks
 
-    def _series_window(self, spec, H, binsize, threshold, w0, w1, first):
+    def _series_window(self, spec, H, binsize, threshold, w0, w1):
         """One dispatch for the blocks sharing a window. Returns (index, value).
 
         The only thing the two filters do differently in run_series, which is
@@ -613,82 +623,69 @@ class MatchedFilter:
 
     def _run_series_gpu(self, ser, st, ws, we, binsize, threshold,
                         templates, raw):
-        """run_series on a GPU plan, flat or hierarchical.
-
-        The C does the per-block forward transform inside the plan; here it is
-        done on the host, which is the same arithmetic and keeps the device
-        code to the one kernel that already exists.
-
-        Blocks are grouped by window, because a window is a dispatch parameter
-        rather than per-pair data: blocks sharing one can go in a single call,
-        and only the ragged ones at a segment's edges are left on their own.
-
-        This was written twice, once per filter class, differing in one call.
-        The copies then drifted: the hierarchical one lost the 1/n and handed
-        its coarse gate spectra n times too large, which is the whole of
-        round 0 in docs/iteration-plan.md. Two implementations of one
-        algorithm is how that happens, so there is one.
-        """
+        """Bound temporary FFT/gather memory while batching matching windows."""
         n = self.n
-        nblk = st.size
-        t0, nt = (0, self.ntemplates) if templates is None else (
-            int(templates[0]), int(templates[1]))
-        if nt < 1 or t0 < 0 or t0 + nt > self.ntemplates:
-            raise ValueError("templates sub-range out of bounds")
-        binsize = n if binsize is None else int(binsize)
+        t0, nt = (0, self.ntemplates) if templates is None else map(int, templates)
         H = self._gtmpl[t0:t0 + nt]
-
-        # One strided gather and one batched transform, rather than a Python
-        # loop calling np.fft.fft per block. Blocks may run off the end of the
-        # series; the missing tail is zero, as the C's padding makes it.
-        #
-        # The 1/n is the caller's convention and the C applies it on the way
-        # in. Omitting it handed the coarse gate spectra n times too large --
-        # _gpu_hier saw |D|max 304.633 against run()'s 0.0743734 at n=4096,
-        # exactly 4096 -- so every pair cleared a threshold calibrated for
-        # the real scale.
-        if ser.size:
-            grid = (st[:, None].astype(np.int64)
-                    + np.arange(n, dtype=np.int64)[None, :])
-            inside = grid < ser.size
-            # np.minimum keeps the gather in bounds; `inside` zeroes the tail.
-            blocks = np.where(inside, ser[np.minimum(grid, ser.size - 1)],
-                              np.complex64(0))
-            spec = np.fft.fft(blocks, axis=1)
-            spec /= n
-            # NumPy 2 preserves complex64 here; older NumPy promotes it.
-            # Avoid copying an already correctly typed full spectrum bank.
-            spec = spec.astype(np.complex64, copy=False)
-        else:
-            spec = np.zeros((nblk, n), dtype=np.complex64)
-
+        nblk = st.size
         nb = self.nbins(binsize, (int(ws[0]), int(we[0])))
         idx = np.full((nblk, nt, nb), -1, dtype=np.int64)
         val = np.zeros((nblk, nt, nb), dtype=np.complex64)
-        first = True
+        # Conservative allowance for gather indices, masks, complex128 NumPy
+        # FFT temporaries, spectra, and dispatch readback. Returned output is
+        # necessarily proportional to the requested output shape.
+        budget = getattr(self, "_series_batch_bytes", 64 * 1024 * 1024)
+        batch = max(1, budget // (64*n + 12*nt*nb))
+        offsets = np.arange(n, dtype=np.int64)
         for w in {(int(a), int(b)) for a, b in zip(ws, we)}:
             rows = np.flatnonzero((ws == w[0]) & (we == w[1]))
-            # Normal overlap-save groups are contiguous. A slice keeps the
-            # freshly computed spectra in place; fancy indexing would copy
-            # the entire group immediately before the device upload.
-            group = (spec[rows[0]:rows[-1] + 1]
-                     if rows[-1] - rows[0] + 1 == rows.size else spec[rows])
-            gi, gv = self._series_window(
-                np.ascontiguousarray(group), H, binsize, threshold,
-                w[0], w[1], first)
-            first = False
-            if gi.shape[2] != nb:
-                raise ValueError(
-                    "blocks in one call must produce the same bin count; "
-                    "window %s gives %d against %d" % (w, gi.shape[2], nb))
-            idx[rows] = gi
-            val[rows] = gv
+            for begin in range(0, rows.size, batch):
+                selected = rows[begin:begin + batch]
+                if ser.size:
+                    grid = st[selected, None].astype(np.int64) + offsets
+                    blocks = np.where(grid < ser.size,
+                                      ser[np.minimum(grid, ser.size - 1)],
+                                      np.complex64(0))
+                    spec = np.fft.fft(blocks, axis=1)
+                    spec /= n
+                    spec = spec.astype(np.complex64, copy=False)
+                else:
+                    spec = np.zeros((selected.size, n), dtype=np.complex64)
+                gi, gv = self._series_window(np.ascontiguousarray(spec), H,
+                                             binsize, threshold, w[0], w[1])
+                idx[selected] = gi
+                val[selected] = gv
         if raw:
             return idx, val
         peaks = np.empty(idx.shape, dtype=PEAK_DTYPE)
-        peaks["index"] = idx
-        peaks["value"] = val
+        peaks["index"], peaks["value"] = idx, val
         return peaks
+
+    def set_memory_limits(self, *, cache_bytes=None, series_bytes=None):
+        """Set GPU dispatch-cache and series-temporary budgets in bytes.
+
+        Defaults: 512 MiB of dispatch buffers, 32 cache entries, and 64 MiB
+        of series working storage. A single dispatch/block can exceed a
+        budget; final returned output is not included in the working budget.
+        Changing the cache budget releases existing dispatch buffers.
+        """
+        if self._gpu is None:
+            raise ValueError("memory budgets apply to GPU filters")
+        for value in (cache_bytes, series_bytes):
+            if value is not None and int(value) < 1:
+                raise ValueError("memory budgets must be positive")
+        if cache_bytes is not None:
+            self.clear_cache()
+            self._gpu.cache_limit_bytes = int(cache_bytes)
+        if series_bytes is not None:
+            self._series_batch_bytes = int(series_bytes)
+
+    def clear_cache(self):
+        """Release GPU dispatch buffers, keeping spectra and compiled pipelines."""
+        if self._gpu is not None:
+            self._gpu.clear_cache()
+            self._ddirty = self._tdirty = True
+
 
 
 
@@ -1323,11 +1320,17 @@ def choose_threshold(power, n, snr, fd, band, tuning=None):
     cands = sorted({k[2] for k in rows_by_fd if k[0] == n})
     if not cands:
         return None
-    use_fd = max([c for c in cands if c <= want * 1.001] or [min(cands)])
+    covered_budgets = [c for c in cands if c <= want * 1.001]
+    if not covered_budgets:
+        return None
+    use_fd = max(covered_budgets)
     snrs = sorted({k[1] for k in rows_by_fd if k[0] == n and k[2] == use_fd})
     if not snrs:
         return None
-    lo = max([x for x in snrs if x <= snr] or [snrs[0]])
+    eligible = [x for x in snrs if x <= snr]
+    if not eligible:
+        return None
+    lo = max(eligible)
     rows = rows_by_fd.get((n, lo, use_fd)) or []
     if not rows:
         return None
@@ -1774,12 +1777,12 @@ class HierarchicalFilter(MatchedFilter):
     avoid coarse-gate omissions.
 
     ``snr`` is the |rho| of the weakest signal that must be kept; ``fd`` is the
-    tolerated false-dismissal probability for such a signal.  Lowering either
-    costs speed, because the coarse threshold has to open wider.  Band, oversampling and tap
-    count come from a compiled-in measured table - matchedfilter does not tune the
-    margin against your data - and can be pinned with ``band`` /
-    ``taps`` for testing.  How the work is *arranged*, on the other hand, is
-    chosen here and not by the caller: see :meth:`run_series`.
+    tolerated false-dismissal probability for such a signal. Configuration
+    and coarse threshold come from supplied measured files (the shipped files
+    are the default). Missing calibration raises. Alternatively, explicitly
+    set ``band`` and call ``set_coarse_threshold(value)``; this mode needs no
+    calibration file or reference. ``taps`` remains configuration metadata for
+    existing tables; execution uses the raw coarse maximum without interpolation.
     """
 
     def __init__(self, n, ndata=1, ntemplates=1, snr=5.5, fd=1e-2,
@@ -1816,7 +1819,6 @@ class HierarchicalFilter(MatchedFilter):
         self._thr_applied = False
         self._pinned = None
         self._fs_snr = None
-        self._last_refine = 0.0
         self._gpu = None
         self._gpairs = 0
         self._gtrig = 0
@@ -1862,26 +1864,11 @@ class HierarchicalFilter(MatchedFilter):
         no rebuild and no re-ingest of templates.
         """
         if self._mf is not None:
-            # A plan pinned in __init__ was built BEFORE set_reference, so
-            # its threshold could not be looked up then -- the table is
-            # keyed on the reference's own (f, ratio). Do it on first use,
-            # once, now that the reference is here.
-            #
-            # Without this a pinned plan ran with a threshold derived from
-            # an empty reference, which is 0: the coarse gate disabled and
-            # every pair escalated. It dismissed nothing, so every budget
-            # assertion on a pinned plan passed by doing no gating at all.
-            if (not self._thr_applied and self._cal_thr is None
-                    and self._pending_ref is not None):
-                self._thr_applied = True
-                try:
-                    tv = choose_threshold(self._pending_ref, self.n,
-                                          self._fs_snr or self.snr,
-                                          self.fd, int(self.config[0]))
-                except Exception:
-                    tv = None
+            if not self._thr_applied:
+                tv = self._coarse_value(self._mf.config()[0], required=False)
                 if tv is not None:
-                    self._mf.set_threshold(float(tv))
+                    self._mf.set_threshold(tv)
+                    self._thr_applied = True
             return self._mf
         cfg = None
         if self._pinned is not None:
@@ -1931,23 +1918,10 @@ class HierarchicalFilter(MatchedFilter):
         b, k = cfg
         self._mf = _core.HMF(self.n, self.ndata, self.ntemplates,
                              self.snr, self.fd, int(b), 1, int(k))
-        # The MEASURED threshold for this reference at this band, if the
-        # table covers it. It replaces the modelled one outright -- no
-        # margin, no recovery factor, no Rice model -- so the number the
-        # coarse pass is compared against is the number that was measured
-        # to meet the budget.
-        if self._cal_thr is None and self._pending_ref is not None:
-            try:
-                tv = choose_threshold(self._pending_ref, self.n,
-                                          self._fs_snr or self.snr,
-                                      self.fd, int(b))
-            except Exception:
-                tv = None
-            if tv is not None:
-                self._mf.set_threshold(float(tv))
-        if self._cal_thr is not None:
-            # A caller-supplied threshold overrides whatever the table chose.
-            self._mf.set_threshold(self._cal_thr)
+        tv = self._coarse_value(b, required=False)
+        if tv is not None:
+            self._mf.set_threshold(tv)
+            self._thr_applied = True
         if self._pending_ref is not None:
             self._mf.set_reference(self._pending_ref)
         return self._mf
@@ -1978,115 +1952,55 @@ class HierarchicalFilter(MatchedFilter):
         self._gtmpl = np.zeros((self.ntemplates, self.n), dtype=np.complex64)
         self._gcal = None
 
+    def _coarse_value(self, band, *, required=True):
+        """Resolve one gate from an explicit value or measured file rows."""
+        if self._cal_thr is not None:
+            if self._pinned is None:
+                raise ValueError("an explicit coarse threshold requires an explicit band")
+            return float(self._cal_thr)
+        value = None
+        if self._pending_ref is not None:
+            value = choose_threshold(self._pending_ref, self.n,
+                                     self._fs_snr or self.snr, self.fd, int(band))
+        if value is None and required:
+            raise ValueError(
+                "no calibrated coarse threshold for n=%d band=%d: provide a "
+                "covering threshold file, or set both band and coarse threshold"
+                % (self.n, band))
+        if value is not None and (not np.isfinite(value) or value < 0
+                                  or value > float(np.finfo(np.float32).max)):
+            raise ValueError("calibrated coarse threshold must be finite, nonnegative float32")
+        return None if value is None else float(value)
+
+    def _execution_plan(self):
+        plan = self._ensure()
+        if not self._thr_applied:
+            plan.set_threshold(self._coarse_value(plan.config()[0]))
+            self._thr_applied = True
+        return plan
+
     def _gpu_calibration(self, threshold):
-        """(band, f, threshold) for this reference.
-
-        The GPU runs the CPU's algorithm now -- coarse pass, one threshold,
-        refine -- so it reads the same measured threshold from the same
-        table. It used to build a 1x1 CPU plan purely to read three numbers
-        out of it, because the threshold was a Rice model plus measured
-        recovery factors and a second implementation of those would have
-        been a second thing to keep in step. There is no model left to keep
-        in step: choose_threshold IS the implementation.
-
-        The CPU plan is still built when the table cannot bound this
-        reference, because that is the path that still derives a threshold.
-        Three slots are returned where one number goes, so every caller and
-        both backends keep their shape.
-        """
-        # _cal_thr belongs in the key: set_coarse_threshold changes the
-        # answer, so a cached result from before it must not be reused.
-        key = (threshold, self.snr, self.fd, self._fs_snr, self._pinned,
-               self._cal_thr)
+        """Use the same supplied calibration as the CPU, without fallback."""
+        key = (self.snr, self.fd, self._fs_snr, self._pinned, self._cal_thr)
         if self._gcal is not None and self._gcal[0] == key:
             return self._gcal[1]
-        # An explicitly pinned configuration must be honoured. Building the
-        # calibration plan without it silently substituted the table's own
-        # choice, so HierarchicalFilter(..., band=256, device="gpu") ran at
-        # band 512 and reported 512 -- a caller asking for a configuration
-        # got a different one.
-        pin = {}
-        if self._pinned is not None:
-            pin = dict(band=self._pinned[0], taps=self._pinned[1])
-        else:
-            # Choose the configuration with THIS DEVICE's cost rows. Letting
-            # the calibration plan choose for itself used the shipped table,
-            # which is a CPU's -- so the GPU picked whichever band is
-            # cheapest on an AVX-512 core.
-            path, self._cost_key = cost_table_for(self.device)
-            try:
-                cfg = choose_config(self._pending_ref, self.n, self.snr,
-                                    self.fd, tuning=_load_tuning_for(self.device))
-            except Exception:
-                cfg = None
-            if cfg is not None:
-                pin = dict(band=cfg[0], taps=cfg[1])
-        # The measured threshold, read directly. No CPU plan, no model.
-        if pin.get("band") and self._pending_ref is not None:
-            tv = None
-            if self._cal_thr is not None:
-                # A caller-set threshold is an instruction, not a hint, and
-                # it has to reach BOTH backends. It did not: this path went
-                # straight to the table, so set_coarse_threshold was
-                # silently ignored on the GPU and the plan ran at whatever
-                # the table said. Benchmarks that thought they had closed
-                # the gate were still refining.
-                tv = float(self._cal_thr)
-            else:
-                try:
-                    tv = choose_threshold(self._pending_ref, self.n,
-                                          self._fs_snr or self.snr,
-                                          self.fd, int(pin["band"]))
-                except Exception:
-                    tv = None
-            if tv is not None:
-                band = int(pin["band"])
-                ref = np.asarray(self._pending_ref, dtype=np.float64)
-                f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
-                self._gcfg = (band, int(pin.get("taps") or 8))
-                out = (band, f, float(tv))
-                self._gcal = (key, out)
-                return out
-
-        if (self._pinned is not None and pin.get("band")
-                and self._pending_ref is not None):
-            # Only for a band the CALLER pinned. An autotuned band whose
-            # threshold is refused just falls through to the modelled path
-            # -- selection proposing something uncalibrated is a table gap,
-            # not a user error, and raising there would break workloads
-            # that never asked for that band.
-            #
-            # The lookup refused: this (f, ratio) is below the measured
-            # rows and extrapolating a GATE is unsafe. Say so here rather
-            # than falling through to build a CPU plan, which raises
-            # "no hierarchical plan for n=... band=..." and points at the
-            # wrong thing entirely -- this is a GPU filter and the CPU plan
-            # is only being built to read a threshold off it.
-            raise ValueError(
-                "no calibrated coarse threshold for n=%d band=%d at "
-                "snr=%g fd=%g: the reference's (f, ratio) falls below the "
-                "measured rows, and a gate must not be extrapolated. "
-                "Use a larger band, or extend threshold.txt to cover it."
-                % (self.n, pin["band"], self.snr, self.fd))
-
-        cal = HierarchicalFilter(self.n, 1, 1, snr=self.snr, fd=self.fd, **pin)
-        # Order matters: set_first_stage builds the plan, and building it
-        # before the reference arrives means the band is chosen with nothing
-        # to choose from, which fails with "no measured tuning" on a
-        # configuration the tables cover perfectly well.
-        cal.set_reference(self._pending_ref)
-        cal.set_templates(self._gtmpl[0][None, :])
-        if self._fs_snr is not None:
-            cal.set_first_stage(self._fs_snr)
-        plan = cal._ensure()
-        band = cal.config[0]
-        thr = plan.coarse_threshold(float(threshold))
-        if self._cal_thr is not None:
-            thr = float(self._cal_thr)   # same override on the fallback path
-        ref = np.asarray(self._pending_ref, dtype=np.float64)
-        f = float(ref[:band].sum() / ref.sum()) if ref.sum() > 0 else 0.0
-        self._gcfg = cal.config          # the real (band, taps)
-        out = (band, f, thr)
+        cfg = self._pinned
+        if cfg is None:
+            if self._pending_ref is None:
+                raise ValueError("set_reference is required for file-based configuration selection")
+            _, self._cost_key = cost_table_for(self.device)
+            cfg = choose_config(self._pending_ref, self.n, self.snr, self.fd,
+                                tuning=_load_tuning_for(self.device))
+        if cfg is None:
+            raise ValueError(_uncovered_message(self.n, self.snr, self.fd))
+        band, taps = cfg
+        tv = self._coarse_value(band)
+        f = None
+        if self._pending_ref is not None:
+            ref = np.asarray(self._pending_ref, dtype=np.float64)
+            f = float(ref[:band].sum() / ref.sum())
+        self._gcfg = (int(band), int(taps))
+        out = (int(band), f, tv)
         self._gcal = (key, out)
         return out
 
@@ -2105,8 +2019,6 @@ class HierarchicalFilter(MatchedFilter):
         if nd < 1 or nt < 1 or d0 < 0 or t0 < 0 \
            or d0 + nd > self.ndata or t0 + nt > self.ntemplates:
             raise ValueError("data/templates sub-range out of bounds")
-        if self._pending_ref is None:
-            raise ValueError("set_reference is required before running on a GPU")
         if not self._dataset or self._missing("data", d0, nd):
             raise ValueError(
                 "no data: call set_data() before run(). The plan stores the "
@@ -2141,8 +2053,7 @@ class HierarchicalFilter(MatchedFilter):
         Autotuning exists to choose this number for a false-dismissal budget,
         and needs measured tables to do it. A caller who knows what threshold
         they want does not: set it here and no table is consulted, no
-        reference is required for the threshold (one is still needed for the
-        coarse band itself), and nothing is modelled. The guarantee becomes
+        reference is required when the band is explicitly set, and nothing is modelled. The guarantee becomes
         whatever the caller's own threshold implies, which is the honest
         trade for not asking the library to promise a budget.
 
@@ -2155,9 +2066,12 @@ class HierarchicalFilter(MatchedFilter):
                 self._mf.set_threshold(-1.0)
             return
         value = float(value)
-        if not np.isfinite(value) or value < 0:
-            raise ValueError("coarse threshold must be finite and nonnegative, or None")
+        if not np.isfinite(value) or value < 0 or value > float(np.finfo(np.float32).max):
+            raise ValueError("coarse threshold must be finite nonnegative float32, or None")
+        if self._pinned is None:
+            raise ValueError("an explicit coarse threshold requires an explicit band")
         self._cal_thr = value
+        self._thr_applied = True
         if self._mf is not None:
             self._mf.set_threshold(float(value))
 
@@ -2169,26 +2083,16 @@ class HierarchicalFilter(MatchedFilter):
         reconstruction is needed.  Lower it to run the first stage more
         conservatively, at the cost of reconstructing more often.
 
-        The value chosen from ``snr`` and ``fd`` at construction is a
-        suggestion, not a constraint -- it comes from an offline sweep whose
-        recovery factors are measured against a mean spectrum, so it is not
-        reliable everywhere (see docs/hierarchical.md).  Callers who know
-        better should say so here.  Band and taps are fixed when
-        the plan is built and are not affected.
+        The threshold is looked up in the supplied calibration file. Missing
+        coverage raises at execution. Band and taps stay fixed. An explicit
+        coarse threshold takes precedence over this setting.
 
-        The design table's SNR grid starts at 4.5, and the level is
-        interpolated on it, so anything lower **clamps to 4.5** rather than
-        going further.  The call succeeds either way; if you need the first
-        stage looser than that, widen the band instead.
-
-        Pass ``None`` or a non-positive value to go back to deriving it.
+        Pass ``None`` or a non-positive value to use the constructor's SNR.
         """
-        self._fs_snr = max(4.5, float(snr)) if snr is not None and float(snr) > 0 else None
+        self._fs_snr = float(snr) if snr is not None and float(snr) > 0 else None
         self._thr_applied = False
         if self._mf is not None and self._cal_thr is None:
             self._mf.set_threshold(-1.0)
-        if self._gpu is None:
-            self._ensure().set_first_stage(self._fs_snr or 0.0)
 
     def set_reference(self, power):
         """Set the reference SNR distribution.
@@ -2197,8 +2101,8 @@ class HierarchicalFilter(MatchedFilter):
         power of the filter *output* in each bin.  Only its shape matters, as
         the total is divided out.
 
-        By default each template's band fraction and recovery factors are
-        measured from the template itself, which assumes its own power
+        By default each template's band fraction is
+        computed from the template itself, which assumes its own power
         distribution is the distribution of the SNR it produces.  That holds
         only when the data is white and the template whitened.  A broadband
         ratio filter reconstructing a low-frequency signal breaks it badly --
@@ -2206,9 +2110,8 @@ class HierarchicalFilter(MatchedFilter):
 
         The output distribution is a property of the signal rather than of any
         one template and is near-identical across a bank, so set it once here
-        rather than tuning per template.  Doing so also skips the per-template
-        ingest measurement.  Pass ``None`` to go back to measuring each
-        template.
+        rather than tuning per template.  Pass ``None`` to use each template's own band fraction.
+        Changing the reference refreshes already-loaded coarse templates.
         """
         if power is not None:
             p = np.ascontiguousarray(power, dtype=np.float32)
@@ -2234,7 +2137,7 @@ class HierarchicalFilter(MatchedFilter):
             self._mf.set_reference(p)
 
 
-    def _series_window(self, spec, H, binsize, threshold, w0, w1, first):
+    def _series_window(self, spec, H, binsize, threshold, w0, w1):
         """The hierarchical dispatch: coarse gate, then refine what survives.
 
         Everything else in run_series is the base class's.
@@ -2244,76 +2147,11 @@ class HierarchicalFilter(MatchedFilter):
         self._ddirty = True
         return self._gpu_hier(spec, H, binsize, threshold, w0, w1)
 
-    def run_series(self, series, starts, win_start, win_end,
-                   binsize=None, threshold=0.0, templates=None, raw=False):
-        """Filter a time series over a caller-supplied block layout.
-
-        The caller keeps the overlap-save arithmetic -- where each block starts
-        and which span of its output is valid.  matchedfilter only executes that plan,
-        which removes the per-block round trip: no separately-planned forward
-        FFT, no spectrum passed back and forth, and one call per segment rather
-        than one per block.
-
-        Windows are per block, so the ragged ones at a segment's edges need no
-        grouping.  Returns a structured array of shape
-        ``(nblocks, ntemplates, nbins)``, or with ``raw=True`` the two plain
-        arrays ``(index, value)`` of that shape -- which skips
-        assembling the structured array, a real cost here because a whole
-        segment's blocks come back at once.
-
-        Give this as much of the series as is available.  Blocks are filtered
-        several at a time, because D data segments against T templates is a
-        symmetric product and one segment against a large bank is the worst
-        shape to hand the kernel -- the bank gets streamed once per segment.
-        The grouping is chosen internally from the transform length, breaks
-        wherever consecutive blocks stop sharing a window, and cannot change
-        any result; it is worth 1.17x at 418 templates and nothing at 37.
-        Calling once per block, as an earlier version of the caller did,
-        forfeits it.
-
-        Raw CPU results reuse the plan's buffers; copy retained results.
-        A later run() requires set_data() again on both devices.
-        """
-        ser, st, ws, we, binsize, t0, nt = self._series_layout(
-            series, starts, win_start, win_end, binsize, templates)
-        nblk = st.size
-        # CPU series execution reuses the data slots. Require fresh spectra
-        # before a later run(), consistently on both devices.
-        self._dataset = False
-        self._data_ready = set()
-        if self._gpu is not None:
-            return self._run_series_gpu(ser, st, ws, we, binsize, threshold,
-                                        templates, raw)
-        nb = self._ensure().nbins(binsize, int(ws[0]), int(we[0]))
-        need = nblk * nt * nb
-        # Reuse the buffers, as run() does.  Re-allocated per call they are a
-        # small cost here -- one call per segment rather than per block -- but
-        # the shape is stable across segments, so there is no reason to pay it.
-        sb = self._sbuf
-        if sb is None or sb[0] != (nblk, nt, nb):
-            sb = self._sbuf = ((nblk, nt, nb),
-                               np.empty(need, dtype=np.int64),
-                               np.empty(need, dtype=np.complex64),
-                               np.empty(need, dtype=np.float32),
-                               np.empty(nblk * nt, dtype=np.int32))
-        _, idx, val, mag, cnt = sb
-        self._ensure().run_series(ser, st, ws, we, t0, nt, binsize, float(threshold),
-                            idx, val, mag, cnt)
-        if raw:
-            # Two, as every other entry point returns -- including this
-            # method's own GPU branch, which is what made CPU and GPU
-            # disagree on one call and stopped hierarchical-on-GPU running
-            # end to end. A peak is where and what, nothing else; magnitude
-            # is np.abs(value) exactly, so returning it only copied.
-            return idx.reshape(nblk, nt, nb), val.reshape(nblk, nt, nb)
-        peaks = np.empty((nblk, nt, nb), dtype=PEAK_DTYPE)
-        peaks["index"] = idx.reshape(nblk, nt, nb)
-        peaks["value"] = val.reshape(nblk, nt, nb)
-        return peaks
-
     @property
     def config(self):
         """``(band, taps)`` the design table selected."""
+        if self._pinned is not None:
+            return self._pinned
         if self._gpu is not None:
             self._gpu_calibration(self.snr)
             return self._gcfg

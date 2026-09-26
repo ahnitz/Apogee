@@ -7,7 +7,7 @@ variant that no glob matched, ships as a wheel that works on the developer's
 machine and fails on a device that selects the missing one.
 
 That is not hypothetical. The flat kernel had a 32 KB variant for the two
-sizes whose staging wants 64 KB and the gated kernel did not, so a device
+sizes whose staging wants 64 KB and the refine kernel did not, so a device
 offering 32 KB ran the flat path and could not create a hierarchical
 pipeline at all. Every GPU used in development has 64 KB, so nothing here
 could have noticed.
@@ -50,11 +50,11 @@ def test_every_file_the_manifest_names_exists():
     man = _manifest()
     missing = []
     for n, info in sorted(man["modules"].items(), key=lambda kv: int(kv[0])):
-        gated = info.get("gated") or {}
+        refine = info.get("refine") or {}
         for f, why in ((info.get("file"), "flat"),
                        ((info.get("portable") or {}).get("file"), "flat 32 KB"),
-                       (gated.get("file"), "gated"),
-                       ((gated.get("portable") or {}).get("file"), "gated 32 KB")):
+                       (refine.get("file"), "refine"),
+                       ((refine.get("portable") or {}).get("file"), "refine 32 KB")):
             if f and not (spirv / f).is_file():
                 missing.append("n=%s %s: %s" % (n, why, f))
         for entry, m in (info.get("metal") or {}).items():
@@ -68,18 +68,18 @@ def test_every_file_the_manifest_names_exists():
 
 
 def test_both_entry_points_have_the_same_variants():
-    """The flat and gated kernels run on the same devices, so they need the
+    """The flat and refine kernels run on the same devices, so they need the
     same fallbacks. Having one without the other is the bug this catches."""
     man = _manifest()
     for n, info in sorted(man["modules"].items(), key=lambda kv: int(kv[0])):
         flat_small = bool((info.get("portable") or {}).get("file"))
-        gated_small = bool(((info.get("gated") or {}).get("portable") or {})
+        refine_small = bool(((info.get("refine") or {}).get("portable") or {})
                            .get("file"))
-        assert flat_small == gated_small, (
+        assert flat_small == refine_small, (
             "n=%s ships a 32 KB variant for %s only -- a device that needs "
             "one needs both, and will run the flat path and fail to build a "
             "hierarchical pipeline"
-            % (n, "the flat kernel" if flat_small else "the gated kernel"))
+            % (n, "the flat kernel" if flat_small else "the refine kernel"))
 
 
 def test_the_tiled_coarse_kernels_selected_are_present():

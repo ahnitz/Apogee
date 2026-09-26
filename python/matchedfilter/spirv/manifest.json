@@ -35,11 +35,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_64.spv",
-        "bytes": 16460,
-        "descriptors": 5
-      },
       "file": "tierb_64.spv",
       "bytes": 15708,
       "compact": {
@@ -53,10 +48,6 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_64.metal",
-          "metallib": null
-        },
-        "gatedTierB": {
-          "msl": "gated_64.metal",
           "metallib": null
         },
         "compactPairs": {
@@ -106,11 +97,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_128.spv",
-        "bytes": 17048,
-        "descriptors": 5
-      },
       "file": "tierb_128.spv",
       "bytes": 16296,
       "compact": {
@@ -124,10 +110,6 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_128.metal",
-          "metallib": null
-        },
-        "gatedTierB": {
-          "msl": "gated_128.metal",
           "metallib": null
         },
         "compactPairs": {
@@ -177,11 +159,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_256.spv",
-        "bytes": 18984,
-        "descriptors": 5
-      },
       "file": "tierb_256.spv",
       "bytes": 18232,
       "compact": {
@@ -195,10 +172,6 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_256.metal",
-          "metallib": null
-        },
-        "gatedTierB": {
-          "msl": "gated_256.metal",
           "metallib": null
         },
         "compactPairs": {
@@ -248,11 +221,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_512.spv",
-        "bytes": 22960,
-        "descriptors": 5
-      },
       "file": "tierb_512.spv",
       "bytes": 22208,
       "compact": {
@@ -266,10 +234,6 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_512.metal",
-          "metallib": null
-        },
-        "gatedTierB": {
-          "msl": "gated_512.metal",
           "metallib": null
         },
         "compactPairs": {
@@ -319,11 +283,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_1024.spv",
-        "bytes": 23572,
-        "descriptors": 5
-      },
       "file": "tierb_1024.spv",
       "bytes": 22820,
       "compact": {
@@ -337,10 +296,6 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_1024.metal",
-          "metallib": null
-        },
-        "gatedTierB": {
-          "msl": "gated_1024.metal",
           "metallib": null
         },
         "compactPairs": {
@@ -390,11 +345,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_2048.spv",
-        "bytes": 24160,
-        "descriptors": 5
-      },
       "file": "tierb_2048.spv",
       "bytes": 23408,
       "compact": {
@@ -408,10 +358,6 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_2048.metal",
-          "metallib": null
-        },
-        "gatedTierB": {
-          "msl": "gated_2048.metal",
           "metallib": null
         },
         "compactPairs": {
@@ -461,11 +407,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_4096.spv",
-        "bytes": 26096,
-        "descriptors": 5
-      },
       "file": "tierb_4096.spv",
       "bytes": 25344,
       "compact": {
@@ -479,10 +420,6 @@
       "metal": {
         "fusedTierB": {
           "msl": "tierb_4096.metal",
-          "metallib": null
-        },
-        "gatedTierB": {
-          "msl": "gated_4096.metal",
           "metallib": null
         },
         "compactPairs": {
@@ -532,15 +469,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_8192.spv",
-        "bytes": 30072,
-        "descriptors": 5,
-        "portable": {
-          "file": "gated_8192_lds32.spv",
-          "lds_bytes": 32768
-        }
-      },
       "file": "tierb_8192.spv",
       "bytes": 29320,
       "compact": {
@@ -561,15 +489,6 @@
           "metallib": null,
           "portable": {
             "msl": "tierb_8192_lds32.metal",
-            "metallib": null,
-            "lds_bytes": 32768
-          }
-        },
-        "gatedTierB": {
-          "msl": "gated_8192.metal",
-          "metallib": null,
-          "portable": {
-            "msl": "gated_8192_lds32.metal",
             "metallib": null,
             "lds_bytes": 32768
           }
@@ -635,15 +554,6 @@
         }
       ],
       "push_constant": true,
-      "gated": {
-        "file": "gated_16384.spv",
-        "bytes": 30684,
-        "descriptors": 5,
-        "portable": {
-          "file": "gated_16384_lds32.spv",
-          "lds_bytes": 32768
-        }
-      },
       "file": "tierb_16384.spv",
       "bytes": 29932,
       "compact": {
@@ -664,15 +574,6 @@
           "metallib": null,
           "portable": {
             "msl": "tierb_16384_lds32.metal",
-            "metallib": null,
-            "lds_bytes": 32768
-          }
-        },
-        "gatedTierB": {
-          "msl": "gated_16384.metal",
-          "metallib": null,
-          "portable": {
-            "msl": "gated_16384_lds32.metal",
             "metallib": null,
             "lds_bytes": 32768
           }

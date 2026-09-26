@@ -58,12 +58,15 @@ def test_hier_bench_cli_uses_current_raw_results(tmp_path):
     assert 'proof:' in result.stdout
 
 
-def test_retune_cli_defines_helpers_before_entrypoint(tmp_path):
+def test_retune_cli_defines_helpers_before_entrypoint(tmp_path, monkeypatch):
     import subprocess
     import sys
     root=Path(__file__).resolve().parents[1]
     accuracy=tmp_path/'accuracy.txt'
     accuracy.write_text('ACC2 128 8 6.0 .99 8.0 1.0 .001\n')
+    threshold=tmp_path/'threshold.txt'
+    threshold.write_text('THR 128 6.0 .01 .01 .0001 0.0\n')
+    monkeypatch.setenv("MF_THRESHOLD", str(threshold))
     output=tmp_path/'cost.txt'
     result=subprocess.run([sys.executable,str(root/'tools/hmf_tune.py'),
         '--retune-cost',str(accuracy),'--out',str(output)],

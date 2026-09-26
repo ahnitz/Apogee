@@ -116,14 +116,12 @@ COARSE_KERNEL = ROOT / "src" / "gpu" / "coarse_tile.slang"
 #: kernel's workgroup is BAND/16 threads, which is 16, 32 and 64 here, and
 #: is already 128 at band 2048.
 COARSE_BANDS = {256: 16, 512: 32, 1024: 32}
-#: Two entry points from one source. fusedTierB is the filter; gatedTierB is
-#: the same filter behind a coarse-pass gate it evaluates itself, so the
-#: hierarchical mode needs no host decision between the passes.
+#: Production entry points from one source. fusedTierB is the flat/coarse filter.
 #: compactPairs turns the coarse results into a survivor list and the X
 #: group count an indirect dispatch reads; refineListed is the refine over
 #: that list. Together they replace launching one workgroup per pair to have
 #: it exit, which was 57% of the hierarchical call at 512x512.
-ENTRIES = ("fusedTierB", "gatedTierB", "compactPairs", "refineListed")
+ENTRIES = ("fusedTierB", "compactPairs", "refineListed")
 ENTRY = ENTRIES[0]
 
 #: Templates per workgroup on the COARSE path, by band. The tile holds the
@@ -144,7 +142,7 @@ ENTRY = ENTRIES[0]
 COARSE_TILE_T = {128: 2, 256: 2, 512: 4, 1024: 2}
 #: Artifact prefix per entry point. Two entries used to be distinguished by
 #: `entry == ENTRY`, which silently collides the moment there is a third.
-STEMS = {"fusedTierB": "tierb", "gatedTierB": "gated",
+STEMS = {"fusedTierB": "tierb",
          "compactPairs": "compact", "refineListed": "refine"}
 
 _STORAGE_CLASS = {2: "Uniform", 9: "PushConstant", 12: "StorageBuffer"}
@@ -338,26 +336,8 @@ def main(argv=None):
             print("  n=%-6d %-16s %5d bytes  staging %2d KB  portable variant"
                   % (n, small.name, small.stat().st_size,
                      lds_bytes(n, PORTABLE_CAP) // 1024))
-        gated = compile_one(slangc, n, OUT, "gatedTierB")
-        ginfo = reflect(gated.read_bytes())
-        # The gated kernel needs the same 32 KB fallback the flat one has.
-        # Without it a device with 32 KB of shared memory ran the flat path
-        # and could not create a pipeline for the hierarchical one -- and
-        # every device we test has 64 KB, so nothing here would have said so.
-        gsmall = None
-        if lds_bytes(n, LDS_CAP[n]) > lds_bytes(n, PORTABLE_CAP):
-            gsmall = compile_one(slangc, n, OUT, "gatedTierB",
-                                 cap=PORTABLE_CAP, suffix="_lds32")
-            print("  n=%-6d %-16s %5d bytes  staging %2d KB  portable gated"
-                  % (n, gsmall.name, gsmall.stat().st_size,
-                     lds_bytes(n, PORTABLE_CAP) // 1024))
         spv = compile_one(slangc, n, OUT)
         info = reflect(spv.read_bytes())
-        info["gated"] = dict(file=gated.name, bytes=gated.stat().st_size,
-                             descriptors=len(ginfo["descriptors"]))
-        if gsmall is not None:
-            info["gated"]["portable"] = dict(
-                file=gsmall.name, lds_bytes=lds_bytes(n, PORTABLE_CAP))
         info["file"] = spv.name
         info["bytes"] = spv.stat().st_size
         # Compaction: gather the pairs that passed the coarse threshold and
@@ -384,11 +364,11 @@ def main(argv=None):
         metal = {}
         mcap = metal_cap(n)
 
-        # The coarse ROLE, at half width. fusedTierB and gatedTierB serve
+        # The coarse ROLE, at half width. fusedTierB serves
         # the coarse stage as well as their own, and the coarse stage reads
         # the packed cdata/ct0 -- so those two get a SECOND build rather
         # than a changed one, and the flat/refine paths keep full precision.
-        for centry in ("fusedTierB", "gatedTierB"):
+        for centry in ("fusedTierB",):
             compile_one(slangc, n, OUT, entry=centry, suffix="_c16", coarse16=1)
             # PPG=4: four pairs per workgroup. With the half-width stage that
             # is 8 KB per group, so a CU holds 8 groups x 4 waves = 32 waves

@@ -139,7 +139,7 @@ def test_reference_update_recalibrates_a_reused_gpu_filter():
         assert (peaks["index"] >= 0).all() == (low_power == 1.)
         fraction = ref[:band].sum() / ref.sum()
         assert f._gpu_calibration(0.)[1] == pytest.approx(fraction)
-        np.testing.assert_allclose(f._ct[0], h[:, :band] / np.sqrt(fraction), rtol=1e-6)
+        np.testing.assert_allclose(f._ct, h[:, :band] / np.sqrt(fraction), rtol=1e-6)
 
 
 def test_series_keeps_unchanged_template_buffers_resident(plan, monkeypatch):
@@ -154,7 +154,7 @@ def test_series_keeps_unchanged_template_buffers_resident(plan, monkeypatch):
         protected.add(id(batch[1]))
     for batch in ctx._hier.values():
         bufs = batch[0] if plan.device.backend == "vulkan" else batch
-        protected.update(id(bufs[name]) for name in ("tmpl", "ct0", "ct1"))
+        protected.update(id(bufs[name]) for name in ("tmpl", "ct0"))
     assert protected
     buffer_class = plan._backend()._Buffer
     write = buffer_class.write

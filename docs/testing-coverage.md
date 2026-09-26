@@ -134,3 +134,15 @@ formatted three fields and indexed `cfg[2]`, crashing both console reporting
 and JSON export after the flat timings completed. The CLI regression stubs only
 the expensive timing operations and exercises successful two-field reporting,
 JSON output, and an uncovered calibration row in the same run.
+
+## Audit cleanup coverage
+
+See [audit-cleanup.md](audit-cleanup.md) for the strict file/explicit calibration
+contract, memory limits, cost-selection tooling, and measured performance.
+New tests cover native output overruns and malformed layouts, optional magnitude
+storage and scratch resizing, CPU/GPU refusal without calibration, explicit
+settings without table access, rescaling already-ingested templates after a
+reference change, dispatch eviction, and bounded series batches. Execution-only
+matrix/arity tests explicitly open the gate; statistical tests continue to use
+measured calibration. The benchmark's superset check now explicitly opens the
+gate instead of relying on below-grid SNR clamping.

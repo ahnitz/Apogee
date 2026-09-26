@@ -22,3 +22,23 @@ class InputUploads:
             needed.append(resident.get(key) != signature)
             signatures.append(signature)
         return (*needed, *signatures)
+
+    cache_limit_bytes = 512 * 1024 * 1024
+    cache_limit_entries = 32
+
+    def _cache_room(self, estimate):
+        """Bound retained dispatch buffers; one oversized dispatch is allowed.
+
+        Called only on cache misses. Clearing batches keeps compiled pipelines,
+        and every backend submits synchronously before buffers can be evicted.
+        """
+        used = 0
+        for batch in self._batches.values():
+            used += sum(getattr(b, 'nbytes', 0) for b in batch)
+        for batch in self._hier.values():
+            bufs = batch[0] if isinstance(batch, tuple) else batch
+            used += sum(getattr(b, 'nbytes', 0) for b in bufs.values())
+        entries = len(self._batches) + len(self._hier)
+        if entries and (used + estimate > self.cache_limit_bytes
+                        or entries >= self.cache_limit_entries):
+            self.clear_cache()

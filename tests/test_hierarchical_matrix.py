@@ -501,6 +501,8 @@ def test_every_size_and_band_is_correct_not_merely_runnable(device):
                  h = mf.HierarchicalFilter(n, 2, nt, snr=5.5, fd=1e-2,
                                            band=band, taps=8, device=device)
                  h.set_reference(ref)
+                 # Exercise execution coverage independently of calibration coverage.
+                 h.set_coarse_threshold(0.0)
                  h.set_templates(H)
                  h.set_data(D)
                  hb = h.run(binsize=n, threshold=5.5)

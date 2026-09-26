@@ -374,14 +374,17 @@ def main(argv=None):
     relmag = (np.abs(gm[both] - fm[both]) / np.maximum(fm[both], 1e-30)
               if both.any() else np.zeros(1))
 
-    # Internal check: the lowest first-stage level the design grid offers has
-    # to report a superset of this run, with identical values where both fire.
-    p.set_first_stage(0.01)
-    li, lv = p.run_series(series, st, ws, we, binsize=a.n,
+    # An explicitly open gate must report a superset, with identical values.
+    # Do not request an unmeasured SNR and rely on implicit clamping.
+    band, taps = p.config
+    opened = mf.HierarchicalFilter(a.n, 1, a.templates, band=band, taps=taps)
+    opened.set_coarse_threshold(0.0)
+    opened.set_reference(power)
+    opened.set_templates(h)
+    li, lv = opened.run_series(series, st, ws, we, binsize=a.n,
                               threshold=a.threshold, raw=True)
     li = np.array(li).reshape(len(st), a.templates)
     lm = np.abs(np.array(lv)).reshape(len(st), a.templates)
-    p.set_first_stage(a.first_stage if a.first_stage else None)
     lost = (gi >= 0) & (li < 0)
     drift = (gi >= 0) & (li >= 0) & ((li != gi) | (lm != gm))
 
@@ -423,9 +426,9 @@ def main(argv=None):
     if relmag.max() > 1e-5:
         fails.append("magnitude differs by %.2e, beyond fp32" % relmag.max())
     if lost.any():
-        fails.append("%d peaks lost at the lowest first stage" % lost.sum())
+        fails.append("%d peaks lost with the gate open" % lost.sum())
     if drift.any():
-        fails.append("%d peaks changed at the lowest first stage" % drift.sum())
+        fails.append("%d peaks changed with the gate open" % drift.sum())
     if found.sum() == 0:
         fails.append("the flat filter found nothing, so nothing was proved:"
                      " lower --threshold or raise --inject")
@@ -439,7 +442,7 @@ def main(argv=None):
               % (found.sum(), relmag.max()))
         print("         %d omitted (rate %.1e, budget 1.0e-03)"
               % (int(omitted.sum()), fdrate))
-        print("         %d more pairs fire at the lowest first stage, none lost"
+        print("         %d more pairs fire with the gate open, none lost"
               % int(((li >= 0) & (gi < 0)).sum()))
 
     if not a.no_profile:

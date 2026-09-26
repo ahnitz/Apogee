@@ -440,7 +440,7 @@ uint slotToIndex(uint slot)
 
 //: The filter itself, as a plain function so more than one entry point can
 //: use it. Slang does not allow one entry point to call another, and the
-//: gated variant needs exactly this body after its early-out.
+//: compacted refinement uses this same body.
 #ifndef TILE_T
 #define TILE_T 1
 #endif
@@ -810,54 +810,6 @@ void fusedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
                winStart, winEnd, binsize, binShift, nbins, thrBits);
 }
 
-//: The hierarchical refinement, gated ON THE DEVICE.
-//:
-//: The coarse pass writes its two halves to buffers; this reads them, makes
-//: the same decision the CPU makes, and either refines the pair or writes
-//: "nothing here" and stops. The gate lives inside the refining kernel
-//: rather than in a compaction pass feeding an indirect dispatch, because a
-//: workgroup that exits early costs a launch and nothing else.
-//:
-//: What it buys is that the whole hierarchical filter becomes three
-//: dispatches in ONE command buffer with no host in the loop. Reading the
-//: coarse result back to choose survivors cost far more than the filtering
-//: did: 0.26 ms of kernel work inside a 5.0 ms call at n=16384.
-[shader("compute")][numthreads(WG*PPG,1,1)]
-void gatedTierB(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
-                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
-                RWStructuredBuffer<int> peakIdx,
-                RWStructuredBuffer<float2> peakVal,
-                StructuredBuffer<float2> coarse,
-                uniform uint ntmpl, uniform uint winStart, uniform uint winEnd,
-                uniform uint binsize, uniform int binShift, uniform uint nbins,
-                uniform uint thrBits, uniform float thr)
-{
-#if PPG == 1
-    uint pair = gid.x, tid = lid.x;
-    _stgBase = 0;
-#else
-    uint _sub = lid.x / WG;
-    uint pair = gid.x * PPG + _sub, tid = lid.x % WG;
-    _stgBase = _sub * STGW;
-#endif
-    // ONE coarse value against ONE threshold. There used to be two buffers
-    // and two thresholds: an even half and a half-sample-shifted odd half,
-    // with a cheap gate deciding whether the odd transform was worth
-    // computing. The coarse grid is critically sampled now -- there is no
-    // odd half, so there is nothing for a second threshold to gate, and
-    // this is the entire decision the coarse pass exists to make.
-    if (length(coarse[pair]) < thr) {
-        for (uint b = tid; b < nbins; b += WG) {
-            uint o = pair * nbins + b;
-            peakIdx[o] = -1;
-            peakVal[o] = float2(0.0f, 0.0f);
-        }
-        return;
-    }
-    filterPair(pair, tid, data, tmpl, peakIdx, peakVal, ntmpl,
-               winStart, winEnd, binsize, binShift, nbins, thrBits);
-}
-
 //: Compaction. One THREAD per pair, not one workgroup.
 //:
 //: The refine used to launch a workgroup for every pair so that each could
@@ -902,7 +854,7 @@ void compactPairs(uint3 gid: SV_DispatchThreadID,
     }
 }
 
-//: The refine, over a compacted list. Identical to gatedTierB except that
+//: The refine, over a compacted list. Uses the same filtering body, except that
 //: the pair comes from the list rather than from the group id, and there is
 //: no gate left to apply -- being in the list IS having passed it.
 [shader("compute")][numthreads(WG*PPG,1,1)]

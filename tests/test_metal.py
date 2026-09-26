@@ -48,7 +48,7 @@ def test_the_wave_reduction_is_native(manifest, n):
     source -- so it is worth asserting rather than assuming it stays true
     across upgrades.
     """
-    src = (METAL_DIR / manifest["modules"][str(n)]["metal"]["gatedTierB"]["msl"]).read_text()
+    src = (METAL_DIR / manifest["modules"][str(n)]["metal"]["fusedTierB"]["msl"]).read_text()
     assert "simd_max" in src, "the wave reduction stopped lowering to simd_max"
     assert "simd_is_first" in src
 

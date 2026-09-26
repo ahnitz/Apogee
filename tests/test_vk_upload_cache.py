@@ -73,7 +73,7 @@ def ctx(request, monkeypatch):
                            vkQueueWaitIdle=lambda *args: 0)
     c._make_batch = lambda *args: (*[Buffer() for _ in range(4)], None)
     c._make_hier = lambda *args: (
-        {name: Buffer() for name in ("data", "tmpl", "cdata", "ct0", "ct1",
+        {name: Buffer() for name in ("data", "tmpl", "cdata", "ct0",
                                      "idx", "val", "args")}, None)
     if request.param == "metal":
         monkeypatch.setattr(backend, "_Buffer", Buffer)
@@ -96,7 +96,7 @@ def test_revisited_window_receives_updated_inputs(ctx, hier, changed):
                   upload_tmpl=dirty == "tmpl")
         if hier:
             ctx.hier_peaks(n, 1024, data, tmpl, tmpl[:, :1024],
-                           tmpl[:, :1024] * 1j, 0., 0., **kw)
+                           0., **kw)
         else:
             ctx.peaks(n, data, tmpl, **kw)
 
@@ -117,8 +117,6 @@ def test_revisited_window_receives_updated_inputs(ctx, hier, changed):
                     and not _vkcompute._COARSE_TILE.get(1024)):
                 coarse = _vkcompute._pack_half2(coarse)
             np.testing.assert_array_equal(buffers["ct0"].value, coarse)
-            np.testing.assert_array_equal(buffers["ct1"].value,
-                                          tmpl[:, :1024] * 1j)
     else:
         target = list(ctx._batches.values())[-1][0 if changed == "data" else 1]
     np.testing.assert_array_equal(target.value, data if changed == "data" else tmpl)
@@ -137,7 +135,7 @@ def test_split_dispatch_keeps_resident_inputs(ctx, hier):
         kw = dict(binsize=1, window=(17, n), upload_data=dirty,
                   upload_tmpl=dirty)
         if hier:
-            ctx.hier_peaks(n, 1024, d, h, h[:, :1024], h[:, :1024], 0., 0., **kw)
+            ctx.hier_peaks(n, 1024, d, h, h[:, :1024], 0., **kw)
         else:
             ctx.peaks(n, d, h, **kw)
     def input_writes():
@@ -145,7 +143,7 @@ def test_split_dispatch_keeps_resident_inputs(ctx, hier):
             buffers = [(v[0] if ctx._test_backend == "vulkan" else v)
                        for v in ctx._hier.values()]
             return sum(b[name].writes for b in buffers for name in
-                       ("data", "tmpl", "cdata", "ct0", "ct1"))
+                       ("data", "tmpl", "cdata", "ct0"))
         return sum(b[0].writes + b[1].writes for b in ctx._batches.values())
     for _ in range(2):
         d *= 2
@@ -163,7 +161,7 @@ def test_changing_data_keeps_templates_resident(ctx, hier):
     def run(dirty):
         kw = dict(upload_data=dirty, upload_tmpl=False)
         if hier:
-            ctx.hier_peaks(n, 1024, d, h, h[:, :1024], h[:, :1024], 0., 0., **kw)
+            ctx.hier_peaks(n, 1024, d, h, h[:, :1024], 0., **kw)
         else:
             ctx.peaks(n, d, h, **kw)
     run(True)
@@ -174,7 +172,7 @@ def test_changing_data_keeps_templates_resident(ctx, hier):
         buffers = next(iter(ctx._hier.values()))
         if ctx._test_backend == "vulkan":
             buffers = buffers[0]
-        assert all(buffers[name].writes == 1 for name in ("tmpl", "ct0", "ct1"))
+        assert all(buffers[name].writes == 1 for name in ("tmpl", "ct0"))
         assert buffers["data"].writes == 4
     else:
         buffers = next(iter(ctx._batches.values()))
@@ -197,7 +195,7 @@ def test_revisited_window_matches_float64_on_gpu(hier, changed):
                   upload_tmpl=dirty == "tmpl")
         if hier:
             return c.hier_peaks(n, 1024, data, tmpl, tmpl[:, :1024],
-                               tmpl[:, :1024] * 1j, 0., 0., **kw)
+                               0., **kw)
         return c.peaks(n, data, tmpl, **kw)
     try:
         run((0, n), None)

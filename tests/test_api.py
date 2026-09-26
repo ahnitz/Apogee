@@ -514,10 +514,11 @@ def test_pinning_reads_the_threshold_from_the_table():
     # is what a smaller fd buys. Not strictly lower -- where the curve sits
     # near the table's resolution floor several budgets share an answer.
     ts = [mf.choose_threshold(power, n, 5.0, fd, 512)
-          for fd in (1e-2, 1e-3, 1e-4)]
+          for fd in (1e-2, 1e-3)]
     assert all(t is not None and t > 0 for t in ts), ts
-    assert ts[0] >= ts[1] >= ts[2], ts
-    assert ts[2] < ts[0], ts            # somewhere in the range it must bite
+    assert ts[0] >= ts[1], ts
+    assert mf.choose_threshold(power, n, 5.0, 1e-4, 512) is None
+    assert ts[1] < ts[0], ts            # somewhere in the range it must bite
 
     # band is not in the key, so an off-grid band is answerable -- it enters
     # only through the (f, B_eff) measured at its own edge
@@ -848,34 +849,17 @@ def test_first_stage_threshold_is_independent_of_configuration():
         "rate must rise as the first-stage SNR falls, got " + repr(rates))
 
 
-def test_first_stage_below_the_design_grid_is_clamped():
-    """Values under the design table's lowest SNR saturate rather than scale.
-
-    hmf_threshold clamps its snr argument to the table's grid, whose floor is
-    4.5, so asking for less is silently the same as asking for 4.5.  Worth a
-    test because the call succeeds and looks like it did something.
-    """
-    n, nd, nt = 4096, 64, 8
-    rng = np.random.default_rng(3)
-    power = inspiral_power(n)
-    h = np.repeat(template_with_power(n, power)[None, :], nt, axis=0)
-    d = noise((nd, n), rng)
-    for i in range(0, nd, 4):
-        d[i] += (6.0 * np.fft.fft(np.roll(np.fft.ifft(h[i % nt]), i * 37))
-                 ).astype(np.complex64)
-
-    got = {}
-    for fs in (4.5, 3.0, 0.01):
-        hf = mf.HierarchicalFilter(n, ndata=nd, ntemplates=nt, snr=5.5,
-                                   fd=1e-3, band=512, taps=8)
-        hf.set_reference(power)
-        hf.set_templates(h)
-        hf.set_data(d)
+def test_first_stage_below_the_measured_grid_is_refused():
+    """A lower SNR must not silently borrow the file's higher-SNR gate."""
+    n = 4096
+    hf = mf.HierarchicalFilter(n, band=512, snr=5.5)
+    hf.set_reference(inspiral_power(n))
+    hf.set_templates(template_with_power(n, inspiral_power(n))[None, :])
+    hf.set_data(noise((1, n), np.random.default_rng(3)))
+    for fs in (3.0, 0.01):
         hf.set_first_stage(fs)
-        hf.run(binsize=n, threshold=5.5)
-        got[fs] = hf.refine_rate
-    assert got[3.0] == pytest.approx(got[4.5], rel=1e-6)
-    assert got[0.01] == pytest.approx(got[4.5], rel=1e-6)
+        with pytest.raises(ValueError, match="no calibrated coarse threshold"):
+            hf.run()
 
 
 @pytest.mark.parametrize("klass", ["flat", "hier"])

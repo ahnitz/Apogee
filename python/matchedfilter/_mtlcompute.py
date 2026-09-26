@@ -417,6 +417,7 @@ class Context(InputUploads):
             key, data, tmpl, upload_data, upload_tmpl)
         batch = self._batches.get(key)
         if batch is None:
+            self._cache_room(8*n*(nd+nt) + 12*nd*nt*nbins)
             out = nd * nt * nbins
             batch = (_Buffer(self, nd * n * 8), _Buffer(self, nt * n * 8),
                      _Buffer(self, out * 4), _Buffer(self, out * 8))
@@ -468,7 +469,7 @@ class Context(InputUploads):
         return idx, val
 
     # ---- hierarchical -----------------------------------------------------
-    def hier_peaks(self, n, band, data, tmpl, ct0, ct1, even_thr, raw_thr,
+    def hier_peaks(self, n, band, data, tmpl, ct0, raw_thr,
                    binsize=None, threshold=0.0, window=None,
                    upload_data=True, upload_tmpl=True):
         """The whole hierarchical filter in ONE command buffer.
@@ -500,8 +501,7 @@ class Context(InputUploads):
             span = _MAX_BINS * binsize
             pi, pv = [], []
             for a in range(lo, hi, span):
-                i2, v2 = self.hier_peaks(n, band, data, tmpl, ct0, ct1,
-                                         even_thr, raw_thr, binsize=binsize,
+                i2, v2 = self.hier_peaks(n, band, data, tmpl, ct0, raw_thr, binsize=binsize,
                                          threshold=threshold,
                                          window=(a, min(a + span, hi)),
                                          upload_data=upload_data,
@@ -518,12 +518,12 @@ class Context(InputUploads):
             key, data, tmpl, upload_data, upload_tmpl)
         bufs = self._hier.get(key)
         if bufs is None:
+            self._cache_room(8*n*(nd+nt) + 8*band*(nd+nt) + nd*nt*(24+12*nbins))
             bufs = {
                 "data":  _Buffer(self, nd * n * 8),
                 "tmpl":  _Buffer(self, nt * n * 8),
                 "cdata": _Buffer(self, nd * band * 8),
                 "ct0":   _Buffer(self, nt * band * 8),
-                "ct1":   _Buffer(self, nt * band * 8),
                 "cidx":  _Buffer(self, pairs * 4),
                 "cval":  _Buffer(self, pairs * 8),
                 # Compacted survivors and the indirect threadgroup count.
@@ -549,7 +549,6 @@ class Context(InputUploads):
         if upload_tmpl:
             bufs["tmpl"].write(np.ascontiguousarray(tmpl, np.complex64))
             bufs["ct0"].write(np.ascontiguousarray(ct0, np.complex64))
-            bufs["ct1"].write(np.ascontiguousarray(ct1, np.complex64))
             self._uploaded["tmpl"][key] = tsig
 
         coarse = self.pipeline(band)
@@ -653,6 +652,17 @@ class Context(InputUploads):
                          % (status, describe_error(
                              self.o, ctypes.c_void_p(err)) if err
                             else "no error object"))
+
+    def clear_cache(self):
+        for batch in self._batches.values():
+            for buf in batch:
+                buf.destroy()
+        for bufs in self._hier.values():
+            for buf in bufs.values():
+                buf.destroy()
+        self._batches.clear()
+        self._hier.clear()
+        self._uploaded = {"data": {}, "tmpl": {}}
 
     def destroy(self):
         if getattr(self, "_batches", None) is None:

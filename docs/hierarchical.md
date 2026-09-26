@@ -169,10 +169,16 @@ fails.  So spread alone is not the mechanism and the question is open.
   one would not help; but it means a single loud bin drags the whole pair
   through the full correlation.
 - **Bands 64 and 128 are supported but never selected.**  The transform
-  handles them (the pair-batched path), and they are tested, but no cost
-  rows are installed for them: appending measured rows made selection pick
-  band 128/K4 at 4.37x where band 512/K4 measured 10.75x.  Explicit
-  `band=64` or `band=128` works.
+  handles them (the pair-batched path) and they are tested, but no cost rows
+  are installed.  The blocker is not cost: at the reference it would be
+  picked for, band 128 sits at ratio 1.24 and dismisses 2.9e-2 of injected
+  signals against a 1e-3 budget, because the threshold table's low-ratio
+  corner is optimistic by about 11%.  Band 128 is sound at ratio 2.68 and
+  above, and band 256 is sound at 1.66, so this is the corner and not the
+  band.  Enabling them needs measured threshold rows below ratio 1.5.  See
+  docs/tooling-cleanup.md and tests/test_low_ratio_corner.py.  Explicit
+  `band=128` works away from that corner; explicit `band=64` is refused at
+  n=4096 for want of a calibrated threshold.
 - **The trigger rate depends on the data.**  On noisier data than the design
   assumed the coarse pass escalates more often, and at a high enough rate the coarse pass
   is pure overhead.  `ap_hmf_stats` reports it; that is the first number to look

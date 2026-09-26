@@ -122,9 +122,9 @@ int ap_mf_run_series(ap_mf_plan *p,
  *
  * snr is the |rho| of the weakest signal that must be kept (5 is typical); fd is
  * the tolerated false-dismissal probability for such a signal (1e-2 .. 1e-4).
- * Band, oversampling and tap count come from a compiled-in measured table -
- * matchedfilter does not autotune - and can be overridden for testing with
- * ap_hmf_create_ex.
+ * The caller supplies band and a nonnegative coarse threshold. The native
+ * engine does not read files or derive calibration; Python resolves measured
+ * files before execution. snr/fd/taps are retained for ABI compatibility.
  */
 typedef struct ap_hmf_plan ap_hmf_plan;
 
@@ -136,7 +136,7 @@ size_t ap_hmf_nbins(const ap_hmf_plan *p, size_t binsize, size_t start, size_t e
 /* Reference SNR distribution: expected power per bin of the filter OUTPUT,
  * length n, real, any scale.  Setting it is usually the right thing to do.
  *
- * By default each template's band fraction and recovery factors are measured
+ * By default each template's band fraction is computed
  * from the template itself, which assumes its own power distribution is the
  * distribution of the SNR it produces.  That holds only when the data is white
  * and the template is whitened.  It fails, for instance, when the template is a
@@ -148,17 +148,13 @@ size_t ap_hmf_nbins(const ap_hmf_plan *p, size_t binsize, size_t start, size_t e
  * here rather than tuning per template.  Doing so also skips the per-template
  * measurement at ingest entirely.
  *
- * Pass NULL to return to measuring each template.  Set before the templates. */
+ * Pass NULL to use each template. Existing templates are rescaled on change. */
 int    ap_hmf_set_reference(ap_hmf_plan *p, const float *power);
-/* Calibrate the first stage against this SNR instead of the search threshold.
-   Final triggers are still cut at the threshold passed to ap_hmf_run; this
-   only sets where the cheap first pass decides a full reconstruction is
-   needed.  Pass <=0 to go back to deriving it.  Band and taps are
-   fixed at plan creation and are unaffected. */
+/* Legacy ABI: invalidate the gate; the caller must supply a recalibrated
+   threshold before the next execution. No model or clamping is applied. */
 int    ap_hmf_set_first_stage(ap_hmf_plan *p, float snr);
-/* Supply the coarse threshold directly, in the units the coarse pass
-   reports, measured rather than modelled. Overrides the internal
-   derivation entirely. Negative restores it. */
+/* Supply a finite nonnegative coarse threshold in coarse-output units.
+   A negative value marks the plan unconfigured; execution then fails. */
 int    ap_hmf_set_threshold(ap_hmf_plan *p, float t);
 
 int    ap_hmf_set_data    (ap_hmf_plan *p, int d, const float *spec);
@@ -197,15 +193,11 @@ int ap_hmf_run_series(ap_hmf_plan *p,
    The ratio is the measured trigger rate, which is what the speedup rides on. */
 void ap_hmf_stats(const ap_hmf_plan *p, long *pairs, long *triggers);
 
-/* The three coarse-pass thresholds this plan would use at `threshold`.
-   They are what a non-CPU backend needs in order to make the SAME decision:
-   dismiss below `even`, take the odd half above `raw`, escalate at or above
-   `margin`.  With set_reference they are scalars rather than per-template,
-   because the recovery factors and the band fraction then come from the
-   reference and not from each template.  Returns 0 on success. */
+/* Read the supplied scalar coarse threshold. Returns -1 if unconfigured.
+   The threshold argument is retained for ABI compatibility and is ignored. */
 int ap_hmf_coarse_thresholds(ap_hmf_plan *p, float threshold, float *thr);
 
-/* The band / oversampling / taps / margin the table chose, for reporting. */
+/* The supplied band and taps, for reporting. */
 void ap_hmf_config(const ap_hmf_plan *p, size_t *band, int *taps);
 
 int ap_supported(size_t n);
