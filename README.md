@@ -26,19 +26,10 @@
   <sub>16384 correlations of 4096 points. FFTW and rocFFT are timed doing the
   <b>inverse transform alone</b>; matchedfilter is timed doing the product,
   the transform <b>and</b> the peak scan — and still wins, because it never
-  writes the 537 MB of correlation the others have to.</sub>
-</p>
-
-<p align="center">
-  <img src="docs/assets/teaser-m2.svg" alt="matchedfilter on an Apple M2 at n=4096" width="860">
-</p>
-
-<p align="center">
-  <sub>The same workload on an <b>Apple M2</b> (Metal), measured 2026-09-25.
-  10.2&times; CPU&rarr;GPU on the full filter and 7.8&times; on the
-  hierarchical one; the hierarchical mode is 8.4&times; the flat filter on
-  the CPU and 6.4&times; on the GPU. No FFTW or rocFFT bar here — this panel
-  is the same code on different silicon, not a new comparison.</sub>
+  writes the 537 MB of correlation the others have to.<br>
+  The same workload on an <b>Apple M2</b> (Metal): 12.03 ms flat and
+  1.88 ms hierarchical, 10.2&times; and 7.8&times; over that machine's own
+  CPU.</sub>
 </p>
 
 ---
