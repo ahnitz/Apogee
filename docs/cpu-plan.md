@@ -235,6 +235,45 @@ so about three times the 1.0-1.3% noise floor), and that headroom is worth
 not where most of the speedup comes from -- which is what separates them
 from band 128, where the safe configuration keeps nothing at all.
 
+### SELECTION PICKS THE SLOWER BAND, and it is worth up to 1.8x
+
+The most actionable finding of the night, and it needs no new kernel.
+Timed on the default inspiral reference at n=4096, every admissible band,
+against what selection chose:
+
+    snr   fd      picked    256     512    1024
+    5.0  1e-2     512       514    [293]    499
+    5.0  1e-3     512      1038    [416]    661
+    5.5  1e-2     512       337    [208]    414
+    5.5  1e-3     512       587    [253]    510
+    6.0  1e-2     256       264    [204]    407    512 is 1.30x faster
+    6.0  1e-3     256       384    [209]    415    512 is 1.84x faster
+    6.5  1e-2     256       [93]    206     413
+    6.5  1e-3     256       339    [206]    419    512 is 1.64x faster
+
+Three of eight points pick the slower band. `tools/score_selection.py`
+agrees independently at its own operating point: picked (256, 8) for 6.18x
+where (512, 8) gives 11.88x -- **52% of best**.
+
+The cause is the cost table, not the rule. At snr 6.0 fd 1e-3, normalised
+to band 1024:
+
+    band   table cost   measured   table is
+     256     0.4963      0.925     1.9x too CHEAP
+     512     0.5649      0.504     about right
+    1024     1.0000      1.000     --
+
+Ranked by table cost the order is 256, 512, 1024; ranked by the clock it is
+512, 256, 1024. Band 256 is priced at half what it runs, so selection takes
+it. Note that `audit_threshold.py --coverage` says cost.txt DOES cover the
+operating range in (f, B_eff), so this is not the extrapolation failure the
+small-band cost rows have -- the rows exist and are wrong, or the IDW
+interpolation lands on rows from a different escalation regime.
+
+`hmf_tune.py --retune-cost` re-measures the table for a machine and is the
+obvious first thing to try. Whether the shipped rows are wrong everywhere
+or only near this query is not established.
+
 ### `fd` is a promise about signals, not about trigger lists
 
 Marginal NOISE triggers are dismissed at 2.4e-2 (captured) to 3.7e-1
