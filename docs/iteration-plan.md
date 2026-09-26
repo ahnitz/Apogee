@@ -1347,3 +1347,57 @@ Plus MF_HMF_TRACE being read via getenv inside the per-pair loop.
     What remains is spread across the transform machinery rather than
     concentrated anywhere: two 16x16 transposes per block in stageA_tail,
     and the codelets themselves.
+
+## The CPU/GPU band gap: why bands 64 and 128 have no CPU plan
+
+    band     CPU              GPU
+      64     absent           n=1024
+     128     absent           n=1024, 2048, 4096
+     256     all sizes        up to 4096
+     512     all sizes        up to 8192
+    1024     2048+            2048+
+
+This is why every cross-device test skips band 128, and skipping it is how
+the GPU wave-reduction bug survived: the only comparison that could see it
+needed a CPU plan that does not exist.
+
+### Root cause
+
+The CPU transform is a balanced two-stage split, N = n1 x n2. Stage A puts
+AP_W lanes across n1; stage B puts AP_W lanes across n2. Both therefore need
+at least a full vector:
+
+    n1 >= AP_W  and  n2 >= AP_W   =>   N >= AP_W^2
+
+    AVX3       AP_W=16  ->  N >= 256   -> bands 256, 512, 1024
+    AVX2       AP_W= 8  ->  N >=  64   -> bands 64, 128 possible
+    SSE4/NEON  AP_W= 4  ->  N >=  16   -> bands 64, 128 possible
+
+So the gap has TWO different causes, and they need different answers:
+
+  * **On AVX-512 it is structural.** 128 splits only as 16x8, and 8 is half
+    a vector, so stage B cannot fill its lanes. No tuning fixes this.
+  * **On AVX2, SSE4 and NEON it is policy.** Those targets could run 64 and
+    128 today, but supported() hard-codes `N<256u` (balanced-inl.h:85) to
+    keep the supported set identical across back ends -- deliberately, so a
+    plan cannot succeed on one machine and fail on another, and so MF_ISA
+    does not change what the library accepts.
+
+### What closing it actually requires
+
+A single-stage path for N < AP_W^2, with **lanes across independent pairs**
+rather than across n1. The coarse stage always has pairs to spare, so the
+lanes are free; what is new is the input layout, since the pair axis is not
+the contiguous one today. esupported() already covers 8..1024 as element
+sizes, so the codelet exists -- it is the plumbing that does not.
+
+That also removes the corner turn for these sizes: with lanes = pairs there
+is no transpose between stages, because there are no stages.
+
+### Interim mitigation, already in place
+
+test_hierarchical_matches_flat_on_the_same_device compares hierarchical
+against the FLAT filter on the SAME device, which needs no CPU plan and no
+table. It covers band 128 on the GPU, and it is what now catches the class
+of bug that hid there. The gap is a missing capability, not a hole in the
+testing any more.
