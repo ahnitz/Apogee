@@ -1,0 +1,37 @@
+{
+  "n": 4096,
+  "data": 128,
+  "templates": 512,
+  "fd": 0.01,
+  "paths": {
+    "before_tiled": {
+      "ms": 0.6141670796418244,
+      "min_ms": 0.6017224403053877,
+      "max_ms": 0.6256288004806265,
+      "band": 256,
+      "refine_rate": 0.0296630859375
+    },
+    "fixed_tiled": {
+      "ms": 0.4349562711463934,
+      "min_ms": 0.4268267618144973,
+      "max_ms": 0.4511963521541507,
+      "band": 256,
+      "refine_rate": 0.0296630859375
+    },
+    "fixed_untiled": {
+      "ms": 0.46710246568880154,
+      "min_ms": 0.4586022728207437,
+      "max_ms": 0.4851701154481046,
+      "band": 256,
+      "refine_rate": 0.0297088623046875
+    }
+  },
+  "cpu_hier": {
+    "ms": 14.821717486483976,
+    "min_ms": 14.63488073204644,
+    "max_ms": 15.187584009254351,
+    "band": 512,
+    "refine_rate": 0.0055694580078125
+  },
+  "method": "Same teaser inputs, full window, warmed public run(), 12 rotated/reversed GPU rounds with 50 ms blocks; CPU measured separately with same warmup and blocks. Fixed committed-source snapshot at 429d5c2."
+}

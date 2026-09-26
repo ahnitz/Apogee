@@ -73,3 +73,31 @@ returned matching final peak indices/values and refined exactly 6.8359375%
 of pairs. These comparisons measure retained tiling separately from repaired
 refinement, rather than inferring either benefit from a CPU/GPU speed ratio.
 Raw ranges are in `docs/measurements/hierarchical-ab-2026-09-26.json`.
+
+## Larger presentation workload: 128 × 512
+
+At 4096 points, this batch has 65536 correlations. With the same teaser input
+construction, full window, SNR=5.5 and fd=0.01, the controlled GPU comparison
+measured:
+
+| Hierarchical path | Median ms per batch |
+|---|---:|
+| GPU before refinement fix, tiled | 0.614 |
+| GPU fixed, tiled | **0.435** |
+| GPU fixed, untiled | 0.467 |
+| CPU, automatic band selection | 14.822 |
+
+The refinement fix reduces GPU time by 29.2%. Tiling reduces time by another
+6.9% versus the fixed untiled path (1.074× throughput), with non-overlapping
+round ranges in this measurement. The complete GPU path is approximately
+34.1× faster than the separately timed CPU path. CPU selects band 512 and GPU
+band 256, so this device comparison includes their selection policies.
+
+All GPU variants returned matching final peaks. Tiled variants refined 1944
+pairs; untiled refined 1947 of 65536, a three-pair difference consistent with
+numerical differences near the coarse gate. This is not an exactly identical
+refinement workload and is recorded rather than hidden. All three use the
+same coarse threshold. GPU timings used twelve rotating/reversed rounds,
+50 ms blocks and 0.5 s warmup per variant; CPU used the same block and warmup
+method separately. Raw results are in
+`docs/measurements/hierarchical-ab-128x512-2026-09-26.json`.
