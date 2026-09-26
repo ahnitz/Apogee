@@ -248,9 +248,15 @@ def measure(n, band, U, K, snr, trials, seed=13, batch=None, power=None,
     lag0 = 0
     for _ in range((trials + batch - 1) // batch):
         D = noise((batch, n), rng)
-        for j in range(batch):
-            lag0 = (lag0 + 37) % n
-            D[j] += (snr * H * ph_tab[(kidx * lag0) % n]).astype(np.complex64)
+        # One vectorised injection per batch rather than `batch` Python
+        # iterations. With the noise pooled this loop WAS the cell: 0.138s
+        # of 0.254s at n=1024, against 0.039s of actual filtering. The lag
+        # sequence is unchanged -- lag0 advances by 37 per trial and
+        # carries across batches -- so the injected data is identical.
+        lags = (lag0 + 37 * np.arange(1, batch + 1)) % n
+        lag0 = int(lags[-1])
+        ramp = ph_tab[(kidx[None, :] * lags[:, None]) % n]
+        D += (snr * H[None, :] * ramp).astype(np.complex64)
         flat.set_data(D)
         hf.set_data(D)
         a_ = flat.run(binsize=n, threshold=snr, raw=True)
@@ -766,6 +772,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
     for i in range(0, max(len(others), 1), max(group - 1, 1)):
         chunk = [pivot] + others[i:i + max(group - 1, 1)]
         plans = {}
+        skipped = []
         for cfg in chunk:
             band, U, K, margin = cfg
             hf = mf.HierarchicalFilter(n, ndata=batch, ntemplates=nt, snr=snr,
@@ -773,10 +780,29 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
             hf.set_reference(power)
             _apply_margin(hf, margin, snr)
             hf.set_templates(H)
+            # A configuration the library declines -- band 64 has no
+            # calibrated coarse threshold at any n -- must not kill the
+            # sweep. Before this, --retune-cost died on the first such cell
+            # and produced only n=1024, which is to say the cost table could
+            # not be regenerated at all. The refusal surfaces on first run,
+            # not at construction, so it is provoked here.
+            try:
+                hf.set_data(data[0])
+                hf.run(binsize=n, threshold=snr, raw=True)
+            except ValueError as e:
+                skipped.append((cfg, str(e).split(":")[0]))
+                continue
             plans[cfg] = hf
-        acc = {c: [] for c in chunk}
+        if skipped:
+            print("    skipped %d configuration(s) the library declines: %s"
+                  % (len(skipped), ", ".join("band %d/K%d (%s)"
+                                             % (c[0], c[2], why)
+                                             for c, why in skipped)))
+        if pivot not in plans:
+            continue                          # nothing to normalise against
+        acc = {c: [] for c in plans}
         for _ in range(reps):
-            for cfg in chunk:                 # cycle, do not run to completion
+            for cfg in plans:                 # cycle, do not run to completion
                 hf = plans[cfg]
                 t0 = time.perf_counter()
                 for d in data:
@@ -785,7 +811,7 @@ def cost_sweep_one_reference(n, power, snr, configs, reps=4, batch=64,
                 acc[cfg].append((time.perf_counter() - t0) / (per * nt * batch))
         piv = float(np.median(acc[pivot]))
         pivot_runs += acc[pivot]
-        for c in chunk:
+        for c in plans:
             if c == pivot and pivot in med:
                 continue
             med[c] = float(np.median(acc[c])) / max(piv, 1e-30)
