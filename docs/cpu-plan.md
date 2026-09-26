@@ -194,6 +194,40 @@ rejected: 2.13x slower at band 256, 1.88x at 512, to fix a 4% margin that
 dismisses 0 of 523 injections. A gate is nonlinear in its threshold and
 few-percent accuracy is not enough to apply to one.
 
+### Why bands 64 and 128 cannot be selected -- the real reason
+
+Not a missing table entry. Applying the sqrt(ln band) correction to band 128
+alone DOES fix its correctness: dismissal goes from 15 of 523 to 0 of 523.
+It also takes escalation from 37.5% to 92.2%, and that is the whole story.
+Timed against the flat filter on the same data, n=4096:
+
+    band   threshold             time      vs flat
+     128   table (unsafe)       1035 us     2.51x
+     128   corrected (safe)     2465 us     1.05x
+     256   table                1046 us     2.48x
+     256   corrected            2249 us     1.15x
+     512   table                 410 us     6.33x
+     512   corrected             773 us     3.36x
+
+**The small-band speedup is bought with a threshold that is too high.** At
+band 128 the reference lands at ratio 1.24, the coarse grid is too coarse to
+localise the peak, and a gate safe enough to keep signals admits 92% of
+pairs -- so the hierarchical filter degenerates to the flat filter plus a
+coarse pass. The 2.51x is a false-dismissal budget being spent, not work
+being saved.
+
+That also retro-explains the observation this whole thread started from:
+installing the small-band cost rows made selection pick band 128 at 4.37x
+where band 512 measured 10.75x. Selection picked it because the cost table
+said it was cheap -- and those costs were measured at the unsafe threshold.
+With a safe one it is not cheap.
+
+Band 512 survives correction at 3.36x and is worth having. Band 256 does
+not: 2.48x becomes 1.15x, so most of its advantage comes from the 4.3% its
+table row sits above the bisected-safe value. It passes 0 of 523 injections
+today, so it is not demonstrably unsafe -- but its speed and its margin are
+the same quantity, and band 256 is what selection picks at snr 6.0 and 6.5.
+
 ### `fd` is a promise about signals, not about trigger lists
 
 Marginal NOISE triggers are dismissed at 2.4e-2 (captured) to 3.7e-1
