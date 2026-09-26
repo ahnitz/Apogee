@@ -64,10 +64,43 @@ n=4096:
 
 6.2% matches bands 512 and 1024. At band 256 the pre-pass saves almost
 nothing, because a third of the pairs survive it and pay for both passes --
-and band 256 is what selection picks at snr 6.0 and 6.5. So phase 3 is
-worth 1.3-1.5x end to end where it works and close to nothing where it does
-not, and which of those a caller gets depends on the band selection hands
-them. Price it per band, never on one pooled figure.
+and band 256 is what selection picks at snr 6.0 and 6.5. Price it per band,
+never on one pooled figure.
+
+**And the 6.2% is optimistic for a second reason: the upward bias is not a
+bound.** "Unsafe flips stay at zero by construction" reads as a guarantee,
+but 1.0166 comes from a worst under-report of 0.9837 measured over 520
+pairs. It is a fit, and it breaks on the first wider sample:
+
+    sample                       pairs    worst   bias needed
+    captured pycbc, band 1024      720   0.96387     1.0375
+    synthetic noise, band  256      600   0.96084     1.0408
+    synthetic noise, band  512      600   0.96894     1.0321
+    synthetic noise, band 1024      600   0.97091     1.0300
+
+Every one exceeds 1.0166, so a reject pass built on it WOULD lose signals.
+Making it safe means a larger bias, a larger bias rejects less, and the cost
+model degrades twice over. Measured pass rates on the exact statistic:
+
+    band   at 1.0166   at 1.042   at 1.10
+     256      43.3%      52.7%     74.9%
+     512      16.5%      21.9%     42.3%
+    1024      11.2%      17.9%     35.5%
+
+At 1.042 -- safe on the samples above, still not a proven bound -- phase 3
+comes to:
+
+    band    cost    coarse gain   end to end
+     256   1.03C       0.97x        0.99x     a net loss
+     512   0.72C       1.39x        1.19x
+    1024   0.68C       1.47x        1.31x
+
+against the 1.79x coarse the 6.2% figure implies. So phase 3 is worth about
+1.2-1.3x end to end at the bands where it works, not the 1.5-1.8x the model
+suggests, and it is a loss at band 256. A rigorous bound on block
+floating-point int8 error -- rather than an observed maximum -- would be
+looser still, so the honest reading is that this is the ceiling, not a
+starting point.
 
 Measured over 520 real pairs, margin placed where the true statistic gives a 5%
 trigger rate:
