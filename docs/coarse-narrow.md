@@ -52,6 +52,23 @@ So the stale 16% flattered every variant that spends trigger rate and
 understated the one that does not. Phase 3 is the better bet of the two by
 more than the doc suggests, not less.
 
+**One qualification, and it is the number phase 3 rests on.** `0.56C`
+assumes the reject pass lets 6.2% of pairs through. That fraction IS the
+escalation rate, and it is not one number -- measured on pure noise at
+n=4096:
+
+    band   escalation   phase-3 coarse cost   coarse speedup
+     256      37.5%            0.88C                1.13x
+     512       7.8%            0.58C                1.73x
+    1024       9.4%            0.60C                1.68x
+
+6.2% matches bands 512 and 1024. At band 256 the pre-pass saves almost
+nothing, because a third of the pairs survive it and pay for both passes --
+and band 256 is what selection picks at snr 6.0 and 6.5. So phase 3 is
+worth 1.3-1.5x end to end where it works and close to nothing where it does
+not, and which of those a caller gets depends on the band selection hands
+them. Price it per band, never on one pooled figure.
+
 Measured over 520 real pairs, margin placed where the true statistic gives a 5%
 trigger rate:
 
