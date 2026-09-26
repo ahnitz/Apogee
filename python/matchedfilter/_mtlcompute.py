@@ -57,6 +57,20 @@ from ._errors import UnsupportedSize      # noqa: F401  (re-export)
 from ._gpu_cache import InputUploads
 
 
+#: Points per thread, which is also how many threads carry a transform:
+#: WG = n / R. Vulkan bakes this into the SPIR-V and the host never needs
+#: it; Metal is dispatched with an explicit threadgroup size, so the host
+#: has to agree with the kernel. Getting it wrong here does not fail to
+#: launch -- it launches the wrong shape.
+#:
+#: Mirrors tools/build_spirv.py RADIX, which is what compiled them.
+_RADIX = {32768: 32, 65536: 64}
+
+
+def _radix(n):
+    return _RADIX.get(n, 16)
+
+
 class MetalError(RuntimeError):
     pass
 
@@ -346,7 +360,7 @@ class Context(InputUploads):
                          argtypes=(ctypes.c_void_p,))
         if not fn:
             raise MetalError("no function %r in %s" % (entry, stem))
-        want = n // 16
+        want = n // _radix(n)
         err = ctypes.c_void_p()
         pso = self.o.call(self.device,
                           b"newComputePipelineStateWithFunction:error:",
@@ -407,7 +421,7 @@ class Context(InputUploads):
                         argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong))
         self.o.call(enc, b"dispatchThreadgroups:threadsPerThreadgroup:",
                     restype=None,
-                    args=(_MTLSize(spectra.shape[0], 1, 1), _MTLSize(n // 16, 1, 1)),
+                    args=(_MTLSize(spectra.shape[0], 1, 1), _MTLSize(n // _radix(n), 1, 1)),
                     argtypes=(_MTLSize, _MTLSize))
         self.o.call(enc, b"endEncoding", restype=None)
         if defer:
@@ -506,7 +520,7 @@ class Context(InputUploads):
                                   ctypes.c_ulong))
 
         grid = _MTLSize(nd * nt, 1, 1)
-        group = _MTLSize(n // 16, 1, 1)
+        group = _MTLSize(n // _radix(n), 1, 1)
         self.o.call(enc, b"dispatchThreadgroups:threadsPerThreadgroup:",
                     restype=None, args=(grid, group),
                     argtypes=(_MTLSize, _MTLSize))
@@ -627,7 +641,7 @@ class Context(InputUploads):
             # works for the transform kernels, where it is width//R, and
             # is wrong for compactPairs, which is numthreads(256) and has
             # no transform length at all.
-            tg = (width // 16) if tg is None else tg
+            tg = (width // _radix(width)) if tg is None else tg
             self.o.call(enc, b"setComputePipelineState:", restype=None,
                         args=(pso,), argtypes=(ctypes.c_void_p,))
             blk = (ctypes.c_uint32 * len(params))(*params)

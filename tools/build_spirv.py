@@ -26,13 +26,21 @@ OUT = ROOT / "python" / "matchedfilter" / "spirv"
 MSL = ROOT / "python" / "matchedfilter" / "metal"
 
 #: Sizes the Tier-B kernel covers.  One source specialised by NLEN rather
-#: than a blob per hand-written kernel; 16384 is the ceiling because above it
-#: the transform needs more than 1024 threads and must be split across
-#: dispatches (Tier C, not yet written).
+#: than a blob per hand-written kernel.
 #:
 #: Keep in step with matchedfilter._GPU_SIZES, which is what device="gpu"
 #: checks before it builds a plan.
-TIER_B = (64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384)
+TIER_B = (64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)
+
+#: Points per thread, which is also the decomposition radix. A workgroup is
+#: capped at 1024 threads and n = WG * R, so 16 points per thread stops at
+#: 16384; 32 and 64 are what reach the next two lengths.
+#:
+#: 131072 would need R=128, or 256 VGPRs of transform state per thread
+#: before any working set -- past what the register file will hold, and the
+#: point where the four-step has to be split across dispatches instead.
+#: That is a second kernel, not a wider R.
+RADIX = {32768: 32, 65536: 64}
 
 #: The short lengths are not transform sizes a caller asks for -- they are
 #: COARSE bands. The hierarchical mode's first pass is the ordinary filter at
@@ -70,9 +78,14 @@ _COARSE_ONLY = (64, 128, 256, 512)
 #: real hardware would fail to create the pipeline.
 PORTABLE_CAP = 4096          # complex, = 32 KB
 
+#: The two widest lengths inherit 16384's staging: CH = CAP/WG = 8 either
+#: way, so the exchange runs the same two-barrier chunks against a wider
+#: register file. Not measured as an optimum -- it is the value that makes
+#: them work, and tuning them wants a quiet machine.
 LDS_CAP = {
     64: 512, 128: 512, 256: 512, 512: 512,
     1024: 512, 2048: 1024, 4096: 2048, 8192: 8192, 16384: 8192,
+    32768: 8192, 65536: 8192,
 }
 
 #: Metal's own column. The exchange runs R/CH chunks with CH = CAP/WG, and
@@ -226,8 +239,8 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0, ppg=1):
     """
     src = outdir / ("mm_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   "#define PPG %d\n"
-                   % (n, cap, coarse16, ppg) + KERNEL.read_text())
+                   "#define PPG %d\n#define RADIX %d\n"
+                   % (n, cap, coarse16, ppg, RADIX.get(n, 16)) + KERNEL.read_text())
     stem = "%s_%d%s" % (STEMS[entry], n, suffix)
     msl = outdir / (stem + ".metal")
     proc = subprocess.run(
@@ -260,11 +273,12 @@ def compile_metal(slangc, n, cap, entry, outdir, suffix="", coarse16=0, ppg=1):
 def lds_bytes(n, cap):
     """Shared memory the kernel declares: stg[CH * WG * 2] uints.
 
-    Mirrors the kernel's own arithmetic -- WG = n/16, CH = min(cap/WG, 16) --
+    Mirrors the kernel's own arithmetic -- WG = n/R, CH = min(cap/WG, R) --
     so a build cannot claim a size the shader does not actually ask for.
     """
-    wg = n // 16
-    ch = min(max(cap // wg, 1), 16)
+    r = RADIX.get(n, 16)
+    wg = n // r
+    ch = min(max(cap // wg, 1), r)
     return ch * wg * 8
 
 
@@ -272,7 +286,9 @@ def compile_one(slangc, n, outdir, entry=ENTRY, cap=None, suffix="", coarse16=0,
     cap = LDS_CAP[n] if cap is None else cap
     src = outdir / ("mf_%d_%s%s.slang" % (n, entry, suffix))
     src.write_text("#define NLEN %d\n#define LDS_CAP %d\n#define COARSE16 %d\n"
-                   "#define PPG %d\n#define TILE_T %d\n" % (n, cap, coarse16, ppg, tile) + KERNEL.read_text())
+                   "#define PPG %d\n#define TILE_T %d\n#define RADIX %d\n"
+                   % (n, cap, coarse16, ppg, tile, RADIX.get(n, 16))
+                   + KERNEL.read_text())
     name = "%s_%d%s.spv" % (STEMS[entry], n, suffix)
     spv = outdir / name
     proc = subprocess.run(
@@ -368,7 +384,13 @@ def main(argv=None):
         # the coarse stage as well as their own, and the coarse stage reads
         # the packed cdata/ct0 -- so those two get a SECOND build rather
         # than a changed one, and the flat/refine paths keep full precision.
-        for centry in ("fusedTierB",):
+        #: Only at the lengths a BAND can take. The coarse pass runs at
+        #: length `band` and a band is always shorter than the transform it
+        #: gates, so no coarse kernel is ever dispatched at the two widest
+        #: sizes -- and the SoA half they would need is written at 16
+        #: registers. The kernel's own #error states the same constraint;
+        #: this is the build side of it.
+        for centry in (("fusedTierB",) if RADIX.get(n, 16) == 16 else ()):
             compile_one(slangc, n, OUT, entry=centry, suffix="_c16", coarse16=1)
             # PPG=4: four pairs per workgroup. With the half-width stage that
             # is 8 KB per group, so a CU holds 8 groups x 4 waves = 32 waves

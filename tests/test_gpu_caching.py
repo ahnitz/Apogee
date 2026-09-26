@@ -222,13 +222,17 @@ def test_a_reused_filter_is_right_across_changing_parameters():
             assert int(got["index"][1, 2, b]) == k, (binsize, window, b)
 
 
-@pytest.mark.parametrize("n", [32768, 65536, 262144])
+@pytest.mark.parametrize("n", [131072, 262144, 1048576])
 def test_above_the_gpu_range_refuses_clearly(n):
-    """The GPU covers 1024 to 16384; larger must refuse, not crash or guess.
+    """The GPU covers 1024 to 65536; larger must refuse, not crash or guess.
 
-    One workgroup carries a whole transform, so 16384 is the ceiling at 1024
-    threads. Larger transforms are a CPU job until the decomposition is split
-    across dispatches.
+    One workgroup carries a whole transform, so n = threads * points-per-
+    thread with threads capped at 1024.  R=16 reaches 16384, R=32 reaches
+    32768 and R=64 reaches 65536.  131072 would need 256 VGPRs of transform
+    state per thread before any working set, which the register file will
+    not hold -- past here the four-step has to be split across dispatches,
+    which is a different kernel and is not written.  Those lengths are a CPU
+    job, and asking the GPU for one must say so.
     """
     with pytest.raises(ValueError, match="supports n in"):
         mf.MatchedFilter(n, 1, 2, device=DEVICE)

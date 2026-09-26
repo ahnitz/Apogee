@@ -29,7 +29,8 @@ The same workload on an **Apple M2** (Metal): 12.03 ms flat and 1.88 ms hierarch
 > [open an issue](https://github.com/ahnitz/matchedfilter/issues/new) or get
 > in touch. Areas that would benefit most right now: a Metal/macOS backend,
 > per-device tuning on hardware other than a Radeon 8060S, and transform
-> lengths above 16384 on the GPU.
+> lengths above 65536 on the GPU, which need the transform split across
+> dispatches rather than carried by one workgroup.
 
 ```bash
 pip install matchedfilter

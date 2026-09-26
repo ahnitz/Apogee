@@ -213,8 +213,13 @@ it wrong would have been silent. It was established by dumping every register
 against a float64 reference at all five lengths and fitting; see
 `tools/gpu_output_order.py`.
 
-**Still open.** Transform lengths above 16384 need more than one workgroup
-and are not implemented. `run()` allocates and frees its device buffers per
+**Still open.** Transform lengths above 65536 need the four-step split
+across dispatches and are not implemented. 16384 was the ceiling while a
+thread held 16 points; 32768 and 65536 widen that to 32 and 64, which moves
+the decomposition radix, the twiddles and the digit-reversed output order
+together -- all three checked against a float64 reference in
+`tools/gpu_regmodel.py`. 131072 would want 128 points per thread, past what
+the register file holds, so it is a second kernel rather than a wider R. `run()` allocates and frees its device buffers per
 call, so the measured end-to-end time is well above the kernel time; buffer
 reuse is the obvious next step, and the CPU path already does it. Per-device
 cost tables do not exist, so the hierarchical mode's selection still prices

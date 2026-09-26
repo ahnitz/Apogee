@@ -7,22 +7,44 @@
 // blocks and it finishes them with no exchange at all.
 //
 // Verified in tools/gpu_decomposition.py before any of this was written,
-// for 1024 through 16384. n >= 32768 wants more than 1024 threads and is
-// Tier C.
+// and checked register by register in tools/gpu_regmodel.py, which runs
+// the real want[] scatter and the real slotToIndex against a float64
+// reference. R is a parameter: 1024 threads is the cap, so 16 points per
+// thread stops at 16384 and the last two lengths widen R instead.
 //
-//   n      threads  recursion     innermost
-//   1024      64    64->4         4 blocks of 4 per thread
-//   2048     128    128->8        2 blocks of 8
-//   4096     256    256->16       1 block of 16
-//   8192     512    512->32->2    8 blocks of 2
-//  16384    1024    1024->64->4   4 blocks of 4
+//   n      R   threads  recursion     innermost
+//   1024   16     64    64->4         4 blocks of 4 per thread
+//   2048   16    128    128->8        2 blocks of 8
+//   4096   16    256    256->16       1 block of 16
+//   8192   16    512    512->32->2    8 blocks of 2
+//  16384   16   1024    1024->64->4   4 blocks of 4
+//  32768   32   1024    1024->32      1 block of 32
+//  65536   64   1024    1024->16      4 blocks of 16
+//
+// 131072 would want R=128 -- 256 VGPRs of transform state per thread
+// before any working set -- so it is Tier C: the four-step split across
+// dispatches with global memory between.
 
 #ifndef NLEN
 #define NLEN 1024
 #endif
+//: Points per thread.  16 wherever a workgroup can carry the transform at
+//: 16; 32 and 64 are what take a length past 16384, where WG = NLEN/R would
+//: otherwise need more than the 1024 threads a workgroup is allowed.
+//:
+//: R is the DECOMPOSITION RADIX as well as the register count -- every
+//: level does an R-point DFT in registers, so widening it changes the
+//: recursion, the twiddles and the digit-reversed output order together.
+//: tools/gpu_regmodel.py checks all three against a float64 reference and
+//: reproduces every shipped length, which is the only reason this is a
+//: parameter and not a rewrite.
+#ifndef RADIX
+#define RADIX 16
+#endif
 static const uint N   = NLEN;
-static const uint R   = 16;
-static const uint WG  = NLEN / 16;        // threads per transform
+static const uint R   = RADIX;
+static const uint LGR = (RADIX == 16) ? 4u : ((RADIX == 32) ? 5u : 6u);
+static const uint WG  = NLEN / RADIX;       // threads per transform
 static const float PI = 3.14159265358979f;
 
 //: The exchange is staged in chunks so the threadgroup array is a fixed
@@ -72,6 +94,13 @@ static const uint CH  = ((CAP / WG) > R) ? R : ((CAP / WG > 0) ? (CAP / WG) : 1)
 //: as 8-byte ones. Hence a separate suffixed build.
 #ifndef COARSE16
 #define COARSE16 0
+#endif
+//: The SoA/fp16 half is written at 16 registers throughout. It only ever
+//: builds at a coarse band, and every band is <= 1024 and so carries R=16 --
+//: but that is an assumption a future band could break silently, so it is
+//: stated here where the compiler can hold it.
+#if COARSE16 && (RADIX != 16)
+#error "COARSE16 is written for R=16; a wider band needs the SoA half widened too"
 #endif
 //: PPG: pairs per workgroup. One pair per workgroup makes a workgroup a
 //: SINGLE wave32 at band 512, and the 16-workgroups-per-CU cap then pins
@@ -146,7 +175,7 @@ static uint _tid;
 //: so the level loop unrolls and every len/TB/shift below folds to a
 //: constant -- which is the whole difference between this and the
 //: hand-specialised kernel.
-static const uint NLEVELS = (WG <= 16) ? 1 : ((WG <= 256) ? 2 : 3);
+static const uint NLEVELS = (WG <= R) ? 1 : ((WG <= R * R) ? 2 : 3);
 
 C cmul(C a, C b) { return C(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
 C cmulConj(C a, C b) { return C(a.x*b.x + a.y*b.y, a.y*b.x - a.x*b.y); }
@@ -257,7 +286,7 @@ H mag2s(H re, H im) { return re * re + im * im; }
 //: Dual exchange. Two passes over the same stage -- re then im -- so the
 //: LDS sizing is untouched. Each stgPut stores one half2, which is the
 //: same element of BOTH transforms, so one pass moves both.
-void exchangeS(inout H re[16], inout H im[16], uint want[16],
+void exchangeS(inout H re[16], inout H im[16], uint want[RADIX],
                uint lgLen, uint lgSpan)
 {
     H outr[16], outi[16];
@@ -309,16 +338,16 @@ void r4(inout C a, inout C b, inout C c, inout C d)
 // or length here indexes the register array dynamically, which forces a
 // spill to scratch -- the first version did that and the driver crashed.
 // The innermost block size follows from NLEN, so it folds.
-void dft2(inout C r[16], uint o)
+void dft2(inout C r[RADIX], uint o)
 {
     C a=r[o], b=r[o+1]; r[o]=a+b; r[o+1]=a-b;
 }
-void dft4(inout C r[16], uint o)
+void dft4(inout C r[RADIX], uint o)
 {
     r4(r[o], r[o+1], r[o+2], r[o+3]);
     C t=r[o+1]; r[o+1]=r[o+2]; r[o+2]=t;
 }
-void dft8(inout C r[16], uint o)
+void dft8(inout C r[RADIX], uint o)
 {
     // radix-2, three stages, fully unrolled with static indices
     const float S = 0.70710678f;
@@ -356,15 +385,99 @@ void dft16(inout C r[16])
     t=r[11]; r[11]=r[14]; r[14]=t;
 }
 
-//: Innermost block size: recurse TB /= 16 until it fits in a thread.
-static const uint INNER = (WG <= 16) ? WG : ((WG / 16 <= 16) ? WG / 16 : WG / 256);
-
-void innermost(inout C r[16])
+//: dft16 at a static offset inside a wider register file. At R=16 this is
+//: dft16 itself; above it the slice is copied out and back, which unrolls
+//: to register renames because every offset is a compile-time constant.
+void dft16at(inout C r[RADIX], uint o)
 {
+#if RADIX == 16
+    dft16(r);
+#else
+    C b[16];
+    [unroll] for (uint i = 0; i < 16; ++i) b[i] = r[o + i];
+    dft16(b);
+    [unroll] for (uint i = 0; i < 16; ++i) r[o + i] = b[i];
+#endif
+}
+
+#if RADIX == 32
+//: R=32 as two dft16 under a decimation-in-frequency split:
+//:
+//:     u[j] = x[j] + x[j+16]              -> X[2k]
+//:     v[j] = (x[j] - x[j+16]) * W32^j    -> X[2k+1]
+//:
+//: The interleave at the end is NOT optional. want[] below indexes
+//: registers by frequency k2, so a radix that left its output permuted
+//: would mis-route the entire level -- silently, at plausible magnitudes.
+void dft32(inout C r[RADIX])
+{
+    C u[16], v[16];
+    [unroll] for (uint j = 0; j < 16; ++j) {
+        C a = r[j], b = r[j + 16];
+        u[j] = a + b;
+        float ang = 2.0f * PI * float(j) / 32.0f;
+        v[j] = cmul(a - b, C(CS(cos(ang)), CS(sin(ang))));
+    }
+    dft16(u);
+    dft16(v);
+    [unroll] for (uint k = 0; k < 16; ++k) { r[2 * k] = u[k]; r[2 * k + 1] = v[k]; }
+}
+#endif
+
+#if RADIX == 64
+//: R=64 as four dft16 under a radix-4 decimation in frequency. r4 already
+//: computes the four sums sum_q x[j+16q] * i^(pq) in place and in natural p
+//: order -- the same butterfly dft16 is built from -- so the split costs one
+//: r4 per j and no twiddle of its own.
+void dft64(inout C r[RADIX])
+{
+    [unroll] for (uint j = 0; j < 16; ++j)
+        r4(r[j], r[j + 16], r[j + 32], r[j + 48]);
+    C o[64];
+    [unroll] for (uint pp = 0; pp < 4; ++pp) {
+        C b[16];
+        [unroll] for (uint j = 0; j < 16; ++j) {
+            float ang = 2.0f * PI * float(pp * j) / 64.0f;
+            b[j] = cmul(r[pp * 16 + j], C(CS(cos(ang)), CS(sin(ang))));
+        }
+        dft16(b);
+        [unroll] for (uint k = 0; k < 16; ++k) o[4 * k + pp] = b[k];
+    }
+    [unroll] for (uint i = 0; i < 64; ++i) r[i] = o[i];
+}
+#endif
+
+//: The per-level radix.
+void dftR(inout C r[RADIX])
+{
+#if RADIX == 16
+    dft16(r);
+#elif RADIX == 32
+    dft32(r);
+#else
+    dft64(r);
+#endif
+}
+
+//: Innermost block size: recurse TB /= R until it fits in a thread.
+static const uint INNER = (WG <= R) ? WG
+                        : ((WG / R <= R) ? WG / R : WG / (R * R));
+
+//: Only the combinations that are actually built appear here. R>16 occurs
+//: at one geometry each -- WG=1024 gives INNER=32 at R=32 and INNER=16 at
+//: R=64 -- so the other branches would be dead code carrying live risk.
+void innermost(inout C r[RADIX])
+{
+#if RADIX == 32
+    dft32(r);                                    // INNER == 32
+#elif RADIX == 64
+    [unroll] for (uint b = 0; b < 4; ++b) dft16at(r, b*16);   // INNER == 16
+#else
     if (INNER == 16)     { dft16(r); }
     else if (INNER == 8) { [unroll] for (uint b = 0; b < 2; ++b) dft8(r, b*8); }
     else if (INNER == 4) { [unroll] for (uint b = 0; b < 4; ++b) dft4(r, b*4); }
     else                 { [unroll] for (uint b = 0; b < 8; ++b) dft2(r, b*2); }
+#endif
 }
 
 // Exchange in chunks. Staging CH registers of every thread at a time,
@@ -375,7 +488,7 @@ void innermost(inout C r[16])
 //   scatter wrote   p = blk*len + i*span + lane
 //   so from p:      blk = p/len, i = (p%len)/span, lane = (p%len)%span
 //                   writer thread = blk*span + lane
-void exchange(inout C r[16], uint want[16], uint lgLen, uint lgSpan)
+void exchange(inout C r[RADIX], uint want[RADIX], uint lgLen, uint lgSpan)
 {
     // Every divisor here is a power of two, so these are shifts and masks.
     // Written as / and % they were integer divisions -- 16 of them per
@@ -386,7 +499,7 @@ void exchange(inout C r[16], uint want[16], uint lgLen, uint lgSpan)
     // it and warns, and a backend that leaves an unwritten register as
     // garbage rather than zero would turn that warning into a wrong
     // answer. Cheap insurance against a compiler we have not met.
-    C out[16];
+    C out[RADIX];
     [unroll] for (uint z = 0; z < R; ++z) out[z] = C(0.0f, 0.0f);
     uint spanMask = (1u << lgSpan) - 1u;
     uint lenMask  = (1u << lgLen) - 1u;
@@ -422,9 +535,11 @@ void exchange(inout C r[16], uint want[16], uint lgLen, uint lgSpan)
 //: of a register array spills to scratch and crashed a driver here once.
 static const uint NIDIG = (INNER == 4) ? 2u : 1u;
 static const uint NDIG  = NLEVELS + NIDIG;
-static const uint LGI0  = (INNER == 2) ? 1u : ((INNER == 4) ? 1u : ((INNER == 8) ? 3u : 4u));
+static const uint LGI0  = (INNER == 2) ? 1u : ((INNER == 4) ? 1u
+                        : ((INNER == 8) ? 3u : ((INNER == 16) ? 4u
+                        : ((INNER == 32) ? 5u : 6u))));
 
-uint lgOf(uint i) { return (i < NLEVELS) ? 4u : ((i == NLEVELS) ? LGI0 : 1u); }
+uint lgOf(uint i) { return (i < NLEVELS) ? LGR : ((i == NLEVELS) ? LGI0 : 1u); }
 
 uint slotToIndex(uint slot)
 {
@@ -445,11 +560,26 @@ uint slotToIndex(uint slot)
 #define TILE_T 1
 #endif
 
+//: The transform itself, with no filtering and no peak search around it.
+//:
+//: Split out of filterOne because Tier C calls it too: a length past 65536
+//: is two of these, with a twiddle and a transpose between. Everything in
+//: here is a function of `tid` and the compile-time geometry, so lifting it
+//: is a pure move of the source. It is NOT byte-identical in the SPIR-V --
+//: n=16384 goes 29932 -> 29972 -- so it rests on the cross-device index and
+//: value checks, not on the artefact being unchanged. What it buys is that
+//: the Tier C stages cannot drift from the transform eleven lengths are
+//: already verified against.
+void transform(inout C r[RADIX], uint tid)
+{
+#include "fft_transform.slang"
+}
+
 // Keep the full-precision path in one function. Passing a dummy data
 // register array through the coarse tiling wrapper doubled flat/refine
 // execution time on the Radeon 8060S, even when its loads were disabled.
 #if COARSE16
-void filterOne(uint pair, uint d, uint t, uint tid, C dreg[16],
+void filterOne(uint pair, uint d, uint t, uint tid, C dreg[RADIX],
                StructuredBuffer<CVal> data, StructuredBuffer<CVal> tmpl,
                RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
                uint winStart, uint winEnd,
@@ -466,7 +596,7 @@ void filterPair(uint pair, uint tid,
     _tid = tid;
     uint d = pair / ntmpl, t = pair % ntmpl;
 #endif
-    C r[16];
+    C r[RADIX];
 
     // level 0: gather this thread's stride-WG column straight from global
 #if COARSE16
@@ -483,7 +613,7 @@ void filterPair(uint pair, uint tid,
     }
 #endif
 
-#include "fft_transform.slang"
+    transform(r, tid);
 
     // --- peak per bin ---------------------------------------------------
     // Bins are contiguous in OUTPUT index, and the output index is not
@@ -508,8 +638,8 @@ void filterPair(uint pair, uint tid,
 #endif
     GroupMemoryBarrierWithGroupSync();
 
-    uint myMag[16];
-    uint myBin[16];
+    uint myMag[RADIX];
+    uint myBin[RADIX];
     [unroll] for (uint i = 0; i < R; ++i) {
         uint idx = slotToIndex(tid * R + i);
         bool live = (idx >= winStart && idx < winEnd);
@@ -646,7 +776,7 @@ void peakLane(uint pair, uint tid, uint lane, H magv[16], H re[16], H im[16],
 //: fill one lane each. Every operation from here to the magnitude is
 //: elementwise and packs.
 void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
-               C dreg[16], StructuredBuffer<CVal> tmpl,
+               C dreg[RADIX], StructuredBuffer<CVal> tmpl,
                RWStructuredBuffer<int> peakIdx, RWStructuredBuffer<float2> peakVal,
                uint winStart, uint winEnd, uint thrBits)
 {
@@ -662,10 +792,10 @@ void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
     }
 
     [ForceUnroll] for (uint lvl = 0; lvl < NLEVELS; ++lvl) {
-        uint want[16];
+        uint want[RADIX];
         [unroll] for (uint z = 0; z < R; ++z) want[z] = 0u;
-        const uint TB   = WG >> (4 * lvl);
-        const uint len  = N  >> (4 * lvl);
+        const uint TB   = WG >> (LGR * lvl);
+        const uint len  = N  >> (LGR * lvl);
         const uint lgTB = firstbithigh(TB);
         const uint lgLn = firstbithigh(len);
         uint blk  = tid >> lgTB;
@@ -692,7 +822,7 @@ void filterTwo(uint pairA, uint pairB, uint tA, uint tB, uint tid,
             }
         }
         const uint per  = R / max(TB, 1u);
-        const uint TB2  = max(TB >> 4, 1u), len2 = TB;
+        const uint TB2  = max(TB >> LGR, 1u), len2 = TB;
         uint blk2 = tid / TB2, lane2 = tid % TB2;
         [unroll] for (uint dd = 0; dd < R; ++dd) {
             uint j = dd / max(TB, 1u), m = dd % max(TB, 1u);
@@ -738,7 +868,7 @@ void filterPair(uint pair, uint tid,
     // the pair count is not a multiple of it.
     uint p0 = pair * TILE_T;
     uint d = p0 / ntmpl, t0 = p0 % ntmpl;
-    C dreg[16];
+    C dreg[RADIX];
 #if COARSE16
     [unroll] for (uint n2 = 0; n2 < R; ++n2)
         dreg[n2] = cload(data, d*N + tid + WG * n2);
@@ -854,3 +984,116 @@ void refineListed(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
     filterPair(pair, lid.x, data, tmpl, peakIdx, peakVal, ntmpl,
                winStart, winEnd, binsize, binShift, nbins, thrBits);
 }
+
+// ---------------------------------------------------------------------
+// Tier C: the lengths one workgroup cannot carry.
+//
+// n = N1 * N2 with j = n1 + N1*n2 and k = k1*N2 + k2:
+//
+//   stage 1   one workgroup per (pair, n1): an N2-point transform over n2,
+//             times W_n^(n1*k2), scattered to scratch[k2*N1 + n1]
+//   stage 3   one workgroup per (pair, k2): an N1-point transform over n1,
+//             output index k1*N2 + k2
+//
+// Both stages are THIS file compiled at their own NLEN -- stage 1 at N2,
+// stage 3 at N1 -- so each reuses transform() and slotToIndex() rather than
+// carrying a second copy of the decomposition. The other factor is then
+// just TC_N/NLEN in both, which is why one define is enough.
+//
+// Verified against a float64 reference in tools/gpu_tierc_model.py, INCLUDING
+// the register-to-index mapping: each stage leaves its output digit-reversed,
+// so slotToIndex applies twice, and getting either wrong reports a real peak
+// at the wrong sample.
+#ifndef TC_N
+#define TC_N 0
+#endif
+#if TC_N
+
+//: N1 in stage 1, N2 in stage 3 -- the factor this compilation is NOT.
+static const uint TC_OTHER = TC_N / NLEN;
+
+[shader("compute")][numthreads(WG, 1, 1)]
+void tcStage1(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
+              StructuredBuffer<float2> data, StructuredBuffer<float2> tmpl,
+              RWStructuredBuffer<float2> scratch, uniform uint ntmpl)
+{
+    uint pair = gid.x / TC_OTHER, n1 = gid.x % TC_OTHER;
+    uint d = pair / ntmpl, t = pair % ntmpl;
+    uint tid = lid.x;
+    _tid = tid;
+    _stgBase = 0;
+
+    C r[RADIX];
+    [unroll] for (uint m = 0; m < R; ++m) {
+        uint j = n1 + TC_OTHER * (tid + WG * m);
+        r[m] = cmulConj(data[d * TC_N + j], tmpl[t * TC_N + j]);
+    }
+    transform(r, tid);
+
+    //: n1*k2 < N1*N2 = n <= 2^20, so the product is exact in float32 and the
+    //: angle stays inside one turn. Folding it any other way costs accuracy
+    //: for nothing.
+    [unroll] for (uint i = 0; i < R; ++i) {
+        uint k2 = slotToIndex(tid * R + i);
+        float a = 2.0f * PI * float(n1 * k2) / float(TC_N);
+        scratch[pair * TC_N + k2 * TC_OTHER + n1] = cmul(r[i], C(cos(a), sin(a)));
+    }
+}
+
+//: One candidate per (pair, k2): stage 3's workgroup owns a strided N1-sample
+//: slice of the output, so the whole-transform maximum is a reduction ACROSS
+//: workgroups. Each writes its own best and a third pass combines them --
+//: N2 candidates a pair rather than n, which is why this needs no global
+//: atomic and no second evaluation of the transform.
+[shader("compute")][numthreads(WG, 1, 1)]
+void tcStage3(uint3 gid: SV_GroupID, uint3 lid: SV_GroupThreadID,
+              StructuredBuffer<float2> scratch,
+              RWStructuredBuffer<uint> candMag, RWStructuredBuffer<int> candIdx,
+              RWStructuredBuffer<float2> candVal,
+              uniform uint winStart, uniform uint winEnd, uniform uint thrBits)
+{
+    uint pair = gid.x / TC_OTHER, k2 = gid.x % TC_OTHER;
+    uint tid = lid.x;
+    _tid = tid;
+    _stgBase = 0;
+
+    C r[RADIX];
+    [unroll] for (uint m = 0; m < R; ++m)
+        r[m] = scratch[pair * TC_N + k2 * NLEN + (tid + WG * m)];
+    transform(r, tid);
+
+    uint best = thrBits;
+    [unroll] for (uint i = 0; i < R; ++i) {
+        uint k1 = slotToIndex(tid * R + i);
+        uint idx = k1 * TC_OTHER + k2;
+        bool live = (idx >= winStart && idx < winEnd);
+        uint mg = live ? asuint(r[i].x * r[i].x + r[i].y * r[i].y) : 0u;
+        best = max(best, mg);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    if (tid == 0) stg[0] = thrBits;
+    GroupMemoryBarrierWithGroupSync();
+    if (best > thrBits) InterlockedMax(stg[0], best);
+    GroupMemoryBarrierWithGroupSync();
+
+    uint slot = pair * TC_OTHER + k2;
+    if (tid == 0 && stg[0] == thrBits) {
+        candMag[slot] = thrBits;
+        candIdx[slot] = -1;
+        candVal[slot] = float2(0.0f, 0.0f);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint i = 0; i < R; ++i) {
+        uint k1 = slotToIndex(tid * R + i);
+        uint idx = k1 * TC_OTHER + k2;
+        bool live = (idx >= winStart && idx < winEnd);
+        uint mg = live ? asuint(r[i].x * r[i].x + r[i].y * r[i].y) : 0u;
+        if (mg > thrBits && stg[0] == mg) {
+            candMag[slot] = mg;
+            candIdx[slot] = int(idx);
+            candVal[slot] = float2(float(r[i].x), float(r[i].y));
+        }
+    }
+}
+#endif

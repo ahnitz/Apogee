@@ -97,8 +97,8 @@ instead of guessing.
 
 ## Choosing a transform length
 
-CPU lengths are powers of two from 64 to 1048576. GPU lengths are
-1024, 2048, 4096, 8192 and 16384, subject to device limits. The
+CPU lengths are powers of two from 64 to 1048576. GPU lengths are powers
+of two from 64 to 65536, subject to device limits. The
 hierarchical mode additionally needs measured tuning coverage at that length;
 `tools/hmf_tune.py` generates more.
 
@@ -165,10 +165,14 @@ not ask for.
 | precision | float32 | float32 |
 | parallelism | single-threaded by design | the device |
 
-Why 16384 on the GPU: one workgroup carries a whole transform, and at
-`n/16` threads per workgroup 16384 is what 1024 threads reach. Longer
-transforms need the decomposition split across dispatches, which is not
-written. Asking for one raises, naming the sizes that work.
+Why 65536 on the GPU: one workgroup carries a whole transform, so
+`n = threads x points-per-thread` with threads capped at 1024. Sixteen
+points per thread reaches 16384; thirty-two reaches 32768 and sixty-four
+reaches 65536, each widening the decomposition radix along with the register
+file. Past that a thread would need 256 points -- more transform state than
+the register file holds -- so longer transforms need the decomposition split
+across dispatches, which is a different kernel and is not written. Asking
+for one raises, naming the sizes that work.
 
 Shared CPU/GPU allocations are available through `filter.empty_shared()`.
 For zero-copy bank binding, DLPack interoperability, and the remaining

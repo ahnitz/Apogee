@@ -448,7 +448,13 @@ def test_manual_overrides_reach_every_backend(device):
 #: the band fixes WG = band/16, which fixes PPG and TILE_T, which selects
 #: among tierb_N_c16, _c16p2 and _c16p4. Testing one band at one size
 #: exercises one of them. This sweep is the only thing that covers the rest.
-_MATRIX_SIZES = (1024, 2048, 4096, 8192, 16384)
+#: 32768 and 65536 are carried by a WIDER kernel -- 32 and 64 points per
+#: thread rather than 16, which changes the decomposition radix, the
+#: twiddles and the digit-reversed output order together. They are in
+#: this sweep for the same reason the rest are: the failure mode is a
+#: peak attributed to the wrong sample, which only an index comparison
+#: sees.
+_MATRIX_SIZES = (1024, 2048, 4096, 8192, 16384, 32768, 65536)
 _MATRIX_BANDS = (64, 128, 256, 512, 1024)
 
 
@@ -464,10 +470,23 @@ def test_every_size_and_band_is_correct_not_merely_runnable(device):
 
     So this asserts recovery and agreement, not absence of exceptions:
       * the flat filter finds the injected signal,
-      * the hierarchical filter finds it too -- a gate that dismisses it is
-        the failure mode that looks like a speedup,
-      * and where both report, they report the SAME peak, which is the
-        one-sided guarantee the hierarchical mode is built on.
+      * and where both report, they report the SAME peak -- which is what
+        exercises the coarse and refine kernels and their index mapping at
+        every compiled geometry.
+
+    READ THE GATE CLAIM CAREFULLY. `set_coarse_threshold(0.0)` below forces
+    the gate wide open on purpose, so that execution coverage does not
+    depend on calibration coverage -- a size with no measured threshold
+    still gets its kernels run. The consequence is that `dismissed == 0`
+    CANNOT fail here: with the gate open nothing is dismissible, so that
+    assertion is about the plumbing, not about the gate.
+
+    Whether the gate dismisses correctly is a different question, and is
+    tested separately -- see the threshold override test above, which runs
+    the same filter at 0.0 and 1e9 and asserts the second dismisses
+    everything. Do not read this sweep as evidence that a size's gate is
+    calibrated: at 32768 and 65536 it is not, and a run that asks for a
+    real gate raises rather than guessing.
 
     Combinations the library declines are skipped, not failed: not every
     band has a plan or a calibrated threshold at every size. But the count

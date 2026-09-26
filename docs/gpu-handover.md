@@ -137,55 +137,69 @@ fewer instructions relieved (both measured).
 The full rule set is in `docs/optimization-method.md` (13 rules, each
 anchored to something that actually happened).
 
-## 4. Large-n parity: the GPU stops at 16384, the CPU reaches 262144
+## 4. Size parity with the CPU
 
-The CPU accepts n up to 262144. The GPU raises "supports n in [...]" above
-16384 -- for BOTH flat and hierarchical -- because no kernels are compiled
-past that. It is not a table or threshold gap.
+The CPU takes every power of two from 64 to 1048576. The GPU now takes 64
+to 65536 -- eleven lengths, all of them checked against the CPU on index
+*and* value, not merely run.
 
-**The constraint.** n = WG * R with WG capped at 1024 threads by Vulkan
-and R fixed at 16, because `dft16` IS the algorithm -- a 16-point
-in-register DFT.
+**Done.**
 
-    n        required R   VGPRs for r[] alone   verdict
-    16384       16             32               current maximum, WG=1024
-    32768       32             64               tractable
-    65536       64            128               fits; occupancy collapses
-    131072     128            256               exhausts the register file
-    262144     256            512               impossible in one workgroup
+* **64, 128, 256, 512.** These kernels already shipped, built as coarse
+  bands; the decomposition generalises down without change, so exposing
+  them as transform lengths cost nothing. 192 configurations across shapes,
+  windows and binsizes agree with the CPU exactly.
+* **32768 and 65536.** R -- points per thread, which is also the
+  decomposition radix -- became a build parameter. 16 up to 16384, then 32
+  and 64, because a workgroup is capped at 1024 threads and n = WG * R.
+  `dft32` and `dft64` are built from `dft16` under a decimation-in-frequency
+  split, and both restore natural order before returning: `want[]` indexes
+  registers by frequency, so a permuted radix would mis-route the level.
+  72 configurations agree with the CPU; injections land on the exact lag.
 
-So parity is two different jobs, and only the first is an extension.
+**Remaining: 131072, 262144, 524288, 1048576.** These need the four-step
+split across dispatches. The decomposition is already written and checked
+in `tools/gpu_tierc_model.py`:
 
-### 4a. n = 32768 and 65536 -- raise R
+    n = N1 * N2,  j = n1 + N1*n2,  k = k1*N2 + k2
+    stage 1   for each n1: an N2-point transform over n2 of x[n1 + N1*n2],
+              multiplied by W_n^(n1*k2) on the way out
+    stage 3   for each k2: an N1-point transform over n1
+    output    X[k1*N2 + k2]
 
-Each thread holds two (or four) register-blocks and needs a radix-2
-combine across them with twiddles between: **one more decomposition level,
-inside the thread**, where today every level spans the workgroup and
-exchanges through LDS. The existing level loop is the right template --
-same structure, no barrier, because the data never leaves the thread.
+Both factors land at 1024 or below -- a length Tier B already carries -- so
+the sub-transforms are the existing kernel geometry and only the addressing
+is new. Scratch is stored transposed, `A[k2*N1 + n1]`, which puts the
+strided access on the write side where it does not feed a transform.
 
-Sites to change:
-  * 28 declarations spelled `[16]`; R is already a named constant, so most
-    become `[R]`. `dft16`/`dft16s` are the exception -- they are 16 by
-    definition and must be CALLED R/16 times per level, not widened.
-  * `WG = NLEN / 16` becomes `min(1024, NLEN / R)` with `R = NLEN / WG`.
-  * `NLEVELS` and `INNER` assume R=16 in their arithmetic.
-  * `LDS_CAP` needs entries for 32768 and 65536.
-  * The in-thread combine is new code: after the R/16 dft16 calls, apply
-    w^(k*j/R) and butterfly across the sub-blocks.
+Three things that are genuinely new, and are the actual work:
 
-The existing test matrix covers it the moment the sizes are added to
-`_MATRIX_SIZES` -- index AND value, both devices, every band.
+1. **The peak reduction must become global.** Tier B reduces within one
+   workgroup because one workgroup holds the whole transform. Stage 3
+   spreads a pair's output across N2 workgroups, so the per-bin maximum
+   needs an atomic table in device memory plus a second pass to write the
+   index and value matching it. The float-bits-as-uint monotone trick the
+   LDS path already uses carries over unchanged.
+2. **Scratch is n complex per pair in flight** -- 8 MB a pair at 1048576,
+   so pairs must be chunked rather than dispatched at once.
+3. **Both stages are digit-reversed within themselves**, so `slotToIndex`
+   applies twice: on k2 leaving stage 1, on k1 leaving stage 3. This is
+   the silent-failure surface, and it is what the model pins.
 
-### 4b. n = 131072 and 262144 -- a second implementation
+Host work lands in `_vkcompute.py` and `_mtlcompute.py`, which is worth
+knowing before starting: at the time of writing another session held
+uncommitted changes in both.
 
-These need a MULTI-KERNEL FFT: transform in passes with the intermediate
-going through global memory between dispatches. That is a different
-algorithm from the one this kernel implements, not an extension of it, and
-it needs its own correctness and performance story.
+### Method note
 
-Worth deciding deliberately: the register-resident design is WHY this
-kernel is fast, and a global-memory multi-pass transform at those lengths
-may not beat the CPU by enough to justify maintaining a second
-implementation. Establish whether real workloads reach 131072 before
-committing.
+Both Tier B extensions were written model-first: a register-level Python
+mirror of the kernel (`tools/gpu_regmodel.py`) that runs the real `want[]`
+scatter, the real exchange addressing and the real `slotToIndex`, checked
+against a float64 reference. It reproduces all eleven shipped lengths --
+including the `dft4` quirk where the innermost radix spends two radix-2
+digits rather than one radix-4 digit -- and that is the only reason
+widening R was a parameter change rather than a rewrite.
+
+Do the same for Tier C. This kernel's failure mode is a peak reported at
+the wrong sample: magnitudes stay plausible, benchmarks stay fast, and only
+an index comparison notices.

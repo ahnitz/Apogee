@@ -43,8 +43,18 @@ except (ImportError, PackageNotFoundError):  # running from a source tree
 PEAK_DTYPE = np.dtype([("index", "<i8"), ("value", "<c8")])
 
 #: Transform lengths the GPU kernel covers. One workgroup carries a whole
-#: transform, so 16384 is the ceiling at 1024 threads.
-_GPU_SIZES = frozenset((1024, 2048, 4096, 8192, 16384))
+#: transform and n = threads * points-per-thread, so the 1024-thread cap puts
+#: the ceiling at 16384 while a thread holds 16 points, at 32768 while it
+#: holds 32, and at 65536 while it holds 64. Above that the transform state
+#: no longer fits the register file and the four-step has to be split across
+#: dispatches -- a different kernel, so 65536 is where this one ends.
+#:
+#: Keep in step with tools/build_spirv.py TIER_B, which is what emits them.
+#: The short lengths were built as coarse bands before they were offered as
+#: transform lengths -- the kernel generalises down without change, so they
+#: cost nothing to expose and close the bottom of the CPU's range.
+_GPU_SIZES = frozenset((64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384,
+                        32768, 65536))
 
 __all__ = ["MatchedFilter", "HierarchicalFilter", "PEAK_DTYPE", "backend",
            "targets", "set_target", "devices", "Device", "__version__"]

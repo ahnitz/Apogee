@@ -34,11 +34,32 @@ existing cross-device numerical, caching, series, and bin/window matrices.
 Vulkan ran on the Radeon 8060S. Metal dispatch/cache logic has host tests;
 actual Metal execution still requires macOS CI.
 
+## Transform length parity
+
+The CPU takes fifteen lengths, every power of two from 64 to 1048576. The
+GPU takes the first eleven, 64 to 65536, and each is checked against the
+CPU on peak **index and value**, not merely run -- the failure mode here is
+a real peak attributed to the wrong sample, which agrees on magnitude and
+survives any benchmark.
+
+One workgroup carries a whole transform, so `n = threads x points-per-
+thread` with threads capped at 1024. Sixteen points per thread reaches
+16384, thirty-two reaches 32768, sixty-four reaches 65536.
+
+**The remaining four -- 131072, 262144, 524288, 1048576 -- are not
+implemented.** They need the four-step split across two dispatches with
+global memory between, which is a second kernel rather than a wider radix.
+The decomposition and, more importantly, the register-to-output-index
+contract are verified against a float64 reference in
+`tools/gpu_tierc_model.py`; `docs/gpu-handover.md` section 4 carries the
+design. Asking the GPU for one of these raises and names the sizes that
+work, rather than guessing.
+
 ## Supported differences and operational limits
 
 | Area | CPU | GPU |
 |---|---|---|
-| Flat transform lengths | Powers of two 64–1048576 | 1024, 2048, 4096, 8192, 16384; device limits can reject 16384 |
+| Flat transform lengths | Powers of two 64–1048576 | Powers of two 64–65536; device limits can reject the 1024-thread sizes (16384 and up) |
 | Hierarchical reference | Pinned plans can derive per-template statistics without a reference | Explicit common reference required for execution |
 | Automatic configuration | CPU cost tables | Device cost tables, with documented fallback where absent |
 | Coarse arithmetic | Float32 | Vulkan uses packed half precision for selected coarse bands; Metal uses its own kernels |

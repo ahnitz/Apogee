@@ -222,7 +222,7 @@
       ],
       "push_constant": true,
       "file": "tierb_512.spv",
-      "bytes": 21984,
+      "bytes": 22004,
       "compact": {
         "file": "compact_512.spv",
         "descriptors": 5
@@ -284,7 +284,7 @@
       ],
       "push_constant": true,
       "file": "tierb_1024.spv",
-      "bytes": 22596,
+      "bytes": 22616,
       "compact": {
         "file": "compact_1024.spv",
         "descriptors": 5
@@ -346,7 +346,7 @@
       ],
       "push_constant": true,
       "file": "tierb_2048.spv",
-      "bytes": 23184,
+      "bytes": 23204,
       "compact": {
         "file": "compact_2048.spv",
         "descriptors": 5
@@ -408,7 +408,7 @@
       ],
       "push_constant": true,
       "file": "tierb_4096.spv",
-      "bytes": 25120,
+      "bytes": 25140,
       "compact": {
         "file": "compact_4096.spv",
         "descriptors": 5
@@ -470,7 +470,7 @@
       ],
       "push_constant": true,
       "file": "tierb_8192.spv",
-      "bytes": 29096,
+      "bytes": 29136,
       "compact": {
         "file": "compact_8192.spv",
         "descriptors": 5
@@ -518,8 +518,7 @@
       "lds_bytes": 65536,
       "portable": {
         "file": "tierb_8192_lds32.spv",
-        "lds_bytes": 32768,
-        "bytes": 29096
+        "lds_bytes": 32768
       }
     },
     "16384": {
@@ -556,7 +555,7 @@
       ],
       "push_constant": true,
       "file": "tierb_16384.spv",
-      "bytes": 29708,
+      "bytes": 29748,
       "compact": {
         "file": "compact_16384.spv",
         "descriptors": 5
@@ -604,8 +603,177 @@
       "lds_bytes": 65536,
       "portable": {
         "file": "tierb_16384_lds32.spv",
-        "lds_bytes": 32768,
-        "bytes": 29708
+        "lds_bytes": 32768
+      }
+    },
+    "32768": {
+      "local_size": [
+        1024,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakIdx",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_32768.spv",
+      "bytes": 40392,
+      "compact": {
+        "file": "compact_32768.spv",
+        "descriptors": 5
+      },
+      "refine": {
+        "file": "refine_32768.spv",
+        "descriptors": 5,
+        "portable": {
+          "file": "refine_32768_lds32.spv",
+          "lds_bytes": 32768
+        }
+      },
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_32768.metal",
+          "metallib": null,
+          "portable": {
+            "msl": "tierb_32768_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
+        },
+        "compactPairs": {
+          "msl": "compact_32768.metal",
+          "metallib": null,
+          "portable": {
+            "msl": "compact_32768_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
+        },
+        "refineListed": {
+          "msl": "refine_32768.metal",
+          "metallib": null,
+          "portable": {
+            "msl": "refine_32768_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
+        }
+      },
+      "metal_lds_cap": 8192,
+      "metal_lds_bytes": 65536,
+      "lds_cap": 8192,
+      "lds_bytes": 65536,
+      "portable": {
+        "file": "tierb_32768_lds32.spv",
+        "lds_bytes": 32768
+      }
+    },
+    "65536": {
+      "local_size": [
+        1024,
+        1,
+        1
+      ],
+      "descriptors": [
+        {
+          "name": "entryPointParams.data",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 0
+        },
+        {
+          "name": "entryPointParams.tmpl",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 1
+        },
+        {
+          "name": "entryPointParams.peakIdx",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 2
+        },
+        {
+          "name": "entryPointParams.peakVal",
+          "kind": "StorageBuffer",
+          "set": 0,
+          "binding": 3
+        }
+      ],
+      "push_constant": true,
+      "file": "tierb_65536.spv",
+      "bytes": 30812,
+      "compact": {
+        "file": "compact_65536.spv",
+        "descriptors": 5
+      },
+      "refine": {
+        "file": "refine_65536.spv",
+        "descriptors": 5,
+        "portable": {
+          "file": "refine_65536_lds32.spv",
+          "lds_bytes": 32768
+        }
+      },
+      "metal": {
+        "fusedTierB": {
+          "msl": "tierb_65536.metal",
+          "metallib": null,
+          "portable": {
+            "msl": "tierb_65536_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
+        },
+        "compactPairs": {
+          "msl": "compact_65536.metal",
+          "metallib": null,
+          "portable": {
+            "msl": "compact_65536_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
+        },
+        "refineListed": {
+          "msl": "refine_65536.metal",
+          "metallib": null,
+          "portable": {
+            "msl": "refine_65536_lds32.metal",
+            "metallib": null,
+            "lds_bytes": 32768
+          }
+        }
+      },
+      "metal_lds_cap": 8192,
+      "metal_lds_bytes": 65536,
+      "lds_cap": 8192,
+      "lds_bytes": 65536,
+      "portable": {
+        "file": "tierb_65536_lds32.spv",
+        "lds_bytes": 32768
       }
     }
   }
