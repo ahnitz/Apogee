@@ -79,27 +79,37 @@ ping-pong parity even, and the `prod` case was missing from that condition.
 Regenerating changes 9 lines, all inside fft8_prod; everything else is
 byte-identical. `codelet_prod` now states the contract.
 
-### The opportunity it exposed -- NEXT ITEM
+### Pair batching at 256–1024: adaptive dispatch
 
-The pair-batched path is faster than the balanced split at the sizes the
-balanced split CAN do. Interleaved in one build (MF_PBMAX moves the cutoff),
-nd=8 nt=64:
+Automatic dispatch now opts in on measured AVX3, AVX2 and SSE4 targets for
+actual calls with at least 8 data segments and 16 contiguous templates,
+aligned template start, at least 75% SIMD lane occupancy, and a single bin
+covering at least half the transform. Other calls retain the balanced path.
+The total D×T is insufficient: lanes span templates, and 32×1 pads badly.
+One-data calls also regressed when ingestion was included, despite wins in
+kernel-only timing, so they deliberately retain the balanced path.
 
-    N= 256   213.1 -> 86.5 us   2.16x
-    N= 512   583.8 -> 313.4 us  1.97x
-    N=1024   626.6 -> 381.4 us  1.61x    8 of 8 rounds at every size
+A second packed layout is allocated lazily on the first eligible call.
+Only initialized requested rows are copied; later setters update both layouts.
+This adds memory and first-call setup cost, and alternating wide and narrow
+calls retains the second layout. Allocation failure falls back to balanced.
+`MF_PBMAX=128` forces balanced at these sizes, and `MF_PBMAX=1024` forces
+pair batching; neither environment override is changed internally.
 
-Larger than everything else measured on the CPU this session. It is NOT the
-default because lanes are pairs and a batch below AP_W pads:
+Interleaved measurement on Ryzen AI Max+ 395, AVX3, 8×64, seven rounds:
 
-    N= 256  nd=1 nt=1  0.52x       N=1024  nd=1 nt=1  0.19x
-    N= 256  nd=8 nt=16 1.66x       N=1024  nd=8 nt=16 1.38x
+| N | Steady-state speedup | Including data and template ingestion |
+|---|---:|---:|
+| 256 | 2.31× | 1.81× |
+| 512 | 1.90× | 1.48× |
+| 1024 | 1.83× | 1.37× |
 
-Crossover around nd*nt ~ 24. Raising the cutoff needs a policy on batch
-shape, and probably lanes that flatten (d, t) instead of spanning templates
-within one d, so a one-template batch can fill them from the data side.
-Shipping the cutoff at 128 on the strength of wide-batch numbers alone would
-be a fitted bound.
+Every round won at these shapes. These are matched-filter batch timings,
+not a claim of equivalent end-to-end PyCBC speedup. Reproduce with
+`python tools/bench_pairbatch.py` and `--include-ingest`; use `MF_ISA=AVX2`
+or `MF_ISA=SSE4` for narrower targets. ARM retains its original dispatch
+until measured there. Regression tests exercise updates, subsets, padding,
+windows, counts, and hierarchical series against forced balanced execution.
 
 ### The design, as it was written and as it held
 
@@ -128,12 +138,8 @@ fallback would have thrown away.
 
 ## Also outstanding
 
-  * **Raise the pair-batch cutoff above 128** -- see above. The biggest
-    single CPU number measured so far, blocked on batch-shape policy.
   * **SWAR** -- the CPU equivalent of fp16 for the coarse stage. Queued
     deliberately behind the structural work.
-  * **A 2D-tile diagram** for the docs, to show what the tiling actually
-    does.
   * **stageA_prod_gm is still 46%** of the coarse stage (was 58%). What
     remains inside it is two 16x16 transposes per block and a rolled
     t-loop. The coarse stage sits ~2.2x off single-core FMA peak, down from

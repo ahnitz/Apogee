@@ -84,24 +84,12 @@ typedef struct {
  * the narrow targets COULD split 64 as 8x8, and then which kernel ran would
  * depend on which ISA the CPU happened to offer.
  *
- * It is not obviously the fastest cutoff.  Measured interleaved in one build
- * (MF_PBMAX moves it, which is why the knob exists -- this machine drifts 18%
- * between runs, so a cutoff argued from two separately compiled binaries would
- * be measuring the room), pair-batched against balanced, nd=8 nt=64:
- *
- *     N= 256   213.1 -> 86.5 us   2.16x      N=1024   626.6 -> 381.4 us  1.61x
- *     N= 512   583.8 ->313.4 us   1.97x      8 of 8 rounds at every size
- *
- * What stops that becoming the default is the other end of the batch. Lanes
- * are pairs, so a batch smaller than AP_W pads, and the padding is real work:
- *
- *     N= 256  nd=1 nt=1  0.52x    N=1024  nd=1 nt=1  0.19x
- *     N= 256  nd=8 nt=16 1.66x    N=1024  nd=8 nt=16 1.38x
- *
- * The crossover is around nd*nt ~ 24. Raising the cutoff therefore needs a
- * policy on batch shape, and probably lanes that flatten (d,t) instead of
- * spanning templates within one d, so a one-template batch can still fill
- * them from the data side. That is a separate change; this one is the bands. */
+ * Keep the standalone FFT cutoff at 128. matchfilt.c can lazily create a
+ * pair-batched alternate at 256..1024 for measured wide-batch shapes, while
+ * preserving balanced execution for small, sparse and narrow-window calls.
+ * Lanes span templates, so D*T alone is not a useful occupancy criterion.
+ * See docs/cpu-plan.md and tools/bench_pairbatch.py for ingestion-inclusive
+ * measurements and the dispatch rule. MF_PBMAX remains an explicit override. */
 static inline int pairbatch_size(size_t N){
   if(N>1024u||!esupported((int)N)) return 0;
   size_t lim=128u;
@@ -1118,7 +1106,7 @@ const ap_backend *Backend(void){
     hwy::TargetName(HWY_TARGET), AP_W,
     create, destroy, fft, supported,
     binmax, binmax_split, has_prod, split, binmax_prod, series_buf, series_stride, interp_max,
-    pairbatch, binmax_prod_batch
+    pairbatch, binmax_prod_batch, create_small
   };
   return &be;
 }

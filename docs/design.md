@@ -45,6 +45,13 @@ At 2^20 that is 48 MiB per pair, and 256 pairs is 12 GiB.
 
 4. **Conjugate templates once at ingest**, not per pair.
 
+![A square tile reuses eight input spectra for sixteen pairs; a strip needs seventeen.](assets/pair-tiles.svg)
+
+The diagram counts distinct inputs, not compulsory DRAM transfers: cache
+capacity and loop order determine the actual traffic. This cache tile is
+separate from SIMD pair batching, which currently fills lanes with templates
+for one data segment. A 32×1 batch therefore does not fill 32 SIMD lanes.
+
 ## What does not work, and why
 
 - **Pushing butterflies across the product.** The product is elementwise in

@@ -63,14 +63,19 @@ struct ap_mf_plan {
   float *tsr,*tsi;            /* [n][pb] gathered template group, when needed  */
   ap_peak *pkbuf;             /* [pb][nb] dense results, before placement      */
   size_t pkcap;
+  /* Optional second layout, created only when an actual call can use it.
+     The balanced plan remains available for small sub-ranges and selections. */
+  struct ap_mf_plan *pair_alt;
+  unsigned char *alt_dready, *alt_tready;
+  int allow_pair_alt;
 };
 
-ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
+static ap_mf_plan *create_mf(size_t n, int ndata, int ntmpl, int pair){
   if(ndata<1||ntmpl<1) return NULL;
   ap_mf_plan *p = calloc(1,sizeof(*p));
   if(!p) return NULL;
   p->n=n; p->nd=ndata; p->nt=ntmpl;
-  p->fft = ap_create(n);
+  p->fft = pair ? ap_create_pairbatch(n) : ap_create(n);
   if(!p->fft){ free(p); return NULL; }
   /* Ask the plan for its split rather than recomputing it.  Deriving it
      independently means the two disagree the moment the heuristic changes, and
@@ -93,6 +98,12 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
   p->tile = 8;
   { const char *e=getenv("MF_MFTILE"); if(e){ int v=atoi(e); if(v>0) p->tile=v; } }
   p->pb = ap_plan_pairbatch(p->fft);
+  /* Only the measured x86 targets opt in. MF_PBMAX remains a way to force
+     either implementation in one build, without changing process state here. */
+  const char *isa=ap_plan_backend(p->fft);
+  p->allow_pair_alt = !pair && !p->pb && n>=256 && n<=1024 && ntmpl>=16
+    && !getenv("MF_PBMAX")
+    && (!strcmp(isa,"AVX3") || !strcmp(isa,"AVX2") || !strcmp(isa,"SSE4"));
   p->ntpad = p->pb ? ((ntmpl + p->pb - 1)/p->pb)*p->pb : ntmpl;
   p->dre=ap_alloc64((size_t)ndata*n*sizeof(float));
   p->dim=ap_alloc64((size_t)ndata*n*sizeof(float));
@@ -117,9 +128,15 @@ ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
   return p;
 }
 
+ap_mf_plan *ap_mf_create(size_t n, int ndata, int ntmpl){
+  return create_mf(n,ndata,ntmpl,0);
+}
+
 void ap_mf_destroy(ap_mf_plan *p){
   if(!p) return;
   if(p->fft) ap_destroy(p->fft);
+  ap_mf_destroy(p->pair_alt);
+  free(p->alt_dready); free(p->alt_tready);
   free(p->dre);free(p->dim);free(p->tre);free(p->tim);
   free(p->pr);free(p->pi);free(p->scratch);
   free(p->sfwd);free(p->sspec);
@@ -159,6 +176,10 @@ int ap_mf_set_data(ap_mf_plan *p, int d, const float *spec){
   if(!p||d<0||d>=p->nd) return -1;
   split_store(spec, p->dre+(size_t)d*p->n, p->dim+(size_t)d*p->n, p->n, 0,
               p->gmajor?p->n1:0, p->n2, p->w);
+  if(p->pair_alt){
+    ap_mf_set_data(p->pair_alt,d,spec);
+    p->alt_dready[d]=1;
+  }
   return 0;
 }
 
@@ -182,7 +203,43 @@ int ap_mf_set_template(ap_mf_plan *p, int t, const float *spec){
   /* conjugate at ingest, not per pair: this runs T times, the pair loop D*T */
   split_store(spec, p->tre+(size_t)t*p->n, p->tim+(size_t)t*p->n, p->n, 1,
               p->gmajor?p->n1:0, p->n2, p->w);
+  if(p->pair_alt){
+    ap_mf_set_template(p->pair_alt,t,spec);
+    p->alt_tready[t]=1;
+  }
   return 0;
+}
+
+/* Undo the primary layout once when a row first reaches the alternate plan.
+   Subsequent setters populate both layouts directly, outside the pair loop. */
+static void restore_spectrum(ap_mf_plan *p,const float *re,const float *im,int conj){
+  for(size_t k=0;k<p->n;k++){
+    size_t j=k;
+    if(p->gmajor){
+      size_t a=k%(size_t)p->n1, b=k/(size_t)p->n1;
+      j=(a/p->w)*p->n2*p->w+b*p->w+a%p->w;
+    }
+    p->scratch[2*k]=re[j];
+    p->scratch[2*k+1]=conj ? -im[j] : im[j];
+  }
+}
+
+static ap_mf_plan *pair_alternate(ap_mf_plan *p,int d0,int nd,int t0,int nt){
+  if(!p->pair_alt){
+    ap_mf_plan *q=create_mf(p->n,p->nd,p->nt,1);
+    unsigned char *dr=calloc((size_t)p->nd,1), *tr=calloc((size_t)p->nt,1);
+    if(!q || !dr || !tr){ ap_mf_destroy(q); free(dr); free(tr); return NULL; }
+    p->pair_alt=q; p->alt_dready=dr; p->alt_tready=tr;
+  }
+  for(int d=d0;d<d0+nd;d++) if(!p->alt_dready[d]){
+    restore_spectrum(p,p->dre+(size_t)d*p->n,p->dim+(size_t)d*p->n,0);
+    ap_mf_set_data(p->pair_alt,d,p->scratch); p->alt_dready[d]=1;
+  }
+  for(int t=t0;t<t0+nt;t++) if(!p->alt_tready[t]){
+    restore_spectrum(p,p->tre+(size_t)t*p->n,p->tim+(size_t)t*p->n,1);
+    ap_mf_set_template(p->pair_alt,t,p->scratch); p->alt_tready[t]=1;
+  }
+  return p->pair_alt;
 }
 
 
@@ -288,6 +345,16 @@ static int run_pairs(ap_mf_plan *p, int d0, int nd, int t0, int nt,
                      ap_peak *peaks, int *counts, size_t start, size_t end){
   if(p->pb) return run_pairs_pb(p,d0,nd,t0,nt,tsel,nsel,binsize,threshold,
                                 peaks,counts,start,end);
+  /* Lanes span templates, not D*T: 32x1 cannot fill one vector. Require
+     >=75% occupancy, aligned contiguous templates, and a broad single bin.
+     Unmeasured sparse/multi-bin/narrow-window cases keep the original path. */
+  if(p->allow_pair_alt && !tsel && nd>=8 && nt>=16 && t0%p->w==0
+     && 4*(size_t)nt>=3*((nt+p->w-1)/p->w)*(size_t)p->w
+     && end-start>=p->n/2 && binsize>=end-start){
+    ap_mf_plan *q=pair_alternate(p,d0,nd,t0,nt);
+    if(q) return run_pairs_pb(q,d0,nd,t0,nt,NULL,nt,binsize,threshold,
+                             peaks,counts,start,end);
+  }
   const size_t n=p->n, nb=(end-start+binsize-1)/binsize;
   /* Tile the pair loop.  Running d outer already keeps one data spectrum resident
      across the t loop, but every template then streams once per d: D*(1+T)

@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="370" viewBox="0 0 820 370">
+<rect width="820" height="370" fill="#f8fafc"/>
+<g font-family="sans-serif" fill="#172554">
+<text x="28" y="32" font-size="22">Pair-loop cache tiling: 16 pairs in either shape</text>
+<text x="50" y="80" font-size="18">4 data × 4 templates</text>
+<rect x="50" y="108" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="98" y="108" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="146" y="108" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="194" y="108" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="50" y="156" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="98" y="156" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="146" y="156" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="194" y="156" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="50" y="204" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="98" y="204" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="146" y="204" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="194" y="204" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="50" y="252" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="98" y="252" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="146" y="252" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="194" y="252" width="45" height="45" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<text x="50" y="325" font-size="17">8 input spectra: 4 + 4</text>
+<text x="350" y="80" font-size="18">1 data × 16 templates</text>
+<rect x="350" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="375" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="400" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="425" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="450" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="475" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="500" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="525" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="550" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="575" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="600" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="625" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="650" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="675" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="700" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<rect x="725" y="108" width="22" height="22" rx="3" fill="#bfdbfe" stroke="#2563eb"/>
+<text x="350" y="170" font-size="17">17 input spectra: 1 + 16</text>
+<text x="350" y="220" font-size="15">Each cell computes one data–template correlation.</text>
+<text x="350" y="247" font-size="15">Columns share templates; rows share data.</text>
+<text x="350" y="274" font-size="15">Reuse requires the tile’s inputs to fit in cache.</text>
+<text x="350" y="325" font-size="15">SIMD pair batching is separate: lanes span templates.</text>
+</g></svg>

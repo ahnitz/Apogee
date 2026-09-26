@@ -50,6 +50,7 @@ typedef struct {
                              const float *tr, const float *ti, int nlane,
                              size_t binsize, float thr, ap_peak *out, int conj,
                              size_t start, size_t end);
+  void *(*create_pairbatch)(size_t N);
 } ap_backend;
 
 /* The kernel for the target Highway's runtime dispatch selected, or NULL if

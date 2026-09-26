@@ -12,6 +12,7 @@
 typedef struct ap_plan ap_plan;
 
 ap_plan *ap_create(size_t N);
+ap_plan *ap_create_pairbatch(size_t N);
 void     ap_destroy(ap_plan *p);
 const char *ap_plan_backend(const ap_plan *p);
 int      ap_lane_width(void);
