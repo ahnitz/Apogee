@@ -136,3 +136,56 @@ fewer instructions relieved (both measured).
 
 The full rule set is in `docs/optimization-method.md` (13 rules, each
 anchored to something that actually happened).
+
+## 4. Large-n parity: the GPU stops at 16384, the CPU reaches 262144
+
+The CPU accepts n up to 262144. The GPU raises "supports n in [...]" above
+16384 -- for BOTH flat and hierarchical -- because no kernels are compiled
+past that. It is not a table or threshold gap.
+
+**The constraint.** n = WG * R with WG capped at 1024 threads by Vulkan
+and R fixed at 16, because `dft16` IS the algorithm -- a 16-point
+in-register DFT.
+
+    n        required R   VGPRs for r[] alone   verdict
+    16384       16             32               current maximum, WG=1024
+    32768       32             64               tractable
+    65536       64            128               fits; occupancy collapses
+    131072     128            256               exhausts the register file
+    262144     256            512               impossible in one workgroup
+
+So parity is two different jobs, and only the first is an extension.
+
+### 4a. n = 32768 and 65536 -- raise R
+
+Each thread holds two (or four) register-blocks and needs a radix-2
+combine across them with twiddles between: **one more decomposition level,
+inside the thread**, where today every level spans the workgroup and
+exchanges through LDS. The existing level loop is the right template --
+same structure, no barrier, because the data never leaves the thread.
+
+Sites to change:
+  * 28 declarations spelled `[16]`; R is already a named constant, so most
+    become `[R]`. `dft16`/`dft16s` are the exception -- they are 16 by
+    definition and must be CALLED R/16 times per level, not widened.
+  * `WG = NLEN / 16` becomes `min(1024, NLEN / R)` with `R = NLEN / WG`.
+  * `NLEVELS` and `INNER` assume R=16 in their arithmetic.
+  * `LDS_CAP` needs entries for 32768 and 65536.
+  * The in-thread combine is new code: after the R/16 dft16 calls, apply
+    w^(k*j/R) and butterfly across the sub-blocks.
+
+The existing test matrix covers it the moment the sizes are added to
+`_MATRIX_SIZES` -- index AND value, both devices, every band.
+
+### 4b. n = 131072 and 262144 -- a second implementation
+
+These need a MULTI-KERNEL FFT: transform in passes with the intermediate
+going through global memory between dispatches. That is a different
+algorithm from the one this kernel implements, not an extension of it, and
+it needs its own correctness and performance story.
+
+Worth deciding deliberately: the register-resident design is WHY this
+kernel is fast, and a global-memory multi-pass transform at those lengths
+may not beat the CPU by enough to justify maintaining a second
+implementation. Establish whether real workloads reach 131072 before
+committing.
