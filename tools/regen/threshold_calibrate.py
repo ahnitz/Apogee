@@ -30,7 +30,7 @@ BAND = max(256, min(1024, N // 4))
 SNRS = [5.0, 5.5, 6.0, 6.5]
 #: Extended down to 0.60: band 128 at n=4096 sits at f=0.697,
 #: below the old 0.80 floor, so its gate was being extrapolated.
-FS = [0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.995]
+FS = [0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.995]
 #: and down to 1.2: band 128 sits at ratio 1.24.
 RATIOS = [1.2, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0]
 FDS = [1e-2, 1e-3]
