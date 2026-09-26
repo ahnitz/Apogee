@@ -24,13 +24,29 @@ fine AT 1.66. Dropping the band-128 threshold 10%, to 3.0007, takes the
 dismissal to 0 of 605 -- so the table row is about 11% too high rather than
 the configuration being unusable.
 
+Bisecting the table against measurement (tools/audit_threshold.py) says the
+error is not one bad cell but a GRADIENT, present wherever the ratio is
+small and growing as it falls:
+
+    band   f       ratio   measured safe   table    table is
+     128   0.6970   1.24       2.8956      3.3341   15.1% HIGH
+     256   0.8832   1.66       3.3843      3.5307    4.3% high
+     512   0.9584   2.83       3.8774      4.0354    4.1% high
+    1024   0.9882   5.33       4.3502      4.2423    2.5% low
+
+A threshold above the safe value dismisses signals, so "high" is the unsafe
+direction. At ratio 5 and up the table is correct or conservative. Below it
+the rows are a few percent optimistic -- bands 256 and 512, which selection
+ships, are running 4% hot and pass only because they have slack -- and by
+ratio 1.24 the error reaches 15% and breaks through.
+
 `ratio` is samples across the correlation peak, band / B_eff, and the table
-is keyed on it precisely because band is supposed to drop out. Near the grid
-edge it does not: the table's ratio grid starts at 1.200, the failing query
-sits at 1.24, and the same table serves a query at 1.37 (f = 0.695, band
-1024) that passes. Whatever the cause -- a steep gradient the bilinear fit
-misses, or rows at ratio 1.20 measured at 6000 trials against a 1e-3 budget
-they cannot resolve -- the fix is measured rows below ratio 1.5 with enough
+is keyed on it precisely because band is supposed to drop out. The rows
+themselves barely move with it: at f = 0.5000 the measured thresholds run
+3.2441, 3.2500, 3.2148, 3.2383 across ratio 1.2 to 3.0, which is a flat
+line with noise on it rather than the trend the measurements above show.
+That is what 6000 trials a bisection step buys against a 1e-3 budget -- six
+expected events -- so the fix is re-measurement below ratio 1.5 with enough
 trials, not a constant subtracted here.
 
 Selection cannot reach the failing corner today: the lowest ratio it picks

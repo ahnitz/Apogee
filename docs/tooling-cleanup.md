@@ -117,9 +117,28 @@ table is keyed on it because band is supposed to drop out; near the grid edge
 it does not. The grid starts at ratio 1.200, the failing query is 1.24, and a
 query at 1.37 (f = 0.695, band 1024) passes.
 
-So enabling bands 64 and 128 needs the threshold table re-measured below
-ratio 1.5, with enough trials to resolve 1e-3 -- the existing rows use 6000
-per bisection step, which cannot. Not a constant subtracted at the lookup.
+Bisecting the table against measurement (`tools/audit_threshold.py`, which
+deliberately does NOT reuse `hmf_tune.measure_tc` -- a check sharing the
+producer's setup cannot see a fault in it) says the error is a GRADIENT, not
+one bad cell:
+
+    band   f       ratio   measured safe   table    table is
+     128   0.6970   1.24       2.8956      3.3341   15.1% HIGH
+     256   0.8832   1.66       3.3843      3.5307    4.3% high
+     512   0.9584   2.83       3.8774      4.0354    4.1% high
+    1024   0.9882   5.33       4.3502      4.2423    2.5% low
+
+At ratio 5 and up the table is correct or conservative. Below it the rows
+are a few percent optimistic -- bands 256 and 512, which selection ships,
+run 4% hot and pass only because they have slack -- and by ratio 1.24 the
+error reaches 15% and breaks through into real dismissals.
+
+The rows barely move with ratio at all: at f = 0.5000 they run 3.2441,
+3.2500, 3.2148, 3.2383 across ratio 1.2 to 3.0, a flat line with noise on it
+rather than the trend measurement shows. That is what 6000 trials a
+bisection step buys against a 1e-3 budget -- six expected events. So
+enabling bands 64 and 128 needs the table re-measured below ratio 1.5 with
+enough trials, not a constant subtracted at the lookup.
 
 Selection cannot reach the corner today: over 352 sampled (n, reference, snr,
 fd) combinations the lowest ratio it picks is 1.29 at f = 0.787, which
